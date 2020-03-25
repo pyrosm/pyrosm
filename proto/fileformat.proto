@@ -1,0 +1,47 @@
+/** Copyright (c) 2010 Scott A. Crosby. <scott@sacrosby.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+*/
+
+option optimize_for = LITE_RUNTIME;
+option java_package = "crosby.binary";
+package OSMPBF;
+
+//protoc --java_out=../.. fileformat.proto
+
+
+//
+//  STORAGE LAYER: Storing primitives.
+//
+
+message Blob {
+  optional bytes raw = 1; // No compression
+  optional int32 raw_size = 2; // When compressed, the uncompressed size
+
+  // Possible compressed versions of the data.
+  optional bytes zlib_data = 3;
+
+  // PROPOSED feature for LZMA compressed data. SUPPORT IS NOT REQUIRED.
+  optional bytes lzma_data = 4;
+
+  // Formerly used for bzip2 compressed data. Depreciated in 2010.
+  optional bytes OBSOLETE_bzip2_data = 5 [deprecated=true]; // Don't reuse this tag number.
+}
+
+/* A file contains an sequence of fileblock headers, each prefixed by
+their length in network byte order, followed by a data block
+containing the actual data. types staring with a "_" are reserved.
+*/
+
+message BlobHeader {
+  required string type = 1;
+  optional bytes indexdata = 2;
+  required int32 datasize = 3;
+}
+
+
