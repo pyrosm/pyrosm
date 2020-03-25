@@ -1,0 +1,6 @@
+graft pyrosm
+graft ci
+graft proto
+graft tests
+include .travis.yml .appveyor.yml
+global-exclude __pycache__/*
