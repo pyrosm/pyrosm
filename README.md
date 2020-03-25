@@ -13,8 +13,47 @@ Google's own Pyrobuf library with C++ backend.
 for parsing different datasets from the OpenStreetMap pbf-dump including road networks, buildings and points of interest. The main difference between 
 PyrOSM and OSMnx is that OSMnx reads the data over internet using OverPass API, whereas PyrOSM reads the data from local OSM data dumps
 that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). This makes it possible to read data much faster thus 
-allowing e.g. parsing street networks for whole country in a matter of minutes instead of hours (however, see [caveats](#caveats)).  
+allowing e.g. parsing street networks for whole country in a matter of minutes instead of hours (however, see [caveats](#caveats)).
+
+## Features
+
+ - read street networks (separately for driving, cycling, walking and all-combined)
+ - filter data based on bounding box 
+
+## Install
+
+PyrOSM is distributed in PyPi and it can be installed with pip:
+
+`$ pip install pyrosm`  
+
+## How to use?
+
+Using `pyrosm` is easy and it can be imported into Python as any other library. 
+
+To read drivable street networks from OpenStreetMap protobuf file, simply:
+
+```python
+import pyrosm
+fp = "mydata.osm.pbf"
+drivable_roads = pyrosm.get_driving_network(fp)
+```   
+
+## Performance
+
+
 
 ## Caveats
+
+### Filtering large files by bounding box 
+
+Although PyrOSM provides possibility to filter even larger data files based on bounding box while reading (also lowering memory consumption), 
+this process can slow down the reading process significantly (1.5-3x longer) due to necessary lookups when parsing the data. 
+This might not be an issue with smaller files (up to ~100MB) but with larger data dumps this can start consuming a lot of 
+processing time.
+
+Hence, a recommended approach is to **first** filter the protobuf file based on bounding box into a smaller subset by using a dedicated 
+open source Java tool called [Osmosis](https://wiki.openstreetmap.org/wiki/Osmosis) which is available for all operating systems. 
+Detailed installation instructions are [here](https://wiki.openstreetmap.org/wiki/Osmosis/Installation), and instructions how to filter
+data based on bounding box are [here](https://wiki.openstreetmap.org/wiki/Osmosis/Examples#Extract_administrative_Boundaries_from_a_PBF_Extract).
 
 
