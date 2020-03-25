@@ -1,4 +1,5 @@
-# PyrOSM
+# PyrOSM 
+[![build status](https://api.travis-ci.com/HTenkanen/pyrosm.svg?branch=master)](https://travis-ci.com/HTenkanen/pyrosm)
 
 **PyrOSM** is a **`fast`** Python library for reading OpenStreetMap from `protobuf` files (`*.osm.pbf`) into Geopandas GeoDataFrames. 
 PyrOSM makes it easy to extract various datasets from OpenStreetMap pbf-dumps including road networks, buildings and points of interest. 
