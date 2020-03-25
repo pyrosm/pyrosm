@@ -1,6 +1,6 @@
 # PyrOSM
 
-**PyrOSM** is a `fast` Python library for reading OpenStreetMap from `protobuf` files (`*.osm.pbf`) into Geopandas GeoDataFrames. 
+**PyrOSM** is a **`fast`** Python library for reading OpenStreetMap from `protobuf` files (`*.osm.pbf`) into Geopandas GeoDataFrames. 
 The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*).
 PyrOSM is built on top of another Cython library called [Pyrobuf](https://github.com/appnexus/pyrobuf) which is a faster Cython alternative 
 to Google's Protobuf library: It provides 2-4x boost in performance for deserializing the protocol buffer messages compared to 
