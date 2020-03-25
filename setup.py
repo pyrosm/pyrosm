@@ -29,10 +29,10 @@ setup(
     version='0.0.1',
     license='MIT',
     description='A Python tool to parse OSM data from Protobuf format into GeoDataFrame.',
-    #long_description='%s\n%s' % (
-    #    re.compile('^.. start-badges.*^.. end-badges', re.M | re.S).sub('', read('README.rst')),
-    #    re.sub(':[a-z]+:`~?(.*?)`', r'``\1``', read('CHANGELOG.rst'))
-    #),
+    long_description='%s\n%s' % (
+        re.compile('^.. start-badges.*^.. end-badges', re.M | re.S).sub('', read('README.rst')),
+        re.sub(':[a-z]+:`~?(.*?)`', r'``\1``', read('CHANGELOG.rst'))
+    ),
     author='Henrikki Tenkanen',
     author_email='h.tenkanen@ucl.ac.uk',
     url='https://github.com/htenkanen/PyrOSM',
@@ -55,11 +55,10 @@ setup(
         'Programming Language :: Python :: 3.8',
         'Topic :: Utilities',
     ],
-    #project_urls={
-    #    'Documentation': 'https://cafein.readthedocs.io/',
-    #    'Changelog': 'https://cafein.readthedocs.io/en/latest/changelog.html',
-    #    'Issue Tracker': 'https://github.com/htenkanen/cafein/issues',
-    #},
+    project_urls={
+        'Documentation': 'https://pyrosm.github.io/',
+        'Issue Tracker': 'https://github.com/htenkanen/pyrosm/issues',
+    },
     keywords=[
         # eg: 'keyword1', 'keyword2', 'keyword3',
     ],
