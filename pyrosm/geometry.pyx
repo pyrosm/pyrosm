@@ -21,9 +21,9 @@ cdef to_shapely(pygeos_array):
     return out
 
 cdef create_way_geometries(nodes, ways):
-    cdef dict way, lookup_dict
+    cdef dict way
     cdef long long node
-    cdef list geometries, coords
+    cdef list coords
     lookup_dict = create_node_lookup_dict(nodes)
 
     geometries = []
