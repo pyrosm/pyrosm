@@ -1,0 +1,17 @@
+[paths]
+source =
+   pyrosm
+   */site-packages/pyrosm
+
+[run]
+branch = true
+source =
+    pyrosm
+    tests
+parallel = true
+plugins = Cython.Coverage
+
+[report]
+show_missing = true
+precision = 2
+omit = *migrations*
