@@ -2,13 +2,16 @@
 [![build status](https://api.travis-ci.com/HTenkanen/pyrosm.svg?branch=master)](https://travis-ci.com/HTenkanen/pyrosm)
 
 **Pyrosm** is a Python library for reading OpenStreetMap from `protobuf` files (`*.osm.pbf`) into Geopandas GeoDataFrames. 
-Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including road networks, buildings and points of interest. 
+Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks, buildings and points of interest.
+
 
 The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) 
 which makes it much faster than any Python alternatives for parsing OpenStreetMap data.
 Pyrosm is built on top of another Cython library called [Pyrobuf](https://github.com/appnexus/pyrobuf) which is a faster Cython alternative 
 to Google's Protobuf library: It provides 2-4x boost in performance for deserializing the protocol buffer messages compared to 
-Google's own Protobuf library with C++ backend. 
+Google's version with C++ backend. Google's Protocol Buffers is a commonly used and efficient method to serialize and compress structured data 
+which is also used by OpenStreetMap contributors do distribute the OSM data in PBF format (Protocolbuffer Binary Format). 
+
  
 **Pyrosm** is easy to use and it provides a somewhat similar user interface as another popular Python library [OSMnx](https://github.com/gboeing/osmnx)
 for parsing different datasets from the OpenStreetMap pbf-dump including road networks, buildings and points of interest. The main difference between 
