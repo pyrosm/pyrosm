@@ -30,7 +30,7 @@ install:
   - python -c "import pyrosm"
 
 script:
-  - pytest pyrosm --cov pyrosm -v --cov-report term-missing
+  - pytest --cov pyrosm -v --cov-report term-missing
   - if [ "$STYLE" ]; then black --check pyrosm; fi
   - if [ "$STYLE" ]; then flake8 pyrosm; fi
 

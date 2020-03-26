@@ -31,8 +31,8 @@ setup(
     license='MIT',
     description='A Python tool to parse OSM data from Protobuf format into GeoDataFrame.',
     long_description='%s\n%s' % (
-        re.compile('^.. start-badges.*^.. end-badges', re.M | re.S).sub('', read('README.rst')),
-        re.sub(':[a-z]+:`~?(.*?)`', r'``\1``', read('CHANGELOG.rst'))
+        re.compile('^.. start-badges.*^.. end-badges', re.M | re.S).sub('', read('README.md')),
+        re.sub(':[a-z]+:`~?(.*?)`', r'``\1``', read('CHANGELOG.md'))
     ),
     author='Henrikki Tenkanen',
     author_email='h.tenkanen@ucl.ac.uk',
@@ -68,5 +68,9 @@ setup(
     install_requires=requirements,
     setup_requires=requirements,
     pyrobuf_modules="proto",
-    ext_modules=cythonize(os.path.join("pyrosm", "*.pyx"), annotate=False)
+    ext_modules=cythonize(os.path.join("pyrosm", "*.pyx"),
+                          annotate=False,
+                          #compiler_directives={'linetrace': True}
+                          )
 )
+
