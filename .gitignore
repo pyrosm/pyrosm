@@ -4,4 +4,5 @@ pyrobuf
 *.c
 build
 dist
+temp
 pyrosm.egg-info
