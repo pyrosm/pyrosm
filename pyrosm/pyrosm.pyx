@@ -4,7 +4,7 @@ from pyrosm.config import highway_tags_to_keep
 from pyrosm.pbfreader cimport parse_osm_data, get_way_data
 from pyrosm.geometry cimport create_way_geometries
 
-class Osm:
+class OSM:
     from pyrosm.utils._compat import PYGEOS_SHAPELY_COMPAT
 
     def __init__(self, filepath,

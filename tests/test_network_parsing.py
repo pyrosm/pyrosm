@@ -15,9 +15,9 @@ def helsinki_pbf():
 
 
 def test_parse_network_geodataframe(test_pbf):
-    from pyrosm import Osm
+    from pyrosm import OSM
     from geopandas import GeoDataFrame
-    osm = Osm(filepath=test_pbf)
+    osm = OSM(filepath=test_pbf)
     gdf = osm.parse_osm()
 
     # Test type
