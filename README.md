@@ -1,15 +1,16 @@
 # Pyrosm 
 [![build status](https://api.travis-ci.com/HTenkanen/pyrosm.svg?branch=master)](https://travis-ci.com/HTenkanen/pyrosm)
 
-**pyrosm** is a **`fast`** Python library for reading OpenStreetMap from `protobuf` files (`*.osm.pbf`) into Geopandas GeoDataFrames. 
+**Pyrosm** is a Python library for reading OpenStreetMap from `protobuf` files (`*.osm.pbf`) into Geopandas GeoDataFrames. 
 Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including road networks, buildings and points of interest. 
 
-The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*).
-pyrosm is built on top of another Cython library called [Pyrobuf](https://github.com/appnexus/pyrobuf) which is a faster Cython alternative 
+The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) 
+which makes it much faster than any Python alternatives for parsing OpenStreetMap data.
+Pyrosm is built on top of another Cython library called [Pyrobuf](https://github.com/appnexus/pyrobuf) which is a faster Cython alternative 
 to Google's Protobuf library: It provides 2-4x boost in performance for deserializing the protocol buffer messages compared to 
 Google's own Protobuf library with C++ backend. 
  
-**Pyrosm** is also easy to use and it provides a somewhat similar user interface as another popular Python library [OSMnx](https://github.com/gboeing/osmnx)
+**Pyrosm** is easy to use and it provides a somewhat similar user interface as another popular Python library [OSMnx](https://github.com/gboeing/osmnx)
 for parsing different datasets from the OpenStreetMap pbf-dump including road networks, buildings and points of interest. The main difference between 
 pyrosm and OSMnx is that OSMnx reads the data over internet using OverPass API, whereas pyrosm reads the data from local OSM data dumps
 that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). This makes it possible to read data much faster thus 
