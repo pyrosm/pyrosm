@@ -37,9 +37,7 @@ Pyrosm is distributed via PyPi and it can be installed with pip:
 
 ## How to use?
 
-Using `pyrosm` is easy and it can be imported into Python as any other library. 
-
-To read drivable street networks from OpenStreetMap protobuf file, simply:
+Using `pyrosm` is straightforward. To read drivable street networks from OpenStreetMap protobuf file (package includes a small test protobuf file), simply:
 
 ```ipython
 In  [1]: from pyrosm import OSM
