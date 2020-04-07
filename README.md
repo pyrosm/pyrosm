@@ -2,7 +2,7 @@
 [![build status](https://api.travis-ci.com/HTenkanen/pyrosm.svg?branch=master)](https://travis-ci.com/HTenkanen/pyrosm)
 
 **Pyrosm** is a Python library for reading OpenStreetMap from `protobuf` files (`*.osm.pbf`) into Geopandas GeoDataFrames. 
-Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks, buildings and points of interest.
+Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks (buildings and points of interest in progress).
 
 
 The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) 
@@ -19,10 +19,15 @@ pyrosm and OSMnx is that OSMnx reads the data over internet using OverPass API, 
 that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). This makes it possible to read data much faster thus 
 allowing e.g. parsing street networks for whole country in a matter of minutes instead of hours (however, see [caveats](#caveats)).
 
-## Features
+## Current features
 
  - read street networks (separately for driving, cycling, walking and all-combined)
  - filter data based on bounding box 
+ 
+## Road map
+
+ - add parsing of building information
+ - add parsing of places of interests (POIs)
 
 ## Install
 
@@ -41,10 +46,15 @@ from pyrosm import OSM
 fp = "mydata.osm.pbf"
 # Initialize the OSM parser object
 osm = OSM(fp)
-osm.get_driving_network(fp)
+osm.get_network(net_type="driving")
 ```   
 
 ## Performance
+
+Proper benchmarking results are on their way, but to give some idea, reading all drivable roads in Helsinki Region (approx. 85,000 roads) 
+takes approximately **10 seconds** (laptop with 16GB memory, SSD drive, and Intel Core i5-8250U CPU 1.6 GHZ). And the result looks something like:
+
+![Helsinki_driving_net](resources/img/Helsinki_driving_net.PNG)
 
 ## Caveats
 
