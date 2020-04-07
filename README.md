@@ -28,6 +28,7 @@ allowing e.g. parsing street networks for whole country in a matter of minutes i
 
  - add parsing of building information
  - add parsing of places of interests (POIs)
+ - add more tests
 
 ## Install
 
