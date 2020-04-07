@@ -8,6 +8,7 @@ dependencies:
   # required
   - geopandas
   - pygeos
+  - cython
   # testing
   - pytest
   - pytest-cov
@@ -16,4 +17,5 @@ dependencies:
   - pip
   - pip:
       - pyrobuf
+      - git+https://github.com/realead/cykhash.git
 
