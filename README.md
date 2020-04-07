@@ -48,7 +48,7 @@ fp = get_path("test_pbf")
 osm = OSM(fp)
 
 # Read all drivable roads
-drive_net = osm.get_network(net_type="driving")
+drive_net = osm.get_network(network_type="driving")
 drive_net.head()
 ...
   access bridge  ...        id                                           geometry
