@@ -83,6 +83,12 @@ get_network(network_type='walking') method of pyrosm.pyrosm.OSM instance
 
 ```
 
+## Examples
+
+For further usage examples (for now), take a look at the tests, such as:
+  - [test_network_parsing.py](tests/test_network_parsing.py)
+
+
 ## Performance
 
 Proper benchmarking results are on their way, but to give some idea, reading all drivable roads in Helsinki Region (approx. 85,000 roads) 
