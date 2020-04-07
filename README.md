@@ -1,5 +1,5 @@
 # Pyrosm 
-[![build status](https://api.travis-ci.org/HTenkanen/pyrosm.svg?branch=master)](https://travis-ci.org/HTenkanen/pyrosm)
+[![build status](https://api.travis-ci.org/HTenkanen/pyrosm.svg?branch=master)](https://travis-ci.org/HTenkanen/pyrosm)[![Coverage Status](https://codecov.io/gh/HTenkanen/pyrosm/branch/master/graph/badge.svg)](https://codecov.io/gh/HTenkanen/pyrosm)
 
 **Pyrosm** is a Python library for reading OpenStreetMap from `protobuf` files (`*.osm.pbf`) into Geopandas GeoDataFrames. 
 Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks (buildings and points of interest in progress).
@@ -41,12 +41,26 @@ Using `pyrosm` is easy and it can be imported into Python as any other library.
 
 To read drivable street networks from OpenStreetMap protobuf file, simply:
 
-```python
-from pyrosm import OSM
-fp = "mydata.osm.pbf"
+```ipython
+In  [1]: from pyrosm import OSM
+In  [2]: from pyrosm import get_path
+In  [3]: fp = get_path("test_pbf")
+
 # Initialize the OSM parser object
-osm = OSM(fp)
-osm.get_network(net_type="driving")
+In  [4]: osm = OSM(fp)
+
+# Read all drivable roads
+In  [5]: drive_net = osm.get_network(net_type="driving")
+In  [6]: drive_net.head()
+Out [6]:
+  access bridge  ...        id                                           geometry
+0   None   None  ...   4732994  LINESTRING (26.94310 60.52580, 26.94295 60.525...
+1   None   None  ...   5184588  LINESTRING (26.94778 60.52231, 26.94717 60.522...
+2   None    yes  ...   5184589  LINESTRING (26.94891 60.52181, 26.94778 60.52231)
+3   None   None  ...   5184590  LINESTRING (26.94310 60.52580, 26.94452 60.525...
+4   None   None  ...  22731285  LINESTRING (26.93072 60.52252, 26.93094 60.522...
+
+[5 rows x 14 columns]
 ```   
 
 ## Performance
