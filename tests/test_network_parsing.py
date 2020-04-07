@@ -25,7 +25,7 @@ def test_filter_network_by_walking(test_pbf):
     from geopandas import GeoDataFrame
     from shapely.geometry import LineString
     osm = OSM(filepath=test_pbf)
-    gdf = osm.get_network(net_type="walking")
+    gdf = osm.get_network(network_type="walking")
 
     assert isinstance(gdf.loc[0, 'geometry'], LineString)
     assert isinstance(gdf, GeoDataFrame)
@@ -48,7 +48,7 @@ def test_filter_network_by_driving(test_pbf):
     from geopandas import GeoDataFrame
     from shapely.geometry import LineString
     osm = OSM(filepath=test_pbf)
-    gdf = osm.get_network(net_type="driving")
+    gdf = osm.get_network(network_type="driving")
 
     assert isinstance(gdf.loc[0, 'geometry'], LineString)
     assert isinstance(gdf, GeoDataFrame)
@@ -71,7 +71,7 @@ def test_filter_network_by_cycling(test_pbf):
     from geopandas import GeoDataFrame
     from shapely.geometry import LineString
     osm = OSM(filepath=test_pbf)
-    gdf = osm.get_network(net_type="cycling")
+    gdf = osm.get_network(network_type="cycling")
 
     assert isinstance(gdf.loc[0, 'geometry'], LineString)
     assert isinstance(gdf, GeoDataFrame)
@@ -102,7 +102,7 @@ def test_saving_network_to_shapefile(test_pbf, test_output_dir):
 
     temp_path = os.path.join(test_output_dir, "pyrosm_test.shp")
     osm = OSM(filepath=test_pbf)
-    gdf = osm.get_network(net_type="cycling")
+    gdf = osm.get_network(network_type="cycling")
     gdf.to_file(temp_path)
 
     # Ensure it can be read and matches with original one
