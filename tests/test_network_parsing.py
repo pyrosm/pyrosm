@@ -151,6 +151,7 @@ def test_parse_network_with_bbox(test_pbf):
     for coord1, coord2 in zip(bounds, result_bounds):
         assert round(coord2, 3) >= round(coord1, 3)
 
+
 def test_parse_network_with_shapely_bbox(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
