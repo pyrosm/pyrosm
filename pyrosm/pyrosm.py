@@ -33,7 +33,9 @@ class OSM:
 
         self.filepath = filepath
 
-        if type(bounding_box) in [Polygon, MultiPolygon]:
+        if bounding_box is None:
+            self.bounding_box = None
+        elif type(bounding_box) in [Polygon, MultiPolygon]:
             self.bounding_box = bounding_box.bounds
         elif isinstance(bounding_box, list):
             self.bounding_box = bounding_box

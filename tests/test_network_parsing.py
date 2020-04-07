@@ -151,6 +151,36 @@ def test_parse_network_with_bbox(test_pbf):
     for coord1, coord2 in zip(bounds, result_bounds):
         assert round(coord2, 3) >= round(coord1, 3)
 
+def test_parse_network_with_shapely_bbox(test_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+    from shapely.geometry import LineString, box
+
+    bounds = box(*[26.94, 60.525, 26.96, 60.535])
+    # Init with bounding box
+    osm = OSM(filepath=test_pbf, bounding_box=bounds)
+    gdf = osm.get_network()
+
+    assert isinstance(gdf.loc[0, 'geometry'], LineString)
+    assert isinstance(gdf, GeoDataFrame)
+
+    # Test shape
+    assert gdf.shape == (65, 14)
+
+    required_cols = ['access', 'bridge', 'foot', 'highway', 'lanes', 'lit', 'maxspeed',
+                     'name', 'oneway', 'ref', 'service', 'surface', 'id',
+                     'geometry']
+    for col in required_cols:
+        assert col in gdf.columns
+
+    # Should not include 'motorway' ways by default
+    assert "motorway" not in gdf["highway"].unique()
+
+    # The total bounds of the result should not be larger than the filter
+    # (allow some rounding error)
+    result_bounds = gdf.total_bounds
+    for coord1, coord2 in zip(bounds.bounds, result_bounds):
+        assert round(coord2, 3) >= round(coord1, 3)
 
 
 
