@@ -9,13 +9,12 @@ dependencies:
   - geopandas
   - pygeos
   - cython
+  - pyrobuf
   # testing
   - pytest
   - pytest-cov
   - codecov
-  # pyrobuf needs to be built temporarily from PyPi, as latest version is not pushed to conda-forge yet.
   - pip
   - pip:
-      - pyrobuf
       - git+https://github.com/realead/cykhash.git
 
