@@ -108,7 +108,7 @@ class OSM:
         return gdf
 
     def get_buildings(self):
-        pass
+        raise NotImplementedError()
 
     def get_pois(self):
-        pass
+        raise NotImplementedError()
