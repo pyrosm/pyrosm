@@ -32,7 +32,7 @@ requirements = ['geopandas',
 
 setup(
     name='pyrosm',
-    version='0.0.1',
+    version='0.1.0',
     license='MIT',
     description='A Python tool to parse OSM data from Protobuf format into GeoDataFrame.',
     long_description='%s\n%s' % (
@@ -41,7 +41,7 @@ setup(
     ),
     author='Henrikki Tenkanen',
     author_email='h.tenkanen@ucl.ac.uk',
-    url='https://github.com/htenkanen/PyrOSM',
+    url='https://github.com/htenkanen/pyrosm',
     packages=find_packages(),
     include_package_data=True,
     zip_safe=False,
@@ -62,7 +62,7 @@ setup(
         'Topic :: Utilities',
     ],
     project_urls={
-        'Documentation': 'https://pyrosm.github.io/',
+        #'Documentation': 'https://pyrosm.github.io/',
         'Issue Tracker': 'https://github.com/htenkanen/pyrosm/issues',
     },
     keywords=[
