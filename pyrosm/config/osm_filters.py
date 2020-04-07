@@ -62,14 +62,17 @@ def walking_filter():
     such cycleways.
 
     Applied filters:
-        '["area"!~"yes"]["highway"!~"cycleway|motor|proposed|construction|abandoned|platform|raceway"]'
-        '["foot"!~"no"]["service"!~"private"]'
+    '["area"!~"yes"]["highway"!~"cycleway|motor|proposed|construction|abandoned|
+      platform|raceway|motorway|motorway_link"]'
+
+    '["foot"!~"no"]["service"!~"private"]'
 
 
     """
     return dict(
         area=['yes'],
-        highway=['cycleway', 'motor', 'proposed', 'construction', 'abandoned', 'platform', 'raceway'],
+        highway=['cycleway', 'motor', 'proposed', 'construction', 'abandoned',
+                 'platform', 'raceway', 'motorway', 'motorway_link'],
         foot=['no'],
         service=['private']
     )
@@ -91,7 +94,7 @@ def cycling_filter():
     return dict(
         area=['yes'],
         highway=['footway', 'steps', 'corridor', 'elevator', 'escalator', 'motor', 'proposed',
-                 'construction', 'abandoned', 'platform', 'raceway'],
+                 'construction', 'abandoned', 'platform', 'raceway', 'motorway', 'motorway_link'],
         bicycle=['no'],
         service=['private']
     )
