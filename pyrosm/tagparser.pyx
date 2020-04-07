@@ -1,19 +1,21 @@
 cdef unicode tounicode(char *s):
     return s.decode("UTF-8")
 
-cdef parse_way_tags(keys, vals, stringtable):
-    cdef int k, v
+cdef parse_tags(keys, vals, stringtable):
+    cdef int i, N=len(keys)
     d = dict()
-    for k, v in zip(keys, vals):
+    for i in range(0, N):
+        k, v = keys[i], vals[i]
         d[stringtable[k]] = stringtable[v]
     return d
 
 cdef parse_dense_tags(keys_vals, string_table):
-    cdef int tag_idx, k, v
+    cdef int N=len(keys_vals)
+    cdef int tag_idx = 0
     tag_list = []
-    tag_idx = 0
-    while tag_idx < len(keys_vals):
-        tags = {}
+
+    while tag_idx < N:
+        tags = dict()
         while keys_vals[tag_idx] != 0:
             k = keys_vals[tag_idx]
             v = keys_vals[tag_idx + 1]
@@ -24,17 +26,15 @@ cdef parse_dense_tags(keys_vals, string_table):
             tag_list.append(tags)
         else:
             tag_list.append(None)
-
         tag_idx += 1
     return tag_list
 
 cdef explode_way_tags(ways):
-    cdef dict way, way_keys
-    cdef list exploded = []
-    cdef str k, v, dummy
+    exploded = []
+    cdef int i, n=len(ways)
     way_keys = {}
-
-    for way in ways:
+    for i in range(0, n):
+        way = ways[i]
         for k, v in way['tags'].items():
             way[k] = v
             try:

@@ -50,14 +50,13 @@ osm.get_driving_network(fp)
 
 ### Filtering large files by bounding box 
 
-Although `pyrosm` provides possibility to filter even larger data files based on bounding box while reading (also lowering memory consumption), 
+Although `pyrosm` provides possibility to filter even larger data files based on bounding box, 
 this process can slow down the reading process significantly (1.5-3x longer) due to necessary lookups when parsing the data. 
-This might not be an issue with smaller files (up to ~100MB) but with larger data dumps this can start consuming a lot of 
-processing time.
+This might not be an issue with smaller files (up to ~100MB) but with larger data dumps this can take longer than necessary.
 
-Hence, a recommended approach is to **first** filter the protobuf file based on bounding box into a smaller subset by using a dedicated 
-open source Java tool called [Osmosis](https://wiki.openstreetmap.org/wiki/Osmosis) which is available for all operating systems. 
-Detailed installation instructions are [here](https://wiki.openstreetmap.org/wiki/Osmosis/Installation), and instructions how to filter
-data based on bounding box are [here](https://wiki.openstreetmap.org/wiki/Osmosis/Examples#Extract_administrative_Boundaries_from_a_PBF_Extract).
+Hence, a recommended approach with large data files is to **first** filter the protobuf file based on bounding box into a 
+smaller subset by using a dedicated open source Java tool called [Osmosis](https://wiki.openstreetmap.org/wiki/Osmosis) 
+which is available for all operating systems. Detailed installation instructions are [here](https://wiki.openstreetmap.org/wiki/Osmosis/Installation), 
+and instructions how to filter data based on bounding box are [here](https://wiki.openstreetmap.org/wiki/Osmosis/Examples#Extract_administrative_Boundaries_from_a_PBF_Extract).
 
 

@@ -25,6 +25,10 @@ requirements = ['geopandas',
                 'pygeos',
                 ]
 
+# extensions = [Extension("pyrosm.khash.khashsets", ["pyrosm/khash/khashsets.pyx"]),
+#               Extension("pyrosm.khash.khashsets", ["pyrosm/khash/khashmaps.pyx"]),
+#               ]
+
 setup(
     name='pyrosm',
     version='0.0.1',

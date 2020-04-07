@@ -2,6 +2,7 @@
 pyrobuf
 *.pyd
 *.c
+*.html
 build
 dist
 temp
