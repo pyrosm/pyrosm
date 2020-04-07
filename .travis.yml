@@ -27,7 +27,6 @@ install:
   - if [ "$STYLE" ]; then pip install black flake8; fi
   - pip install .
   - conda list
-  - python -c "import pyrosm"
 
 script:
   - pytest --cov pyrosm -v --cov-report term-missing
