@@ -40,7 +40,7 @@ class OSM:
         elif isinstance(bounding_box, list):
             self.bounding_box = bounding_box
         else:
-            raise ValueError("bounding_box should be a list or shapely Polygon.")
+            raise ValueError("bounding_box should be a list or a shapely Polygon.")
 
         self.conf = Conf
         # TODO: Add as a parameter

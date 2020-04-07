@@ -183,4 +183,19 @@ def test_parse_network_with_shapely_bbox(test_pbf):
         assert round(coord2, 3) >= round(coord1, 3)
 
 
+def test_passing_incorrect_bounding_box(test_pbf):
+    from pyrosm import OSM
+
+    wrong_format = "[26.94, 60.525, 26.96, 60.535]"
+    try:
+        osm = OSM(filepath=test_pbf, bounding_box=wrong_format)
+    except ValueError as e:
+        if "bounding_box should be" in str(e):
+            pass
+        else:
+            raise(e)
+    except Exception as e:
+        raise e
+
+
 
