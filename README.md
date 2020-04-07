@@ -40,18 +40,17 @@ Pyrosm is distributed via PyPi and it can be installed with pip:
 
 Using `pyrosm` is straightforward. To read drivable street networks from OpenStreetMap protobuf file (package includes a small test protobuf file), simply:
 
-```ipython
-In  [1]: from pyrosm import OSM
-In  [2]: from pyrosm import get_path
-In  [3]: fp = get_path("test_pbf")
-
+```python
+from pyrosm import OSM
+from pyrosm import get_path
+fp = get_path("test_pbf")
 # Initialize the OSM parser object
-In  [4]: osm = OSM(fp)
+osm = OSM(fp)
 
 # Read all drivable roads
-In  [5]: drive_net = osm.get_network(net_type="driving")
-In  [6]: drive_net.head()
-Out [6]:
+drive_net = osm.get_network(net_type="driving")
+drive_net.head()
+...
   access bridge  ...        id                                           geometry
 0   None   None  ...   4732994  LINESTRING (26.94310 60.52580, 26.94295 60.525...
 1   None   None  ...   5184588  LINESTRING (26.94778 60.52231, 26.94717 60.522...
