@@ -23,6 +23,7 @@ def read(*names, **kwargs):
 requirements = ['geopandas',
                 'pyrobuf',
                 'pygeos',
+                'cykhash',
                 ]
 
 # extensions = [Extension("pyrosm.khash.khashsets", ["pyrosm/khash/khashsets.pyx"]),
