@@ -6,7 +6,7 @@ Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps in
 
 
 The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) 
-which makes it much faster than any Python alternatives for parsing OpenStreetMap data.
+which makes it probably faster than any other Python alternatives for parsing OpenStreetMap data.
 Pyrosm is built on top of another Cython library called [Pyrobuf](https://github.com/appnexus/pyrobuf) which is a faster Cython alternative 
 to Google's Protobuf library: It provides 2-4x boost in performance for deserializing the protocol buffer messages compared to 
 Google's version with C++ backend. Google's Protocol Buffers is a commonly used and efficient method to serialize and compress structured data 
