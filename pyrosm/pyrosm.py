@@ -2,6 +2,7 @@ from pyrosm.config import Conf
 from pyrosm.pbfreader import parse_osm_data, get_way_data
 from pyrosm.geometry import create_way_geometries
 from pyrosm.frames import create_way_gdf
+from shapely.geometry import Polygon, MultiPolygon
 
 
 class OSM:
@@ -16,9 +17,13 @@ class OSM:
         filepath : str
             Filepath to input OSM dataset ( .osm.pbf | .osm | .osm.bz2 | .osm.gz )
 
-        bounding_box : shapely.Polygon (optional)
-            Bounding box (shapely.geometry.Polygon) that can be used to filter OSM data spatially.
+        bounding_box : list | shapely.Polygon (optional)
+            Filtering OSM data spatially is allowed by passing a
+            bounding box either as a list `[minx, miny, maxx, maxy]` or
+            as a `shapely.geometry.Polygon`.
 
+            Note: if using Polygon, the tool will use its bounds.
+            Filtering based on complex shapes is not currently supported.
         """
         if not isinstance(filepath, str):
             raise ValueError("'filepath' should be a string.")
@@ -27,7 +32,14 @@ class OSM:
                              f"Found: {filepath.split('.')[-1]}")
 
         self.filepath = filepath
-        self.bounding_box = bounding_box
+
+        if type(bounding_box) in [Polygon, MultiPolygon]:
+            self.bounding_box = bounding_box.bounds
+        elif isinstance(bounding_box, list):
+            self.bounding_box = bounding_box
+        else:
+            raise ValueError("bounding_box should be a list or shapely Polygon.")
+
         self.conf = Conf
         # TODO: Add as a parameter
         self._verbose = False
