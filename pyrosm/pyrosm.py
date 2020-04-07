@@ -8,12 +8,8 @@ class OSM:
     from pyrosm.utils._compat import PYGEOS_SHAPELY_COMPAT
 
     def __init__(self, filepath,
-                 bounding_box=None,
-                 verbose=False):
+                 bounding_box=None):
         """
-        Reads data from OSM file and parses street networks
-        for walking, driving, and cycling.
-
         Parameters
         ----------
 
@@ -23,8 +19,6 @@ class OSM:
         bounding_box : shapely.Polygon (optional)
             Bounding box (shapely.geometry.Polygon) that can be used to filter OSM data spatially.
 
-        verbose : bool
-            If True, will print parsing-related information to the screen.
         """
         if not isinstance(filepath, str):
             raise ValueError("'filepath' should be a string.")
@@ -35,7 +29,8 @@ class OSM:
         self.filepath = filepath
         self.bounding_box = bounding_box
         self.conf = Conf
-        self._verbose = verbose
+        # TODO: Add as a parameter
+        self._verbose = False
 
         self._all_way_tags = None
         self._nodes = None
@@ -73,9 +68,20 @@ class OSM:
         elif net_type == "all":
             return None
 
-    def get_network(self, net_type="walking"):
+    def get_network(self, network_type="walking"):
+        """
+        Reads data from OSM file and parses street networks
+        for walking, driving, and cycling.
+
+        Parameters
+        ----------
+
+        network_type : str
+            What kind of network to parse. Possible values are: 'walking' | 'cycling' | 'driving' | 'all'.
+
+        """
         # Get filter
-        network_filter = self._get_filter(net_type)
+        network_filter = self._get_filter(network_type)
         tags_to_keep = self.conf.tag_filters.networks
 
         if self._nodes is None or self._way_records is None:
