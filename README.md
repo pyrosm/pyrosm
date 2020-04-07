@@ -61,6 +61,28 @@ drive_net.head()
 [5 rows x 14 columns]
 ```   
 
+To get further information how to use the tool, you can use good old `help`:
+
+```python
+
+help(osm.get_network)
+
+...
+
+Help on method get_network in module pyrosm.pyrosm:
+
+get_network(network_type='walking') method of pyrosm.pyrosm.OSM instance
+    Reads data from OSM file and parses street networks
+    for walking, driving, and cycling.
+    
+    Parameters
+    ----------
+    
+    network_type : str
+        What kind of network to parse. Possible values are: 'walking' | 'cycling' | 'driving' | 'all'.
+
+```
+
 ## Performance
 
 Proper benchmarking results are on their way, but to give some idea, reading all drivable roads in Helsinki Region (approx. 85,000 roads) 
