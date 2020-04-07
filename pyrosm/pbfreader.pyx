@@ -1,7 +1,7 @@
 from pyrosm.exceptions import PBFNotImplemented
 from struct import unpack
 import zlib
-from cafein_proto import BlobHeader, Blob, HeaderBlock, PrimitiveBlock
+from pyrosm_proto import BlobHeader, Blob, HeaderBlock, PrimitiveBlock
 from pyrosm.tagparser cimport tounicode, parse_dense_tags, parse_tags, explode_way_tags
 from pyrosm.c_arrays cimport to_clong_array
 from cykhash.khashsets cimport Int64Set_from_buffer
