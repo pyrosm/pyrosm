@@ -7,3 +7,4 @@ build
 dist
 temp
 pyrosm.egg-info
+.coverage
