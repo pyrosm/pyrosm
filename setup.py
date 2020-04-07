@@ -8,9 +8,8 @@ from os.path import dirname
 from os.path import join
 from setuptools import find_packages
 from setuptools import setup
-from Cython.Build import cythonize
 import os
-
+from Cython.Build import cythonize
 
 def read(*names, **kwargs):
     with io.open(
@@ -24,6 +23,7 @@ requirements = ['geopandas',
                 'pyrobuf',
                 'pygeos',
                 'cykhash',
+                'cython',
                 ]
 
 # extensions = [Extension("pyrosm.khash.khashsets", ["pyrosm/khash/khashsets.pyx"]),
