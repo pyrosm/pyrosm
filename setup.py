@@ -15,9 +15,8 @@ import os
 try:
     from Cython.Build import cythonize
 except ImportError:
-    def cythonize (*args, ** kwargs):
-        from Cython.Build import cythonize
-        return cythonize(*args, ** kwargs)
+    from setuptools import dist
+    dist.Distribution().fetch_build_eggs(['Cython>=0.15.1'])
 
 
 def read(*names, **kwargs):
@@ -43,7 +42,7 @@ requirements = [
 
 setup(
     name='pyrosm',
-    version='0.1.2',
+    version='0.1.3',
     license='MIT',
     description='A Python tool to parse OSM data from Protobuf format into GeoDataFrame.',
     # long_description='%s\n%s' % (
