@@ -22,8 +22,8 @@ def read(*names, **kwargs):
 requirements = ['geopandas',
                 'pyrobuf',
                 'pygeos',
-                'cykhash',
                 'cython',
+                'cykhash @ git+https://github.com/realead/cykhash@master'
                 ]
 
 # extensions = [Extension("pyrosm.khash.khashsets", ["pyrosm/khash/khashsets.pyx"]),
@@ -32,7 +32,7 @@ requirements = ['geopandas',
 
 setup(
     name='pyrosm',
-    version='0.1.0',
+    version='0.1.1',
     license='MIT',
     description='A Python tool to parse OSM data from Protobuf format into GeoDataFrame.',
     # long_description='%s\n%s' % (
