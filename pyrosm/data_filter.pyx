@@ -52,5 +52,8 @@ cdef get_filtered_data(ways, tags_to_keep):
                 # If not add into tags
                 other_tags[k] = v
         [data[k].append(v) for k, v in way_records.items()]
-        data["tags"].append(str(other_tags))
+        if len(other_tags) > 0:
+            data["tags"].append(str(other_tags))
+        else:
+            data["tags"].append(None)
     return data
