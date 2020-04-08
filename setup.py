@@ -31,15 +31,12 @@ def read(*names, **kwargs):
 requirements = [
     'Cython>=0.15.1',
     'setuptools>=18.0',
+    'cykhash @ https://github.com/realead/cykhash/zipball/master'
     'geopandas',
     'pyrobuf',
     'pygeos',
-    'cykhash @ git+https://github.com/realead/cykhash@master'
 ]
 
-# extensions = [Extension("pyrosm.khash.khashsets", ["pyrosm/khash/khashsets.pyx"]),
-#               Extension("pyrosm.khash.khashsets", ["pyrosm/khash/khashmaps.pyx"]),
-#               ]
 
 setup(
     name='pyrosm',
