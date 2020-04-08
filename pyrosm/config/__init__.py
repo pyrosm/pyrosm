@@ -12,7 +12,7 @@ class NetworkFilter:
 class Tags:
     networks = highway_tags_to_keep
     buildings = building_tags_to_keep
-    #amenities = building_tags_to_keep
+    amenities = building_tags_to_keep
 
 
 class Conf:

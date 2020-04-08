@@ -2,7 +2,7 @@
 # HIGHWAY TAGS
 # ========================
 
-# Default tags to keep with highways
+# Default tags to keep as columns with highways
 # Mostly based on: https://wiki.openstreetmap.org/wiki/Key:highway
 highway_tags_to_keep = ["access",
                         "area",
@@ -71,6 +71,8 @@ highway_tags_to_keep = ["access",
 # https://wiki.openstreetmap.org/wiki/Key:building
 # https://wiki.openstreetmap.org/wiki/Key:addr
 
+# Default tags to keep as columns with buildings/amenities
+
 building_tags_to_keep = ['building',
                          'addr:city',
                          'addr:country',
@@ -79,8 +81,6 @@ building_tags_to_keep = ['building',
                          'addr:housename',
                          'addr:postcode',
                          'addr:place',
-                         'addr:province',
-                         'addr:state',
                          'addr:street',
                          'amenity',
                          'building:flats',
@@ -96,7 +96,6 @@ building_tags_to_keep = ['building',
                          'internet_access',
                          'landuse',
                          'levels',
-                         'mml:class'
                          'name',
                          'office',
                          'opening_hours',
@@ -104,10 +103,8 @@ building_tags_to_keep = ['building',
                          'phone',
                          'ref',
                          'shop',
-                         'soft_storey',
                          'source',
                          'start_date',
-                         'takeaway',
                          'url',
                          'website',
                          'wikipedia',
@@ -115,5 +112,10 @@ building_tags_to_keep = ['building',
                          # Other tags that are not kept by default
                          # 'addr:conscriptionnumber',
                          # 'addr:district',
+                         # 'addr:province',
+                         # 'soft_storey',
+                         # 'takeaway',
+                         # 'addr:state',
+                         # 'mml:class'
 
                          ]

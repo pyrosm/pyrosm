@@ -1,3 +1,4 @@
+from rapidjson import dumps
 
 cdef filter_osm(data_records, data_filter, osm_data_type):
     """
@@ -53,7 +54,7 @@ cdef get_filtered_data(ways, tags_to_keep):
                 other_tags[k] = v
         [data[k].append(v) for k, v in way_records.items()]
         if len(other_tags) > 0:
-            data["tags"].append(str(other_tags))
+            data["tags"].append(dumps(other_tags))
         else:
             data["tags"].append(None)
     return data
