@@ -9,12 +9,6 @@ def test_pbf():
 
 
 @pytest.fixture
-def helsinki_pbf():
-    pbf_path = get_path("helsinki_pbf")
-    return pbf_path
-
-
-@pytest.fixture
 def test_output_dir():
     import os, tempfile
     return os.path.join(tempfile.gettempdir(), "pyrosm_test_results")
