@@ -4,7 +4,8 @@ from pyrosm._arrays cimport convert_to_array_dict
 
 cdef filter_buildings(data_records, data_filter):
     return filter_osm(data_records, data_filter,
-                      osm_data_type="building")
+                      osm_data_type="building",
+                      filter_type="keep")
 
 
 cdef _get_building_data(ways, tags_to_keep, building_filter):

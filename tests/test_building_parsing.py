@@ -131,3 +131,22 @@ def test_saving_buildings_to_geopackage(test_pbf, test_output_dir):
 
     # Clean up
     shutil.rmtree(test_output_dir)
+
+
+def test_reading_buildings_with_filter(test_pbf):
+    from pyrosm import OSM
+    from shapely.geometry import Polygon
+    from geopandas import GeoDataFrame
+    # Filter for 'industrial' buildings
+    custom_filter = {'building': ['industrial']}
+    osm = OSM(filepath=test_pbf)
+    gdf = osm.get_buildings(tag_filters=custom_filter)
+
+    assert isinstance(gdf, GeoDataFrame)
+    assert isinstance(gdf.loc[0, "geometry"], Polygon)
+    assert gdf.shape == (28, 6)
+
+    required_cols = ['building', 'id', 'timestamp', 'version', 'tags', 'geometry']
+
+    for col in required_cols:
+        assert col in gdf.columns
