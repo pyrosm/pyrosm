@@ -66,6 +66,7 @@ setup(
     license='MIT',
     description='A Python tool to parse OSM data from Protobuf format into GeoDataFrame.',
     long_description=read_long_description(),
+    long_description_content_type="text/markdown",
     author='Henrikki Tenkanen',
     author_email='h.tenkanen@ucl.ac.uk',
     url='https://github.com/htenkanen/pyrosm',
