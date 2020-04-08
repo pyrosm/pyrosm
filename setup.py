@@ -54,6 +54,7 @@ requirements = [
     # These will be checked before setup
     #'Cython>=0.15.1',
     #'pyrobuf>=0.9.3',
+    'python-rapidjson',
     'setuptools>=18.0',
     'geopandas',
     'pygeos',

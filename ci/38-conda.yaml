@@ -10,6 +10,7 @@ dependencies:
   - pygeos
   - cython
   - pyrobuf
+  - python-rapidjson
   # testing
   - pytest
   - pytest-cov
