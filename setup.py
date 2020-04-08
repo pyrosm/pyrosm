@@ -40,7 +40,7 @@ requirements = [
 
 setup(
     name='pyrosm',
-    version='0.1.4',
+    version='0.1.4.1',
     license='MIT',
     description='A Python tool to parse OSM data from Protobuf format into GeoDataFrame.',
     # long_description='%s\n%s' % (
