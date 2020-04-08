@@ -15,9 +15,16 @@ import os
 try:
     from Cython.Build import cythonize
 except ImportError:
-    from setuptools import dist
-    dist.Distribution().fetch_build_eggs(['Cython>=0.15.1'])
-    from Cython.Build import cythonize
+    #from setuptools import dist
+    #dist.Distribution().fetch_build_eggs(['Cython>=0.15.1'])
+    #from Cython.Build import cythonize
+    os.system('pip install Cython')
+
+# Cykhash needs to be installed before running setup
+try:
+    import cykhash
+except ImportError:
+    os.system('pip install https://github.com/realead/cykhash/archive/master.zip')
 
 
 def read(*names, **kwargs):
@@ -30,7 +37,6 @@ def read(*names, **kwargs):
 
 requirements = [
     'Cython>=0.15.1',
-    'cykhash @ https://github.com/realead/cykhash/archive/master.zip'
     'setuptools>=18.0',
     'geopandas',
     'pyrobuf',
@@ -40,7 +46,7 @@ requirements = [
 
 setup(
     name='pyrosm',
-    version='0.1.4.2',
+    version='0.1.4.3',
     license='MIT',
     description='A Python tool to parse OSM data from Protobuf format into GeoDataFrame.',
     # long_description='%s\n%s' % (
