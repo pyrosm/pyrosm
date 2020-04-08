@@ -9,7 +9,16 @@ from os.path import join
 from setuptools import find_packages
 from setuptools import setup
 import os
-from Cython.Build import cythonize
+
+# Cython needs to be installed before running setup
+# https://luminousmen.com/post/resolve-cython-and-numpy-dependencies
+try:
+    from Cython.Build import cythonize
+except ImportError:
+    def cythonize (*args, ** kwargs):
+        from Cython.Build import cythonize
+        return cythonize(*args, ** kwargs)
+
 
 def read(*names, **kwargs):
     with io.open(
@@ -19,12 +28,14 @@ def read(*names, **kwargs):
         return fh.read()
 
 
-requirements = ['geopandas',
-                'pyrobuf',
-                'pygeos',
-                'cython',
-                'cykhash @ git+https://github.com/realead/cykhash@master'
-                ]
+requirements = [
+    'setuptools>=18.0',
+    'cython',
+    'geopandas',
+    'pyrobuf',
+    'pygeos',
+    'cykhash @ git+https://github.com/realead/cykhash@master'
+]
 
 # extensions = [Extension("pyrosm.khash.khashsets", ["pyrosm/khash/khashsets.pyx"]),
 #               Extension("pyrosm.khash.khashsets", ["pyrosm/khash/khashmaps.pyx"]),
@@ -62,7 +73,7 @@ setup(
         'Topic :: Utilities',
     ],
     project_urls={
-        #'Documentation': 'https://pyrosm.github.io/',
+        # 'Documentation': 'https://pyrosm.github.io/',
         'Issue Tracker': 'https://github.com/htenkanen/pyrosm/issues',
     },
     keywords=[
@@ -75,7 +86,6 @@ setup(
     pyrobuf_modules="proto",
     ext_modules=cythonize(os.path.join("pyrosm", "*.pyx"),
                           annotate=False,
-                          #compiler_directives={'linetrace': True}
+                          # compiler_directives={'linetrace': True}
                           )
 )
-
