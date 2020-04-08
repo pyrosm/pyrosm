@@ -37,16 +37,20 @@ cdef get_filtered_data(ways, tags_to_keep):
 
     lookup = dict.fromkeys(tags_to_keep, None)
     data = {k: [] for k in tags_to_keep}
+    data["tags"] = []
 
     for i in range(0, n):
         way = ways[i]
         way_records = dict.fromkeys(tags_to_keep, None)
+        other_tags = {}
         for k, v in way.items():
             try:
-                # Check if tag should be kept
+                # Check if tag should be kept as a column
                 lookup[k]
                 way_records[k] = v
             except:
-                pass
+                # If not add into tags
+                other_tags[k] = v
         [data[k].append(v) for k, v in way_records.items()]
+        data["tags"].append(str(other_tags))
     return data

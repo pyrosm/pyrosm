@@ -59,11 +59,11 @@ def test_reading_buildings_with_defaults(test_pbf):
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], Polygon)
-    assert gdf.shape == (2193, 18)
+    assert gdf.shape == (2193, 17)
 
     required_cols = ['building', 'addr:city', 'addr:street', 'addr:country',
                      'addr:postcode', 'addr:housenumber', 'source', 'opening_hours',
-                     'building:levels', 'mml:class', 'id',
+                     'building:levels', 'id',
                      'timestamp', 'version', 'geometry']
 
     for col in required_cols:
@@ -84,12 +84,12 @@ def test_parse_buildings_with_bbox(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (569, 14)
+    assert gdf.shape == (569, 13)
 
     required_cols = ['building', 'addr:street',
                      'addr:postcode', 'addr:housenumber',
-                     'opening_hours', 'mml:class', 'id',
-                     'timestamp', 'version', 'geometry']
+                     'opening_hours', 'id',
+                     'timestamp', 'version', 'geometry', 'tags']
 
     for col in required_cols:
         assert col in gdf.columns
