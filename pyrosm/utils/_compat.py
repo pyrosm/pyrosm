@@ -7,8 +7,8 @@ import warnings
 if not shapely_geos_version.startswith(geos_capi_version_string):
     warnings.warn(
         "The Shapely GEOS version ({}) is incompatible with the GEOS "
-        "version PyGEOS was compiled with ({}). Conversions between both "
-        "will be slow.".format(
+        "version PyGEOS was compiled with ({}). The tool will work "
+        "but it runs a bit slower.".format(
             shapely_geos_version, geos_capi_version_string
         )
     )

@@ -11,7 +11,7 @@ from setuptools import setup
 import os
 
 # TODO: The installation of Cython, Cykhash and Pyrobuf this way is a hack.
-#  Integrate cykhash function directly to pyrosm to avoid these.
+#  Integrate cykhash function directly to pyrosm to avoid these and publish in conda-forge.
 
 # Cython needs to be installed before running setup
 # https://luminousmen.com/post/resolve-cython-and-numpy-dependencies
@@ -44,16 +44,17 @@ def read(*names, **kwargs):
 
 requirements = [
     'Cython>=0.15.1',
+    'cykhash>=0.3.0',
+    'pyrobuf>=0.9.3'
     'setuptools>=18.0',
     'geopandas',
-    'pyrobuf',
     'pygeos',
 ]
 
 
 setup(
     name='pyrosm',
-    version='0.1.4.5',
+    version='0.1.5',
     license='MIT',
     description='A Python tool to parse OSM data from Protobuf format into GeoDataFrame.',
     # long_description='%s\n%s' % (
