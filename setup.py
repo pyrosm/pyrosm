@@ -51,8 +51,9 @@ def read_long_description():
 
 
 requirements = [
-    'Cython>=0.15.1',
-    'pyrobuf>=0.9.3',
+    # These will be checked before setup
+    #'Cython>=0.15.1',
+    #'pyrobuf>=0.9.3',
     'setuptools>=18.0',
     'geopandas',
     'pygeos',
@@ -61,7 +62,7 @@ requirements = [
 
 setup(
     name='pyrosm',
-    version='0.1.6',
+    version='0.1.7',
     license='MIT',
     description='A Python tool to parse OSM data from Protobuf format into GeoDataFrame.',
     long_description=read_long_description(),
