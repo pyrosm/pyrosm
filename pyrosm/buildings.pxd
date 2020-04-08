@@ -1,0 +1,1 @@
+cpdef get_building_data(ways, tags_to_keep, building_filter)
