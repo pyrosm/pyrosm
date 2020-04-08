@@ -10,6 +10,9 @@ from setuptools import find_packages
 from setuptools import setup
 import os
 
+# TODO: The installation of Cython and Cykhash is a hack.
+#  Integrate cykhash function directly to pyrosm to avoid these.
+
 # Cython needs to be installed before running setup
 # https://luminousmen.com/post/resolve-cython-and-numpy-dependencies
 try:
@@ -17,8 +20,8 @@ try:
 except ImportError:
     #from setuptools import dist
     #dist.Distribution().fetch_build_eggs(['Cython>=0.15.1'])
-    #from Cython.Build import cythonize
     os.system('pip install Cython')
+    from Cython.Build import cythonize
 
 # Cykhash needs to be installed before running setup
 try:
@@ -46,7 +49,7 @@ requirements = [
 
 setup(
     name='pyrosm',
-    version='0.1.4.3',
+    version='0.1.4.4',
     license='MIT',
     description='A Python tool to parse OSM data from Protobuf format into GeoDataFrame.',
     # long_description='%s\n%s' % (
