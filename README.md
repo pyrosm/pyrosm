@@ -26,7 +26,7 @@ allowing e.g. parsing street networks for whole country in a matter of minutes i
  
 ## Roadmap
 
- - add parsing of building information
+ - add parsing of building information (v.0.2.0)
  - add parsing of places of interests (POIs)
  - add more tests
 
