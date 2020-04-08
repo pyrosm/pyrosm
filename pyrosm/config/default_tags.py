@@ -2,7 +2,7 @@
 # HIGHWAY TAGS
 # ========================
 
-# Default tags to keep with highways
+# Default tags to keep as columns with highways
 # Mostly based on: https://wiki.openstreetmap.org/wiki/Key:highway
 highway_tags_to_keep = ["access",
                         "area",
@@ -64,50 +64,58 @@ highway_tags_to_keep = ["access",
 
                         ]
 
-amenity_tags_to_keep = ["access",
-                        "amenity",
-                        "area",
-                        "barrier",
-                        "bicycle",
-                        "bridge",
-                        "building",
-                        "created_by",
-                        "cycleway",
-                        "electrified",
-                        "est_width",
-                        "foot",
-                        "footway",
-                        "gauge",
-                        "height",
-                        "highway",
-                        "horse",
-                        "int_ref",
-                        "is_in",
-                        "junction",
-                        "landuse",
-                        "lanes",
-                        "layer",
-                        "leisure",
-                        "lit",
-                        "maxspeed",
-                        "motorcar",
-                        "motor_vehicle",
-                        "name",
-                        "natural",
-                        "oneway",
-                        "path",
-                        "place",
-                        "power",
-                        "psv",
-                        "railway",
-                        "ref",
-                        "service",
-                        "segregated",
-                        "sidewalk",
-                        "source",
-                        "surface",
-                        "tunnel",
-                        "waterway",
-                        "wetland",
-                        "width",
-                        "wood"]
+# ========================
+# BUILDING / AMENITY TAGS
+# ========================
+# See:
+# https://wiki.openstreetmap.org/wiki/Key:building
+# https://wiki.openstreetmap.org/wiki/Key:addr
+
+# Default tags to keep as columns with buildings/amenities
+
+building_tags_to_keep = ['building',
+                         'addr:city',
+                         'addr:country',
+                         'addr:full',
+                         'addr:housenumber',
+                         'addr:housename',
+                         'addr:postcode',
+                         'addr:place',
+                         'addr:street',
+                         'amenity',
+                         'building:flats',
+                         'building:levels',
+                         'building:material',
+                         'building:max_level',
+                         'building:min_level',
+                         'building:fireproof',
+                         'building:use',
+                         'craft',
+                         'email',
+                         'height',
+                         'internet_access',
+                         'landuse',
+                         'levels',
+                         'name',
+                         'office',
+                         'opening_hours',
+                         'operator',
+                         'phone',
+                         'ref',
+                         'shop',
+                         'source',
+                         'start_date',
+                         'url',
+                         'website',
+                         'wikipedia',
+
+                         # Other tags that are not kept by default
+                         # 'addr:conscriptionnumber',
+                         # 'addr:district',
+                         # 'addr:province',
+                         # 'soft_storey',
+                         # 'takeaway',
+                         # 'addr:state',
+                         # 'mml:class'
+
+                         ]

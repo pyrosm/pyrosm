@@ -1,7 +1,9 @@
 from pyrosm.config import Conf
-from pyrosm.pbfreader import parse_osm_data, get_way_data
-from pyrosm.geometry import create_way_geometries
-from pyrosm.frames import create_way_gdf
+from pyrosm.pbfreader import parse_osm_data
+from pyrosm.networks import get_way_data
+from pyrosm.buildings import get_building_data
+from pyrosm.geometry import create_way_geometries, create_polygon_geometries
+from pyrosm.frames import create_gdf
 from shapely.geometry import Polygon, MultiPolygon
 
 
@@ -107,11 +109,11 @@ class OSM:
                             network_filter
                             )
 
-        way_geometries = create_way_geometries(self._nodes,
-                                               ways)
+        geometries = create_way_geometries(self._nodes,
+                                           ways)
 
         # Convert to GeoDataFrame
-        gdf = create_way_gdf(ways, way_geometries)
+        gdf = create_gdf(ways, geometries)
         gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
 
         # Do not keep node information
@@ -121,8 +123,30 @@ class OSM:
 
         return gdf
 
-    def get_buildings(self):
-        raise NotImplementedError()
+    def get_buildings(self, tag_filters=None):
+        # Default tags to keep
+        tags_to_keep = self.conf.tag_filters.buildings
+
+        if self._nodes is None or self._way_records is None:
+            self._read_pbf()
+
+        buildings = get_building_data(self._way_records,
+                                      tags_to_keep,
+                                      tag_filters)
+
+        geometries = create_polygon_geometries(self._nodes,
+                                               buildings)
+
+        # Convert to GeoDataFrame
+        gdf = create_gdf(buildings, geometries)
+        gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
+
+        # Do not keep node information
+        # (they are in a list, and causes issues saving the files)
+        if "nodes" in gdf.columns:
+            gdf = gdf.drop("nodes", axis=1)
+
+        return gdf
 
     def get_pois(self):
         raise NotImplementedError()

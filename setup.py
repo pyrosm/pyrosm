@@ -54,6 +54,7 @@ requirements = [
     # These will be checked before setup
     #'Cython>=0.15.1',
     #'pyrobuf>=0.9.3',
+    'python-rapidjson',
     'setuptools>=18.0',
     'geopandas',
     'pygeos',
@@ -62,7 +63,7 @@ requirements = [
 
 setup(
     name='pyrosm',
-    version='0.1.7',
+    version='0.1.8',
     license='MIT',
     description='A Python tool to parse OSM data from Protobuf format into GeoDataFrame.',
     long_description=read_long_description(),

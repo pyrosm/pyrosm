@@ -11,7 +11,7 @@ cpdef create_nodes_gdf(node_dict_list):
     nodes = gpd.GeoDataFrame(nodes, crs='epsg:4326')
     return nodes
 
-cpdef create_way_gdf(data_records, geometry_array):
+cpdef create_gdf(data_records, geometry_array):
     datasets = [v for v in data_records.values()]
     keys = list(data_records.keys())
     data = pd.DataFrame()

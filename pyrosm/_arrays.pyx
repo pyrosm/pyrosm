@@ -1,5 +1,22 @@
 from libc.stdlib cimport malloc
 import cython
+import numpy as np
+
+
+cdef convert_to_array_dict(data):
+    # Convert to arrays
+    arrays = {}
+    for key, value_list in data.items():
+        # Nodes are in a list and should always be kept
+        if not isinstance(value_list[0], list):
+            # Otherwise keep tag only if it contains data
+            unique = list(set(value_list))
+            if len(unique) < 2:
+                if unique[0] is None:
+                    continue
+        arrays[key] = np.array(value_list, dtype=object)
+    return arrays
+
 
 cdef char** to_cstring_array(list str_list):
     """
@@ -56,6 +73,7 @@ cdef float* to_cfloat_array(list float_list):
         c_floats[i] = float_list[i]
 
     return c_floats
+
 
 cdef long long* to_clong_array(long_list):
     """

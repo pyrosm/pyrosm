@@ -2,7 +2,7 @@
 [![PyPI version](https://badge.fury.io/py/pyrosm.svg)](https://badge.fury.io/py/pyrosm)[![build status](https://api.travis-ci.org/HTenkanen/pyrosm.svg?branch=master)](https://travis-ci.org/HTenkanen/pyrosm)[![Coverage Status](https://codecov.io/gh/HTenkanen/pyrosm/branch/master/graph/badge.svg)](https://codecov.io/gh/HTenkanen/pyrosm)
 
 **Pyrosm** is a Python library for reading OpenStreetMap from `protobuf` files (`*.osm.pbf`) into Geopandas GeoDataFrames. 
-Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks (buildings and points of interest in progress).
+Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks and buildings (points of interest in progress).
 
 
 The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) 
@@ -14,7 +14,7 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
 
  
 **Pyrosm** is easy to use and it provides a somewhat similar user interface as another popular Python library [OSMnx](https://github.com/gboeing/osmnx)
-for parsing different datasets from the OpenStreetMap pbf-dump including road networks (later also buildings and points of interest). The main difference between 
+for parsing different datasets from the OpenStreetMap pbf-dump including road networks and buildings (later also points of interest and landuse). The main difference between 
 pyrosm and OSMnx is that OSMnx reads the data over internet using OverPass API, whereas pyrosm reads the data from local OSM data dumps
 that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). This makes it possible to read data much faster thus 
 allowing e.g. parsing street networks for whole country in a matter of minutes instead of hours (however, see [caveats](#caveats)).
@@ -22,11 +22,15 @@ allowing e.g. parsing street networks for whole country in a matter of minutes i
 ## Current features
 
  - read street networks (separately for driving, cycling, walking and all-combined)
- - filter data based on bounding box 
+ - read buildings from PBF (not yet relations, though)
+ - filter data based on bounding box
+ - apply custom filter to filter data 
+    - e.g. with buildings you can filter specific types of buildings with `{'building': ['residential', 'retail']}` 
+ 
  
 ## Roadmap
 
- - add parsing of building information (v.0.2.0)
+ - include also relations with buildings (v.0.2.0)
  - add parsing of places of interests (POIs)
  - add more tests
 
@@ -56,6 +60,7 @@ fp = get_path("test_pbf")
 osm = OSM(fp)
 
 # Read all drivable roads
+# =======================
 drive_net = osm.get_network(network_type="driving")
 drive_net.head()
 ...
@@ -67,6 +72,19 @@ drive_net.head()
 4   None   None  ...  22731285  LINESTRING (26.93072 60.52252, 26.93094 60.522...
 
 [5 rows x 14 columns]
+
+# Read all residential and retail buildings
+# =========================================
+custom_filter = {'building': ['residential', 'retail']}
+buildings = osm.get_buildings(tag_filters=custom_filter)
+buildings.head()
+...
+      building  ...                                           geometry
+0       retail  ...  POLYGON ((26.94511 60.52322, 26.94487 60.52314...
+1       retail  ...  POLYGON ((26.95093 60.53644, 26.95083 60.53642...
+2  residential  ...  POLYGON ((26.96536 60.52540, 26.96528 60.52539...
+3  residential  ...  POLYGON ((26.93920 60.53257, 26.93940 60.53254...
+4  residential  ...  POLYGON ((26.96578 60.52129, 26.96569 60.52137...
 ```   
 
 To get further information how to use the tool, you can use good old `help`:

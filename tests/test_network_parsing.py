@@ -9,12 +9,6 @@ def test_pbf():
 
 
 @pytest.fixture
-def helsinki_pbf():
-    pbf_path = get_path("helsinki_pbf")
-    return pbf_path
-
-
-@pytest.fixture
 def test_output_dir():
     import os, tempfile
     return os.path.join(tempfile.gettempdir(), "pyrosm_test_results")
@@ -31,11 +25,11 @@ def test_filter_network_by_walking(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (238, 14)
+    assert gdf.shape == (238, 17)
 
     required_cols = ['access', 'bridge', 'foot', 'highway', 'lanes', 'lit', 'maxspeed',
                      'name', 'oneway', 'ref', 'service', 'surface', 'id',
-                     'geometry']
+                     'geometry', 'tags']
     for col in required_cols:
         assert col in gdf.columns
 
@@ -54,10 +48,10 @@ def test_filter_network_by_driving(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (200, 14)
+    assert gdf.shape == (200, 17)
 
     required_cols = ['access', 'bridge', 'highway', 'int_ref', 'lanes', 'lit', 'maxspeed',
-                     'name', 'oneway', 'ref', 'service', 'surface', 'id', 'geometry']
+                     'name', 'oneway', 'ref', 'service', 'surface', 'id', 'geometry', 'tags']
     for col in required_cols:
         assert col in gdf.columns
 
@@ -77,11 +71,11 @@ def test_filter_network_by_cycling(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (290, 16)
+    assert gdf.shape == (290, 19)
 
     required_cols = ['access', 'bicycle', 'bridge', 'foot', 'highway', 'lanes', 'lit',
                      'maxspeed', 'name', 'oneway', 'ref', 'service', 'surface', 'tunnel',
-                     'id', 'geometry']
+                     'id', 'geometry', 'tags']
     for col in required_cols:
         assert col in gdf.columns
 
@@ -108,11 +102,13 @@ def test_saving_network_to_shapefile(test_pbf, test_output_dir):
     # Ensure it can be read and matches with original one
     gdf2 = gpd.read_file(temp_path)
 
-    # When reading large OSM id integers (long) they
-    # might be imported as strings instead of ints which is normal,
-    # however, the values should be identical
-    gdf["id"] = gdf["id"].astype(int)
-    gdf2["id"] = gdf2["id"].astype(int)
+    # When reading integers they
+    # might be imported as strings instead of ints which is
+    # normal, however, the values should be identical
+    convert_to_ints = ["id", "timestamp", "version"]
+    for col in convert_to_ints:
+        gdf[col] = gdf[col].astype(int)
+        gdf2[col] = gdf2[col].astype(int)
 
     assert_frame_equal(gdf, gdf2)
 
@@ -134,11 +130,11 @@ def test_parse_network_with_bbox(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (65, 14)
+    assert gdf.shape == (65, 17)
 
     required_cols = ['access', 'bridge', 'foot', 'highway', 'lanes', 'lit', 'maxspeed',
                      'name', 'oneway', 'ref', 'service', 'surface', 'id',
-                     'geometry']
+                     'geometry', 'tags']
     for col in required_cols:
         assert col in gdf.columns
 
@@ -166,11 +162,11 @@ def test_parse_network_with_shapely_bbox(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (65, 14)
+    assert gdf.shape == (65, 17)
 
     required_cols = ['access', 'bridge', 'foot', 'highway', 'lanes', 'lit', 'maxspeed',
                      'name', 'oneway', 'ref', 'service', 'surface', 'id',
-                     'geometry']
+                     'geometry', 'tags']
     for col in required_cols:
         assert col in gdf.columns
 
