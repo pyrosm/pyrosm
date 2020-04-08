@@ -6,6 +6,7 @@ import io
 import re
 from os.path import dirname
 from os.path import join
+from os import path
 from setuptools import find_packages
 from setuptools import setup
 import os
@@ -42,6 +43,13 @@ def read(*names, **kwargs):
         return fh.read()
 
 
+def read_long_description():
+    this_directory = path.abspath(path.dirname(__file__))
+    with open(path.join(this_directory, 'README.md'), encoding='utf-8') as f:
+        long_description = f.read()
+    return long_description
+
+
 requirements = [
     'Cython>=0.15.1',
     'cykhash>=0.3.0',
@@ -57,10 +65,7 @@ setup(
     version='0.1.5',
     license='MIT',
     description='A Python tool to parse OSM data from Protobuf format into GeoDataFrame.',
-    # long_description='%s\n%s' % (
-    #     re.compile('^.. start-badges.*^.. end-badges', re.M | re.S).sub('', read('README.md')),
-    #     re.sub(':[a-z]+:`~?(.*?)`', r'``\1``', read('CHANGELOG.md'))
-    # ),
+    long_description=read_long_description(),
     author='Henrikki Tenkanen',
     author_email='h.tenkanen@ucl.ac.uk',
     url='https://github.com/htenkanen/pyrosm',
