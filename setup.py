@@ -53,7 +53,7 @@ def read_long_description():
 requirements = [
     'Cython>=0.15.1',
     'cykhash>=0.3.0',
-    'pyrobuf>=0.9.3'
+    'pyrobuf>=0.9.3',
     'setuptools>=18.0',
     'geopandas',
     'pygeos',
