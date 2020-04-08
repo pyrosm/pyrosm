@@ -1,11 +1,40 @@
 from rapidjson import dumps
 
-cdef filter_osm(data_records, data_filter, osm_data_type):
+class Solver:
+    """Solver is used to toggle between exclude / keep checks applied in data filter."""
+    def __init__(self, direction):
+
+        if direction == "exclude":
+            self.solver = self.isin_check
+        elif direction == "keep":
+            self.solver = self.notin_check
+        else:
+            raise ValueError("filter type should be 'keep' or 'exclude'")
+
+    def isin_check(self, value, container):
+        if value in container:
+            return True
+        return False
+
+    def notin_check(self, value, container):
+        if value not in container:
+            return True
+        return False
+
+    def check(self, value, container):
+        return self.solver(value, container)
+
+
+cdef filter_osm(data_records, data_filter, osm_data_type, filter_type):
     """
     osm_data_type can be: 'highway', 'building', or 'landuse'
+    filter_type can be: 'keep', 'exclude' 
+    (determines if the values in data_filter should be used for including/excluding data)
     """
     cdef str rec_value
     cdef int i, N=len(data_records)
+
+    solver = Solver(filter_type)
 
     filtered_data = []
     filter_out = False
@@ -21,7 +50,7 @@ cdef filter_osm(data_records, data_filter, osm_data_type):
         if data_filter is not None:
             for k, v in record.items():
                 if k in filter_keys:
-                    if v in data_filter[k]:
+                    if solver.check(v, data_filter[k]):
                         filter_out = True
                         break
             if not filter_out:
