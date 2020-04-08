@@ -1,5 +1,6 @@
 from pyrosm.config import Conf
-from pyrosm.pbfreader import parse_osm_data, get_way_data
+from pyrosm.pbfreader import parse_osm_data
+from pyrosm.networks import get_way_data
 from pyrosm.geometry import create_way_geometries
 from pyrosm.frames import create_way_gdf
 from shapely.geometry import Polygon, MultiPolygon
