@@ -34,7 +34,15 @@ allowing e.g. parsing street networks for whole country in a matter of minutes i
 
 Pyrosm is distributed via PyPi and it can be installed with pip:
 
-`$ pip install pyrosm`  
+`$ pip install pyrosm`
+
+### Troubleshooting
+
+Notice that `pyrosm` requires geopandas to work. 
+On Linux and Mac installing geopandas with `pip` should work without a problem, which is handled automatically when installing pyrosm. 
+
+However, on Windows installing geopandas with pip is likely to cause issues, hence, it is recommended to install Geopandas before installing
+`pyrosm`. See instructions from [Geopandas website](https://geopandas.org/install.html#installation).
 
 ## How to use?
 
