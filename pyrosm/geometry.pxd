@@ -1,4 +1,5 @@
 cpdef create_way_geometries(nodes, ways)
+cpdef create_polygon_geometries(way_elements, nodes)
 cdef create_node_lookup_dict(nodes)
 cdef pygeos_to_shapely(geom)
 cdef to_shapely(pygeos_array)
