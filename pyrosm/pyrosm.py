@@ -130,15 +130,15 @@ class OSM:
         if self._nodes is None or self._way_records is None:
             self._read_pbf()
 
-        self.buildings = get_building_data(self._way_records,
+        buildings = get_building_data(self._way_records,
                                       tags_to_keep,
                                       tag_filters)
 
         geometries = create_polygon_geometries(self._nodes,
-                                               self.buildings)
+                                               buildings)
 
         # Convert to GeoDataFrame
-        gdf = create_gdf(self.buildings, geometries)
+        gdf = create_gdf(buildings, geometries)
         gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
 
         # Do not keep node information
