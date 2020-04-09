@@ -4,6 +4,8 @@ import zlib
 from pyrosm_proto import BlobHeader, Blob, HeaderBlock, PrimitiveBlock
 from pyrosm.tagparser cimport tounicode, parse_dense_tags, parse_tags, explode_way_tags
 from pyrosm._arrays cimport to_clong_array
+from pyrosm.delta_compression cimport delta_decode_latitude, delta_decode_longitude, \
+    delta_decode_id, delta_decode_timestamp, delta_decode_changeset
 from cykhash.khashsets cimport Int64Set_from_buffer
 from cykhash import isin_int64
 import numpy as np
@@ -84,42 +86,29 @@ cdef get_primitive_blocks_and_string_tables(filepath):
 
 
 cdef parse_dense(pblock, data, string_table, bounding_box):
-    cdef int node_granularity, timestamp_granularity, lon_offset, lat_offset, div
-
-    node_granularity = pblock.granularity
-    timestamp_granularity = pblock.date_granularity
-    lon_offset = pblock.lon_offset
-    lat_offset = pblock.lat_offset
-    div = 1000000000
+    cdef:
+        int node_granularity = pblock.granularity
+        int timestamp_granularity = pblock.date_granularity
+        int lon_offset = pblock.lon_offset
+        int lat_offset = pblock.lat_offset
 
     # Get latitudes
-    lats_deltas = np.zeros(len(data.lat) + 1, dtype=np.int64)
-    lats_deltas[1:] = list(data.lat)
-    lats = (np.cumsum(lats_deltas)[1:] * node_granularity + lat_offset) / div
+    lats = delta_decode_latitude(data, node_granularity, lat_offset)
 
     # Get longitudes
-    lons_deltas = np.zeros(len(data.lon) + 1, dtype=np.int64)
-    lons_deltas[1:] = list(data.lon)
-    lons = (np.cumsum(lons_deltas)[1:] * node_granularity + lon_offset) / div
+    lons = delta_decode_longitude(data, node_granularity, lon_offset)
 
     # Version
     versions = np.array(list(data.denseinfo.version), dtype=np.int64)
 
     # Ids
-    id_deltas = np.zeros(len(data.id) + 1, dtype=np.int64)
-    id_deltas[1:] = list(data.id)
-    ids = np.cumsum(id_deltas)[1:]
+    ids = delta_decode_id(data)
 
     # Timestamp
-    timestamp_deltas = np.zeros(len(data.denseinfo.timestamp) + 1, dtype=np.int64)
-    timestamp_deltas[1:] = list(data.denseinfo.timestamp)
-    timestamps = (np.cumsum(timestamp_deltas)[1:] * timestamp_granularity / 1000) \
-        .astype(int)
+    timestamps = delta_decode_timestamp(data, timestamp_granularity)
 
     # Changeset
-    changeset_deltas = np.zeros(len(data.denseinfo.changeset) + 1, dtype=np.int64)
-    changeset_deltas[1:] = list(data.denseinfo.changeset)
-    changesets = np.cumsum(changeset_deltas)[1:]
+    changesets = delta_decode_changeset(data)
 
     # Tags
     tags = np.empty(len(data.id), dtype=object)
