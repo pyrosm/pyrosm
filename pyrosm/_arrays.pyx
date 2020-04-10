@@ -17,6 +17,46 @@ cdef convert_to_array_dict(data):
         arrays[key] = np.array(value_list, dtype=object)
     return arrays
 
+cdef get_dtype(key):
+    dtypes = {"id": np.int64,
+              "version": np.int8,
+              "changeset": np.int8,
+              "timestamp": np.int64,
+              "lon": np.float32,
+              "lat": np.float32,
+              "tags": object,
+              "members": object,
+              }
+    if key in dtypes.keys():
+        return dtypes[key]
+    return None
+
+cdef concatenate_dicts_or_arrays(dict_list_of_arrays):
+    cdef str k
+
+    keys = list(set([k for d in dict_list_of_arrays
+                     for k in d.keys()]))
+    result_dict = {key: [] for key in keys}
+
+    for dicts in dict_list_of_arrays:
+        for k, v in dicts.items():
+            result_dict[k] += v.tolist()
+
+    # Convert to arrays
+    result_arrays = {}
+    for k, v in result_dict.items():
+        result_arrays[k] = np.array(v, dtype=get_dtype(k))
+
+    # The length of all arrays must match
+    length = None
+    for k, array in result_arrays.items():
+        if length is None:
+            length = array.shape[0]
+        else:
+            assert length == array.shape[0]
+
+    return result_arrays
+
 
 cdef char** to_cstring_array(list str_list):
     """

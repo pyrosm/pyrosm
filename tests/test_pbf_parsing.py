@@ -46,3 +46,20 @@ def test_parsing_basic_elements_from_pbf(test_pbf):
         for col in way_cols:
             assert col in way.keys()
 
+
+def test_getting_nodes(test_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+    osm = OSM(filepath=test_pbf)
+    osm._read_pbf()
+    nodes = osm.nodes
+
+    assert isinstance(nodes, GeoDataFrame)
+
+    # Required node columns
+    node_cols = ['id', 'version', 'changeset', 'timestamp', 'lon', 'lat', 'tags']
+    for col in node_cols:
+        assert col in nodes.columns
+
+    # Check shape
+    assert nodes.shape == (14222, 8)

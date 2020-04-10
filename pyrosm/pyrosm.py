@@ -3,7 +3,7 @@ from pyrosm.pbfreader import parse_osm_data
 from pyrosm.networks import get_way_data
 from pyrosm.buildings import get_building_data
 from pyrosm.geometry import create_way_geometries, create_polygon_geometries
-from pyrosm.frames import create_gdf
+from pyrosm.frames import create_gdf, create_nodes_gdf
 from shapely.geometry import Polygon, MultiPolygon
 
 
@@ -45,6 +45,8 @@ class OSM:
             raise ValueError("bounding_box should be a list or a shapely Polygon.")
 
         self.conf = Conf
+        self.nodes = None
+
         # TODO: Add as a parameter
         self._verbose = False
 
@@ -145,8 +147,16 @@ class OSM:
         # (they are in a list, and causes issues saving the files)
         if "nodes" in gdf.columns:
             gdf = gdf.drop("nodes", axis=1)
-
         return gdf
 
     def get_pois(self):
         raise NotImplementedError()
+
+    def __getattribute__(self, name):
+        # If nodes are requested convert to gdf before returning
+        # (keep otherwise intact)
+        if name == "nodes":
+            return create_nodes_gdf(super(OSM, self).__getattribute__("_nodes"))
+        return super(OSM, self).__getattribute__(name)
+
+
