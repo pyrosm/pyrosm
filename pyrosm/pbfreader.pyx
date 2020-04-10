@@ -82,6 +82,9 @@ cdef get_primitive_blocks_and_string_tables(filepath):
 
         primitive_blocks.append(pblock)
         string_tables.append(str_table)
+
+    # Close file when finished reading
+    f.close()
     return primitive_blocks, string_tables
 
 
@@ -112,7 +115,8 @@ cdef parse_dense(pblock, data, string_table, bounding_box):
 
     # Tags
     tags = np.empty(len(data.id), dtype=object)
-    parsed = parse_dense_tags(data.keys_vals, string_table)
+    #parsed = parse_dense_tags(data.keys_vals, string_table)
+    parsed = []
     # In some cases node-tags are not available at all
     if len(parsed) != 0:
         tags[:] = parsed
