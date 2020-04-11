@@ -1,21 +1,8 @@
 from libc.stdlib cimport malloc
 import cython
 import numpy as np
+from rapidjson import dumps
 
-
-cdef convert_to_array_dict(data):
-    # Convert to arrays
-    arrays = {}
-    for key, value_list in data.items():
-        # Nodes are in a list and should always be kept
-        if not isinstance(value_list[0], list):
-            # Otherwise keep tag only if it contains data
-            unique = list(set(value_list))
-            if len(unique) < 2:
-                if unique[0] is None:
-                    continue
-        arrays[key] = np.array(value_list, dtype=object)
-    return arrays
 
 cdef get_dtype(key):
     dtypes = {"id": np.int64,
@@ -31,7 +18,51 @@ cdef get_dtype(key):
         return dtypes[key]
     return None
 
-cdef concatenate_dicts_or_arrays(dict_list_of_arrays):
+
+cdef convert_way_records_to_lists(ways, tags_to_separate_as_arrays):
+    cdef int i
+    cdef int n=len(ways)
+
+    lookup = dict.fromkeys(tags_to_separate_as_arrays, None)
+    data = {k: [] for k in tags_to_separate_as_arrays}
+    data["tags"] = []
+
+    for i in range(0, n):
+        way = ways[i]
+        way_records = dict.fromkeys(tags_to_separate_as_arrays, None)
+        other_tags = {}
+        for k, v in way.items():
+            try:
+                # Check if tag should be kept as a column
+                lookup[k]
+                way_records[k] = v
+            except:
+                # If not add into tags
+                other_tags[k] = v
+        [data[k].append(v) for k, v in way_records.items()]
+        if len(other_tags) > 0:
+            data["tags"].append(dumps(other_tags))
+        else:
+            data["tags"].append(None)
+    return data
+
+
+cdef convert_to_arrays_and_drop_empty(data):
+    # Convert to arrays
+    arrays = {}
+    for key, value_list in data.items():
+        # Nodes are in a list and should always be kept
+        if not isinstance(value_list[0], list):
+            # Otherwise keep tag only if it contains data
+            unique = list(set(value_list))
+            if len(unique) < 2:
+                if unique[0] is None:
+                    continue
+        arrays[key] = np.array(value_list, dtype=get_dtype(key))
+    return arrays
+
+
+cdef concatenate_dicts_of_arrays(dict_list_of_arrays):
     cdef str k
 
     keys = list(set([k for d in dict_list_of_arrays
