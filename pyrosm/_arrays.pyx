@@ -20,6 +20,12 @@ cdef get_dtype(key):
 
 
 cdef convert_way_records_to_lists(ways, tags_to_separate_as_arrays):
+    """
+    Function to convert heterogeneous way dictionaries into harmonized dictionary 
+    of value-lists for all OSM keys. If a given OSM-key is not present for a given way 
+    record, will add None. This process makes it possible to create same-sized numpy arrays
+    for all OSM way tags.  
+    """
     cdef int i
     cdef int n=len(ways)
 
@@ -48,6 +54,12 @@ cdef convert_way_records_to_lists(ways, tags_to_separate_as_arrays):
 
 
 cdef convert_to_arrays_and_drop_empty(data):
+    """
+    Function to convert the harmonized dictionary 
+    of key:values to numpy arrays. If a given OSM-key contains
+    only None values (i.e. is "empty"), it will be dropped from the 
+    resulting dictionary. 
+    """
     # Convert to arrays
     arrays = {}
     for key, value_list in data.items():
