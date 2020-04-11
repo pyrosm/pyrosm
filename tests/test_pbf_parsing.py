@@ -52,7 +52,7 @@ def test_getting_nodes(test_pbf):
     from geopandas import GeoDataFrame
     osm = OSM(filepath=test_pbf)
     osm._read_pbf()
-    nodes = osm.nodes
+    nodes = osm._nodes_gdf
 
     assert isinstance(nodes, GeoDataFrame)
 
