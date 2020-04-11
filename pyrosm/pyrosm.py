@@ -45,13 +45,13 @@ class OSM:
             raise ValueError("bounding_box should be a list or a shapely Polygon.")
 
         self.conf = Conf
-        self.nodes = None
 
         # TODO: Add as a parameter
         self._verbose = False
 
         self._all_way_tags = None
         self._nodes = None
+        self._nodes_gdf = None
         self._way_records = None
         self._relations = None
 
@@ -153,9 +153,8 @@ class OSM:
         raise NotImplementedError()
 
     def __getattribute__(self, name):
-        # If nodes are requested convert to gdf before returning
-        # (keep otherwise intact)
-        if name == "nodes":
+        # If node-gdf is requested convert to gdf before returning
+        if name == "_nodes_gdf":
             return create_nodes_gdf(super(OSM, self).__getattribute__("_nodes"))
         return super(OSM, self).__getattribute__(name)
 
