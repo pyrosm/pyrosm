@@ -1,3 +1,7 @@
+import numpy as np
+from cykhash.khashsets cimport Int64Set_from_buffer
+
+
 class Solver:
     """Solver is used to toggle between exclude / keep checks applied in data filter."""
     def __init__(self, direction):
@@ -37,7 +41,18 @@ cdef has_osm_data_type(osm_data_type, tag_keys):
     return False
 
 
-cdef filter_osm(data_records, data_filter, osm_data_type, filter_type):
+cdef way_is_part_of_relation(way_record, lookup_dict):
+    try:
+        lookup_dict[way_record["id"]]
+        return True
+    except KeyError as e:
+        return False
+    except Exception as e:
+        raise e
+
+
+cdef filter_osm(data_records, data_filter, osm_data_type,
+                relation_way_ids=None, filter_type=None):
     """
     Filter OSM data records by given OSM tag key:value pairs.
     
@@ -61,6 +76,9 @@ cdef filter_osm(data_records, data_filter, osm_data_type, filter_type):
          - 'building' (for buildings), 
          - 'landuse' (for landuse) etc.
          
+    relation_way_ids : list (optional)
+        A list of way ids that belong to relations. Ways that match with these ids are always kept.
+         
     filter_type : str ( 'keep' | 'exclude' ) 
         Whether the given data_filter should 'keep' or 'exclude' the records 
         where given tag:value pair is present in the record.  
@@ -76,10 +94,25 @@ cdef filter_osm(data_records, data_filter, osm_data_type, filter_type):
     if data_filter is not None:
         filter_keys = list(data_filter.keys())
 
+    relation_check = False
+    if relation_way_ids is not None:
+        # TODO: This check should probably happen somewhere before coming here
+        if type(relation_way_ids) not in [list, np.ndarray]:
+            raise ValueError("'relation_way_ids' should be a list or an array.")
+        relation_way_lookup = dict.fromkeys(relation_way_ids)
+        relation_check = True
+
     for i in range(0, N):
         record = data_records[i]
+
+        if relation_check:
+            if way_is_part_of_relation(record, relation_way_lookup):
+                filtered_data.append(record)
+                continue
+
         if not has_osm_data_type(osm_data_type, list(record.keys())):
             continue
+
         # Check if should be filtered based on given data_filter
         if data_filter is not None:
             for k, v in record.items():
@@ -97,3 +130,11 @@ cdef filter_osm(data_records, data_filter, osm_data_type, filter_type):
 
 cdef filter_array_dict_by_indices(array_dict, indices):
     return {k: v[indices] for k, v in array_dict.items()}
+
+
+cdef get_lookup_khash_for_int64(int64_id_array):
+    return Int64Set_from_buffer(
+        memoryview(
+            int64_id_array
+        )
+    )
