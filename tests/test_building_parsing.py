@@ -19,18 +19,19 @@ def test_parsing_building_elements(test_pbf):
     from pyrosm.buildings import get_building_data
     osm = OSM(filepath=test_pbf)
     osm._read_pbf()
-    buildings = get_building_data(osm._way_records,
+    ways, relation_ways, relations = get_building_data(osm._way_records,
+                                  osm._relations,
                                   osm.conf.tag_filters.buildings,
                                   None)
-    assert isinstance(buildings, dict)
+    assert isinstance(ways, dict)
 
     # Required keys
     required = ['id', 'nodes']
     for col in required:
-        assert col in buildings.keys()
+        assert col in ways.keys()
 
     # Test shape
-    assert len(buildings["id"]) == 2219
+    assert len(ways["id"]) == 2219
 
 
 def test_creating_building_geometries(test_pbf):
@@ -41,13 +42,14 @@ def test_creating_building_geometries(test_pbf):
     from numpy import ndarray
     osm = OSM(filepath=test_pbf)
     osm._read_pbf()
-    gdf = get_building_data(osm._way_records,
-                                  osm.conf.tag_filters.buildings,
-                                  None)
-    geometries = create_polygon_geometries(osm._nodes, gdf)
+    ways, relation_ways, relations = get_building_data(osm._way_records,
+                                                       osm._relations,
+                                                       osm.conf.tag_filters.buildings,
+                                                       None)
+    geometries = create_polygon_geometries(osm._node_coordinates, ways)
     assert isinstance(geometries, ndarray)
     assert isinstance(geometries[0], Polygon)
-    assert len(geometries) == len(gdf["id"])
+    assert len(geometries) == len(ways["id"])
 
 
 def test_reading_buildings_with_defaults(test_pbf):
