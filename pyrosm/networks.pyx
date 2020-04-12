@@ -10,7 +10,7 @@ cdef filter_network_data(data_records, data_filter):
 cdef _get_way_data(ways, tags_to_keep, network_filter):
 
     # Tags to keep as separate columns
-    tags_to_keep += ["id", "nodes", "timestamp", "version"]
+    tags_to_keep += ["id", "nodes", "timestamp", "changeset", "version"]
 
     # Filter data with given filter
     # (if network_filter is None, will keep all with tag 'highway')
