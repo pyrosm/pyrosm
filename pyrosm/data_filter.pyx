@@ -1,5 +1,7 @@
 import numpy as np
 from cykhash.khashsets cimport Int64Set_from_buffer
+from cykhash import isin_int64
+from cpython cimport array
 
 
 class Solver:
@@ -29,7 +31,7 @@ class Solver:
 
 cdef has_osm_data_type(osm_data_type, tag_keys):
     cdef str key
-    cdef int i, n=len(tag_keys)
+    cdef int i, n = len(tag_keys)
     for i in range(0, n):
         key = tag_keys[i]
         # Allow osm_data_type to match with a slice of string
@@ -40,7 +42,6 @@ cdef has_osm_data_type(osm_data_type, tag_keys):
             return True
     return False
 
-
 cdef way_is_part_of_relation(way_record, lookup_dict):
     try:
         lookup_dict[way_record["id"]]
@@ -49,7 +50,6 @@ cdef way_is_part_of_relation(way_record, lookup_dict):
         return False
     except Exception as e:
         raise e
-
 
 cdef filter_osm(data_records, data_filter, osm_data_type,
                 relation_way_ids, filter_type):
@@ -84,7 +84,7 @@ cdef filter_osm(data_records, data_filter, osm_data_type,
         where given tag:value pair is present in the record.  
     """
     cdef str rec_value
-    cdef int i, N=len(data_records)
+    cdef int i, N = len(data_records)
 
     solver = Solver(filter_type)
 
@@ -127,10 +127,8 @@ cdef filter_osm(data_records, data_filter, osm_data_type,
             filtered_data.append(record)
     return filtered_data
 
-
 cdef filter_array_dict_by_indices_or_mask(array_dict, indices):
     return {k: v[indices] for k, v in array_dict.items()}
-
 
 cdef get_lookup_khash_for_int64(int64_id_array):
     return Int64Set_from_buffer(
@@ -138,3 +136,19 @@ cdef get_lookup_khash_for_int64(int64_id_array):
             int64_id_array
         )
     )
+
+cdef get_nodeid_lookup_khash(nodes):
+    return get_lookup_khash_for_int64(
+        np.concatenate([group['id'].tolist()
+                        for group in nodes]).astype(np.int64)
+    )
+
+cdef nodes_for_way_exist_khash(nodes, node_lookup):
+    v = array.array('q', nodes)
+    cdef int n = len(v)
+
+    result = array.array('B', [False] * n)
+    isin_int64(v, node_lookup, result)
+    if True in result:
+        return True
+    return False

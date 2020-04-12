@@ -6,21 +6,9 @@ from pyrosm.tagparser cimport tounicode, parse_dense_tags, parse_tags, explode_w
 from pyrosm._arrays cimport to_clong_array
 from pyrosm.delta_compression cimport delta_decode_latitude, delta_decode_longitude, \
     delta_decode_id, delta_decode_timestamp, delta_decode_changeset
-from cykhash.khashsets cimport Int64Set_from_buffer
-from cykhash import isin_int64
+from pyrosm.data_filter cimport get_nodeid_lookup_khash, nodes_for_way_exist_khash
 import numpy as np
-from cpython cimport array
 from libc.stdlib cimport malloc, free
-
-
-cdef get_nodeid_lookup_khash(nodes):
-    return Int64Set_from_buffer(
-        memoryview(
-            np.concatenate([group['id'].tolist()
-                            for group in nodes]).astype(np.int64)
-        )
-    )
-
 
 cdef get_primitive_blocks_and_string_tables(filepath):
     cdef int msg_len
@@ -209,17 +197,6 @@ cdef parse_nodeids_from_ref_deltas(refs):
     finally:
         free(nodes)
         free(refs_c)
-
-
-cdef nodes_for_way_exist_khash(nodes, node_lookup):
-    v = array.array('q', nodes)
-    cdef int n = len(v)
-
-    result = array.array('B', [False] * n)
-    isin_int64(v, node_lookup, result)
-    if True in result:
-        return True
-    return False
 
 
 cdef parse_ways(data, string_table, node_lookup):
