@@ -52,7 +52,7 @@ cdef way_is_part_of_relation(way_record, lookup_dict):
 
 
 cdef filter_osm(data_records, data_filter, osm_data_type,
-                relation_way_ids=None, filter_type=None):
+                relation_way_ids, filter_type):
     """
     Filter OSM data records by given OSM tag key:value pairs.
     
