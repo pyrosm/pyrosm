@@ -128,7 +128,7 @@ cdef filter_osm(data_records, data_filter, osm_data_type,
     return filtered_data
 
 
-cdef filter_array_dict_by_indices(array_dict, indices):
+cdef filter_array_dict_by_indices_or_mask(array_dict, indices):
     return {k: v[indices] for k, v in array_dict.items()}
 
 
