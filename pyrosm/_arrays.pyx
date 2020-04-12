@@ -3,7 +3,6 @@ import cython
 import numpy as np
 from rapidjson import dumps
 
-
 cdef get_dtype(key):
     dtypes = {"id": np.int64,
               "version": np.int8,
@@ -13,6 +12,7 @@ cdef get_dtype(key):
               "lat": np.float32,
               "tags": object,
               "members": object,
+              "geometry": object,
               }
     if key in dtypes.keys():
         return dtypes[key]
@@ -63,8 +63,11 @@ cdef convert_to_arrays_and_drop_empty(data):
     # Convert to arrays
     arrays = {}
     for key, value_list in data.items():
+        # Geometry should always be kept
+        if key == "geometry":
+            pass
         # Nodes are in a list and should always be kept
-        if not isinstance(value_list[0], list):
+        elif not isinstance(value_list[0], list):
             # Otherwise keep tag only if it contains data
             unique = list(set(value_list))
             if len(unique) < 2:
