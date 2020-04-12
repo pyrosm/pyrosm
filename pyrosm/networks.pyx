@@ -4,6 +4,7 @@ from pyrosm._arrays cimport convert_to_arrays_and_drop_empty, convert_way_record
 cdef filter_network_data(data_records, data_filter):
     return filter_osm(data_records, data_filter,
                       osm_data_type="highway",
+                      relation_way_ids=None,
                       filter_type="exclude")
 
 cdef _get_way_data(ways, tags_to_keep, network_filter):
