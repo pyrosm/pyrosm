@@ -188,7 +188,18 @@ class OSM:
         """
         Parse Point of Interest (POI) from OSM.
 
-        By default will parse all OSM elements (points, lines and polygons)
+        Parameters
+        ----------
+
+        custom_filter : dict
+            An optional custom filter to filter only specific POIs from OpenStreetMap
+            (see details below).
+
+
+        How to use?
+        -----------
+
+        By default, will parse all OSM elements (points, lines and polygons)
         that are associated with following keys:
           - amenity
           - craft
@@ -219,8 +230,9 @@ class OSM:
         'place', 'shop', 'tourism', 'waterway']
 
         >>> print("Typical tags associated with tourism:", Conf.tags.tourism)
-        ['alpine_hut', 'apartment', 'aquarium', 'artwork', 'attraction', 'camp_pitch', 'camp_site', 'caravan_site',
-        'chalet', 'gallery', 'guest_house', 'hostel', 'hotel', 'information', 'motel', 'museum', 'picnic_site', 'theme_park',
+        ['alpine_hut', 'apartment', 'aquarium', 'artwork', 'attraction', 'camp_pitch',
+        'camp_site', 'caravan_site', 'chalet', 'gallery', 'guest_house', 'hostel',
+        'hotel', 'information', 'motel', 'museum', 'picnic_site', 'theme_park',
         'tourism', 'viewpoint', 'wilderness_hut', 'zoo']
 
         """
