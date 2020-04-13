@@ -26,7 +26,7 @@ except ImportError:
 try:
     import cykhash
 except ImportError:
-    os.system('pip install https://github.com/realead/cykhash/archive/master.zip')
+    os.system('pip install https://github.com/HTenkanen/cykhash/archive/master.zip')
 
 # Pyrobuf needs to be installed before running setup
 try:
@@ -63,7 +63,7 @@ requirements = [
 
 setup(
     name='pyrosm',
-    version='0.1.8',
+    version='0.2.0',
     license='MIT',
     description='A Python tool to parse OSM data from Protobuf format into GeoDataFrame.',
     long_description=read_long_description(),
