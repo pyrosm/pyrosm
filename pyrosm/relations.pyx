@@ -1,8 +1,7 @@
 from pyrosm.data_filter cimport filter_array_dict_by_indices_or_mask
 from pyrosm.geometry cimport get_way_coordinates_for_polygon, create_linear_ring, pygeos_to_shapely
 from pyrosm._arrays cimport convert_to_arrays_and_drop_empty, convert_way_records_to_lists
-from pygeos import polygons
-from shapely.geometry import MultiPolygon
+from pygeos import polygons, multipolygons
 import numpy as np
 
 
@@ -57,8 +56,11 @@ cdef get_relations(relations, relation_ways, node_coordinates):
                 else:
                     raise ValueError("Got invalid member role: " + str(role))
 
-            if len(shell) == 1:
+            if len(shell) == 0:
+                continue
+            elif len(shell) == 1:
                 shell = shell[0]
+
             if len(holes) == 0:
                 holes = None
 
@@ -70,8 +72,7 @@ cdef get_relations(relations, relation_ways, node_coordinates):
 
         elif len(geometries) == 1:
             if isinstance(geometries[0], np.ndarray):
-                # TODO: This should be handled using pygeos
-                geometry = MultiPolygon([pygeos_to_shapely(geom) for geom in geometries[0]])
+                geometry = pygeos_to_shapely(multipolygons(geometries[0]))
             else:
                 geometry = pygeos_to_shapely(geometries[0])
 
