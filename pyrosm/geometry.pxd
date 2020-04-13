@@ -1,6 +1,7 @@
 cpdef create_point_geometries(xarray, yarray)
 cdef _create_point_geometries(xarray, yarray)
 cpdef create_way_geometries(node_coordinates, way_elements)
+cdef create_pygeos_polygon_from_relation(node_coordinates, relation_ways, member_roles)
 cpdef create_polygon_geometries(node_coordinates, way_elements)
 cdef create_linear_ring(coordinates)
 cpdef create_node_coordinates_lookup(nodes)

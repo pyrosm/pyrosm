@@ -68,6 +68,8 @@ cdef create_linear_ring(coordinates):
     except GEOSException as e:
         if "Invalid number of points" in str(e):
             return None
+        elif "point array must contain" in str(e):
+            return None
         raise e
     except Exception as e:
         raise e
@@ -117,6 +119,42 @@ cdef _create_way_geometries(node_coordinates, way_elements):
          for geom in geometries],
         dtype=object))
 
+
+cdef create_pygeos_polygon_from_relation(node_coordinates, relation_ways, member_roles):
+    cdef int i, m_cnt
+    cdef str role
+
+    # Get coordinates for relation
+    coordinates = get_way_coordinates_for_polygon(node_coordinates, relation_ways)
+
+    shell = []
+    holes = []
+    m_cnt = len(member_roles)
+    for i in range(0, m_cnt):
+        role = member_roles[i]
+        if role == "outer":
+            ring = create_linear_ring(coordinates[i])
+            if ring is not None:
+                shell.append(ring)
+
+        elif role == "inner":
+            ring = create_linear_ring(coordinates[i])
+            if ring is not None:
+                holes.append(ring)
+
+        else:
+            raise ValueError("Got invalid member role: " + str(role))
+
+    if len(shell) == 0:
+        return None
+
+    elif len(shell) == 1:
+        shell = shell[0]
+
+    if len(holes) == 0:
+        holes = None
+
+    return polygons(shell, holes)
 
 cdef _create_polygon_geometries(node_coordinates, way_elements):
     cdef long long node

@@ -9,6 +9,12 @@ def test_pbf():
 
 
 @pytest.fixture
+def helsinki_pbf():
+    pbf_path = get_path("helsinki_pbf")
+    return pbf_path
+
+
+@pytest.fixture
 def test_output_dir():
     import os, tempfile
     return os.path.join(tempfile.gettempdir(), "pyrosm_test_results")
@@ -147,6 +153,23 @@ def test_reading_buildings_with_filter(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], Polygon)
     assert gdf.shape == (28, 6)
+
+    required_cols = ['building', 'id', 'timestamp', 'version', 'tags', 'geometry']
+
+    for col in required_cols:
+        assert col in gdf.columns
+
+
+def test_reading_buildings_with_relations(helsinki_pbf):
+    from pyrosm import OSM
+    from shapely.geometry import Polygon
+    from geopandas import GeoDataFrame
+    osm = OSM(filepath=helsinki_pbf)
+    gdf = osm.get_buildings()
+
+    assert isinstance(gdf, GeoDataFrame)
+    assert isinstance(gdf.loc[0, "geometry"], Polygon)
+    assert gdf.shape == (621, 33)
 
     required_cols = ['building', 'id', 'timestamp', 'version', 'tags', 'geometry']
 
