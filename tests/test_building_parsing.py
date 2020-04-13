@@ -148,7 +148,7 @@ def test_reading_buildings_with_filter(test_pbf):
     # Filter for 'industrial' buildings
     custom_filter = {'building': ['industrial']}
     osm = OSM(filepath=test_pbf)
-    gdf = osm.get_buildings(tag_filters=custom_filter)
+    gdf = osm.get_buildings(custom_filters=custom_filter)
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], Polygon)
