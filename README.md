@@ -32,6 +32,7 @@ allowing e.g. parsing street networks for whole country in a matter of minutes i
 
  - add parsing of places of interests (POIs)
  - add parsing of landuse
+ - add possibility to crop PBF and save a subset into new PBF.
  - add more tests
 
 ## Install
