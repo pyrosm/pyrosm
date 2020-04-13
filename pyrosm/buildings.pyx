@@ -55,6 +55,11 @@ cdef get_building_way_arrays(ways, relation_member_ids, tags_to_keep, building_f
     # Get all building ways
     ways = filter_buildings(ways, building_filter, relation_member_ids)
 
+    # If there is not data in the area, do not continue
+    # (return None for ways and relations)
+    if len(ways) == 0:
+        return None, None
+
     relation_arrays = None
     if relation_member_ids is not None:
         # Separate ways that are part of a relation
@@ -82,6 +87,11 @@ cdef _get_building_data(way_records, relations, tags_to_keep, building_filter):
     # Get building ways (separately as "normal" ways and relation_ways)
     ways, relation_ways = get_building_way_arrays(way_records, relation_member_ids,
                                                   tags_to_keep, building_filter)
+
+    # If there weren't any ways return None
+    if ways is None:
+        return None, None, None
+
     return ways, relation_ways, filtered_relations
 
 cpdef get_building_data(way_records, relations, tags_to_keep, building_filter):

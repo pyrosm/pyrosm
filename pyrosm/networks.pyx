@@ -15,6 +15,11 @@ cdef _get_way_data(ways, tags_to_keep, network_filter):
     # Filter data with given filter
     # (if network_filter is None, will keep all with tag 'highway')
     ways = filter_network_data(ways, network_filter)
+
+    # If no data was found, do not continue
+    if len(ways) == 0:
+        return None
+
     data = convert_way_records_to_lists(ways, tags_to_keep)
     arrays = convert_to_arrays_and_drop_empty(data)
     return arrays

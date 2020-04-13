@@ -8,6 +8,7 @@ from pyrosm.frames import create_gdf, create_nodes_gdf
 from pyrosm.relations import prepare_relations
 from shapely.geometry import Polygon, MultiPolygon
 import geopandas as gpd
+import warnings
 
 
 class OSM:
@@ -118,6 +119,13 @@ class OSM:
                             network_filter
                             )
 
+        # If there weren't any data, return empty GeoDataFrame
+        if ways is None:
+            warnings.warn("Could not find any network data for given area.",
+                          UserWarning,
+                          stacklevel=2)
+            return gpd.GeoDataFrame()
+
         geometries = create_way_geometries(self._node_coordinates,
                                            ways)
 
@@ -143,6 +151,13 @@ class OSM:
                                                            self._relations,
                                                            tags_to_keep,
                                                            tag_filters)
+
+        # If there weren't any data, return empty GeoDataFrame
+        if ways is None:
+            warnings.warn("Could not find any buildings for given area.",
+                          UserWarning,
+                          stacklevel=2)
+            return gpd.GeoDataFrame()
 
         # Create geometries for normal ways
         geometries = create_polygon_geometries(self._node_coordinates,

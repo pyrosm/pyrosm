@@ -175,3 +175,25 @@ def test_reading_buildings_with_relations(helsinki_pbf):
 
     for col in required_cols:
         assert col in gdf.columns
+
+
+def test_reading_buildings_from_area_having_none(helsinki_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    # Bounding box for area that does not have any data
+    bbox = [24.940514, 60.173849, 24.942, 60.175892]
+
+    osm = OSM(filepath=helsinki_pbf, bounding_box=bbox)
+
+    # The tool should warn if no buildings were found
+    with pytest.warns(UserWarning) as w:
+        gdf = osm.get_buildings()
+        # Check the warning text
+        if "could not find any buildings" in str(w):
+            pass
+
+    # Result should be empty GeoDataFrame
+    assert isinstance(gdf, GeoDataFrame)
+    assert gdf.shape == (0, 0)
+
