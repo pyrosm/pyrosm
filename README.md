@@ -118,9 +118,13 @@ For further usage examples (for now), take a look at the tests, such as:
 ## Performance
 
 Proper benchmarking results are on their way, but to give some idea, reading all drivable roads in Helsinki Region (approx. 85,000 roads) 
-takes approximately **10 seconds** (laptop with 16GB memory, SSD drive, and Intel Core i5-8250U CPU 1.6 GHZ). And the result looks something like:
+takes approximately **12 seconds** (laptop with 16GB memory, SSD drive, and Intel Core i5-8250U CPU 1.6 GHZ). And the result looks something like:
 
 ![Helsinki_driving_net](resources/img/Helsinki_driving_net.PNG)
+
+Parsing all buildings from the same area (approx. 180,000) takes approximately **17 seconds**. And the result looks something like:
+
+![Helsinki_building_footprints](resources/img/Helsinki_building_footprints.png)
 
 ## Get in touch
 
