@@ -108,14 +108,14 @@ class OSM:
         """
         # Get filter
         network_filter = self._get_filter(network_type)
-        tags_to_keep = self.conf.tag_filters.networks
+        tags_as_columns = self.conf.tags.highway
 
         if self._nodes is None or self._way_records is None:
             self._read_pbf()
 
         # Filter ways
         ways = get_way_data(self._way_records,
-                            tags_to_keep,
+                            tags_as_columns,
                             network_filter
                             )
 
@@ -140,17 +140,17 @@ class OSM:
 
         return gdf
 
-    def get_buildings(self, tag_filters=None):
-        # Default tags to keep
-        tags_to_keep = self.conf.tag_filters.buildings
+    def get_buildings(self, custom_filter=None):
+        # Default tags to keep as columns
+        tags_as_columns = self.conf.tags.building
 
         if self._nodes is None or self._way_records is None:
             self._read_pbf()
 
         ways, relation_ways, relations = get_building_data(self._way_records,
                                                            self._relations,
-                                                           tags_to_keep,
-                                                           tag_filters)
+                                                           tags_as_columns,
+                                                           custom_filter)
 
         # If there weren't any data, return empty GeoDataFrame
         if ways is None:
@@ -170,7 +170,7 @@ class OSM:
         if relations is not None:
             relations = prepare_relations(relations, relation_ways,
                                           self._node_coordinates,
-                                          tags_to_keep)
+                                          tags_as_columns)
             relation_gdf = gpd.GeoDataFrame(relations)
             gdf = way_gdf.append(relation_gdf, ignore_index=True)
         else:
@@ -184,7 +184,49 @@ class OSM:
             gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def get_pois(self):
+    def get_pois(self, custom_filter=None):
+        """
+        Parse Point of Interest (POI) from OSM.
+
+        By default will parse all OSM elements (points, lines and polygons)
+        that are associated with following keys:
+          - amenity
+          - craft
+          - historic
+          - leisure
+          - shop
+          - tourism
+
+        You can opt-out / opt-in specific elements by using 'custom_filter'.
+        To parse elements associated with only specific tags, such as amenities,
+        you can specify:
+          `custom_filter={"amenity": True}`
+
+        You can also combine multiple filters at the same time.
+        For instance, you can parse all 'amenity' elements AND specific 'shop' elements,
+        such as supermarkets and book stores by specifying:
+          `custom_filter={"amenity": True, "shop": ["supermarket", "books"]}`
+
+        You can check the most typical OSM tags for different map features from OSM Wiki
+        https://wiki.openstreetmap.org/wiki/Map_Features . It is also possible to get a quick
+        look at the most typical OSM tags from Pyrosm configuration:
+
+        >>> from pyrosm.config import Conf
+        >>> print("All available OSM keys", Conf.tags.available)
+        All available OSM keys ['aerialway', 'aeroway', 'amenity', 'building', 'craft',
+        'emergency', 'geological', 'highway', 'historic', 'landuse', 'leisure',
+        'natural', 'office', 'power', 'public_transport', 'railway', 'route',
+        'place', 'shop', 'tourism', 'waterway']
+
+        >>> print("Typical tags associated with tourism:", Conf.tags.tourism)
+        ['alpine_hut', 'apartment', 'aquarium', 'artwork', 'attraction', 'camp_pitch', 'camp_site', 'caravan_site',
+        'chalet', 'gallery', 'guest_house', 'hostel', 'hotel', 'information', 'motel', 'museum', 'picnic_site', 'theme_park',
+        'tourism', 'viewpoint', 'wilderness_hut', 'zoo']
+
+        """
+        raise NotImplementedError()
+
+    def get_landuse(self, custom_filter=None):
         raise NotImplementedError()
 
     def __getattribute__(self, name):
