@@ -4,6 +4,13 @@
 **Pyrosm** is a Python library for reading OpenStreetMap from `protobuf` files (`*.osm.pbf`) into Geopandas GeoDataFrames. 
 Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks and buildings (points of interest in progress).
 
+ 
+**Pyrosm** is easy to use and it provides a somewhat similar user interface as another popular Python library [OSMnx](https://github.com/gboeing/osmnx)
+for parsing different datasets from the OpenStreetMap pbf-dump including road networks and buildings (later also points of interest and landuse). 
+The main difference between pyrosm and OSMnx is that OSMnx reads the data over internet using OverPass API, whereas pyrosm reads the data from local OSM data dumps
+that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). This makes it possible to read data much faster thus 
+allowing e.g. parsing street networks for whole country in a matter of minutes instead of hours (however, see [caveats](#caveats)).
+
 
 The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) 
 which makes it probably faster than any other Python alternatives for parsing OpenStreetMap data.
@@ -12,12 +19,6 @@ to Google's Protobuf library: It provides 2-4x boost in performance for deserial
 Google's version with C++ backend. Google's Protocol Buffers is a commonly used and efficient method to serialize and compress structured data 
 which is also used by OpenStreetMap contributors to distribute the OSM data in PBF format (Protocolbuffer Binary Format). 
 
- 
-**Pyrosm** is easy to use and it provides a somewhat similar user interface as another popular Python library [OSMnx](https://github.com/gboeing/osmnx)
-for parsing different datasets from the OpenStreetMap pbf-dump including road networks and buildings (later also points of interest and landuse). The main difference between 
-pyrosm and OSMnx is that OSMnx reads the data over internet using OverPass API, whereas pyrosm reads the data from local OSM data dumps
-that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). This makes it possible to read data much faster thus 
-allowing e.g. parsing street networks for whole country in a matter of minutes instead of hours (however, see [caveats](#caveats)).
 
 ## Current features
 
