@@ -17,5 +17,5 @@ dependencies:
   - codecov
   - pip
   - pip:
-      - git+https://github.com/realead/cykhash.git
+      - git+https://github.com/HTenkanen/cykhash.git
 
