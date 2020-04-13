@@ -145,6 +145,10 @@ You can install a local development version of the tool by 1) installing necessa
  
     - `pip install -e .`
 
+You can run tests with `pytest` by executing:
+ 
+  `$ pytest -v` 
+
 ## Caveats
 
 ### Filtering large files by bounding box 
