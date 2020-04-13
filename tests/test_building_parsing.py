@@ -27,7 +27,7 @@ def test_parsing_building_elements(test_pbf):
     osm._read_pbf()
     ways, relation_ways, relations = get_building_data(osm._way_records,
                                   osm._relations,
-                                  osm.conf.tag_filters.buildings,
+                                  osm.conf.tags.building,
                                   None)
     assert isinstance(ways, dict)
 
@@ -50,7 +50,7 @@ def test_creating_building_geometries(test_pbf):
     osm._read_pbf()
     ways, relation_ways, relations = get_building_data(osm._way_records,
                                                        osm._relations,
-                                                       osm.conf.tag_filters.buildings,
+                                                       osm.conf.tags.building,
                                                        None)
     geometries = create_polygon_geometries(osm._node_coordinates, ways)
     assert isinstance(geometries, ndarray)
@@ -148,7 +148,7 @@ def test_reading_buildings_with_filter(test_pbf):
     # Filter for 'industrial' buildings
     custom_filter = {'building': ['industrial']}
     osm = OSM(filepath=test_pbf)
-    gdf = osm.get_buildings(custom_filters=custom_filter)
+    gdf = osm.get_buildings(custom_filter=custom_filter)
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], Polygon)
