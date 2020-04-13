@@ -1,0 +1,7 @@
+cdef delta_decode_latitude(data, node_granularity, lat_offset)
+cdef delta_decode_longitude(data, node_granularity, lon_offset)
+cdef delta_decode_id(data)
+cdef delta_decode_timestamp(data, timestamp_granularity)
+cdef delta_decode_changeset(data)
+cdef delta_encode_latitude(lat_array, node_granularity, lat_offset)
+cdef delta_encode_longitude(lon_array, node_granularity, lon_offset)

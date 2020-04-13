@@ -2,9 +2,13 @@ from pyrosm.config import Conf
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm.networks import get_way_data
 from pyrosm.buildings import get_building_data
-from pyrosm.geometry import create_way_geometries, create_polygon_geometries
-from pyrosm.frames import create_gdf
+from pyrosm.geometry import create_way_geometries, \
+    create_polygon_geometries, create_node_coordinates_lookup
+from pyrosm.frames import create_gdf, create_nodes_gdf
+from pyrosm.relations import prepare_relations
 from shapely.geometry import Polygon, MultiPolygon
+import geopandas as gpd
+import warnings
 
 
 class OSM:
@@ -45,11 +49,14 @@ class OSM:
             raise ValueError("bounding_box should be a list or a shapely Polygon.")
 
         self.conf = Conf
+
         # TODO: Add as a parameter
         self._verbose = False
 
         self._all_way_tags = None
         self._nodes = None
+        self._nodes_gdf = None
+        self._node_coordinates = None
         self._way_records = None
         self._relations = None
 
@@ -59,6 +66,9 @@ class OSM:
                                                           exclude_relations=False)
         self._nodes, self._way_records, \
         self._relations, self._all_way_tags = nodes, ways, relations, way_tags
+
+        # Prepare node coordinates lookup table
+        self._node_coordinates = create_node_coordinates_lookup(self._nodes)
 
     def _get_filter(self, net_type):
         possible_filters = [a for a in self.conf.network_filters.__dir__()
@@ -109,7 +119,14 @@ class OSM:
                             network_filter
                             )
 
-        geometries = create_way_geometries(self._nodes,
+        # If there weren't any data, return empty GeoDataFrame
+        if ways is None:
+            warnings.warn("Could not find any network data for given area.",
+                          UserWarning,
+                          stacklevel=2)
+            return gpd.GeoDataFrame()
+
+        geometries = create_way_geometries(self._node_coordinates,
                                            ways)
 
         # Convert to GeoDataFrame
@@ -130,23 +147,48 @@ class OSM:
         if self._nodes is None or self._way_records is None:
             self._read_pbf()
 
-        buildings = get_building_data(self._way_records,
-                                      tags_to_keep,
-                                      tag_filters)
+        ways, relation_ways, relations = get_building_data(self._way_records,
+                                                           self._relations,
+                                                           tags_to_keep,
+                                                           tag_filters)
 
-        geometries = create_polygon_geometries(self._nodes,
-                                               buildings)
+        # If there weren't any data, return empty GeoDataFrame
+        if ways is None:
+            warnings.warn("Could not find any buildings for given area.",
+                          UserWarning,
+                          stacklevel=2)
+            return gpd.GeoDataFrame()
+
+        # Create geometries for normal ways
+        geometries = create_polygon_geometries(self._node_coordinates,
+                                               ways)
 
         # Convert to GeoDataFrame
-        gdf = create_gdf(buildings, geometries)
+        way_gdf = create_gdf(ways, geometries)
+
+        # Prepare relation data if it is available
+        if relations is not None:
+            relations = prepare_relations(relations, relation_ways,
+                                          self._node_coordinates,
+                                          tags_to_keep)
+            relation_gdf = gpd.GeoDataFrame(relations)
+            gdf = way_gdf.append(relation_gdf, ignore_index=True)
+        else:
+            gdf = way_gdf
+
         gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
 
         # Do not keep node information
         # (they are in a list, and causes issues saving the files)
         if "nodes" in gdf.columns:
             gdf = gdf.drop("nodes", axis=1)
-
         return gdf
 
     def get_pois(self):
         raise NotImplementedError()
+
+    def __getattribute__(self, name):
+        # If node-gdf is requested convert to gdf before returning
+        if name == "_nodes_gdf":
+            return create_nodes_gdf(super(OSM, self).__getattribute__("_nodes"))
+        return super(OSM, self).__getattribute__(name)

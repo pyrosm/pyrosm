@@ -9,6 +9,12 @@ def test_pbf():
 
 
 @pytest.fixture
+def helsinki_pbf():
+    pbf_path = get_path("helsinki_pbf")
+    return pbf_path
+
+
+@pytest.fixture
 def test_output_dir():
     import os, tempfile
     return os.path.join(tempfile.gettempdir(), "pyrosm_test_results")
@@ -19,18 +25,19 @@ def test_parsing_building_elements(test_pbf):
     from pyrosm.buildings import get_building_data
     osm = OSM(filepath=test_pbf)
     osm._read_pbf()
-    buildings = get_building_data(osm._way_records,
+    ways, relation_ways, relations = get_building_data(osm._way_records,
+                                  osm._relations,
                                   osm.conf.tag_filters.buildings,
                                   None)
-    assert isinstance(buildings, dict)
+    assert isinstance(ways, dict)
 
     # Required keys
     required = ['id', 'nodes']
     for col in required:
-        assert col in buildings.keys()
+        assert col in ways.keys()
 
     # Test shape
-    assert len(buildings["id"]) == 2219
+    assert len(ways["id"]) == 2219
 
 
 def test_creating_building_geometries(test_pbf):
@@ -41,13 +48,14 @@ def test_creating_building_geometries(test_pbf):
     from numpy import ndarray
     osm = OSM(filepath=test_pbf)
     osm._read_pbf()
-    gdf = get_building_data(osm._way_records,
-                                  osm.conf.tag_filters.buildings,
-                                  None)
-    geometries = create_polygon_geometries(osm._nodes, gdf)
+    ways, relation_ways, relations = get_building_data(osm._way_records,
+                                                       osm._relations,
+                                                       osm.conf.tag_filters.buildings,
+                                                       None)
+    geometries = create_polygon_geometries(osm._node_coordinates, ways)
     assert isinstance(geometries, ndarray)
     assert isinstance(geometries[0], Polygon)
-    assert len(geometries) == len(gdf["id"])
+    assert len(geometries) == len(ways["id"])
 
 
 def test_reading_buildings_with_defaults(test_pbf):
@@ -150,3 +158,42 @@ def test_reading_buildings_with_filter(test_pbf):
 
     for col in required_cols:
         assert col in gdf.columns
+
+
+def test_reading_buildings_with_relations(helsinki_pbf):
+    from pyrosm import OSM
+    from shapely.geometry import Polygon
+    from geopandas import GeoDataFrame
+    osm = OSM(filepath=helsinki_pbf)
+    gdf = osm.get_buildings()
+
+    assert isinstance(gdf, GeoDataFrame)
+    assert isinstance(gdf.loc[0, "geometry"], Polygon)
+    assert gdf.shape == (621, 33)
+
+    required_cols = ['building', 'id', 'timestamp', 'version', 'tags', 'geometry']
+
+    for col in required_cols:
+        assert col in gdf.columns
+
+
+def test_reading_buildings_from_area_having_none(helsinki_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    # Bounding box for area that does not have any data
+    bbox = [24.940514, 60.173849, 24.942, 60.175892]
+
+    osm = OSM(filepath=helsinki_pbf, bounding_box=bbox)
+
+    # The tool should warn if no buildings were found
+    with pytest.warns(UserWarning) as w:
+        gdf = osm.get_buildings()
+        # Check the warning text
+        if "could not find any buildings" in str(w):
+            pass
+
+    # Result should be empty GeoDataFrame
+    assert isinstance(gdf, GeoDataFrame)
+    assert gdf.shape == (0, 0)
+

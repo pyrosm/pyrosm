@@ -6,10 +6,10 @@ _module_path = os.path.dirname(__file__)
 _temp_path = os.path.join(tempfile.gettempdir(), "pyrosm")
 
 _package_files = {"test_pbf": "test.osm.pbf",
+                  "helsinki_pbf": "Helsinki.osm.pbf"
                   }
-_temp_files = {"helsinki_pbf": "Helsinki.osm.pbf"}
 
-available = list(_package_files.keys()) + list(_temp_files.keys())
+available = list(_package_files.keys())
 
 
 def get_path(dataset):
