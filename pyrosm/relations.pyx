@@ -1,7 +1,7 @@
 from pyrosm.data_filter cimport filter_array_dict_by_indices_or_mask
-from pyrosm.geometry cimport get_way_coordinates_for_polygon, create_linear_ring, pygeos_to_shapely
+from pyrosm.geometry cimport pygeos_to_shapely, create_pygeos_polygon_from_relation
 from pyrosm._arrays cimport convert_to_arrays_and_drop_empty, convert_way_records_to_lists
-from pygeos import polygons, multipolygons
+from pygeos import multipolygons
 import numpy as np
 
 
@@ -30,46 +30,23 @@ cdef get_relations(relations, relation_ways, node_coordinates):
             member_roles = rel["members"][j]["member_role"].tolist()
 
             # Get ways for given relation
-            rws = get_ways_for_relation(member_ids, relation_ways)
+            ways = get_ways_for_relation(member_ids, relation_ways)
 
-            if rws is None:
+            if ways is None:
                 continue
 
-            # Get coordinates for relation
-            coordinates = get_way_coordinates_for_polygon(node_coordinates, rws)
+            # Create polygon geometry
+            poly = create_pygeos_polygon_from_relation(node_coordinates,
+                                                       ways,
+                                                       member_roles)
 
-            shell = []
-            holes = []
-            m_cnt = len(member_roles)
-            for i in range(0, m_cnt):
-                role = member_roles[i]
-                if role == "outer":
-                    ring = create_linear_ring(coordinates[i])
-                    if ring is not None:
-                        shell.append(ring)
-
-                elif role == "inner":
-                    ring = create_linear_ring(coordinates[i])
-                    if ring is not None:
-                        holes.append(ring)
-
-                else:
-                    raise ValueError("Got invalid member role: " + str(role))
-
-            if len(shell) == 0:
-                continue
-            elif len(shell) == 1:
-                shell = shell[0]
-
-            if len(holes) == 0:
-                holes = None
-
-            poly = polygons(shell, holes)
-            geometries.append(poly)
+            if poly is not None:
+                geometries.append(poly)
 
         if len(geometries) == 0:
             continue
 
+        # Create MultiPolygon if there were multiple geometries for given relation
         elif len(geometries) == 1:
             if isinstance(geometries[0], np.ndarray):
                 geometry = pygeos_to_shapely(multipolygons(geometries[0]))
