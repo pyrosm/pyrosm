@@ -22,7 +22,7 @@ allowing e.g. parsing street networks for whole country in a matter of minutes i
 ## Current features
 
  - read street networks (separately for driving, cycling, walking and all-combined)
- - read buildings from PBF (not yet relations, though)
+ - read buildings from PBF
  - filter data based on bounding box
  - apply custom filter to filter data 
     - e.g. with buildings you can filter specific types of buildings with `{'building': ['residential', 'retail']}` 
@@ -30,8 +30,8 @@ allowing e.g. parsing street networks for whole country in a matter of minutes i
  
 ## Roadmap
 
- - include also relations with buildings (v.0.2.0)
  - add parsing of places of interests (POIs)
+ - add parsing of landuse
  - add more tests
 
 ## Install
@@ -113,7 +113,7 @@ get_network(network_type='walking') method of pyrosm.pyrosm.OSM instance
 
 For further usage examples (for now), take a look at the tests, such as:
   - [test_network_parsing.py](tests/test_network_parsing.py)
-
+  - [test_building_parsing.py](tests/test_building_parsing.py)
 
 ## Performance
 
@@ -121,6 +121,24 @@ Proper benchmarking results are on their way, but to give some idea, reading all
 takes approximately **10 seconds** (laptop with 16GB memory, SSD drive, and Intel Core i5-8250U CPU 1.6 GHZ). And the result looks something like:
 
 ![Helsinki_driving_net](resources/img/Helsinki_driving_net.PNG)
+
+## Get in touch
+
+If you find a bug from the tool, have question, 
+or would like to suggest a new feature to it, you can [make a new issue here](https://github.com/HTenkanen/pyrosm/issues).
+
+## Development
+
+You can install a local development version of the tool by 1) installing necessary packages with conda and 2) building pyrosm from source:
+
+ 1. install conda-environment for Python 3.7 or 3.8 by:
+ 
+    - Python 3.7 (you might want to modify the env-name which is `test` by default): `$ conda env create -f ci/37-conda.yaml`
+    - Python 3.8: `$ conda env create -f ci/38-conda.yaml`
+    
+ 2. build pyrosm development version from master (activate the environment first):
+ 
+    - `pip install -e .`
 
 ## Caveats
 
