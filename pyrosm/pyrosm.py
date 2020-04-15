@@ -4,9 +4,8 @@ from pyrosm.networks import get_way_data
 from pyrosm.buildings import get_building_data
 from pyrosm.pois import get_poi_data
 from pyrosm.geometry import create_way_geometries, \
-    create_polygon_geometries, create_node_coordinates_lookup
+    create_node_coordinates_lookup
 from pyrosm.frames import create_gdf, create_nodes_gdf
-from pyrosm.relations import prepare_relations
 from shapely.geometry import Polygon, MultiPolygon
 import geopandas as gpd
 import warnings
