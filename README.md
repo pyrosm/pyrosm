@@ -24,14 +24,14 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
 
  - read street networks (separately for driving, cycling, walking and all-combined)
  - read buildings from PBF
+ - read Points of Interest (POI) from PBF
  - filter data based on bounding box
  - apply custom filter to filter data 
-    - e.g. with buildings you can filter specific types of buildings with `{'building': ['residential', 'retail']}` 
+    - e.g. keeping only specific type of buildings can be done by applying a filter: `{'building': ['residential', 'retail']}` 
  
  
 ## Roadmap
 
- - add parsing of places of interests (POIs)
  - add parsing of landuse
  - add possibility to crop PBF and save a subset into new PBF.
  - add more tests
@@ -78,7 +78,7 @@ drive_net.head()
 # Read all residential and retail buildings
 # =========================================
 custom_filter = {'building': ['residential', 'retail']}
-buildings = osm.get_buildings(tag_filters=custom_filter)
+buildings = osm.get_buildings(custom_filter=custom_filter)
 buildings.head()
 ...
       building  ...                                           geometry
@@ -87,6 +87,21 @@ buildings.head()
 2  residential  ...  POLYGON ((26.96536 60.52540, 26.96528 60.52539...
 3  residential  ...  POLYGON ((26.93920 60.53257, 26.93940 60.53254...
 4  residential  ...  POLYGON ((26.96578 60.52129, 26.96569 60.52137...
+
+# Read POIs such as shops and amenities 
+# =====================================
+custom_filter = {'amenity': True, 'shop': True }
+pois = osm.get_pois(custom_filter=custom_filter)
+pois.head()
+...
+   changeset   timestamp        lon  version  ...  phone  building landuse parking
+0        0.0  1461601534  26.951475        2  ...    NaN       NaN     NaN     NaN
+1        0.0  1310921959  26.945166        3  ...    NaN       NaN     NaN     NaN
+2        0.0  1347308819  26.932177        2  ...    NaN       NaN     NaN     NaN
+3        0.0  1310921960  26.949650        2  ...    NaN       NaN     NaN     NaN
+4        0.0  1307995246  26.959021        1  ...    NaN       NaN     NaN     NaN
+
+[5 rows x 22 columns]
 ```   
 
 To get further information how to use the tool, you can use good old `help`:
@@ -127,6 +142,13 @@ takes approximately **12 seconds** (laptop with 16GB memory, SSD drive, and Inte
 Parsing all buildings from the same area (approx. 180,000) takes approximately **17 seconds**. And the result looks something like:
 
 ![Helsinki_building_footprints](resources/img/Helsinki_building_footprints.png)
+
+Parsing all Points of Interest (POIs) with defaults elements (amenities, shops and tourism) 
+takes approximately **14 seconds** (approx. 32,000 features). 
+And the result looks something like:
+
+![Helsinki_POIs](resources/img/Helsinki_POIs_amenity_shop_tourism.png)
+
 
 ## Get in touch
 
