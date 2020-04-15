@@ -10,14 +10,15 @@ def get_network_data(node_coordinates, way_records, tags_as_columns, network_fil
     tags_as_columns += ["id", "nodes", "timestamp", "changeset", "version"]
 
     # Call signature for fetching network data
-    ways, relation_ways, relations = get_osm_data(way_records=way_records,
-                                                  relations=None,
-                                                  tags_as_columns=tags_as_columns,
-                                                  data_filter=network_filter,
-                                                  filter_type="exclude",
-                                                  # Keep only records having 'highway' tag
-                                                  osm_keys="highway",
-                                                  )
+    nodes, ways, relation_ways, relations = get_osm_data(node_arrays=None,
+                                                         way_records=way_records,
+                                                         relations=None,
+                                                         tags_as_columns=tags_as_columns,
+                                                         data_filter=network_filter,
+                                                         filter_type="exclude",
+                                                         # Keep only records having 'highway' tag
+                                                         osm_keys="highway",
+                                                         )
 
     # If there weren't any data, return empty GeoDataFrame
     if ways is None:
