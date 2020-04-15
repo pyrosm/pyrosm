@@ -101,9 +101,6 @@ cdef filter_osm(data_records,
 
     relation_check = False
     if relation_way_ids is not None:
-        # TODO: This check should probably happen somewhere before coming here
-        if type(relation_way_ids) not in [list, np.ndarray]:
-            raise ValueError("'relation_way_ids' should be a list or an array.")
         relation_way_lookup = dict.fromkeys(relation_way_ids)
         relation_check = True
 
