@@ -1,12 +1,11 @@
 from pyrosm.config import Conf
 from pyrosm.pbfreader import parse_osm_data
-from pyrosm.networks import get_way_data
+from pyrosm.networks import get_network_data
 from pyrosm.buildings import get_building_data
 from pyrosm.pois import get_poi_data
 from pyrosm.geometry import create_node_coordinates_lookup
 from pyrosm.frames import create_nodes_gdf
 from shapely.geometry import Polygon, MultiPolygon
-
 
 
 class OSM:
@@ -112,12 +111,12 @@ class OSM:
         if self._nodes is None or self._way_records is None:
             self._read_pbf()
 
-        # Filter ways
-        gdf = get_way_data(self._node_coordinates,
-                           self._way_records,
-                           tags_as_columns,
-                           network_filter
-                           )
+        # Filter network data with given filter
+        gdf = get_network_data(self._node_coordinates,
+                               self._way_records,
+                               tags_as_columns,
+                               network_filter
+                               )
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)

@@ -25,7 +25,7 @@ def get_poi_data(node_coordinates, way_records, relations, tags_as_columns, cust
     ways, relation_ways, relations = get_osm_data(way_records=way_records,
                                                   relations=relations,
                                                   tags_as_columns=tags_as_columns,
-                                                  custom_filter=custom_filter,
+                                                  data_filter=custom_filter,
                                                   filter_type="keep"
                                                   )
 
