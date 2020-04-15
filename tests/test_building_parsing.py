@@ -26,11 +26,12 @@ def test_parsing_building_elements(test_pbf):
     osm = OSM(filepath=test_pbf)
     osm._read_pbf()
     custom_filter = {"building": True}
-    ways, relation_ways, relations = get_osm_data(osm._way_records,
-                                                  osm._relations,
-                                                  osm.conf.tags.building,
-                                                  custom_filter,
-                                                  filter_type="keep")
+    nodes, ways, relation_ways, relations = get_osm_data(None,
+                                                         osm._way_records,
+                                                         osm._relations,
+                                                         osm.conf.tags.building,
+                                                         custom_filter,
+                                                         filter_type="keep")
     assert isinstance(ways, dict)
 
     # Required keys
@@ -52,11 +53,12 @@ def test_creating_building_geometries(test_pbf):
     osm = OSM(filepath=test_pbf)
     osm._read_pbf()
     custom_filter = {"building": True}
-    ways, relation_ways, relations = get_osm_data(osm._way_records,
-                                                  osm._relations,
-                                                  osm.conf.tags.building,
-                                                  custom_filter,
-                                                  filter_type="keep")
+    nodes, ways, relation_ways, relations = get_osm_data(None,
+                                                         osm._way_records,
+                                                         osm._relations,
+                                                         osm.conf.tags.building,
+                                                         custom_filter,
+                                                         filter_type="keep")
     assert isinstance(ways, dict)
 
     geometries = create_polygon_geometries(osm._node_coordinates,
@@ -122,7 +124,6 @@ def test_saving_buildings_to_geopackage(test_pbf, test_output_dir):
     from pyrosm import OSM
     import geopandas as gpd
     import shutil
-    from pandas.testing import assert_frame_equal
 
     if not os.path.exists(test_output_dir):
         os.makedirs(test_output_dir)
@@ -134,16 +135,9 @@ def test_saving_buildings_to_geopackage(test_pbf, test_output_dir):
 
     # Ensure it can be read and matches with original one
     gdf2 = gpd.read_file(temp_path)
-
-    # When reading integers they
-    # might be imported as strings instead of ints which is
-    # normal, however, the values should be identical
-    convert_to_ints = ["id", "timestamp", "version"]
-    for col in convert_to_ints:
-        gdf[col] = gdf[col].astype(int)
-        gdf2[col] = gdf2[col].astype(int)
-
-    # assert_frame_equal(gdf, gdf2)
+    cols = gdf.columns
+    for col in cols:
+        assert gdf[col].tolist() == gdf2[col].tolist()
 
     # Clean up
     shutil.rmtree(test_output_dir)
