@@ -162,7 +162,6 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-
     def get_pois(self, custom_filter=None):
         """
         Parse Point of Interest (POI) from OSM.
@@ -221,38 +220,12 @@ class OSM:
         for k in custom_filter.keys():
             tags_as_columns += getattr(self.conf.tags, k)
 
-
-        ways, relation_ways, relations = get_poi_data(self._way_records,
-                                                      self._relations,
-                                                      list(custom_filter.keys()),
-                                                      tags_as_columns,
-                                                      custom_filter)
-
-        # If there weren't any data, return empty GeoDataFrame
-        if ways is None:
-            warnings.warn("Could not find any POIs for given area.",
-                          UserWarning,
-                          stacklevel=2)
-            return gpd.GeoDataFrame()
-
-        # Create geometries for normal ways
-        geometries = create_polygon_geometries(self._node_coordinates,
-                                               ways)
-
-        # Convert to GeoDataFrame
-        way_gdf = create_gdf(ways, geometries)
-
-        # Prepare relation data if it is available
-        if relations is not None:
-            relations = prepare_relations(relations, relation_ways,
-                                          self._node_coordinates,
-                                          tags_as_columns)
-            relation_gdf = gpd.GeoDataFrame(relations)
-            gdf = way_gdf.append(relation_gdf, ignore_index=True)
-        else:
-            gdf = way_gdf
-
-        gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
+        gdf = get_poi_data(self._node_coordinates,
+                           self._way_records,
+                           self._relations,
+                           list(custom_filter.keys()),
+                           tags_as_columns,
+                           custom_filter)
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
@@ -260,7 +233,6 @@ class OSM:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
-
 
     def get_landuse(self, custom_filter=None):
         raise NotImplementedError()
