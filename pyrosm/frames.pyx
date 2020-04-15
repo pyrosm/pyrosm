@@ -4,8 +4,9 @@ from pyrosm._arrays cimport concatenate_dicts_of_arrays
 from pyrosm.geometry cimport _create_point_geometries
 
 
-cpdef create_nodes_gdf(node_dict_list):
-    nodes = concatenate_dicts_of_arrays(node_dict_list)
+cpdef create_nodes_gdf(nodes):
+    if isinstance(nodes, list):
+        nodes = concatenate_dicts_of_arrays(nodes)
     df = pd.DataFrame()
     for k, v in nodes.items():
         df[k] = v
