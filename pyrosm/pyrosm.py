@@ -50,6 +50,7 @@ class OSM:
             raise ValueError("bounding_box should be a list or a shapely Polygon.")
 
         self.conf = Conf
+        self.keep_node_info = False
 
         # TODO: Add as a parameter
         self._verbose = False
@@ -148,45 +149,19 @@ class OSM:
         if self._nodes is None or self._way_records is None:
             self._read_pbf()
 
-        ways, relation_ways, relations = get_building_data(self._way_records,
-                                                           self._relations,
-                                                           tags_as_columns,
-                                                           custom_filter)
+        gdf = get_building_data(self._node_coordinates,
+                                self._way_records,
+                                self._relations,
+                                tags_as_columns,
+                                custom_filter)
 
-        # If there weren't any data, return empty GeoDataFrame
-        if ways is None:
-            warnings.warn("Could not find any buildings for given area.",
-                          UserWarning,
-                          stacklevel=2)
-            return gpd.GeoDataFrame()
-
-        # Create geometries for normal ways
-        geometries = create_polygon_geometries(self._node_coordinates,
-                                               ways)
-
-        # Convert to GeoDataFrame
-        way_gdf = create_gdf(ways, geometries)
-        way_gdf["osm_type"] = "way"
-
-        # Prepare relation data if it is available
-        if relations is not None:
-            relations = prepare_relations(relations, relation_ways,
-                                          self._node_coordinates,
-                                          tags_as_columns)
-            relation_gdf = gpd.GeoDataFrame(relations)
-            relation_gdf["osm_type"] = "relation"
-
-            gdf = way_gdf.append(relation_gdf, ignore_index=True)
-        else:
-            gdf = way_gdf
-
-        gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
-
-        # Do not keep node information
-        # (they are in a list, and causes issues saving the files)
-        if "nodes" in gdf.columns:
-            gdf = gdf.drop("nodes", axis=1)
+        # Do not keep node information unless specifically asked for
+        # (they are in a list, and can cause issues when saving the files)
+        if not self.keep_node_info:
+            if "nodes" in gdf.columns:
+                gdf = gdf.drop("nodes", axis=1)
         return gdf
+
 
     def get_pois(self, custom_filter=None):
         """
@@ -279,10 +254,11 @@ class OSM:
 
         gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
 
-        # Do not keep node information
-        # (they are in a list, and causes issues saving the files)
-        if "nodes" in gdf.columns:
-            gdf = gdf.drop("nodes", axis=1)
+        # Do not keep node information unless specifically asked for
+        # (they are in a list, and can cause issues when saving the files)
+        if not self.keep_node_info:
+            if "nodes" in gdf.columns:
+                gdf = gdf.drop("nodes", axis=1)
         return gdf
 
 

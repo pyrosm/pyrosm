@@ -61,7 +61,6 @@ cdef separate_relation_ways(way_records, relation_way_ids):
             relation_ways.append(way)
         except Exception as e:
             normal_ways.append(way)
-
     return normal_ways, relation_ways
 
 cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, data_filter, filter_type):
@@ -118,10 +117,13 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
 
     return ways, relation_ways, filtered_relations
 
-cdef get_osm_data(way_records, relations, tags_as_columns, custom_filter, filter_type):
+cdef _get_osm_data(way_records, relations, tags_as_columns, custom_filter, filter_type):
     # Convert filter to appropriate form and parse keys
     data_filter, osm_keys = get_data_filter_and_osm_keys(custom_filter)
 
     # Parse ways and relations
     ways, relation_ways, filtered_relations = get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type)
     return ways, relation_ways, filtered_relations
+
+cpdef get_osm_data(way_records, relations, tags_as_columns, custom_filter, filter_type):
+    return _get_osm_data(way_records, relations, tags_as_columns, custom_filter, filter_type)
