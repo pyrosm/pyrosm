@@ -21,12 +21,14 @@ def get_building_data(node_coordinates, way_records, relations, tags_as_columns,
             custom_filter["building"] = True
 
     # Call signature for fetching buildings
-    ways, relation_ways, relations = get_osm_data(way_records=way_records,
-                                                  relations=relations,
-                                                  tags_as_columns=tags_as_columns,
-                                                  data_filter=custom_filter,
-                                                  filter_type="keep"
-                                                  )
+    nodes, ways, relation_ways, relations = get_osm_data(node_arrays=None,
+                                                         way_records=way_records,
+                                                         relations=relations,
+                                                         tags_as_columns=tags_as_columns,
+                                                         data_filter=custom_filter,
+                                                         filter_type="keep",
+                                                         osm_keys=None
+                                                         )
 
     # If there weren't any data, return empty GeoDataFrame
     if ways is None:
