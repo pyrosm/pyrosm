@@ -125,7 +125,7 @@ cdef create_pygeos_polygon_from_relation(node_coordinates, relation_ways, member
                 holes.append(ring)
 
         else:
-            raise ValueError("Got invalid member role: " + str(role))
+            return None
 
     if len(shell) == 0:
         return None
