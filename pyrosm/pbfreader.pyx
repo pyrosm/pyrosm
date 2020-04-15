@@ -103,8 +103,7 @@ cdef parse_dense(pblock, data, string_table, bounding_box):
 
     # Tags
     tags = np.empty(len(data.id), dtype=object)
-    #parsed = parse_dense_tags(data.keys_vals, string_table)
-    parsed = []
+    parsed = parse_dense_tags(data.keys_vals, string_table)
     # In some cases node-tags are not available at all
     if len(parsed) != 0:
         tags[:] = parsed

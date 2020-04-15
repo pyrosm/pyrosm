@@ -22,13 +22,16 @@ def test_output_dir():
 
 def test_parsing_building_elements(test_pbf):
     from pyrosm import OSM
-    from pyrosm.buildings import get_building_data
+    from pyrosm.data_manager import get_osm_data
     osm = OSM(filepath=test_pbf)
     osm._read_pbf()
-    ways, relation_ways, relations = get_building_data(osm._way_records,
-                                  osm._relations,
-                                  osm.conf.tag_filters.buildings,
-                                  None)
+    custom_filter = {"building": True}
+    nodes, ways, relation_ways, relations = get_osm_data(None,
+                                                         osm._way_records,
+                                                         osm._relations,
+                                                         osm.conf.tags.building,
+                                                         custom_filter,
+                                                         filter_type="keep")
     assert isinstance(ways, dict)
 
     # Required keys
@@ -42,17 +45,24 @@ def test_parsing_building_elements(test_pbf):
 
 def test_creating_building_geometries(test_pbf):
     from pyrosm import OSM
-    from pyrosm.buildings import get_building_data
+    from pyrosm.data_manager import get_osm_data
     from pyrosm.geometry import create_polygon_geometries
-    from shapely.geometry import Polygon
     from numpy import ndarray
+    from shapely.geometry import Polygon
+
     osm = OSM(filepath=test_pbf)
     osm._read_pbf()
-    ways, relation_ways, relations = get_building_data(osm._way_records,
-                                                       osm._relations,
-                                                       osm.conf.tag_filters.buildings,
-                                                       None)
-    geometries = create_polygon_geometries(osm._node_coordinates, ways)
+    custom_filter = {"building": True}
+    nodes, ways, relation_ways, relations = get_osm_data(None,
+                                                         osm._way_records,
+                                                         osm._relations,
+                                                         osm.conf.tags.building,
+                                                         custom_filter,
+                                                         filter_type="keep")
+    assert isinstance(ways, dict)
+
+    geometries = create_polygon_geometries(osm._node_coordinates,
+                                           ways)
     assert isinstance(geometries, ndarray)
     assert isinstance(geometries[0], Polygon)
     assert len(geometries) == len(ways["id"])
@@ -67,7 +77,7 @@ def test_reading_buildings_with_defaults(test_pbf):
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], Polygon)
-    assert gdf.shape == (2193, 18)
+    assert gdf.shape == (2193, 19)
 
     required_cols = ['building', 'addr:city', 'addr:street', 'addr:country',
                      'addr:postcode', 'addr:housenumber', 'source', 'opening_hours',
@@ -92,7 +102,7 @@ def test_parse_buildings_with_bbox(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (569, 14)
+    assert gdf.shape == (569, 15)
 
     required_cols = ['building', 'addr:street',
                      'addr:postcode', 'addr:housenumber',
@@ -114,7 +124,6 @@ def test_saving_buildings_to_geopackage(test_pbf, test_output_dir):
     from pyrosm import OSM
     import geopandas as gpd
     import shutil
-    from pandas.testing import assert_frame_equal
 
     if not os.path.exists(test_output_dir):
         os.makedirs(test_output_dir)
@@ -126,38 +135,37 @@ def test_saving_buildings_to_geopackage(test_pbf, test_output_dir):
 
     # Ensure it can be read and matches with original one
     gdf2 = gpd.read_file(temp_path)
-
-    # When reading integers they
-    # might be imported as strings instead of ints which is
-    # normal, however, the values should be identical
-    convert_to_ints = ["id", "timestamp", "version"]
-    for col in convert_to_ints:
-        gdf[col] = gdf[col].astype(int)
-        gdf2[col] = gdf2[col].astype(int)
-
-    assert_frame_equal(gdf, gdf2)
+    cols = gdf.columns
+    for col in cols:
+        assert gdf[col].tolist() == gdf2[col].tolist()
 
     # Clean up
     shutil.rmtree(test_output_dir)
 
 
-def test_reading_buildings_with_filter(test_pbf):
+def test_reading_buildings_with_filters(test_pbf):
     from pyrosm import OSM
     from shapely.geometry import Polygon
     from geopandas import GeoDataFrame
-    # Filter for 'industrial' buildings
-    custom_filter = {'building': ['industrial']}
+
+    # Get first all data
     osm = OSM(filepath=test_pbf)
-    gdf = osm.get_buildings(tag_filters=custom_filter)
+    gdf_all = osm.get_buildings()
 
-    assert isinstance(gdf, GeoDataFrame)
-    assert isinstance(gdf.loc[0, "geometry"], Polygon)
-    assert gdf.shape == (28, 6)
+    # Find out all 'building' tags
+    cnts = gdf_all['building'].value_counts()
+    for filter_, cnt in cnts.items():
+        filtered = osm.get_buildings({'building': [filter_]})
+        assert isinstance(filtered, GeoDataFrame)
+        assert isinstance(filtered.loc[0, "geometry"], Polygon)
+        assert len(filtered) == cnt
+        # Now should only have buildings with given key
+        assert len(filtered["building"].unique()) == 1
 
-    required_cols = ['building', 'id', 'timestamp', 'version', 'tags', 'geometry']
+        required_cols = ['building', 'id', 'timestamp', 'version', 'geometry']
 
-    for col in required_cols:
-        assert col in gdf.columns
+        for col in required_cols:
+            assert col in filtered.columns
 
 
 def test_reading_buildings_with_relations(helsinki_pbf):
@@ -169,7 +177,7 @@ def test_reading_buildings_with_relations(helsinki_pbf):
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], Polygon)
-    assert gdf.shape == (621, 33)
+    assert gdf.shape == (484, 34)
 
     required_cols = ['building', 'id', 'timestamp', 'version', 'tags', 'geometry']
 
@@ -196,4 +204,3 @@ def test_reading_buildings_from_area_having_none(helsinki_pbf):
     # Result should be empty GeoDataFrame
     assert isinstance(gdf, GeoDataFrame)
     assert gdf.shape == (0, 0)
-

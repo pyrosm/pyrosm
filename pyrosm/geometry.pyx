@@ -13,24 +13,6 @@ cdef _create_node_coordinates_lookup(nodes):
     return {ids[i]: coords[i] for i in range(0, len(ids))}
 
 
-cdef get_relation_multipolygon_indices_for_osm_key(relations, osm_key):
-    """
-    osm_key is e.g. 'building' which would return all relation indices for buildings.
-    Other possible keys are e.g. 'landuse' or 'amenity'
-    """
-    cdef int i, n = len(relations["tags"])
-    indices = []
-    for i in range(0, n):
-        tag = relations["tags"][i]
-        if "type" in tag.keys():
-            if tag["type"] in ["multipolygon"]:
-                for k, v in tag.items():
-                    if osm_key in k:
-                        indices.append(i)
-                        break
-    return indices
-
-
 cdef pygeos_to_shapely(geom):
     if geom is None:
         return None
@@ -143,7 +125,7 @@ cdef create_pygeos_polygon_from_relation(node_coordinates, relation_ways, member
                 holes.append(ring)
 
         else:
-            raise ValueError("Got invalid member role: " + str(role))
+            return None
 
     if len(shell) == 0:
         return None
@@ -158,7 +140,7 @@ cdef create_pygeos_polygon_from_relation(node_coordinates, relation_ways, member
 
 cdef _create_polygon_geometries(node_coordinates, way_elements):
     cdef long long node
-    cdef list coords, nodes_
+    cdef list coords
     cdef int n = len(way_elements['id'])
     cdef int i, ii, nn
 

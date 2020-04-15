@@ -29,17 +29,14 @@ class Solver:
         return self.solver(value, container)
 
 
-cdef has_osm_data_type(osm_data_type, tag_keys):
-    cdef str key
+cdef has_osm_data_type(osm_data_types, tag_keys):
+    cdef str key, osm_data_type
     cdef int i, n = len(tag_keys)
     for i in range(0, n):
         key = tag_keys[i]
-        # Allow osm_data_type to match with a slice of string
-        # E.g. with buildings the "building" tag-key might be missing
-        # (due to incorrect tagging), but it can still be attached
-        # as part of other keys, such as "building:levels".
-        if osm_data_type in key:
-            return True
+        for osm_data_type in osm_data_types:
+            if osm_data_type == key:
+                return True
     return False
 
 cdef way_is_part_of_relation(way_record, lookup_dict):
@@ -51,8 +48,11 @@ cdef way_is_part_of_relation(way_record, lookup_dict):
     except Exception as e:
         raise e
 
-cdef filter_osm(data_records, data_filter, osm_data_type,
-                relation_way_ids, filter_type):
+cdef filter_osm_records(data_records,
+                        data_filter,
+                        osm_data_type,
+                        relation_way_ids,
+                        filter_type):
     """
     Filter OSM data records by given OSM tag key:value pairs.
     
@@ -70,11 +70,12 @@ cdef filter_osm(data_records, data_filter, osm_data_type,
         the records where "building" key has a value "residential". 
         The records will be kept or excluded according the <filter_type> parameter.   
               
-    osm_data_type : str
-        Basic data type is used for filtering, such as:
+    osm_data_type : str | list
+        Basic data type(s) used for filtering, such as:
          - 'highway' (for roads), 
          - 'building' (for buildings), 
          - 'landuse' (for landuse) etc.
+         - ['amenity', 'shop', 'craft'] (a combination that can be useful for parsing POIs)
          
     relation_way_ids : list (optional)
         A list of way ids that belong to relations. Ways that match with these ids are always kept.
@@ -87,24 +88,27 @@ cdef filter_osm(data_records, data_filter, osm_data_type,
     cdef int i, N = len(data_records)
 
     solver = Solver(filter_type)
-
     filtered_data = []
-    filter_out = False
+
+    if not isinstance(osm_data_type, list):
+        osm_data_type = [osm_data_type]
+
+    if len(data_filter) == 0:
+        data_filter = None
 
     if data_filter is not None:
         filter_keys = list(data_filter.keys())
 
     relation_check = False
     if relation_way_ids is not None:
-        # TODO: This check should probably happen somewhere before coming here
-        if type(relation_way_ids) not in [list, np.ndarray]:
-            raise ValueError("'relation_way_ids' should be a list or an array.")
         relation_way_lookup = dict.fromkeys(relation_way_ids)
         relation_check = True
 
     for i in range(0, N):
+        filter_out = False
         record = data_records[i]
-
+        # If way is part of relation it should be kept
+        # (ways that are part of relation might not have any tags)
         if relation_check:
             if way_is_part_of_relation(record, relation_way_lookup):
                 filtered_data.append(record)
@@ -122,7 +126,6 @@ cdef filter_osm(data_records, data_filter, osm_data_type,
                         break
             if not filter_out:
                 filtered_data.append(record)
-            filter_out = False
         else:
             filtered_data.append(record)
     return filtered_data
@@ -152,3 +155,67 @@ cdef nodes_for_way_exist_khash(nodes, node_lookup):
     if True in result:
         return True
     return False
+
+
+cdef record_should_be_kept(tag, osm_keys, data_filter):
+    if tag is None:
+        return False
+
+    cdef str k, v, k2, v2
+    for k, v in tag.items():
+        # Check if required OSM key can be found
+        for osm_key in osm_keys:
+            if osm_key == k:
+                for k2, v2 in tag.items():
+                    if k2 in data_filter.keys():
+                        # Check match with data filter
+                        if v2 in data_filter[k2]:
+                            return True
+                        # If filter is not defined, check for osm_key
+                        elif data_filter[k2] == [True]:
+                            return True
+    return False
+
+cdef filter_relation_indices(relations, osm_keys, data_filter):
+    cdef int i, n = len(relations["tags"])
+    indices = []
+
+    # Ensure keys
+    if len(data_filter) == 0:
+        relation_filter = {}
+    else:
+        relation_filter = {key: value for key, value in data_filter.items()}
+
+    for osm_key in osm_keys:
+        if osm_key not in relation_filter.keys():
+            relation_filter[osm_key] = [True]
+
+    for i in range(0, n):
+        tag = relations["tags"][i]
+        if "type" in tag.keys():
+            # Keep only the ones that are MultiPolygons
+            if tag["type"] in ["multipolygon"]:
+                if record_should_be_kept(tag, osm_keys, relation_filter):
+                    indices.append(i)
+    return indices
+
+
+cdef filter_node_indices(node_arrays, osm_keys, data_filter):
+    cdef int i, n = len(node_arrays["tags"])
+    indices = []
+
+    if len(data_filter) == 0:
+        relation_filter = {}
+    else:
+        relation_filter = {key: value for key, value in data_filter.items()}
+
+    for osm_key in osm_keys:
+        if osm_key not in relation_filter.keys():
+            relation_filter[osm_key] = [True]
+
+    for i in range(0, n):
+        tag = node_arrays["tags"][i]
+        if record_should_be_kept(tag, osm_keys, relation_filter):
+            indices.append(i)
+
+    return indices

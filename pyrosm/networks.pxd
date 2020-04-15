@@ -1,1 +1,0 @@
-cpdef get_way_data(ways, tags_to_keep, network_filter)
