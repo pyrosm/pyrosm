@@ -77,7 +77,7 @@ cdef convert_to_arrays_and_drop_empty(data):
     return arrays
 
 
-cdef concatenate_dicts_of_arrays(dict_list_of_arrays):
+cpdef concatenate_dicts_of_arrays(dict_list_of_arrays):
     cdef str k
 
     keys = list(set([k for d in dict_list_of_arrays
