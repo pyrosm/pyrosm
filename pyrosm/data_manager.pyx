@@ -1,5 +1,7 @@
-from pyrosm.data_filter cimport filter_osm, filter_array_dict_by_indices_or_mask, filter_relation_indices
+from pyrosm.data_filter cimport filter_osm_records, filter_node_indices, \
+    filter_array_dict_by_indices_or_mask, filter_relation_indices
 from pyrosm._arrays cimport convert_to_arrays_and_drop_empty, convert_way_records_to_lists, concatenate_dicts_of_arrays
+from pyrosm.tagparser cimport explode_tag_array
 import numpy as np
 
 cdef get_data_filter_and_osm_keys(custom_filter):
@@ -68,7 +70,7 @@ cdef separate_relation_ways(way_records, relation_way_ids):
 
 cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, data_filter, filter_type):
     # Get all ways including the ones associated with relations
-    ways = filter_osm(way_records,
+    ways = filter_osm_records(way_records,
                       data_filter,
                       osm_keys,
                       relation_way_ids,
@@ -127,14 +129,33 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
 
     return ways, relation_ways, filtered_relations
 
-cdef _get_osm_data(way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys):
+cdef get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter):
+    # Get indices for Nodes that passes data_filter
+    indices = filter_node_indices(node_arrays, osm_keys, data_filter)
+    # If no nodes were found, return None
+    if len(indices) == 0:
+        return None
+    # Otherwise, filter the data accordingly
+    filtered_nodes = filter_array_dict_by_indices_or_mask(node_arrays, indices)
+    # Explode tags and update
+    tags = explode_tag_array(filtered_nodes["tags"], tags_as_columns)
+    for k, v in tags.items():
+        if list(set(v)) != [None]:
+            filtered_nodes[k] = v
+    return filtered_nodes
+
+cdef _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys):
     if osm_keys is None:
         # Convert filter to appropriate form and parse keys
         data_filter, osm_keys = get_data_filter_and_osm_keys(data_filter)
 
+    if node_arrays is not None:
+        # Get nodes
+        node_arrays = get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter)
+
     # Parse ways and relations
     ways, relation_ways, filtered_relations = get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type)
-    return ways, relation_ways, filtered_relations
+    return node_arrays, ways, relation_ways, filtered_relations
 
-cpdef get_osm_data(way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys=None):
-    return _get_osm_data(way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys)
+cpdef get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys=None):
+    return _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys)
