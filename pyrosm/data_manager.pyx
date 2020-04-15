@@ -95,15 +95,19 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
     tags_as_columns += ["id", "nodes", "timestamp", "version"]
 
     # Get relations for specified OSM keys (one or multiple)
-    filtered_relations = get_relation_arrays(relations, osm_keys, data_filter)
+    if relations is not None:
+        filtered_relations = get_relation_arrays(relations, osm_keys, data_filter)
 
-    # Get all way-ids that are associated with relations
-    relation_way_ids = None
-    if filtered_relations is not None:
-        members = concatenate_dicts_of_arrays(filtered_relations['members'])
-        relation_way_ids = members["member_id"]
+        # Get all way-ids that are associated with relations
+        relation_way_ids = None
+        if filtered_relations is not None:
+            members = concatenate_dicts_of_arrays(filtered_relations['members'])
+            relation_way_ids = members["member_id"]
+    else:
+        relation_way_ids = None
+        filtered_relations = None
 
-    # Get building ways (separately as "normal" ways and relation_ways)
+    # Get ways (separately as "normal" ways and relation_ways)
     ways, relation_ways = get_way_arrays(way_records,
                                          relation_way_ids,
                                          osm_keys,
