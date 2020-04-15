@@ -5,7 +5,7 @@ import geopandas as gpd
 import warnings
 
 
-def get_way_data(node_coordinates, way_records, tags_as_columns, network_filter):
+def get_network_data(node_coordinates, way_records, tags_as_columns, network_filter):
     # Tags to keep as separate columns
     tags_as_columns += ["id", "nodes", "timestamp", "changeset", "version"]
 
@@ -13,8 +13,10 @@ def get_way_data(node_coordinates, way_records, tags_as_columns, network_filter)
     ways, relation_ways, relations = get_osm_data(way_records=way_records,
                                                   relations=None,
                                                   tags_as_columns=tags_as_columns,
-                                                  custom_filter=network_filter,
-                                                  filter_type="exclude"
+                                                  data_filter=network_filter,
+                                                  filter_type="exclude",
+                                                  # Keep only records having 'highway' tag
+                                                  osm_keys="highway",
                                                   )
 
     # If there weren't any data, return empty GeoDataFrame
@@ -29,8 +31,6 @@ def get_way_data(node_coordinates, way_records, tags_as_columns, network_filter)
 
     # Convert to GeoDataFrame
     gdf = create_gdf(ways, geometries)
-    # TODO: Keeps now also records that does not have 'highway' value, check
-    #  Dropping such cases is an easy fix temporarily.
-    gdf = gdf.dropna(subset=['geometry', 'highway']).reset_index(drop=True)
+    gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
 
     return gdf
