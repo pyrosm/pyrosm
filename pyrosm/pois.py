@@ -56,4 +56,5 @@ def get_poi_data(nodes, node_coordinates, way_records, relations, tags_as_column
 
     # Merge all
     gdf = pd.concat([node_gdf, way_gdf, relation_gdf])
+    gdf = gdf.dropna(subset=['geometry'])
     return gdf
