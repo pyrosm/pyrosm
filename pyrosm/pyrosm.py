@@ -2,6 +2,7 @@ from pyrosm.config import Conf
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm.networks import get_way_data
 from pyrosm.buildings import get_building_data
+from pyrosm.pois import get_poi_data
 from pyrosm.geometry import create_way_geometries, \
     create_polygon_geometries, create_node_coordinates_lookup
 from pyrosm.frames import create_gdf, create_nodes_gdf
@@ -70,7 +71,7 @@ class OSM:
         # Prepare node coordinates lookup table
         self._node_coordinates = create_node_coordinates_lookup(self._nodes)
 
-    def _get_filter(self, net_type):
+    def _get_network_filter(self, net_type):
         possible_filters = [a for a in self.conf.network_filters.__dir__()
                             if "__" not in a]
         possible_filters += ["all"]
@@ -107,7 +108,7 @@ class OSM:
 
         """
         # Get filter
-        network_filter = self._get_filter(network_type)
+        network_filter = self._get_network_filter(network_type)
         tags_as_columns = self.conf.tags.highway
 
         if self._nodes is None or self._way_records is None:
@@ -165,6 +166,7 @@ class OSM:
 
         # Convert to GeoDataFrame
         way_gdf = create_gdf(ways, geometries)
+        way_gdf["osm_type"] = "way"
 
         # Prepare relation data if it is available
         if relations is not None:
@@ -172,6 +174,8 @@ class OSM:
                                           self._node_coordinates,
                                           tags_as_columns)
             relation_gdf = gpd.GeoDataFrame(relations)
+            relation_gdf["osm_type"] = "relation"
+
             gdf = way_gdf.append(relation_gdf, ignore_index=True)
         else:
             gdf = way_gdf
@@ -236,7 +240,51 @@ class OSM:
         'tourism', 'viewpoint', 'wilderness_hut', 'zoo']
 
         """
-        raise NotImplementedError()
+
+        # Default tags to keep as columns
+        tags_as_columns = []
+        for k in custom_filter.keys():
+            tags_as_columns += getattr(self.conf.tags, k)
+
+
+        ways, relation_ways, relations = get_poi_data(self._way_records,
+                                                      self._relations,
+                                                      list(custom_filter.keys()),
+                                                      tags_as_columns,
+                                                      custom_filter)
+
+        # If there weren't any data, return empty GeoDataFrame
+        if ways is None:
+            warnings.warn("Could not find any POIs for given area.",
+                          UserWarning,
+                          stacklevel=2)
+            return gpd.GeoDataFrame()
+
+        # Create geometries for normal ways
+        geometries = create_polygon_geometries(self._node_coordinates,
+                                               ways)
+
+        # Convert to GeoDataFrame
+        way_gdf = create_gdf(ways, geometries)
+
+        # Prepare relation data if it is available
+        if relations is not None:
+            relations = prepare_relations(relations, relation_ways,
+                                          self._node_coordinates,
+                                          tags_as_columns)
+            relation_gdf = gpd.GeoDataFrame(relations)
+            gdf = way_gdf.append(relation_gdf, ignore_index=True)
+        else:
+            gdf = way_gdf
+
+        gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
+
+        # Do not keep node information
+        # (they are in a list, and causes issues saving the files)
+        if "nodes" in gdf.columns:
+            gdf = gdf.drop("nodes", axis=1)
+        return gdf
+
 
     def get_landuse(self, custom_filter=None):
         raise NotImplementedError()
