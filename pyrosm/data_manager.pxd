@@ -1,0 +1,1 @@
+cdef get_osm_data(way_records, relations, tags_as_columns, custom_filter, filter_type)
