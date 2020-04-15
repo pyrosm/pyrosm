@@ -6,7 +6,7 @@ Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps in
 
  
 **Pyrosm** is easy to use and it provides a somewhat similar user interface as another popular Python library [OSMnx](https://github.com/gboeing/osmnx)
-for parsing different datasets from the OpenStreetMap pbf-dump including road networks and buildings (later also points of interest and landuse). 
+for parsing different datasets from the OpenStreetMap pbf-dump including road networks, buildings and Points of Interest (later also landuse and possibility to make customized calls). 
 The main difference between pyrosm and OSMnx is that OSMnx reads the data over internet using OverPass API, whereas pyrosm reads the data from local OSM data dumps
 that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). This makes it possible to read data much faster thus 
 allowing e.g. parsing street networks for whole country in a matter of minutes instead of hours (however, see [caveats](#caveats)).
