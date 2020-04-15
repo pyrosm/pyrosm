@@ -48,11 +48,11 @@ cdef way_is_part_of_relation(way_record, lookup_dict):
     except Exception as e:
         raise e
 
-cdef filter_osm(data_records,
-                data_filter,
-                osm_data_type,
-                relation_way_ids,
-                filter_type):
+cdef filter_osm_records(data_records,
+                        data_filter,
+                        osm_data_type,
+                        relation_way_ids,
+                        filter_type):
     """
     Filter OSM data records by given OSM tag key:value pairs.
     
@@ -157,13 +157,27 @@ cdef nodes_for_way_exist_khash(nodes, node_lookup):
     return False
 
 
-cdef filter_relation_indices(relations, osm_keys, data_filter):
-    """
-    osm_key is e.g. 'building' which would return all relation indices for buildings.
-    Other possible keys are e.g. 'landuse' or 'amenity'
-    """
-    cdef int i, n = len(relations["tags"])
+cdef record_should_be_kept(tag, osm_keys, data_filter):
+    if tag is None:
+        return False
+
     cdef str k, v, k2, v2
+    for k, v in tag.items():
+        # Check if required OSM key can be found
+        for osm_key in osm_keys:
+            if osm_key == k:
+                for k2, v2 in tag.items():
+                    if k2 in data_filter.keys():
+                        # Check match with data filter
+                        if v2 in data_filter[k2]:
+                            return True
+                        # If filter is not defined, check for osm_key
+                        elif data_filter[k2] == [True]:
+                            return True
+    return False
+
+cdef filter_relation_indices(relations, osm_keys, data_filter):
+    cdef int i, n = len(relations["tags"])
     indices = []
 
     # Ensure keys
@@ -181,18 +195,27 @@ cdef filter_relation_indices(relations, osm_keys, data_filter):
         if "type" in tag.keys():
             # Keep only the ones that are MultiPolygons
             if tag["type"] in ["multipolygon"]:
-                for k, v in tag.items():
-                    key_was_found = False
-                    # Check if required OSM key can be found
-                    for osm_key in osm_keys:
-                        if osm_key == k:
-                            for k2, v2 in tag.items():
-                                if k2 in relation_filter.keys():
-                                    # Check match with data filter
-                                    if v2 in relation_filter[k2]:
-                                        indices.append(i)
-                                    # If filter is not defined, check for osm_key
-                                    elif relation_filter[k2] == [True]:
-                                        indices.append(i)
+                if record_should_be_kept(tag, osm_keys, relation_filter):
+                    indices.append(i)
+    return indices
+
+
+cdef filter_node_indices(node_arrays, osm_keys, data_filter):
+    cdef int i, n = len(node_arrays["tags"])
+    indices = []
+
+    if len(data_filter) == 0:
+        relation_filter = {}
+    else:
+        relation_filter = {key: value for key, value in data_filter.items()}
+
+    for osm_key in osm_keys:
+        if osm_key not in relation_filter.keys():
+            relation_filter[osm_key] = [True]
+
+    for i in range(0, n):
+        tag = node_arrays["tags"][i]
+        if record_should_be_kept(tag, osm_keys, relation_filter):
+            indices.append(i)
 
     return indices
