@@ -95,7 +95,7 @@ class OSM:
 
     def get_network(self, network_type="walking"):
         """
-        Reads data from OSM file and parses street networks
+        Parses street networks from OSM
         for walking, driving, and cycling.
 
         Parameters
@@ -128,6 +128,20 @@ class OSM:
         return gdf
 
     def get_buildings(self, custom_filter=None):
+        """
+        Parses buildings from OSM.
+
+        Parameters
+        ----------
+
+        custom_filter : dict
+            What kind of buildings to parse, see details below.
+
+            You can opt-in specific elements by using 'custom_filter'.
+            To keep only specific buildings such as 'residential' and 'retail', you can apply
+            a custom filter which is a Python dictionary with following format:
+              `custom_filter={'building': ['residential', 'retail']}`
+        """
         # Default tags to keep as columns
         tags_as_columns = self.conf.tags.building
 
@@ -159,15 +173,12 @@ class OSM:
             (see details below).
 
 
-        How to use?
-        -----------
+        Filtering by tags
+        -----------------
 
-        By default, will parse all OSM elements (points, lines and polygons)
+        By default, Pyrosm will parse all OSM elements (points, lines and polygons)
         that are associated with following keys:
           - amenity
-          - craft
-          - historic
-          - leisure
           - shop
           - tourism
 
@@ -180,6 +191,19 @@ class OSM:
         For instance, you can parse all 'amenity' elements AND specific 'shop' elements,
         such as supermarkets and book stores by specifying:
           `custom_filter={"amenity": True, "shop": ["supermarket", "books"]}`
+
+        Filtering by OSM Element type
+        -----------------------------
+
+        A specific column called `osm_type` is added to the the resulting GeoDataFrame that informs
+        about the OSM Element type. Possible values are: 'node', 'way' and 'relation'.
+        These values can be used to filter out specific type of elements
+        from the results. If you for example want to keep only POIs that are Points, you can select
+        them with a simple Pandas query:
+        >>> my_poi_gdf = my_poi_gdf.loc[my_poi_gdf['osm_type']=='node']
+
+        Further info
+        ------------
 
         You can check the most typical OSM tags for different map features from OSM Wiki
         https://wiki.openstreetmap.org/wiki/Map_Features . It is also possible to get a quick
@@ -202,9 +226,6 @@ class OSM:
         # If custom_filter has not been defined, initialize with default
         if custom_filter is None:
             custom_filter = {"amenity": True,
-                             "craft": True,
-                             "historic": True,
-                             "leisure": True,
                              "shop": True,
                              "tourism": True
                              }
