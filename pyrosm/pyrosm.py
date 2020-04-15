@@ -3,12 +3,10 @@ from pyrosm.pbfreader import parse_osm_data
 from pyrosm.networks import get_way_data
 from pyrosm.buildings import get_building_data
 from pyrosm.pois import get_poi_data
-from pyrosm.geometry import create_way_geometries, \
-    create_node_coordinates_lookup
-from pyrosm.frames import create_gdf, create_nodes_gdf
+from pyrosm.geometry import create_node_coordinates_lookup
+from pyrosm.frames import create_nodes_gdf
 from shapely.geometry import Polygon, MultiPolygon
-import geopandas as gpd
-import warnings
+
 
 
 class OSM:
@@ -115,29 +113,17 @@ class OSM:
             self._read_pbf()
 
         # Filter ways
-        ways = get_way_data(self._way_records,
-                            tags_as_columns,
-                            network_filter
-                            )
+        gdf = get_way_data(self._node_coordinates,
+                           self._way_records,
+                           tags_as_columns,
+                           network_filter
+                           )
 
-        # If there weren't any data, return empty GeoDataFrame
-        if ways is None:
-            warnings.warn("Could not find any network data for given area.",
-                          UserWarning,
-                          stacklevel=2)
-            return gpd.GeoDataFrame()
-
-        geometries = create_way_geometries(self._node_coordinates,
-                                           ways)
-
-        # Convert to GeoDataFrame
-        gdf = create_gdf(ways, geometries)
-        gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
-
-        # Do not keep node information
-        # (they are in a list, and causes issues saving the files)
-        if "nodes" in gdf.columns:
-            gdf = gdf.drop("nodes", axis=1)
+        # Do not keep node information unless specifically asked for
+        # (they are in a list, and can cause issues when saving the files)
+        if not self.keep_node_info:
+            if "nodes" in gdf.columns:
+                gdf = gdf.drop("nodes", axis=1)
 
         return gdf
 
