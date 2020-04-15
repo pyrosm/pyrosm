@@ -1,47 +1,47 @@
 from pyrosm.data_manager import get_osm_data
 from pyrosm.geometry import create_polygon_geometries
-from pyrosm.frames import create_gdf
+from pyrosm.frames import create_gdf, create_nodes_gdf
 from pyrosm.relations import prepare_relations
 import geopandas as gpd
+import pandas as pd
 import warnings
 
-def get_poi_data(node_coordinates, way_records, relations, tags_as_columns, custom_filter):
-    # If custom_filter has not been defined, initialize with default
-    if custom_filter is None:
-        custom_filter = {"amenity": True,
-                         "craft": True,
-                         "historic": True,
-                         "leisure": True,
-                         "shop": True,
-                         "tourism": True
-                         }
-    else:
-        # Check that the custom filter is in correct format
-        if not isinstance(custom_filter, dict):
-            raise ValueError(f"'custom_filter' should be a Python dictionary. "
-                             f"Got {custom_filter} with type {type(custom_filter)}.")
 
-    # Call signature for fetching buildings
-    ways, relation_ways, relations = get_osm_data(way_records=way_records,
-                                                  relations=relations,
-                                                  tags_as_columns=tags_as_columns,
-                                                  data_filter=custom_filter,
-                                                  filter_type="keep"
-                                                  )
+def get_poi_data(nodes, node_coordinates, way_records, relations, tags_as_columns, custom_filter):
+
+    # Call signature for fetching POIs
+    nodes, ways, relation_ways, relations = get_osm_data(node_arrays=nodes,
+                                                         way_records=way_records,
+                                                         relations=relations,
+                                                         tags_as_columns=tags_as_columns,
+                                                         data_filter=custom_filter,
+                                                         filter_type="keep",
+                                                         osm_keys=None,
+                                                         )
 
     # If there weren't any data, return empty GeoDataFrame
-    if ways is None:
+    if nodes is None and ways is None and relations is None:
         warnings.warn("Could not find any POIs for given area.",
                       UserWarning,
                       stacklevel=2)
         return gpd.GeoDataFrame()
 
-    # Create geometries for normal ways
-    geometries = create_polygon_geometries(node_coordinates,
-                                           ways)
+    if nodes is not None:
+        # Create GeoDataFrame from nodes
+        node_gdf = create_nodes_gdf(nodes)
+        node_gdf['osm_type'] = "node"
+    else:
+        node_gdf = gpd.GeoDataFrame()
 
-    # Convert to GeoDataFrame
-    way_gdf = create_gdf(ways, geometries)
+    if ways is not None:
+        # Create geometries for normal ways
+        geometries = create_polygon_geometries(node_coordinates,
+                                               ways)
+        # Convert to GeoDataFrame
+        way_gdf = create_gdf(ways, geometries)
+        node_gdf['osm_type'] = "way"
+    else:
+        way_gdf = gpd.GeoDataFrame()
 
     # Prepare relation data if it is available
     if relations is not None:
@@ -49,7 +49,11 @@ def get_poi_data(node_coordinates, way_records, relations, tags_as_columns, cust
                                       node_coordinates,
                                       tags_as_columns)
         relation_gdf = gpd.GeoDataFrame(relations)
-        gdf = way_gdf.append(relation_gdf, ignore_index=True)
+        node_gdf['osm_type'] = "relation"
+
     else:
-        gdf = way_gdf
+        relation_gdf = gpd.GeoDataFrame()
+
+    # Merge all
+    gdf = pd.concat([node_gdf, way_gdf, relation_gdf])
     return gdf
