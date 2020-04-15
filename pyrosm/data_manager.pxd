@@ -1,1 +1,1 @@
-cpdef get_osm_data(way_records, relations, tags_as_columns, custom_filter, filter_type)
+cpdef get_osm_data(way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys=*)
