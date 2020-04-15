@@ -2,6 +2,7 @@ from pyrosm.config import Conf
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm.networks import get_network_data
 from pyrosm.buildings import get_building_data
+from pyrosm._arrays import concatenate_dicts_of_arrays
 from pyrosm.pois import get_poi_data
 from pyrosm.geometry import create_node_coordinates_lookup
 from pyrosm.frames import create_nodes_gdf
@@ -48,7 +49,7 @@ class OSM:
         self.conf = Conf
         self.keep_node_info = False
 
-        # TODO: Add as a parameter
+        # TODO: Add logging as a parameter?
         self._verbose = False
 
         self._all_way_tags = None
@@ -198,16 +199,38 @@ class OSM:
         'tourism', 'viewpoint', 'wilderness_hut', 'zoo']
 
         """
+        # If custom_filter has not been defined, initialize with default
+        if custom_filter is None:
+            custom_filter = {"amenity": True,
+                             "craft": True,
+                             "historic": True,
+                             "leisure": True,
+                             "shop": True,
+                             "tourism": True
+                             }
+
+        else:
+            # Check that the custom filter is in correct format
+            if not isinstance(custom_filter, dict):
+                raise ValueError(f"'custom_filter' should be a Python dictionary. "
+                                 f"Got {custom_filter} with type {type(custom_filter)}.")
+
+        if self._nodes is None or self._way_records is None:
+            self._read_pbf()
 
         # Default tags to keep as columns
         tags_as_columns = []
         for k in custom_filter.keys():
             tags_as_columns += getattr(self.conf.tags, k)
 
-        gdf = get_poi_data(self._node_coordinates,
+        # If nodes are still in chunks, merge before passing forward
+        if isinstance(self._nodes, list):
+            self._nodes = concatenate_dicts_of_arrays(self._nodes)
+
+        gdf = get_poi_data(self._nodes,
+                           self._node_coordinates,
                            self._way_records,
                            self._relations,
-                           list(custom_filter.keys()),
                            tags_as_columns,
                            custom_filter)
 
