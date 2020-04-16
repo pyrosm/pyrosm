@@ -1,5 +1,6 @@
 from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
+from pyrosm.utils import validate_custom_filter
 import geopandas as gpd
 import warnings
 
@@ -10,9 +11,7 @@ def get_natural_data(nodes, node_coordinates, way_records, relations, tags_as_co
         custom_filter = {"natural": True}
     else:
         # Check that the custom filter is in correct format
-        if not isinstance(custom_filter, dict):
-            raise ValueError(f"'custom_filter' should be a Python dictionary. "
-                             f"Got {custom_filter} with type {type(custom_filter)}.")
+        validate_custom_filter(custom_filter)
 
         # Ensure that the "landuse" tag exists
         if "natural" not in custom_filter.keys():

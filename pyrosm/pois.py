@@ -1,10 +1,13 @@
 from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
+from pyrosm.utils import validate_custom_filter
 import geopandas as gpd
 import warnings
 
 
 def get_poi_data(nodes, node_coordinates, way_records, relations, tags_as_columns, custom_filter):
+    # Validate filter
+    validate_custom_filter(custom_filter)
 
     # Call signature for fetching POIs
     nodes, ways, relation_ways, relations = get_osm_data(node_arrays=nodes,
