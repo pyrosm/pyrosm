@@ -61,3 +61,37 @@ def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
     # Test shape
     assert len(gdf) == 1780
     assert gdf.crs == pyproj.CRS.from_epsg(4326)
+
+
+def test_reading_pois_from_area_having_none(helsinki_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    # Bounding box for area that does not have any data
+    bbox = [24.940514, 60.173849, 24.942, 60.175892]
+
+    osm = OSM(filepath=helsinki_pbf, bounding_box=bbox)
+
+    # The tool should warn if no buildings were found
+    with pytest.warns(UserWarning) as w:
+        gdf = osm.get_pois()
+        # Check the warning text
+        if "could not find any buildings" in str(w):
+            pass
+
+    # Result should be empty GeoDataFrame
+    assert isinstance(gdf, GeoDataFrame)
+    assert gdf.shape == (0, 0)
+
+
+def test_passing_incorrect_custom_filter(test_pbf):
+    from pyrosm import OSM
+
+    osm = OSM(filepath=test_pbf)
+    try:
+        osm.get_pois(custom_filter="wrong")
+    except ValueError as e:
+        if "dictionary" in str(e):
+            pass
+    except Exception as e:
+        raise e

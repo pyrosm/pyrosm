@@ -67,6 +67,30 @@ def test_filter_network_by_driving(test_pbf):
     assert "path" not in gdf["highway"].unique()
 
 
+def test_filter_network_by_driving_with_service_roads(test_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+    from shapely.geometry import LineString
+    osm = OSM(filepath=test_pbf)
+    gdf = osm.get_network(network_type="driving+service")
+
+    assert isinstance(gdf.loc[0, 'geometry'], LineString)
+    assert isinstance(gdf, GeoDataFrame)
+
+    # Test shape
+    assert gdf.shape == (200, 18)
+
+    required_cols = ['access', 'bridge', 'highway', 'int_ref', 'lanes', 'lit', 'maxspeed',
+                     'name', 'oneway', 'ref', 'service', 'surface', 'id', 'geometry', 'tags',
+                     'osm_type']
+    for col in required_cols:
+        assert col in gdf.columns
+
+    # Should not include 'footway' or 'path' ways by default
+    assert "footway" not in gdf["highway"].unique()
+    assert "path" not in gdf["highway"].unique()
+
+
 def test_filter_network_by_cycling(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
@@ -89,6 +113,26 @@ def test_filter_network_by_cycling(test_pbf):
     # Should not include 'motorway' or 'motorway_link' ways by default
     assert "motorway" not in gdf["highway"].unique()
     assert "motorway_link" not in gdf["highway"].unique()
+
+
+def test_filter_network_by_all(test_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+    from shapely.geometry import LineString
+    osm = OSM(filepath=test_pbf)
+    gdf = osm.get_network(network_type="all")
+
+    assert isinstance(gdf.loc[0, 'geometry'], LineString)
+    assert isinstance(gdf, GeoDataFrame)
+
+    # Test shape
+    assert gdf.shape == (331, 21)
+
+    required_cols = ['access', 'bicycle', 'bridge', 'foot', 'highway', 'lanes', 'lit',
+                     'maxspeed', 'name', 'oneway', 'ref', 'service', 'surface', 'tunnel',
+                     'id', 'geometry', 'tags', 'osm_type']
+    for col in required_cols:
+        assert col in gdf.columns
 
 
 def test_saving_network_to_shapefile(test_pbf, test_output_dir):
@@ -188,6 +232,31 @@ def test_passing_incorrect_bounding_box(test_pbf):
         osm = OSM(filepath=test_pbf, bounding_box=wrong_format)
     except ValueError as e:
         if "bounding_box should be" in str(e):
+            pass
+        else:
+            raise(e)
+    except Exception as e:
+        raise e
+
+
+def test_passing_incorrect_net_type(test_pbf):
+    from pyrosm import OSM
+
+    osm = OSM(filepath=test_pbf)
+    try:
+        osm.get_network("wrong_network")
+    except ValueError as e:
+        if "'network_type' should be one of the following" in str(e):
+            pass
+        else:
+            raise(e)
+    except Exception as e:
+        raise e
+
+    try:
+        osm.get_network(42)
+    except ValueError as e:
+        if "'network_type' should be one of the following" in str(e):
             pass
         else:
             raise(e)

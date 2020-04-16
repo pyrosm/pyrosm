@@ -231,6 +231,19 @@ def test_using_incorrect_booleans(test_pbf):
             raise e
 
 
+    try:
+        gdf = osm.get_osm_by_custom_criteria(custom_filter=custom_filter,
+                                             keep_relations=False,
+                                             keep_ways=False,
+                                             keep_nodes=False
+                                             )
+    except ValueError as e:
+        if "At least on of the following parameters should be True" in str(e):
+            pass
+        else:
+            raise e
+
+
 def test_using_incorrect_osm_keys(test_pbf):
     from pyrosm import OSM
     osm = OSM(filepath=test_pbf)
@@ -389,3 +402,24 @@ def test_custom_filters_with_custom_keys(helsinki_pbf):
 
     assert isinstance(transit, GeoDataFrame)
     assert len(transit) == 374
+
+
+def test_reading_custom_from_area_having_none(helsinki_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    # Bounding box for area that does not have any data
+    bbox = [24.940514, 60.173849, 24.942, 60.175892]
+
+    osm = OSM(filepath=helsinki_pbf, bounding_box=bbox)
+
+    # The tool should warn if no buildings were found
+    with pytest.warns(UserWarning) as w:
+        gdf = osm.get_osm_by_custom_criteria({"highway": ["primary"]})
+        # Check the warning text
+        if "could not find any OSM data" in str(w):
+            pass
+
+    # Result should be empty GeoDataFrame
+    assert isinstance(gdf, GeoDataFrame)
+    assert gdf.shape == (0, 0)

@@ -204,3 +204,26 @@ def test_reading_buildings_from_area_having_none(helsinki_pbf):
     # Result should be empty GeoDataFrame
     assert isinstance(gdf, GeoDataFrame)
     assert gdf.shape == (0, 0)
+
+
+def test_passing_incorrect_custom_filter(test_pbf):
+    from pyrosm import OSM
+
+    osm = OSM(filepath=test_pbf)
+    try:
+        osm.get_buildings(custom_filter="wrong")
+    except ValueError as e:
+        if "dictionary" in str(e):
+            pass
+    except Exception as e:
+        raise e
+
+
+def test_passing_custom_filter_without_element_key(test_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    osm = OSM(filepath=test_pbf)
+    gdf = osm.get_buildings(custom_filter={"start_date": True})
+    assert isinstance(gdf, GeoDataFrame)
+
