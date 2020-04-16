@@ -3,6 +3,8 @@ from pyrosm.pbfreader import parse_osm_data
 from pyrosm._arrays import concatenate_dicts_of_arrays
 from pyrosm.geometry import create_node_coordinates_lookup
 from pyrosm.frames import create_nodes_gdf
+from pyrosm.utils import validate_custom_filter, validate_osm_keys, \
+    validate_tags_as_columns, validate_booleans
 from shapely.geometry import Polygon, MultiPolygon
 
 from pyrosm.buildings import get_building_data
@@ -10,6 +12,7 @@ from pyrosm.landuse import get_landuse_data
 from pyrosm.natural import get_natural_data
 from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
+from pyrosm.user_defined import get_user_defined_data
 
 
 class OSM:
@@ -217,7 +220,6 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-
     def get_natural(self, custom_filter=None):
         """
         Parses natural from OSM.
@@ -357,6 +359,107 @@ class OSM:
                            self._relations,
                            tags_as_columns,
                            custom_filter)
+
+        # Do not keep node information unless specifically asked for
+        # (they are in a list, and can cause issues when saving the files)
+        if not self.keep_node_info:
+            if "nodes" in gdf.columns:
+                gdf = gdf.drop("nodes", axis=1)
+        return gdf
+
+    def get_osm_by_custom_criteria(self,
+                                   custom_filter,
+                                   osm_keys_to_keep=None,
+                                   filter_type="keep",
+                                   tags_as_columns=None,
+                                   keep_nodes=True,
+                                   keep_ways=True,
+                                   keep_relations=True):
+        """
+        Parse OSM data based on custom criteria.
+
+        Parameters
+        ----------
+
+        custom_filter : dict (required)
+            A custom filter to filter only specific POIs from OpenStreetMap.
+
+        osm_keys_to_keep : str | list
+            A filter to specify which OSM keys should be kept.
+
+        filter_type : str
+            "keep" | "exclude"
+            Whether the filters should be used to keep or exclude the data from OSM.
+
+        tags_as_columns : list
+            Which tags should be kept as columns in the resulting GeoDataFrame.
+
+        keep_nodes : bool
+            Whether or not the nodes should be kept in the resulting GeoDataFrame if they are found.
+
+        keep_ways : bool
+            Whether or not the ways should be kept in the resulting GeoDataFrame if they are found.
+
+        keep_relations : bool
+            Whether or not the relations should be kept in the resulting GeoDataFrame if they are found.
+
+        """
+
+        # Check that the custom filter is in correct format
+        validate_custom_filter(custom_filter)
+
+        if not isinstance(filter_type, str):
+            raise ValueError("'filter_type' -parameter should be either 'keep' or 'exclude'. ")
+
+        # Validate osm keys
+        validate_osm_keys(osm_keys_to_keep)
+        if isinstance(osm_keys_to_keep, str):
+            osm_keys_to_keep = [osm_keys_to_keep]
+
+        # Validate filter
+        filter_type = filter_type.lower()
+        if filter_type not in ["keep", "exclude"]:
+            raise ValueError("'filter_type' -parameter should be either 'keep' or 'exclude'. ")
+
+        # Tags to keep as columns
+        if tags_as_columns is None:
+            tags_as_columns = []
+            for k in custom_filter.keys():
+                try:
+                    tags_as_columns += getattr(self.conf.tags, k)
+                except Exception as e:
+                    pass
+            # If tags weren't available in conf, store keys as columns by default
+            # (all other tags in such cases will be stored in 'tags' column as JSON)
+            if len(tags_as_columns) == 0:
+                tags_as_columns = list(custom_filter.keys())
+
+        else:
+            # Validate tags
+            validate_tags_as_columns(tags_as_columns)
+
+        # Validate booleans
+        validate_booleans(keep_nodes, keep_ways, keep_relations)
+
+        if self._nodes is None or self._way_records is None:
+            self._read_pbf()
+
+        # If nodes are still in chunks, merge before passing forward
+        if isinstance(self._nodes, list):
+            self._nodes = concatenate_dicts_of_arrays(self._nodes)
+
+        gdf = get_user_defined_data(self._nodes,
+                                    self._node_coordinates,
+                                    self._way_records,
+                                    self._relations,
+                                    tags_as_columns,
+                                    custom_filter,
+                                    osm_keys_to_keep,
+                                    filter_type,
+                                    keep_nodes,
+                                    keep_ways,
+                                    keep_relations
+                                    )
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
