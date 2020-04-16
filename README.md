@@ -28,15 +28,16 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
  - read Points of Interest (POI) from PBF
  - read landuse from PBF
  - read "natural" from PBF
+ - read any other data from PBF by using a custom user-defined filter
  - filter data based on bounding box
- - apply custom criteria with buildings and POIs to filter the data 
-    - e.g. keeping only specific type of buildings can be done by applying a filter: `{'building': ['residential', 'retail']}` 
  
  
 ## Roadmap
 
+ - improve docs and make simple website
+ - run benchmarks against other tools
  - add possibility to crop PBF and save a subset into new PBF.
- - add more tests
+ - automate PBF downloading from Geofabrik (?)
 
 ## Install
 
