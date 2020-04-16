@@ -1,6 +1,23 @@
 Changelog
 =========
 
+v0.4.0
+------
+
+- read PBF using custom queries (allows anything to be fetched)
+- read landuse from PBF
+- read natural from PBF
+- improve geometry parsing so that geometry type is read automatically according OSM rules
+- modularize code-base 
+- improve test coverage
+
+
+v0.3.2
+------
+
+- generalize code base
+- read Points of Interest (POI) from PBF
+
 v0.2.0
 ------
 
