@@ -1,12 +1,15 @@
 from pyrosm.config import Conf
 from pyrosm.pbfreader import parse_osm_data
-from pyrosm.networks import get_network_data
-from pyrosm.buildings import get_building_data
 from pyrosm._arrays import concatenate_dicts_of_arrays
-from pyrosm.pois import get_poi_data
 from pyrosm.geometry import create_node_coordinates_lookup
 from pyrosm.frames import create_nodes_gdf
 from shapely.geometry import Polygon, MultiPolygon
+
+from pyrosm.buildings import get_building_data
+from pyrosm.landuse import get_landuse_data
+from pyrosm.natural import get_natural_data
+from pyrosm.networks import get_network_data
+from pyrosm.pois import get_poi_data
 
 
 class OSM:
@@ -141,6 +144,13 @@ class OSM:
             To keep only specific buildings such as 'residential' and 'retail', you can apply
             a custom filter which is a Python dictionary with following format:
               `custom_filter={'building': ['residential', 'retail']}`
+
+        Further info
+        ------------
+
+        See OSM documentation for details about the data:
+        https://wiki.openstreetmap.org/wiki/Key:building
+
         """
         # Default tags to keep as columns
         tags_as_columns = self.conf.tags.building
@@ -153,6 +163,99 @@ class OSM:
                                 self._relations,
                                 tags_as_columns,
                                 custom_filter)
+
+        # Do not keep node information unless specifically asked for
+        # (they are in a list, and can cause issues when saving the files)
+        if not self.keep_node_info:
+            if "nodes" in gdf.columns:
+                gdf = gdf.drop("nodes", axis=1)
+        return gdf
+
+    def get_landuse(self, custom_filter=None):
+        """
+        Parses landuse from OSM.
+
+        Parameters
+        ----------
+
+        custom_filter : dict
+            What kind of landuse to parse, see details below.
+
+            You can opt-in specific elements by using 'custom_filter'.
+            To keep only specific landuse such as 'construction' and 'industrial', you can apply
+            a custom filter which is a Python dictionary with following format:
+              `custom_filter={'landuse': ['construction', 'industrial']}`
+
+        Further info
+        ------------
+
+        See OSM documentation for details about the data:
+        https://wiki.openstreetmap.org/wiki/Key:landuse
+        """
+
+        if self._nodes is None or self._way_records is None:
+            self._read_pbf()
+
+        # Default tags to keep as columns
+        tags_as_columns = self.conf.tags.landuse
+
+        # If nodes are still in chunks, merge before passing forward
+        if isinstance(self._nodes, list):
+            self._nodes = concatenate_dicts_of_arrays(self._nodes)
+
+        gdf = get_landuse_data(self._nodes,
+                               self._node_coordinates,
+                               self._way_records,
+                               self._relations,
+                               tags_as_columns,
+                               custom_filter)
+
+        # Do not keep node information unless specifically asked for
+        # (they are in a list, and can cause issues when saving the files)
+        if not self.keep_node_info:
+            if "nodes" in gdf.columns:
+                gdf = gdf.drop("nodes", axis=1)
+        return gdf
+
+
+    def get_natural(self, custom_filter=None):
+        """
+        Parses natural from OSM.
+
+        Parameters
+        ----------
+
+        custom_filter : dict
+            What kind of natural to parse, see details below.
+
+            You can opt-in specific elements by using 'custom_filter'.
+            To keep only specific natural such as 'wood' and 'tree', you can apply
+            a custom filter which is a Python dictionary with following format:
+              `custom_filter={'natural': ['wood', 'tree']}`
+
+        Further info
+        ------------
+
+        See OSM documentation for details about the data:
+        https://wiki.openstreetmap.org/wiki/Key:natural
+        """
+
+        if self._nodes is None or self._way_records is None:
+            self._read_pbf()
+
+        # Default tags to keep as columns
+        tags_as_columns = self.conf.tags.natural
+
+        # If nodes are still in chunks, merge before passing forward
+        if isinstance(self._nodes, list):
+            self._nodes = concatenate_dicts_of_arrays(self._nodes)
+
+        gdf = get_natural_data(self._nodes,
+                               self._node_coordinates,
+                               self._way_records,
+                               self._relations,
+                               tags_as_columns,
+                               custom_filter)
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
@@ -261,9 +364,6 @@ class OSM:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
-
-    def get_landuse(self, custom_filter=None):
-        raise NotImplementedError()
 
     def __getattribute__(self, name):
         # If node-gdf is requested convert to gdf before returning

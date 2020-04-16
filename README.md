@@ -2,11 +2,12 @@
 [![PyPI version](https://badge.fury.io/py/pyrosm.svg)](https://badge.fury.io/py/pyrosm)[![build status](https://api.travis-ci.org/HTenkanen/pyrosm.svg?branch=master)](https://travis-ci.org/HTenkanen/pyrosm)[![Coverage Status](https://codecov.io/gh/HTenkanen/pyrosm/branch/master/graph/badge.svg)](https://codecov.io/gh/HTenkanen/pyrosm)
 
 **Pyrosm** is a Python library for reading OpenStreetMap from `protobuf` files (`*.osm.pbf`) into Geopandas GeoDataFrames. 
-Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks and buildings (points of interest in progress).
+Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks, buildings, 
+Points of Interest (POI) and landuse. Also fully customized queries are supported which makes it possible to parse the data 
+from OSM with more specific filters. 
 
  
-**Pyrosm** is easy to use and it provides a somewhat similar user interface as another popular Python library [OSMnx](https://github.com/gboeing/osmnx)
-for parsing different datasets from the OpenStreetMap pbf-dump including road networks, buildings and Points of Interest (later also landuse and possibility to make customized calls). 
+**Pyrosm** is easy to use and it provides a somewhat similar user interface as [OSMnx](https://github.com/gboeing/osmnx).
 The main difference between pyrosm and OSMnx is that OSMnx reads the data over internet using OverPass API, whereas pyrosm reads the data from local OSM data dumps
 that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). This makes it possible to read data much faster thus 
 allowing e.g. parsing street networks for whole country in a matter of minutes instead of hours (however, see [caveats](#caveats)).
@@ -26,7 +27,7 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
  - read buildings from PBF
  - read Points of Interest (POI) from PBF
  - filter data based on bounding box
- - apply custom filter to filter data 
+ - apply custom criteria with buildings and POIs to filter the data 
     - e.g. keeping only specific type of buildings can be done by applying a filter: `{'building': ['residential', 'retail']}` 
  
  
