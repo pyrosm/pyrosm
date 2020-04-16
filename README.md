@@ -69,7 +69,8 @@ osm = OSM(fp)
 # Read all drivable roads
 # =======================
 drive_net = osm.get_network(network_type="driving")
-drive_net.head()
+
+>>> drive_net.head()
 ...
   access bridge  ...        id                                           geometry
 0   None   None  ...   4732994  LINESTRING (26.94310 60.52580, 26.94295 60.525...
@@ -92,7 +93,8 @@ fp = get_path("test_pbf")
 osm = OSM(fp)
 custom_filter = {'building': ['residential', 'retail']}
 buildings = osm.get_buildings(custom_filter=custom_filter)
-buildings.head()
+
+>>> buildings.head()
 ...
       building  ...                                           geometry
 0       retail  ...  POLYGON ((26.94511 60.52322, 26.94487 60.52314...
@@ -114,7 +116,8 @@ fp = get_path("test_pbf")
 osm = OSM(fp)
 custom_filter = {'amenity': True, 'shop': True }
 pois = osm.get_pois(custom_filter=custom_filter)
-pois.head()
+
+>>> pois.head()
 ...
    changeset   timestamp        lon  version  ...  phone  building landuse parking
 0        0.0  1461601534  26.951475        2  ...    NaN       NaN     NaN     NaN
@@ -138,7 +141,8 @@ fp = get_path("test_pbf")
 osm = OSM(fp)
 landuse = osm.get_landuse()
 natural = osm.get_natural()
-natural.head()
+
+>>> natural.head()
 ...
            id   timestamp  changeset  ...                   geometry osm_type  water
 0    29985880  1496174642        0.0  ...  POINT (24.95299 60.17726)     node    NaN
@@ -168,15 +172,18 @@ routes = ["bus", "ferry", "railway", "subway", "train", "tram", "trolleybus"]
 rails = ["tramway", "light_rail", "rail", "subway", "tram"]
 bus = ['yes']
 transit = osm.get_osm_by_custom_criteria(custom_filter={
-    'route': routes,
-    'railway': rails,
-    'bus': bus,
-    'public_transport': True},
-    # Keep data matching the criteria above
-    filter_type="keep",
-    # Do not keep nodes (point data)    
-    keep_nodes=False, keep_ways=True, keep_relations=True)
-transit.head()
+                                        'route': routes,
+                                        'railway': rails,
+                                        'bus': bus,
+                                        'public_transport': True},
+                                        # Keep data matching the criteria above
+                                        filter_type="keep",
+                                        # Do not keep nodes (point data)    
+                                        keep_nodes=False, 
+                                        keep_ways=True, 
+                                        keep_relations=True)
+
+>>> transit.head()
   bicycle   bus  ...                                           geometry osm_type
 0    None  None  ...  LINESTRING (24.94133 60.17141, 24.94114 60.173...      way
 1    None  None  ...  LINESTRING (24.94024 60.17530, 24.94020 60.175...      way
