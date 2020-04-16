@@ -24,8 +24,6 @@ def get_path(dataset):
     """
     if dataset in _package_files:
         return os.path.abspath(os.path.join(_module_path, _package_files[dataset]))
-    elif dataset in _temp_files:
-        return os.path.join(_temp_path, _temp_files[dataset])
     else:
         msg = "The dataset '{data}' is not available. ".format(data=dataset)
         msg += "Available datasets are {}".format(", ".join(available))

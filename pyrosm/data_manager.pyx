@@ -85,8 +85,9 @@ cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, da
     if relation_way_ids is not None:
         # Separate ways that are part of a relation
         ways, relation_ways = separate_relation_ways(ways, relation_way_ids)
-        relation_ways = convert_way_records_to_lists(relation_ways, tags_as_columns)
-        relation_arrays = convert_to_arrays_and_drop_empty(relation_ways)
+        if len(relation_ways) > 0:
+            relation_ways = convert_way_records_to_lists(relation_ways, tags_as_columns)
+            relation_arrays = convert_to_arrays_and_drop_empty(relation_ways)
 
     # Process separated ways
     ways = convert_way_records_to_lists(ways, tags_as_columns)
@@ -98,6 +99,10 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
 
     # Tags that should always be kept
     tags_as_columns += ["id", "nodes", "timestamp", "version"]
+
+    # If any way records weren't passed in, cannot parse anything
+    if way_records is None:
+        return None, None, None
 
     # Get relations for specified OSM keys (one or multiple)
     if relations is not None:
@@ -122,6 +127,9 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
                                          tags_as_columns,
                                          data_filter,
                                          filter_type)
+    # If relation ways could not be parsed, also relations should be returned as None
+    if relation_ways is None:
+        filtered_relations = None
 
     # If there weren't any ways return None
     if ways is None:

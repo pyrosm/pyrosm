@@ -14,42 +14,23 @@ def helsinki_pbf():
     return pbf_path
 
 
-@pytest.fixture
-def default_filter():
-    return {"amenity": True,
-            "craft": True,
-            "historic": True,
-            "leisure": True,
-            "shop": True,
-            "tourism": True
-            }
-
-
-@pytest.fixture
-def test_output_dir():
-    import os, tempfile
-    return os.path.join(tempfile.gettempdir(), "pyrosm_test_results")
-
-
-def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
+def test_parsing_natural_with_defaults(test_pbf):
     from pyrosm import OSM
-    from pyrosm.pois import get_poi_data
+    from pyrosm.natural import get_natural_data
     from geopandas import GeoDataFrame
     import pyproj
     from pyrosm._arrays import concatenate_dicts_of_arrays
-    osm = OSM(filepath=helsinki_pbf)
+    osm = OSM(filepath=test_pbf)
     osm._read_pbf()
-    tags_as_columns = []
-    for k in default_filter.keys():
-        tags_as_columns += getattr(osm.conf.tags, k)
+    tags_as_columns = osm.conf.tags.natural
 
     nodes = concatenate_dicts_of_arrays(osm._nodes)
-    gdf = get_poi_data(nodes,
-                       osm._node_coordinates,
-                       osm._way_records,
-                       osm._relations,
-                       tags_as_columns,
-                       default_filter)
+    gdf = get_natural_data(nodes,
+                           osm._node_coordinates,
+                           osm._way_records,
+                           osm._relations,
+                           tags_as_columns,
+                           None)
 
     assert isinstance(gdf, GeoDataFrame)
 
@@ -59,22 +40,22 @@ def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
         assert col in gdf.columns
 
     # Test shape
-    assert len(gdf) == 1780
+    assert len(gdf) == 14
     assert gdf.crs == pyproj.CRS.from_epsg(4326)
 
 
-def test_reading_pois_from_area_having_none(helsinki_pbf):
+def test_reading_natural_from_area_having_none(helsinki_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
 
     # Bounding box for area that does not have any data
-    bbox = [24.940514, 60.173849, 24.942, 60.175892]
+    bbox = [24.939753, 60.173388, 24.941269,60.174829]
 
     osm = OSM(filepath=helsinki_pbf, bounding_box=bbox)
 
     # The tool should warn if no buildings were found
     with pytest.warns(UserWarning) as w:
-        gdf = osm.get_pois()
+        gdf = osm.get_natural()
         # Check the warning text
         if "could not find any buildings" in str(w):
             pass
@@ -89,7 +70,7 @@ def test_passing_incorrect_custom_filter(test_pbf):
 
     osm = OSM(filepath=test_pbf)
     try:
-        osm.get_pois(custom_filter="wrong")
+        osm.get_natural(custom_filter="wrong")
     except ValueError as e:
         if "dictionary" in str(e):
             pass

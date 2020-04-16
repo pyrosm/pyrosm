@@ -93,8 +93,9 @@ cdef filter_osm_records(data_records,
     if not isinstance(osm_data_type, list):
         osm_data_type = [osm_data_type]
 
-    if len(data_filter) == 0:
-        data_filter = None
+    if data_filter is not None:
+        if len(data_filter) == 0:
+            data_filter = None
 
     if data_filter is not None:
         filter_keys = list(data_filter.keys())

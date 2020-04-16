@@ -856,7 +856,8 @@ power_columns = ["cable",
 # PUBLIC_TRANSPORT TAGS
 # ========================
 # See: https://wiki.openstreetmap.org/wiki/Key%3Apublic_transport
-public_transport_columns = ["stop_position",
+public_transport_columns = basic_info_tags + \
+                           ["stop_position",
                             "platform",
                             "station",
                             "stop_area",

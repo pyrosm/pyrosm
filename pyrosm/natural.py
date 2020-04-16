@@ -5,23 +5,31 @@ import geopandas as gpd
 import warnings
 
 
-def get_poi_data(nodes, node_coordinates, way_records, relations, tags_as_columns, custom_filter):
-    # Validate filter
-    validate_custom_filter(custom_filter)
+def get_natural_data(nodes, node_coordinates, way_records, relations, tags_as_columns, custom_filter):
+    # If custom_filter has not been defined, initialize with default
+    if custom_filter is None:
+        custom_filter = {"natural": True}
+    else:
+        # Check that the custom filter is in correct format
+        validate_custom_filter(custom_filter)
 
-    # Call signature for fetching POIs
+        # Ensure that the "landuse" tag exists
+        if "natural" not in custom_filter.keys():
+            custom_filter["natural"] = True
+
+    # Call signature for fetching buildings
     nodes, ways, relation_ways, relations = get_osm_data(node_arrays=nodes,
                                                          way_records=way_records,
                                                          relations=relations,
                                                          tags_as_columns=tags_as_columns,
                                                          data_filter=custom_filter,
                                                          filter_type="keep",
-                                                         osm_keys=None,
+                                                         osm_keys=None
                                                          )
 
     # If there weren't any data, return empty GeoDataFrame
     if nodes is None and ways is None and relations is None:
-        warnings.warn("Could not find any POIs for given area.",
+        warnings.warn("Could not find any natural elements for given area.",
                       UserWarning,
                       stacklevel=2)
         return gpd.GeoDataFrame()
@@ -29,5 +37,4 @@ def get_poi_data(nodes, node_coordinates, way_records, relations, tags_as_column
     # Prepare GeoDataFrame
     gdf = prepare_geodataframe(nodes, node_coordinates, ways,
                                relations, relation_ways, tags_as_columns)
-
     return gdf

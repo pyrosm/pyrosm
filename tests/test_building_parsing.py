@@ -46,7 +46,7 @@ def test_parsing_building_elements(test_pbf):
 def test_creating_building_geometries(test_pbf):
     from pyrosm import OSM
     from pyrosm.data_manager import get_osm_data
-    from pyrosm.geometry import create_polygon_geometries
+    from pyrosm.geometry import create_way_geometries
     from numpy import ndarray
     from shapely.geometry import Polygon
 
@@ -61,8 +61,8 @@ def test_creating_building_geometries(test_pbf):
                                                          filter_type="keep")
     assert isinstance(ways, dict)
 
-    geometries = create_polygon_geometries(osm._node_coordinates,
-                                           ways)
+    geometries = create_way_geometries(osm._node_coordinates,
+                                       ways)
     assert isinstance(geometries, ndarray)
     assert isinstance(geometries[0], Polygon)
     assert len(geometries) == len(ways["id"])
@@ -204,3 +204,26 @@ def test_reading_buildings_from_area_having_none(helsinki_pbf):
     # Result should be empty GeoDataFrame
     assert isinstance(gdf, GeoDataFrame)
     assert gdf.shape == (0, 0)
+
+
+def test_passing_incorrect_custom_filter(test_pbf):
+    from pyrosm import OSM
+
+    osm = OSM(filepath=test_pbf)
+    try:
+        osm.get_buildings(custom_filter="wrong")
+    except ValueError as e:
+        if "dictionary" in str(e):
+            pass
+    except Exception as e:
+        raise e
+
+
+def test_passing_custom_filter_without_element_key(test_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    osm = OSM(filepath=test_pbf)
+    gdf = osm.get_buildings(custom_filter={"start_date": True})
+    assert isinstance(gdf, GeoDataFrame)
+
