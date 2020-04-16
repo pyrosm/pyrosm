@@ -99,6 +99,10 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
     # Tags that should always be kept
     tags_as_columns += ["id", "nodes", "timestamp", "version"]
 
+    # If any way records weren't passed in, cannot parse anything
+    if way_records is None:
+        return None, None, None
+
     # Get relations for specified OSM keys (one or multiple)
     if relations is not None:
         filtered_relations = get_relation_arrays(relations, osm_keys, data_filter)
