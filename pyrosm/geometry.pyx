@@ -74,34 +74,6 @@ cdef _create_point_geometries(xarray, yarray):
         dtype=object))
 
 
-cdef _create_way_geometries(node_coordinates, way_elements):
-    cdef long long node
-    cdef list coords, way_nodes
-    cdef int i, ii, nn, n = len(way_elements['id'])
-
-    geometries = []
-    for i in range(0, n):
-        way_nodes = way_elements['nodes'][i]
-        coords = []
-        nn = len(way_nodes)
-        for ii in range(0, nn):
-            node = way_nodes[ii]
-            try:
-                coords.append((node_coordinates[node][0],
-                               node_coordinates[node][1]))
-            except:
-                pass
-        if len(coords) > 1:
-            geometries.append(coords)
-        else:
-            geometries.append(None)
-    return to_shapely(np.array(
-        [linestrings(geom)
-         if geom is not None else None
-         for geom in geometries],
-        dtype=object))
-
-
 cdef create_pygeos_polygon_from_relation(node_coordinates, relation_ways, member_roles):
     cdef int i, m_cnt
     cdef str role
@@ -138,45 +110,6 @@ cdef create_pygeos_polygon_from_relation(node_coordinates, relation_ways, member
 
     return polygons(shell, holes)
 
-cdef _create_polygon_geometries(node_coordinates, way_elements):
-    cdef long long node
-    cdef list coords
-    cdef int n = len(way_elements['id'])
-    cdef int i, ii, nn
-
-    geometries = []
-
-    for i in range(0, n):
-        nodes_ = way_elements['nodes'][i]
-        coords = []
-
-        nn = len(nodes_)
-        for ii in range(0, nn):
-            node = nodes_[ii]
-            try:
-                coords.append((node_coordinates[node][0],
-                               node_coordinates[node][1]))
-            except:
-                pass
-
-        if len(coords) > 2:
-            try:
-                geometries.append(polygons(coords))
-            except GEOSException as e:
-                # Some geometries might not be valid for creating a Polygon
-                # These might occur e.g. at the edge of the spatial extent
-                if "Invalid number of points in LinearRing" in str(e):
-                    geometries.append(None)
-                else:
-                    raise e
-            except Exception as e:
-                raise e
-
-        else:
-            geometries.append(None)
-
-    return to_shapely(geometries)
-
 
 cpdef create_node_coordinates_lookup(nodes):
     return _create_node_coordinates_lookup(nodes)
@@ -186,9 +119,89 @@ cpdef create_point_geometries(xarray, yarray):
     return _create_point_geometries(xarray, yarray)
 
 
+cdef create_linestring_geometry(nodes, node_coordinates):
+
+    coords = []
+    n = len(nodes)
+    for i in range(0, n):
+        node = nodes[i]
+        try:
+            coords.append((node_coordinates[node][0],
+                           node_coordinates[node][1]))
+        except:
+            pass
+
+    if len(coords) > 1:
+        try:
+            return linestrings(coords)
+        except GEOSException as e:
+            if "Invalid number of points" in str(e):
+                return None
+            else:
+                raise e
+        except Exception as e:
+            raise e
+
+    else:
+        return None
+
+cdef create_polygon_geometry(nodes, node_coordinates):
+    cdef int i, n = len(nodes)
+    coords = []
+    for i in range(0, n):
+        node = nodes[i]
+        try:
+            coords.append((node_coordinates[node][0],
+                           node_coordinates[node][1]))
+        except:
+            pass
+
+    if len(coords) > 2:
+        try:
+            return polygons(coords)
+        except GEOSException as e:
+            # Some geometries might not be valid for creating a Polygon
+            # These might occur e.g. at the edge of the spatial extent
+            if "Invalid number of points in LinearRing" in str(e):
+                return None
+            else:
+                raise e
+        except Exception as e:
+            raise e
+    else:
+        return None
+
+cdef _create_way_geometries(node_coordinates, way_elements):
+    # Info for constructing geometries:
+    # https://wiki.openstreetmap.org/wiki/Way
+
+    cdef long long node
+    cdef list coords
+    cdef int n = len(way_elements['id'])
+    cdef int i
+
+    geometries = []
+
+    for i in range(0, n):
+        nodes = way_elements['nodes'][i]
+        coords = []
+
+        # If first and last node are the same, it's a closed way
+        if nodes[0] == nodes[-1]:
+            tag_keys = way_elements.keys()
+            # Create Polygon unless way is of type 'highway' or 'barrier'
+            if "highway" in tag_keys or "barrier" in tag_keys:
+                geom = create_linestring_geometry(nodes, node_coordinates)
+            else:
+                geom = create_polygon_geometry(nodes, node_coordinates)
+
+        # Otherwise create LineString
+        else:
+            geom = create_linestring_geometry(nodes, node_coordinates)
+
+        geometries.append(geom)
+
+    return to_shapely(geometries)
+
 cpdef create_way_geometries(node_coordinates, way_elements):
     return _create_way_geometries(node_coordinates, way_elements)
-
-
-cpdef create_polygon_geometries(node_coordinates, way_elements):
-    return _create_polygon_geometries(node_coordinates, way_elements, )
