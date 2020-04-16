@@ -78,9 +78,9 @@ class OSM:
     def _get_network_filter(self, net_type):
         possible_filters = [a for a in self.conf.network_filters.__dir__()
                             if "__" not in a]
-        possible_filters += ["all"]
+        possible_filters += ["all", "driving+service"]
         possible_values = ", ".join(possible_filters)
-        msg = "'net_type' should be one of the following: " + possible_values
+        msg = "'network_type' should be one of the following: " + possible_values
         if not isinstance(net_type, str):
             raise ValueError(msg)
 
@@ -94,6 +94,8 @@ class OSM:
             return self.conf.network_filters.walking
         elif net_type == "driving":
             return self.conf.network_filters.driving
+        elif net_type == "driving+service":
+            return self.conf.network_filters.driving_psv
         elif net_type == "cycling":
             return self.conf.network_filters.cycling
         elif net_type == "all":
