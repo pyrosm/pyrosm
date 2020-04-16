@@ -137,7 +137,7 @@ fp = get_path("test_pbf")
 # Initialize the OSM parser object
 osm = OSM(fp)
 landuse = osm.get_landuse()
-natural = osm.get_landuse()
+natural = osm.get_natural()
 natural.head()
 ...
            id   timestamp  changeset  ...                   geometry osm_type  water
