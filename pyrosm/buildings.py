@@ -1,7 +1,5 @@
 from pyrosm.data_manager import get_osm_data
-from pyrosm.geometry import create_polygon_geometries
-from pyrosm.frames import create_gdf
-from pyrosm.relations import prepare_relations
+from pyrosm.frames import prepare_geodataframe
 import geopandas as gpd
 import warnings
 
@@ -31,32 +29,13 @@ def get_building_data(node_coordinates, way_records, relations, tags_as_columns,
                                                          )
 
     # If there weren't any data, return empty GeoDataFrame
-    if ways is None:
-        warnings.warn("Could not find any buildings for given area.",
+    if nodes is None and ways is None and relations is None:
+        warnings.warn("Could not find any landuse elements for given area.",
                       UserWarning,
                       stacklevel=2)
         return gpd.GeoDataFrame()
 
-    # Create geometries for normal ways
-    geometries = create_polygon_geometries(node_coordinates,
-                                           ways)
-
-    # Convert to GeoDataFrame
-    way_gdf = create_gdf(ways, geometries)
-    way_gdf["osm_type"] = "way"
-
-    # Prepare relation data if it is available
-    if relations is not None:
-        relations = prepare_relations(relations, relation_ways,
-                                      node_coordinates,
-                                      tags_as_columns)
-        relation_gdf = gpd.GeoDataFrame(relations)
-        relation_gdf["osm_type"] = "relation"
-
-        gdf = way_gdf.append(relation_gdf, ignore_index=True)
-    else:
-        gdf = way_gdf
-
-    gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
-
+    # Prepare GeoDataFrame
+    gdf = prepare_geodataframe(nodes, node_coordinates, ways,
+                               relations, relation_ways, tags_as_columns)
     return gdf

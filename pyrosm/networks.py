@@ -1,6 +1,5 @@
 from pyrosm.data_manager import get_osm_data
-from pyrosm.frames import create_gdf
-from pyrosm.geometry import create_way_geometries
+from pyrosm.frames import prepare_geodataframe
 import geopandas as gpd
 import warnings
 
@@ -27,11 +26,9 @@ def get_network_data(node_coordinates, way_records, tags_as_columns, network_fil
                       stacklevel=2)
         return gpd.GeoDataFrame()
 
-    geometries = create_way_geometries(node_coordinates,
-                                       ways)
-
-    # Convert to GeoDataFrame
-    gdf = create_gdf(ways, geometries)
-    gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
-
+    # Prepare GeoDataFrame
+    gdf = prepare_geodataframe(nodes, node_coordinates, ways,
+                               relations, relation_ways, tags_as_columns)
     return gdf
+
+

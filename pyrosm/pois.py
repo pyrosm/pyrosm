@@ -1,9 +1,6 @@
 from pyrosm.data_manager import get_osm_data
-from pyrosm.geometry import create_polygon_geometries
-from pyrosm.frames import create_gdf, create_nodes_gdf
-from pyrosm.relations import prepare_relations
+from pyrosm.frames import prepare_geodataframe
 import geopandas as gpd
-import pandas as pd
 import warnings
 
 
@@ -26,35 +23,8 @@ def get_poi_data(nodes, node_coordinates, way_records, relations, tags_as_column
                       stacklevel=2)
         return gpd.GeoDataFrame()
 
-    if nodes is not None:
-        # Create GeoDataFrame from nodes
-        node_gdf = create_nodes_gdf(nodes)
-        node_gdf['osm_type'] = "node"
-    else:
-        node_gdf = gpd.GeoDataFrame()
+    # Prepare GeoDataFrame
+    gdf = prepare_geodataframe(nodes, node_coordinates, ways,
+                               relations, relation_ways, tags_as_columns)
 
-    if ways is not None:
-        # Create geometries for normal ways
-        geometries = create_polygon_geometries(node_coordinates,
-                                               ways)
-        # Convert to GeoDataFrame
-        way_gdf = create_gdf(ways, geometries)
-        node_gdf['osm_type'] = "way"
-    else:
-        way_gdf = gpd.GeoDataFrame()
-
-    # Prepare relation data if it is available
-    if relations is not None:
-        relations = prepare_relations(relations, relation_ways,
-                                      node_coordinates,
-                                      tags_as_columns)
-        relation_gdf = gpd.GeoDataFrame(relations)
-        node_gdf['osm_type'] = "relation"
-
-    else:
-        relation_gdf = gpd.GeoDataFrame()
-
-    # Merge all
-    gdf = pd.concat([node_gdf, way_gdf, relation_gdf])
-    gdf = gdf.dropna(subset=['geometry'])
     return gdf
