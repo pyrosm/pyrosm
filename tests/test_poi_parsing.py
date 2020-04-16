@@ -59,5 +59,5 @@ def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
         assert col in gdf.columns
 
     # Test shape
-    assert len(gdf) == 1777
+    assert len(gdf) == 1780
     assert gdf.crs == pyproj.CRS.from_epsg(4326)
