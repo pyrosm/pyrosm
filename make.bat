@@ -7,10 +7,8 @@ if "%1" == "clean" (
     IF EXIST *.pyd (
         del /S *.pyd
     )
-
-    IF EXIST *.c (
-        del /S *.c
-    )
+    REM For Some reason C-files are not detected automatically with if-exist
+    del /S *.c
 
     IF EXIST .coverage (
         del /S .coverage
