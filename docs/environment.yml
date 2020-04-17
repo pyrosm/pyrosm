@@ -1,0 +1,23 @@
+name: docs
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.7
+  # required
+  - geopandas
+  - sphinx
+  - nbsphinx
+  - pygeos
+  - cython
+  - pyrobuf
+  - python-rapidjson
+  # testing
+  - pytest
+  - pytest-cov
+  - codecov
+  - pip
+  - pip:
+      - git+https://github.com/HTenkanen/cykhash.git
+      - pyrosm
