@@ -29,10 +29,3 @@ def test_not_available():
             raise e
     except Exception as e:
         raise e
-
-
-def test_temp_dir():
-    import pyrosm
-    import os
-    assert os.path.isdir(os.path.dirname(
-        pyrosm.data._temp_path))
