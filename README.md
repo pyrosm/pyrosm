@@ -20,7 +20,7 @@ to Google's Protobuf library: It provides 2-4x boost in performance for deserial
 Google's version with C++ backend. Google's Protocol Buffers is a commonly used and efficient method to serialize and compress structured data 
 which is also used by OpenStreetMap contributors to distribute the OSM data in PBF format (Protocolbuffer Binary Format). 
 
-Documentation is available at [https://pyrosm.readthedocs.io](https://pyrosm.readthedocs.io/en/latest/).
+**Documentation** is available at [https://pyrosm.readthedocs.io](https://pyrosm.readthedocs.io/en/latest/).
 
 ## Current features
 
