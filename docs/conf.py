@@ -22,7 +22,7 @@ copyright = "2020, Henrikki Tenkanen"
 author = "Henrikki Tenkanen"
 
 # The full version, including alpha/beta/rc tags
-release = "v.0.4.0"
+version = release = "0.4.0"
 
 # -- General configuration ---------------------------------------------------
 
