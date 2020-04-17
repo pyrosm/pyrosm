@@ -46,7 +46,7 @@ Current features
    :caption: Reference Guide
 
    Reference to All Attributes and Methods <reference>
-   reference.
+   Changelog <changelog>
 
 Indices and tables
 ==================
