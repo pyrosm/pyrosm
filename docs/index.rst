@@ -18,6 +18,17 @@ takes less than **3 minutes** and parsing the buildings from the same region tak
 .. figure:: img/NY_roads_and_buildings.PNG
 
 
+Current features
+----------------
+
+ - read street networks (separately for driving, cycling, walking and all-combined)
+ - read buildings from PBF
+ - read Points of Interest (POI) from PBF
+ - read landuse from PBF
+ - read "natural" from PBF
+ - read any other data from PBF by using a custom user-defined filter
+ - filter data based on bounding box
+
 .. toctree::
    :maxdepth: 2
    :caption: Getting started
