@@ -34,8 +34,6 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
  
 ## Roadmap
 
- - improve docs and make simple website
- - run benchmarks against other tools
  - add possibility to crop PBF and save a subset into new PBF.
  - automate PBF downloading from Geofabrik (?)
 
