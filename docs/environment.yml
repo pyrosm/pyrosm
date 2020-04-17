@@ -8,5 +8,6 @@ dependencies:
   - pip
   - pip:
       - sphinx==2.3.1
+      - jupyter-sphinx
       - nbsphinx
       - pyrosm
