@@ -25,14 +25,14 @@ class OSM:
         ----------
 
         filepath : str
-            Filepath to input OSM dataset ( .osm.pbf | .osm | .osm.bz2 | .osm.gz )
+            Filepath to input OSM dataset ( *.osm.pbf )
 
         bounding_box : list | shapely.Polygon (optional)
             Filtering OSM data spatially is allowed by passing a
             bounding box either as a list `[minx, miny, maxx, maxy]` or
             as a `shapely.geometry.Polygon`.
 
-            Note: if using Polygon, the tool will use its bounds.
+            Note: if using Shapely Polygon, the tool will use its bounds.
             Filtering based on complex shapes is not currently supported.
         """
         if not isinstance(filepath, str):
@@ -110,7 +110,19 @@ class OSM:
         ----------
 
         network_type : str
-            What kind of network to parse. Possible values are: 'walking' | 'cycling' | 'driving' | 'all'.
+            What kind of network to parse.
+            Possible values are:
+              - `'walking'`
+              - `'cycling'`
+              - `'driving'`
+              - `'driving+service'`
+              - `'all'`.
+
+        See Also
+        --------
+
+        Take a look at the OSM documentation for further details about the data:
+        `https://wiki.openstreetmap.org/wiki/Key:highway <https://wiki.openstreetmap.org/wiki/Key:highway>`__
 
         """
         # Get filter
@@ -143,18 +155,19 @@ class OSM:
         ----------
 
         custom_filter : dict
-            What kind of buildings to parse, see details below.
+            What kind of buildings to parse,
+            see details below.
 
             You can opt-in specific elements by using 'custom_filter'.
             To keep only specific buildings such as 'residential' and 'retail', you can apply
             a custom filter which is a Python dictionary with following format:
-              `custom_filter={'building': ['residential', 'retail']}`
+              - `custom_filter={'building': ['residential', 'retail']}`
 
-        Further info
-        ------------
+        See Also
+        --------
 
-        See OSM documentation for details about the data:
-        https://wiki.openstreetmap.org/wiki/Key:building
+        Take a look at the OSM documentation for further details about the data:
+        `https://wiki.openstreetmap.org/wiki/Key:building <https://wiki.openstreetmap.org/wiki/Key:building>`__
 
         """
         # Default tags to keep as columns
@@ -184,18 +197,21 @@ class OSM:
         ----------
 
         custom_filter : dict
-            What kind of landuse to parse, see details below.
+            What kind of landuse to parse,
+            see details below.
 
             You can opt-in specific elements by using 'custom_filter'.
             To keep only specific landuse such as 'construction' and 'industrial', you can apply
             a custom filter which is a Python dictionary with following format:
               `custom_filter={'landuse': ['construction', 'industrial']}`
 
-        Further info
-        ------------
+        See Also
+        --------
 
-        See OSM documentation for details about the data:
-        https://wiki.openstreetmap.org/wiki/Key:landuse
+        Take a look at OSM documentation for further details about the data:
+
+        `https://wiki.openstreetmap.org/wiki/Key:landuse <https://wiki.openstreetmap.org/wiki/Key:landuse>`__
+
         """
 
         if self._nodes is None or self._way_records is None:
@@ -230,18 +246,21 @@ class OSM:
         ----------
 
         custom_filter : dict
-            What kind of natural to parse, see details below.
+            What kind of natural to parse,
+            see details below.
 
             You can opt-in specific elements by using 'custom_filter'.
             To keep only specific natural such as 'wood' and 'tree', you can apply
             a custom filter which is a Python dictionary with following format:
               `custom_filter={'natural': ['wood', 'tree']}`
 
-        Further info
-        ------------
+        See Also
+        --------
 
-        See OSM documentation for details about the data:
-        https://wiki.openstreetmap.org/wiki/Key:natural
+        Take a look at OSM documentation for further details about the data:
+
+        `https://wiki.openstreetmap.org/wiki/Key:natural <https://wiki.openstreetmap.org/wiki/Key:natural>`__
+
         """
 
         if self._nodes is None or self._way_records is None:
@@ -276,12 +295,12 @@ class OSM:
         ----------
 
         custom_filter : dict
-            An optional custom filter to filter only specific POIs from OpenStreetMap
-            (see details below).
+            An optional custom filter to filter only specific POIs from OpenStreetMap,
+            see details below.
 
 
-        Filtering by tags
-        -----------------
+        Notes
+        -----
 
         By default, Pyrosm will parse all OSM elements (points, lines and polygons)
         that are associated with following keys:
@@ -299,22 +318,13 @@ class OSM:
         such as supermarkets and book stores by specifying:
           `custom_filter={"amenity": True, "shop": ["supermarket", "books"]}`
 
-        Filtering by OSM Element type
-        -----------------------------
 
-        A specific column called `osm_type` is added to the the resulting GeoDataFrame that informs
-        about the OSM Element type. Possible values are: 'node', 'way' and 'relation'.
-        These values can be used to filter out specific type of elements
-        from the results. If you for example want to keep only POIs that are Points, you can select
-        them with a simple Pandas query:
-        >>> my_poi_gdf = my_poi_gdf.loc[my_poi_gdf['osm_type']=='node']
-
-        Further info
-        ------------
+        See Also
+        --------
 
         You can check the most typical OSM tags for different map features from OSM Wiki
-        https://wiki.openstreetmap.org/wiki/Map_Features . It is also possible to get a quick
-        look at the most typical OSM tags from Pyrosm configuration:
+        `https://wiki.openstreetmap.org/wiki/Map_Features <https://wiki.openstreetmap.org/wiki/Map_Features>`__.
+        It is also possible to get a quick look at the most typical OSM tags from Pyrosm configuration:
 
         >>> from pyrosm.config import Conf
         >>> print("All available OSM keys", Conf.tags.available)
