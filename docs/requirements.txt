@@ -1,0 +1,5 @@
+sphinx==2.3.1
+ipython
+jupyter-sphinx
+nbsphinx
+pyrosm
