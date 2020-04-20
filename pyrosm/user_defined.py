@@ -14,7 +14,8 @@ def get_user_defined_data(nodes,
                           filter_type,
                           keep_nodes,
                           keep_ways,
-                          keep_relations):
+                          keep_relations,
+                          bounding_box):
 
     if not keep_nodes:
         nodes = None
@@ -54,6 +55,7 @@ def get_user_defined_data(nodes,
 
     # Prepare GeoDataFrame
     gdf = prepare_geodataframe(nodes, node_coordinates, ways,
-                               relations, relation_ways, tags_as_columns)
+                               relations, relation_ways,
+                               tags_as_columns, bounding_box)
 
     return gdf

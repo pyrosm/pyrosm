@@ -5,7 +5,8 @@ import geopandas as gpd
 import warnings
 
 
-def get_natural_data(nodes, node_coordinates, way_records, relations, tags_as_columns, custom_filter):
+def get_natural_data(nodes, node_coordinates, way_records, relations,
+                     tags_as_columns, custom_filter, bounding_box):
     # If custom_filter has not been defined, initialize with default
     if custom_filter is None:
         custom_filter = {"natural": True}
@@ -36,5 +37,6 @@ def get_natural_data(nodes, node_coordinates, way_records, relations, tags_as_co
 
     # Prepare GeoDataFrame
     gdf = prepare_geodataframe(nodes, node_coordinates, ways,
-                               relations, relation_ways, tags_as_columns)
+                               relations, relation_ways,
+                               tags_as_columns, bounding_box)
     return gdf
