@@ -49,7 +49,8 @@ def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
                        osm._way_records,
                        osm._relations,
                        tags_as_columns,
-                       default_filter)
+                       default_filter,
+                       None)
 
     assert isinstance(gdf, GeoDataFrame)
 

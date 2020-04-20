@@ -30,6 +30,7 @@ def test_parsing_natural_with_defaults(test_pbf):
                            osm._way_records,
                            osm._relations,
                            tags_as_columns,
+                           None,
                            None)
 
     assert isinstance(gdf, GeoDataFrame)
