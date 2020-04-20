@@ -66,13 +66,15 @@ cdef convert_to_arrays_and_drop_empty(data):
         # Geometry should always be kept
         if key == "geometry":
             pass
+
         # Nodes are in a list and should always be kept
         elif not isinstance(value_list[0], list):
-            # Otherwise keep tag only if it contains data
+            # Keep tag only if it contains data
             unique = list(set(value_list))
             if len(unique) < 2:
                 if unique[0] is None:
                     continue
+
         arrays[key] = np.array(value_list, dtype=get_dtype(key))
     return arrays
 
