@@ -1,8 +1,7 @@
 import numpy as np
-from pygeos import linestrings, polygons, points, linearrings
+from pygeos import linestrings, polygons, points, linearrings, multilinestrings
 from pygeos import GEOSException
 import shapely
-
 
 cdef _create_node_coordinates_lookup(nodes):
     cdef int i
@@ -12,19 +11,16 @@ cdef _create_node_coordinates_lookup(nodes):
     coords = np.stack((lons, lats), axis=-1)
     return {ids[i]: coords[i] for i in range(0, len(ids))}
 
-
 cdef pygeos_to_shapely(geom):
     if geom is None:
         return None
     geom = shapely.geos.lgeos.GEOSGeom_clone(geom._ptr)
     return shapely.geometry.base.geom_factory(geom)
 
-
 cdef to_shapely(pygeos_array):
     out = np.empty(len(pygeos_array), dtype=object)
     out[:] = [pygeos_to_shapely(geom) for geom in pygeos_array]
     return out
-
 
 cdef get_way_coordinates_for_polygon(node_coordinate_lookup, way_elements):
     cdef int i, ii, nn, n = len(way_elements["id"])
@@ -43,7 +39,6 @@ cdef get_way_coordinates_for_polygon(node_coordinate_lookup, way_elements):
         features.append(coords)
     return features
 
-
 cdef create_linear_ring(coordinates):
     try:
         return linearrings(coordinates)
@@ -56,6 +51,21 @@ cdef create_linear_ring(coordinates):
     except Exception as e:
         raise e
 
+cdef create_linestring(coordinates):
+    try:
+        return linestrings(coordinates)
+    except GEOSException as e:
+        if "Invalid number of points" in str(e):
+            return None
+        elif "point array must contain" in str(e):
+            return None
+        raise e
+    except ValueError as e:
+        print(coordinates)
+        if "not have enough dimensions" in str(e):
+            raise e
+    except Exception as e:
+        raise e
 
 cdef _create_point_geometries(xarray, yarray):
     cdef:
@@ -73,8 +83,8 @@ cdef _create_point_geometries(xarray, yarray):
          for geom in geometries],
         dtype=object))
 
-
-cdef create_pygeos_polygon_from_relation(node_coordinates, relation_ways, member_roles):
+cdef create_relation_geometry(node_coordinates, relation_ways,
+                              member_roles, boundary):
     cdef int i, m_cnt
     cdef str role
 
@@ -87,22 +97,35 @@ cdef create_pygeos_polygon_from_relation(node_coordinates, relation_ways, member
     for i in range(0, m_cnt):
         role = member_roles[i]
         if role == "outer":
-            ring = create_linear_ring(coordinates[i])
+            if boundary:
+                ring = create_linestring(coordinates[i])
+            else:
+                ring = create_linear_ring(coordinates[i])
+
             if ring is not None:
                 shell.append(ring)
 
         elif role == "inner":
-            ring = create_linear_ring(coordinates[i])
+            if boundary:
+                ring = create_linestring(coordinates[i])
+            else:
+                ring = create_linear_ring(coordinates[i])
             if ring is not None:
                 holes.append(ring)
-
-        else:
-            return None
 
     if len(shell) == 0:
         return None
 
-    elif len(shell) == 1:
+    # Check if should build LineString
+    if boundary:
+        geoms = shell + holes
+        if len(geoms) == 1:
+            return geoms[0]
+        else:
+            return multilinestrings(geoms)
+
+    # Otherwise build Polygon (possibly with holes)
+    if len(shell) == 1:
         shell = shell[0]
 
     if len(holes) == 0:
@@ -110,17 +133,13 @@ cdef create_pygeos_polygon_from_relation(node_coordinates, relation_ways, member
 
     return polygons(shell, holes)
 
-
 cpdef create_node_coordinates_lookup(nodes):
     return _create_node_coordinates_lookup(nodes)
-
 
 cpdef create_point_geometries(xarray, yarray):
     return _create_point_geometries(xarray, yarray)
 
-
 cdef create_linestring_geometry(nodes, node_coordinates):
-
     coords = []
     n = len(nodes)
     for i in range(0, n):
@@ -189,8 +208,8 @@ cdef _create_way_geometries(node_coordinates, way_elements):
         # If first and last node are the same, it's a closed way
         if nodes[0] == nodes[-1]:
             tag_keys = way_elements.keys()
-            # Create Polygon unless way is of type 'highway' or 'barrier'
-            if "highway" in tag_keys or "barrier" in tag_keys:
+            # Create Polygon unless way is of type 'highway', 'barrier' or 'boundary'
+            if "highway" in tag_keys or "barrier" in tag_keys or "boundary" in tag_keys:
                 geom = create_linestring_geometry(nodes, node_coordinates)
             else:
                 geom = create_polygon_geometry(nodes, node_coordinates)
