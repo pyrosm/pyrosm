@@ -4,6 +4,7 @@ from pyrosm._arrays cimport concatenate_dicts_of_arrays
 from pyrosm.geometry cimport _create_point_geometries
 from pyrosm.geometry cimport create_way_geometries
 from pyrosm.relations import prepare_relations
+from shapely.geometry import box, Polygon, MultiPolygon
 
 cpdef create_nodes_gdf(nodes):
     cdef str k
@@ -65,7 +66,7 @@ cpdef prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_c
 
 cpdef prepare_geodataframe(nodes, node_coordinates, ways,
                            relations, relation_ways,
-                           tags_as_columns):
+                           tags_as_columns, bounding_box):
     # Prepare nodes
     node_gdf = prepare_node_gdf(nodes)
 
@@ -78,4 +79,19 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
     # Merge all
     gdf = pd.concat([node_gdf, way_gdf, relation_gdf])
     gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
+
+    # Filter by bounding box if it was used
+    # TODO: This would be faster using Pygeos,
+    #  but as GeoPandas 0.8.0 should start supporting it natively, let's keep things simple
+    if bounding_box is not None:
+        if type(bounding_box) not in [Polygon, MultiPolygon]:
+            bounding_box = box(*bounding_box)
+        # Filter data spatially
+        orig_cols = list(gdf.columns)
+        filter_gdf = gpd.GeoDataFrame({"geometry": [bounding_box]},
+                                      crs="epsg:4326",
+                                      index=[0])
+        gdf = gpd.sjoin(gdf, filter_gdf, how="inner")
+        gdf = gdf[orig_cols].reset_index(drop=True)
+
     return gdf
