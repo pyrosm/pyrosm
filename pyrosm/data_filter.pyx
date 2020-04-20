@@ -194,8 +194,13 @@ cdef filter_relation_indices(relations, osm_keys, data_filter):
     for i in range(0, n):
         tag = relations["tags"][i]
         if "type" in tag.keys():
-            # Keep only the ones that are MultiPolygons
-            if tag["type"] in ["multipolygon"]:
+            # https://wiki.openstreetmap.org/wiki/Types_of_relation
+            if tag["type"] in ["multipolygon", "boundary",
+                               "route", "route_master",
+                               "restriction", "public_transport",
+                               "network", "waterway", "connectivity",
+                               "enforcement", "destination_sign"
+                               ]:
                 if record_should_be_kept(tag, osm_keys, relation_filter):
                     indices.append(i)
     return indices
