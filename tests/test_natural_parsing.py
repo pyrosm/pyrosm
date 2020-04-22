@@ -61,10 +61,8 @@ def test_reading_natural_from_area_having_none(helsinki_pbf):
         if "could not find any buildings" in str(w):
             pass
 
-    # Result should be empty GeoDataFrame
-    assert isinstance(gdf, GeoDataFrame)
-    assert gdf.shape == (0, 0)
-
+    # Result should be None
+    assert gdf is None
 
 def test_passing_incorrect_custom_filter(test_pbf):
     from pyrosm import OSM
