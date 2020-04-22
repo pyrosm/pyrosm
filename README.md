@@ -54,7 +54,10 @@ However, on Windows installing geopandas with pip is likely to cause issues, hen
 
 ## How to use?
 
-Using `pyrosm` is straightforward. To read drivable street networks from OpenStreetMap protobuf file (package includes a small test protobuf file), simply:
+Using `pyrosm` is straightforward. See [docs](https://pyrosm.readthedocs.io/en/latest/basics.html) 
+for instructions how to use the library.
+
+To read drivable street networks from OpenStreetMap protobuf file (package includes a small test protobuf file), simply:
 
 ### Read street networks
 
@@ -217,15 +220,9 @@ get_network(network_type='walking') method of pyrosm.pyrosm.OSM instance
 
 ```
 
-## Examples
-
-For further usage examples (for now), take a look at the tests, such as:
-  - [test_network_parsing.py](tests/test_network_parsing.py)
-  - [test_building_parsing.py](tests/test_building_parsing.py)
-
 ## Performance
 
-Proper benchmarking results are on their way, but to give some idea, reading all drivable roads in Helsinki Region (approx. 85,000 roads) 
+See [docs](https://pyrosm.readthedocs.io/en/latest/benchmarking.html) for more comprehensive benchmarking tests. Reading all drivable roads in Helsinki Region (approx. 85,000 roads) 
 takes approximately **12 seconds** (laptop with 16GB memory, SSD drive, and Intel Core i5-8250U CPU 1.6 GHZ). And the result looks something like:
 
 ![Helsinki_driving_net](resources/img/Helsinki_driving_net.PNG)
