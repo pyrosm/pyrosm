@@ -29,6 +29,7 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
  - read Points of Interest (POI) from PBF
  - read landuse from PBF
  - read "natural" from PBF
+ - read boundaries from PBF (+ allow searching by name)
  - read any other data from PBF by using a custom user-defined filter
  - filter data based on bounding box
  
