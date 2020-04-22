@@ -177,7 +177,7 @@ def test_reading_buildings_with_relations(helsinki_pbf):
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], Polygon)
-    assert gdf.shape == (484, 34)
+    assert gdf.shape == (486, 34)
 
     required_cols = ['building', 'id', 'timestamp', 'version', 'tags', 'geometry']
 
