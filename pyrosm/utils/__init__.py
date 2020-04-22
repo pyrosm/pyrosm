@@ -51,3 +51,24 @@ def validate_booleans(keep_nodes, keep_ways, keep_relations):
     if keep_nodes is False and keep_ways is False and keep_relations is False:
         raise ValueError("At least on of the following parameters should be True: "
                          "'keep_nodes', 'keep_ways', or 'keep_relations'")
+
+
+def validate_boundary_type(boundary_type):
+    allowed_boundary_types = ["administrative", "national_park", "political",
+                              "postal_code", "protected_area", "aboriginal_lands",
+                              "maritime", "marker",
+                              # There is no consensus whether allowing the following ones should be done
+                              # but as they exist, allow using them here as well.
+                              # https://wiki.openstreetmap.org/wiki/Parcel
+                              "lot", "parcel", "tract",
+                              "all"]
+    allowed_text = ", ".join(allowed_boundary_types)
+    if not isinstance(boundary_type, str):
+        raise ValueError(f"'boundary_type' should be one of the following: {allowed_text}."
+                         f"Got '{boundary_type}' of type {type(boundary_type)}.")
+
+    boundary_type = boundary_type.strip().lower()
+    if boundary_type not in allowed_boundary_types:
+        raise ValueError(f"'boundary_type' should be one of the following: {allowed_text}."
+                         f"Got '{boundary_type}' of type {type(boundary_type)}.")
+    return boundary_type
