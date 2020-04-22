@@ -9,9 +9,14 @@ def get_boundary_data(node_coordinates, way_records, relations,
                       tags_as_columns, custom_filter,
                       boundary_type, name, bounding_box):
 
+    if boundary_type == "all":
+        boundary_type = True
+    else:
+        boundary_type = [boundary_type]
+
     # If custom_filter has not been defined, initialize with default
     if custom_filter is None:
-        custom_filter = {"boundary": [boundary_type]}
+        custom_filter = {"boundary": boundary_type}
 
     if "boundary" not in custom_filter.keys():
         custom_filter["boundary"] = True
