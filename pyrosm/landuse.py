@@ -33,7 +33,7 @@ def get_landuse_data(nodes, node_coordinates, way_records, relations,
         warnings.warn("Could not find any landuse elements for given area.",
                       UserWarning,
                       stacklevel=2)
-        return gpd.GeoDataFrame()
+        return None
 
     # Prepare GeoDataFrame
     gdf = prepare_geodataframe(nodes, node_coordinates, ways,

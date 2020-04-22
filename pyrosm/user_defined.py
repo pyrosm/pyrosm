@@ -47,7 +47,7 @@ def get_user_defined_data(nodes,
         warnings.warn("Could not find any OSM data for given area.",
                       UserWarning,
                       stacklevel=2)
-        return gpd.GeoDataFrame()
+        return None
 
     # Ensure that ways are None if returning those are not requested
     if not keep_ways:
