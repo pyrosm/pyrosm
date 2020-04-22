@@ -61,7 +61,6 @@ cdef create_linestring(coordinates):
             return None
         raise e
     except ValueError as e:
-        print(coordinates)
         if "not have enough dimensions" in str(e):
             raise e
     except Exception as e:
@@ -96,22 +95,34 @@ cdef create_relation_geometry(node_coordinates, relation_ways,
     m_cnt = len(member_roles)
     for i in range(0, m_cnt):
         role = member_roles[i]
+        coords = coordinates[i]
+
         if role == "outer":
             if boundary:
-                ring = create_linestring(coordinates[i])
+                geometry = create_linestring(coords)
             else:
-                ring = create_linear_ring(coordinates[i])
-
-            if ring is not None:
-                shell.append(ring)
+                geometry = create_linear_ring(coords)
+            if geometry is not None:
+                shell.append(geometry)
 
         elif role == "inner":
             if boundary:
-                ring = create_linestring(coordinates[i])
+                geometry = create_linestring(coords)
             else:
-                ring = create_linear_ring(coordinates[i])
-            if ring is not None:
-                holes.append(ring)
+                geometry = create_linear_ring(coords)
+            if geometry is not None:
+                holes.append(geometry)
+
+        elif boundary:
+            geometry = create_linestring(coords)
+            if geometry is not None:
+                shell.append(geometry)
+
+        # With all other roles try making Polygon
+        else:
+            geometry = create_linear_ring(coords)
+            if geometry is not None:
+                shell.append(geometry)
 
     if len(shell) == 0:
         return None
