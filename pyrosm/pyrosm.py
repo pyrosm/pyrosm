@@ -4,7 +4,7 @@ from pyrosm._arrays import concatenate_dicts_of_arrays
 from pyrosm.geometry import create_node_coordinates_lookup
 from pyrosm.frames import create_nodes_gdf
 from pyrosm.utils import validate_custom_filter, validate_osm_keys, \
-    validate_tags_as_columns, validate_booleans
+    validate_tags_as_columns, validate_booleans, validate_boundary_type
 from shapely.geometry import Polygon, MultiPolygon
 
 from pyrosm.boundary import get_boundary_data
@@ -318,6 +318,9 @@ class OSM:
               - `"protected_area"`
               - `"aboriginal_lands"`
               - `"maritime"`
+              - `"lot"`
+              - `"parcel"`
+              - `"tract"`
               - `"marker"`
               - `"all"`
 
@@ -347,18 +350,13 @@ class OSM:
         if isinstance(self._nodes, list):
             self._nodes = concatenate_dicts_of_arrays(self._nodes)
 
-        allowed_boundary_types = ["administrative", "national_park", "political",
-                                  "postal_code", "protected_darea", "aboriginal_lands",
-                                  "maritime", "marker", "all"]
+        # Check boundary type
+        boundary_type = validate_boundary_type(boundary_type)
 
-        if not isinstance(boundary_type, str):
-            raise ValueError(f"'boundary_type' should be one of the following. "
-                             f"Got '{boundary_type}' of type {type(boundary_type)}.")
-
-        boundary_type = boundary_type.strip().lower()
-        if boundary_type not in allowed_boundary_types:
-            raise ValueError(f"'boundary_type' should be one of the following. "
-                             f"Got '{boundary_type}' of type {type(boundary_type)}.")
+        if name is not None:
+            if not isinstance(name, str):
+                raise ValueError(f"'name' should be text."
+                                 f"Got '{name}' of type {type(name)}.")
 
         gdf = get_boundary_data(self._node_coordinates,
                                 self._way_records,
