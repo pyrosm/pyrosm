@@ -14,7 +14,7 @@ covering large regions in a matter of minutes instead of hours.
 
 For instance, parsing all roads from the state of New York (USA) with a basic laptop (16GB memory and SSD),
 takes less than **3 minutes** and parsing the buildings from the same region takes approximately
-**4.5 minutes** (see benchmarks for details):
+**4.5 minutes** (see `benchmarks <https://pyrosm.readthedocs.io/en/latest/benchmarking.html>`__ for details):
 
 .. figure:: img/NY_roads_and_buildings.PNG
 
