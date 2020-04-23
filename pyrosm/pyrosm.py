@@ -151,7 +151,7 @@ class OSM:
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info:
+        if not self.keep_node_info and gdf is not None:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
 
@@ -196,7 +196,7 @@ class OSM:
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info:
+        if not self.keep_node_info and gdf is not None:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
@@ -247,7 +247,7 @@ class OSM:
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info:
+        if not self.keep_node_info and gdf is not None:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
@@ -297,7 +297,7 @@ class OSM:
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info:
+        if not self.keep_node_info and gdf is not None:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
@@ -369,7 +369,7 @@ class OSM:
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info:
+        if not self.keep_node_info and gdf is not None:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
@@ -462,7 +462,7 @@ class OSM:
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info:
+        if not self.keep_node_info and gdf is not None:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
@@ -564,7 +564,7 @@ class OSM:
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info:
+        if not self.keep_node_info and gdf is not None:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
