@@ -6,9 +6,10 @@ Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps in
 Points of Interest (POI), landuse and natural elements. Also fully customized queries are supported which makes it possible
 to parse the data from OSM with more specific filters.
 
-Pyrosm is easy to use and it provides a somewhat similar user interface as OSMnx. The main difference between pyrosm and OSMnx is
-that OSMnx reads the data over internet using OverPass API, whereas pyrosm reads the data from local OSM data dumps that can be
-downloaded e.g. from GeoFabrik's website. This makes it possible to read data much faster, thus allowing parsing OSM data
+Pyrosm is easy to use and it provides a somewhat similar user interface as `OSMnx <https://github.com/gboeing/osmnx>`__.
+The main difference between pyrosm and OSMnx is that OSMnx reads the data using an OverPass API, whereas pyrosm reads
+the data from local OSM data dumps that can be downloaded e.g. from GeoFabrik's website.
+This makes it possible to read data much faster, thus allowing parsing OSM data
 covering large regions in a matter of minutes instead of hours.
 
 For instance, parsing all roads from the state of New York (USA) with a basic laptop (16GB memory and SSD),
@@ -26,6 +27,7 @@ Current features
  - read Points of Interest (POI) from PBF
  - read landuse from PBF
  - read "natural" from PBF
+ - read boundaries from PBF (such as administrative borders)
  - read any other data from PBF by using a custom user-defined filter
  - filter data based on bounding box
 
