@@ -1,10 +1,10 @@
 from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
-import geopandas as gpd
 import warnings
 
 
-def get_network_data(node_coordinates, way_records, tags_as_columns, network_filter):
+def get_network_data(node_coordinates, way_records, tags_as_columns,
+                     network_filter, bounding_box):
     # Tags to keep as separate columns
     tags_as_columns += ["id", "nodes", "timestamp", "changeset", "version"]
 
@@ -24,11 +24,12 @@ def get_network_data(node_coordinates, way_records, tags_as_columns, network_fil
         warnings.warn("Could not find any buildings for given area.",
                       UserWarning,
                       stacklevel=2)
-        return gpd.GeoDataFrame()
+        return None
 
     # Prepare GeoDataFrame
     gdf = prepare_geodataframe(nodes, node_coordinates, ways,
-                               relations, relation_ways, tags_as_columns)
+                               relations, relation_ways,
+                               tags_as_columns, bounding_box)
     return gdf
 
 

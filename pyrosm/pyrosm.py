@@ -4,9 +4,10 @@ from pyrosm._arrays import concatenate_dicts_of_arrays
 from pyrosm.geometry import create_node_coordinates_lookup
 from pyrosm.frames import create_nodes_gdf
 from pyrosm.utils import validate_custom_filter, validate_osm_keys, \
-    validate_tags_as_columns, validate_booleans
+    validate_tags_as_columns, validate_booleans, validate_boundary_type
 from shapely.geometry import Polygon, MultiPolygon
 
+from pyrosm.boundary import get_boundary_data
 from pyrosm.buildings import get_building_data
 from pyrosm.landuse import get_landuse_data
 from pyrosm.natural import get_natural_data
@@ -32,8 +33,6 @@ class OSM:
             bounding box either as a list `[minx, miny, maxx, maxy]` or
             as a `shapely.geometry.Polygon`.
 
-            Note: if using Shapely Polygon, the tool will use its bounds.
-            Filtering based on complex shapes is not currently supported.
         """
         if not isinstance(filepath, str):
             raise ValueError("'filepath' should be a string.")
@@ -46,8 +45,11 @@ class OSM:
         if bounding_box is None:
             self.bounding_box = None
         elif type(bounding_box) in [Polygon, MultiPolygon]:
-            self.bounding_box = bounding_box.bounds
+            self.bounding_box = bounding_box
         elif isinstance(bounding_box, list):
+            if not len(bounding_box) == 4:
+                raise ValueError("When passing bounding box as a list it should contain 4 coordinates: "
+                                 "[minx, miny, maxx, maxy].")
             self.bounding_box = bounding_box
         else:
             raise ValueError("bounding_box should be a list or a shapely Polygon.")
@@ -66,9 +68,16 @@ class OSM:
         self._relations = None
 
     def _read_pbf(self):
+        # PBF reading requires a list of bounding box coordinates
+        if type(self.bounding_box) in [Polygon, MultiPolygon]:
+            bounding_box = self.bounding_box.bounds
+        else:
+            bounding_box = self.bounding_box
+
         nodes, ways, relations, way_tags = parse_osm_data(self.filepath,
-                                                          self.bounding_box,
+                                                          bounding_box,
                                                           exclude_relations=False)
+
         self._nodes, self._way_records, \
         self._relations, self._all_way_tags = nodes, ways, relations, way_tags
 
@@ -136,12 +145,13 @@ class OSM:
         gdf = get_network_data(self._node_coordinates,
                                self._way_records,
                                tags_as_columns,
-                               network_filter
+                               network_filter,
+                               self.bounding_box
                                )
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info:
+        if not self.keep_node_info and gdf is not None:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
 
@@ -180,11 +190,13 @@ class OSM:
                                 self._way_records,
                                 self._relations,
                                 tags_as_columns,
-                                custom_filter)
+                                custom_filter,
+                                self.bounding_box
+                                )
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info:
+        if not self.keep_node_info and gdf is not None:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
@@ -229,11 +241,13 @@ class OSM:
                                self._way_records,
                                self._relations,
                                tags_as_columns,
-                               custom_filter)
+                               custom_filter,
+                               self.bounding_box
+                               )
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info:
+        if not self.keep_node_info and gdf is not None:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
@@ -278,11 +292,84 @@ class OSM:
                                self._way_records,
                                self._relations,
                                tags_as_columns,
-                               custom_filter)
+                               custom_filter,
+                               self.bounding_box)
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info:
+        if not self.keep_node_info and gdf is not None:
+            if "nodes" in gdf.columns:
+                gdf = gdf.drop("nodes", axis=1)
+        return gdf
+
+    def get_boundaries(self, boundary_type="administrative", name=None, custom_filter=None):
+        """
+        Parses boundaries from OSM.
+
+        Parameters
+        ----------
+
+        boundary_type : str
+            The type of boundaries to parse. Possible values:
+              - `"administrative` (default)
+              - `"national_park"`
+              - `"political"`
+              - `"postal_code"`
+              - `"protected_area"`
+              - `"aboriginal_lands"`
+              - `"maritime"`
+              - `"lot"`
+              - `"parcel"`
+              - `"tract"`
+              - `"marker"`
+              - `"all"`
+
+        name : str (optional)
+            Name of the administrative area that will be searched for.
+
+        custom_filter : dict (optional)
+            Additional filter for what kind of boundary to parse.
+
+
+        See Also
+        --------
+
+        Take a look at OSM documentation for further details about the data:
+
+        `https://wiki.openstreetmap.org/wiki/Key:boundary <https://wiki.openstreetmap.org/wiki/Key:bondary>`__
+
+        """
+
+        if self._nodes is None or self._way_records is None:
+            self._read_pbf()
+
+        # Default tags to keep as columns
+        tags_as_columns = self.conf.tags.boundary
+
+        # If nodes are still in chunks, merge before passing forward
+        if isinstance(self._nodes, list):
+            self._nodes = concatenate_dicts_of_arrays(self._nodes)
+
+        # Check boundary type
+        boundary_type = validate_boundary_type(boundary_type)
+
+        if name is not None:
+            if not isinstance(name, str):
+                raise ValueError(f"'name' should be text."
+                                 f"Got '{name}' of type {type(name)}.")
+
+        gdf = get_boundary_data(self._node_coordinates,
+                                self._way_records,
+                                self._relations,
+                                tags_as_columns,
+                                custom_filter,
+                                boundary_type,
+                                name,
+                                self.bounding_box)
+
+        # Do not keep node information unless specifically asked for
+        # (they are in a list, and can cause issues when saving the files)
+        if not self.keep_node_info and gdf is not None:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
@@ -370,11 +457,12 @@ class OSM:
                            self._way_records,
                            self._relations,
                            tags_as_columns,
-                           custom_filter)
+                           custom_filter,
+                           self.bounding_box)
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info:
+        if not self.keep_node_info and gdf is not None:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
@@ -470,12 +558,13 @@ class OSM:
                                     filter_type,
                                     keep_nodes,
                                     keep_ways,
-                                    keep_relations
+                                    keep_relations,
+                                    self.bounding_box
                                     )
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info:
+        if not self.keep_node_info and gdf is not None:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf

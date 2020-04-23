@@ -1004,3 +1004,27 @@ aeroway_columns = ["aerodrome",
                    "windsock",
                    "highway_strip",
                    ]
+
+
+# ========================
+# BOUNDARY TAGS
+# ========================
+# See: https://wiki.openstreetmap.org/wiki/Key:boundary
+boundary_columns = basic_info_tags + \
+                   ["aboriginal_lands",
+                    "admin_level",
+                    "administrative",
+                    "boundary",
+                    "left:district",
+                    "right:district",
+                    "maritime",
+                    "marker",
+                    "national_park",
+                    "political",
+                    "postal_code",
+                    "protected_area",
+                    "admin_level",
+                    "border_type",
+                    "start_date",
+                   ]
+

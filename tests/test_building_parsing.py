@@ -177,7 +177,7 @@ def test_reading_buildings_with_relations(helsinki_pbf):
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], Polygon)
-    assert gdf.shape == (484, 34)
+    assert gdf.shape == (486, 34)
 
     required_cols = ['building', 'id', 'timestamp', 'version', 'tags', 'geometry']
 
@@ -201,9 +201,8 @@ def test_reading_buildings_from_area_having_none(helsinki_pbf):
         if "could not find any buildings" in str(w):
             pass
 
-    # Result should be empty GeoDataFrame
-    assert isinstance(gdf, GeoDataFrame)
-    assert gdf.shape == (0, 0)
+    # Result should be None
+    assert gdf is None
 
 
 def test_passing_incorrect_custom_filter(test_pbf):

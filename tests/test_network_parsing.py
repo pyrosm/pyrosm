@@ -280,7 +280,5 @@ def test_reading_network_from_area_without_data(helsinki_pbf):
         if "could not find any network data" in str(w):
             pass
 
-    # Result should be empty GeoDataFrame
-    assert isinstance(gdf, GeoDataFrame)
-    assert gdf.shape == (0, 0)
-
+    # Result should be None
+    assert gdf is None

@@ -15,6 +15,12 @@ def helsinki_pbf():
 
 
 @pytest.fixture
+def helsinki_region_pbf():
+    pbf_path = get_path("helsinki_region_pbf")
+    return pbf_path
+
+
+@pytest.fixture
 def default_filter():
     return {"amenity": True,
             "craft": True,
@@ -338,7 +344,7 @@ def test_reading_with_custom_filters_selecting_specific_osm_element(helsinki_pbf
     # Now should only have 'relation' osm_type
     assert len(filtered['osm_type'].unique()) == 1
     assert filtered['osm_type'].unique()[0] == 'relation'
-    assert len(filtered) == 64
+    assert len(filtered) == 66
 
     # Test getting only ways
     # ---------------------------
@@ -381,7 +387,7 @@ def test_custom_filters_with_custom_keys(helsinki_pbf):
                                               filter_type="keep",
                                               )
     assert isinstance(filtered, GeoDataFrame)
-    assert len(filtered) == 112
+    assert len(filtered) == 63
 
     # Test a more complicated query
     # -----------------------------
@@ -401,7 +407,7 @@ def test_custom_filters_with_custom_keys(helsinki_pbf):
         keep_nodes=False)
 
     assert isinstance(transit, GeoDataFrame)
-    assert len(transit) == 374
+    assert len(transit) == 317
 
 
 def test_reading_custom_from_area_having_none(helsinki_pbf):
@@ -420,6 +426,5 @@ def test_reading_custom_from_area_having_none(helsinki_pbf):
         if "could not find any OSM data" in str(w):
             pass
 
-    # Result should be empty GeoDataFrame
-    assert isinstance(gdf, GeoDataFrame)
-    assert gdf.shape == (0, 0)
+    # Result should be None
+    assert gdf is None

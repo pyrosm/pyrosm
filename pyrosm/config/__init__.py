@@ -24,6 +24,7 @@ class Tags:
     aerialway = aerialway_columns
     aeroway = aeroway_columns
     amenity = amenity_columns
+    boundary = boundary_columns
     building = building_columns
     craft = craft_columns
     emergency = emergency_columns

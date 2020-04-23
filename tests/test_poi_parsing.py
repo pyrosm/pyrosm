@@ -49,7 +49,8 @@ def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
                        osm._way_records,
                        osm._relations,
                        tags_as_columns,
-                       default_filter)
+                       default_filter,
+                       None)
 
     assert isinstance(gdf, GeoDataFrame)
 
@@ -59,7 +60,7 @@ def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
         assert col in gdf.columns
 
     # Test shape
-    assert len(gdf) == 1780
+    assert len(gdf) == 1783
     assert gdf.crs == pyproj.CRS.from_epsg(4326)
 
 
@@ -79,9 +80,8 @@ def test_reading_pois_from_area_having_none(helsinki_pbf):
         if "could not find any buildings" in str(w):
             pass
 
-    # Result should be empty GeoDataFrame
-    assert isinstance(gdf, GeoDataFrame)
-    assert gdf.shape == (0, 0)
+    # Result should be None
+    assert gdf is None
 
 
 def test_passing_incorrect_custom_filter(test_pbf):
