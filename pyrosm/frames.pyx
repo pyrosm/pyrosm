@@ -94,4 +94,7 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
         gdf = gpd.sjoin(gdf, filter_gdf, how="inner")
         gdf = gdf[orig_cols].reset_index(drop=True)
 
+    if len(gdf) == 0:
+        return None
+
     return gdf

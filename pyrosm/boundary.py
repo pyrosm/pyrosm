@@ -46,6 +46,9 @@ def get_boundary_data(node_coordinates, way_records, relations,
                                relations, relation_ways,
                                tags_as_columns, bounding_box)
 
+    if gdf is None:
+        return None
+
     # Filter by name
     # (use Pandas for filtering, which allows using 'contains' more easily)
     if name is not None:
