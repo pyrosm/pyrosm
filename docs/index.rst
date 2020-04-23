@@ -12,9 +12,9 @@ the data from local OSM data dumps that can be downloaded e.g. from GeoFabrik's 
 This makes it possible to read data much faster, thus allowing parsing OSM data
 covering large regions in a matter of minutes instead of hours.
 
-For instance, parsing all roads from the state of New York (USA) with a basic laptop (16GB memory and SSD),
-takes less than **3 minutes** and parsing the buildings from the same region takes approximately
-**4.5 minutes** (see `benchmarks <https://pyrosm.readthedocs.io/en/latest/benchmarking.html>`__ for details):
+For instance, parsing all roads from the state of New York (USA) with a "basic" work laptop (16GB memory, SSD, and Intel Core i5 CPU),
+takes less than **3 minutes** and parsing the buildings from the same region takes less than
+**4 minutes** (see `benchmarks <https://pyrosm.readthedocs.io/en/latest/benchmarking.html>`__ for details):
 
 .. figure:: img/NY_roads_and_buildings.PNG
 
@@ -38,8 +38,6 @@ Current features
    installation.ipynb
    basics.ipynb
    custom_filter.ipynb
-   osm_tags.ipynb
-   customized_queries.ipynb
    benchmarking.ipynb
 
 
