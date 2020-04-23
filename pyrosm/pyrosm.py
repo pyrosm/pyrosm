@@ -316,7 +316,7 @@ class OSM:
 
         boundary_type : str
             The type of boundaries to parse. Possible values:
-              - `"administrative` (default)
+              - `"administrative"` (default)
               - `"national_park"`
               - `"political"`
               - `"postal_code"`
