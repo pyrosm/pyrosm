@@ -31,10 +31,10 @@ class OSM:
         filepath : str
             Filepath to input OSM dataset ( *.osm.pbf )
 
-        bounding_box : list | shapely.Polygon (optional)
+        bounding_box : list | shapely geometry
             Filtering OSM data spatially is allowed by passing a
             bounding box either as a list `[minx, miny, maxx, maxy]` or
-            as a `shapely.geometry.Polygon`.
+            as a Shapely Polygon/MultiPolygon or closed LineString/LinearRing.
 
         """
         if not isinstance(filepath, str):
