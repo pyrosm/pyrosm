@@ -4,9 +4,10 @@ from pyrosm._arrays import concatenate_dicts_of_arrays
 from pyrosm.geometry import create_node_coordinates_lookup
 from pyrosm.frames import create_nodes_gdf
 from pyrosm.utils import validate_custom_filter, validate_osm_keys, \
-    validate_tags_as_columns, validate_booleans, validate_boundary_type
-from shapely.geometry import Polygon, MultiPolygon
-
+    validate_tags_as_columns, validate_booleans, validate_boundary_type, \
+    validate_bounding_box
+from shapely.geometry import Polygon, MultiPolygon, \
+    LineString, LinearRing, MultiLineString
 from pyrosm.boundary import get_boundary_data
 from pyrosm.buildings import get_building_data
 from pyrosm.landuse import get_landuse_data
@@ -18,6 +19,8 @@ from pyrosm.user_defined import get_user_defined_data
 
 class OSM:
     from pyrosm.utils._compat import PYGEOS_SHAPELY_COMPAT
+    allowed_bbox_types = [Polygon, MultiPolygon, MultiLineString,
+                          LineString, LinearRing]
 
     def __init__(self, filepath,
                  bounding_box=None):
@@ -28,10 +31,10 @@ class OSM:
         filepath : str
             Filepath to input OSM dataset ( *.osm.pbf )
 
-        bounding_box : list | shapely.Polygon (optional)
+        bounding_box : list | shapely geometry
             Filtering OSM data spatially is allowed by passing a
             bounding box either as a list `[minx, miny, maxx, maxy]` or
-            as a `shapely.geometry.Polygon`.
+            as a Shapely Polygon/MultiPolygon or closed LineString/LinearRing.
 
         """
         if not isinstance(filepath, str):
@@ -44,15 +47,17 @@ class OSM:
 
         if bounding_box is None:
             self.bounding_box = None
-        elif type(bounding_box) in [Polygon, MultiPolygon]:
-            self.bounding_box = bounding_box
+        elif type(bounding_box) in self.allowed_bbox_types:
+            # Ensures bounding box is a closed geometry
+            # (+ attempts to close MultiLineStrings)
+            self.bounding_box = validate_bounding_box(bounding_box)
         elif isinstance(bounding_box, list):
             if not len(bounding_box) == 4:
                 raise ValueError("When passing bounding box as a list it should contain 4 coordinates: "
                                  "[minx, miny, maxx, maxy].")
             self.bounding_box = bounding_box
         else:
-            raise ValueError("bounding_box should be a list or a shapely Polygon.")
+            raise ValueError("bounding_box should be a list, Shapely Polygon or a Shapely LinearRing.")
 
         self.conf = Conf
         self.keep_node_info = False
@@ -69,7 +74,7 @@ class OSM:
 
     def _read_pbf(self):
         # PBF reading requires a list of bounding box coordinates
-        if type(self.bounding_box) in [Polygon, MultiPolygon]:
+        if type(self.bounding_box) in self.allowed_bbox_types:
             bounding_box = self.bounding_box.bounds
         else:
             bounding_box = self.bounding_box
