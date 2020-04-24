@@ -56,10 +56,10 @@ def test_custom(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
 
-def test_boundaries(test_pbf):
+def test_boundaries(helsinki_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
-    osm = OSM(test_pbf)
+    osm = OSM(helsinki_pbf)
     gdf = osm.get_boundaries()
     assert isinstance(gdf, GeoDataFrame)
 
