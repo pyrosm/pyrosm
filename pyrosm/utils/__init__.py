@@ -1,3 +1,8 @@
+from shapely import ops
+from shapely.geometry import MultiLineString, \
+    Polygon, MultiPolygon
+
+
 def validate_custom_filter(custom_filter):
     # Check that the custom filter is in correct format
     if not isinstance(custom_filter, dict):
@@ -72,3 +77,19 @@ def validate_boundary_type(boundary_type):
         raise ValueError(f"'boundary_type' should be one of the following: {allowed_text}."
                          f"Got '{boundary_type}' of type {type(boundary_type)}.")
     return boundary_type
+
+
+def validate_bounding_box(geom):
+    if type(geom) in [Polygon, MultiPolygon]:
+        return geom
+
+    elif isinstance(geom, MultiLineString):
+        geom = ops.linemerge(geom)
+
+    if not geom.is_closed:
+        raise ValueError(
+            "Provided bounding box is not a closed geometry. "
+            "Ensure that you pass a Polygon or LinearRing."
+        )
+    return Polygon(geom)
+

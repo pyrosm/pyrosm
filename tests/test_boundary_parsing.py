@@ -53,32 +53,6 @@ def test_reading_boundaries_with_name_search(helsinki_pbf):
         assert gdf.osm_type.unique()[0] == 'relation'
 
 
-def test_reading_all_boundaries(helsinki_region_pbf):
-    from pyrosm import OSM
-    osm = OSM(helsinki_region_pbf)
-    gdf = osm.get_boundaries(boundary_type="all")
-
-    # Test shape
-    assert gdf.shape == (733, 19)
-
-    required_columns = ['name', 'admin_level', 'boundary', 'id', 'timestamp', 'version',
-                        'changeset', 'geometry', 'tags', 'osm_type']
-
-    for col in required_columns:
-        assert col in gdf.columns
-
-    # Test filtering different types of boundaries
-    value_counts = gdf['boundary'].value_counts()
-
-    for boundary_type, cnt in value_counts.items():
-        # Some incorrect boundary types exists in the data
-        if boundary_type in ["lot 1", "imagery", "historic"]:
-            continue
-
-        gdf = osm.get_boundaries(boundary_type=boundary_type)
-        assert len(gdf) >= cnt, f"Got incorrect number of rows with {boundary_type}"
-
-
 def test_passing_incorrect_parameters(helsinki_pbf):
     from pyrosm import OSM
     osm = OSM(helsinki_pbf)
@@ -97,4 +71,49 @@ def test_passing_incorrect_parameters(helsinki_pbf):
             pass
     except Exception as e:
         raise e
+
+
+def test_adding_extra_attribute(helsinki_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    osm = OSM(filepath=helsinki_pbf)
+    gdf = osm.get_boundaries()
+    extra_col = "wikidata"
+    extra = osm.get_boundaries(extra_attributes=[extra_col])
+
+    # The extra should have one additional column compared to the original one
+    assert extra.shape[1] == gdf.shape[1]+1
+    # Should have same number of rows
+    assert extra.shape[0] == gdf.shape[0]
+    assert extra_col in extra.columns
+    assert len(extra[extra_col].dropna().unique()) > 0
+    assert isinstance(gdf, GeoDataFrame)
+
+
+def test_reading_all_boundaries(helsinki_region_pbf):
+    from pyrosm import OSM
+    osm = OSM(helsinki_region_pbf)
+    gdf = osm.get_boundaries(boundary_type="all")
+
+    # Test shape
+    assert gdf.shape == (733, 20)
+
+    required_columns = ['name', 'admin_level', 'boundary', 'id', 'timestamp', 'version',
+                        'changeset', 'geometry', 'tags', 'osm_type']
+
+    for col in required_columns:
+        assert col in gdf.columns
+
+    # Test filtering different types of boundaries
+    value_counts = gdf['boundary'].value_counts()
+
+    for boundary_type, cnt in value_counts.items():
+        # Some incorrect boundary types exists in the data
+        if boundary_type in ["lot 1", "imagery", "historic"]:
+            continue
+
+        gdf = osm.get_boundaries(boundary_type=boundary_type)
+        assert len(gdf) >= cnt, f"Got incorrect number of rows with {boundary_type}"
+
 

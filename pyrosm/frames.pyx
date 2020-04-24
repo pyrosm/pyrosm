@@ -4,7 +4,8 @@ from pyrosm._arrays cimport concatenate_dicts_of_arrays
 from pyrosm.geometry cimport _create_point_geometries
 from pyrosm.geometry cimport create_way_geometries
 from pyrosm.relations import prepare_relations
-from shapely.geometry import box, Polygon, MultiPolygon
+from shapely.geometry import box
+
 
 cpdef create_nodes_gdf(nodes):
     cdef str k
@@ -81,10 +82,11 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
     gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
 
     # Filter by bounding box if it was used
-    # TODO: This would be faster using Pygeos,
-    #  but as GeoPandas 0.8.0 should start supporting it natively, let's keep things simple
+    # This would be faster using Pygeos,
+    # but as GeoPandas 0.8.0 should start supporting it natively,
+    # let's keep things simple
     if bounding_box is not None:
-        if type(bounding_box) not in [Polygon, MultiPolygon]:
+        if isinstance(bounding_box, list):
             bounding_box = box(*bounding_box)
         # Filter data spatially
         orig_cols = list(gdf.columns)
@@ -93,5 +95,8 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
                                       index=[0])
         gdf = gpd.sjoin(gdf, filter_gdf, how="inner")
         gdf = gdf[orig_cols].reset_index(drop=True)
+
+    if len(gdf) == 0:
+        return None
 
     return gdf

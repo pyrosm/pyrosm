@@ -1,6 +1,20 @@
 Changelog
 =========
 
+v0.4.2 (April 23, 2020)
+-----------------------
+
+- Add functionality to parse boundaries from PBF (+ integrate name search for finding e.g. specific administrative boundary)
+- Support using Shapely Polygon / MultiPolygon to filter the data spatially
+- add possibility to add "extra attributes" (i.e. OSM keys) that will be parsed as columns.
+- improve documentation
+
+v0.4.1 (April 17, 2020)
+-----------------------
+
+- add documentation
+- create website: https://pyrosm.readthedocs.io
+
 v0.4.0 (April 16, 2020)
 -----------------------
 

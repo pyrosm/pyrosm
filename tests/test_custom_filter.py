@@ -49,7 +49,7 @@ def test_parsing_osm_with_custom_filter_by_excluding_tags(test_pbf):
     custom_filter = {"building": ["residential"]}
     filter_type = "exclude"
     osm_type = "building"
-    gdf = osm.get_osm_by_custom_criteria(custom_filter=custom_filter,
+    gdf = osm.get_data_by_custom_criteria(custom_filter=custom_filter,
                                          filter_type=filter_type,
                                          osm_keys_to_keep=osm_type,
                                          tags_as_columns=tags_as_columns
@@ -88,7 +88,7 @@ def test_parsing_osm_with_custom_filter_by_including_tags(test_pbf):
     custom_filter = {"building": ["retail"]}
     filter_type = "keep"
     osm_type = "building"
-    gdf = osm.get_osm_by_custom_criteria(custom_filter=custom_filter,
+    gdf = osm.get_data_by_custom_criteria(custom_filter=custom_filter,
                                          filter_type=filter_type,
                                          osm_keys_to_keep=osm_type,
                                          tags_as_columns=tags_as_columns
@@ -124,7 +124,7 @@ def test_using_incorrect_filter(test_pbf):
     # 1.
     custom_filter = None
     try:
-        gdf = osm.get_osm_by_custom_criteria(custom_filter=custom_filter)
+        gdf = osm.get_data_by_custom_criteria(custom_filter=custom_filter)
     except ValueError as e:
         if "should be a Python dictionary" in str(e):
             pass
@@ -134,7 +134,7 @@ def test_using_incorrect_filter(test_pbf):
     custom_filter = {"building": [1]}
     # 2.
     try:
-        gdf = osm.get_osm_by_custom_criteria(custom_filter=custom_filter)
+        gdf = osm.get_data_by_custom_criteria(custom_filter=custom_filter)
     except ValueError as e:
         if "string" in str(e):
             pass
@@ -144,7 +144,7 @@ def test_using_incorrect_filter(test_pbf):
     custom_filter = {"building": ["correct_string", 1]}
     # 3.
     try:
-        gdf = osm.get_osm_by_custom_criteria(custom_filter=custom_filter)
+        gdf = osm.get_data_by_custom_criteria(custom_filter=custom_filter)
     except ValueError as e:
         if "string" in str(e):
             pass
@@ -153,7 +153,7 @@ def test_using_incorrect_filter(test_pbf):
     # 4.
     custom_filter = {0: ["residential"]}
     try:
-        gdf = osm.get_osm_by_custom_criteria(custom_filter=custom_filter)
+        gdf = osm.get_data_by_custom_criteria(custom_filter=custom_filter)
     except ValueError as e:
         if "string" in str(e):
             pass
@@ -171,7 +171,7 @@ def test_using_incorrect_tags(test_pbf):
     custom_filter = {"building": ["retail"]}
     # Test that passing incorrect data works as should
     try:
-        gdf = osm.get_osm_by_custom_criteria(custom_filter=custom_filter,
+        gdf = osm.get_data_by_custom_criteria(custom_filter=custom_filter,
                                              tags_as_columns=tags_as_columns
                                              )
     except ValueError as e:
@@ -189,7 +189,7 @@ def test_using_incorrect_filter_type(test_pbf):
     filter_type = "incorrect_test"
     # Test that passing incorrect data works as should
     try:
-        gdf = osm.get_osm_by_custom_criteria(custom_filter=custom_filter,
+        gdf = osm.get_data_by_custom_criteria(custom_filter=custom_filter,
                                              filter_type=filter_type
                                              )
     except ValueError as e:
@@ -207,7 +207,7 @@ def test_using_incorrect_booleans(test_pbf):
     incorrect_bool = "foo"
     # Test that passing incorrect data works as should
     try:
-        gdf = osm.get_osm_by_custom_criteria(custom_filter=custom_filter,
+        gdf = osm.get_data_by_custom_criteria(custom_filter=custom_filter,
                                              keep_nodes=incorrect_bool
                                              )
     except ValueError as e:
@@ -217,7 +217,7 @@ def test_using_incorrect_booleans(test_pbf):
             raise e
 
     try:
-        gdf = osm.get_osm_by_custom_criteria(custom_filter=custom_filter,
+        gdf = osm.get_data_by_custom_criteria(custom_filter=custom_filter,
                                              keep_ways=incorrect_bool
                                              )
     except ValueError as e:
@@ -227,7 +227,7 @@ def test_using_incorrect_booleans(test_pbf):
             raise e
 
     try:
-        gdf = osm.get_osm_by_custom_criteria(custom_filter=custom_filter,
+        gdf = osm.get_data_by_custom_criteria(custom_filter=custom_filter,
                                              keep_relations=incorrect_bool
                                              )
     except ValueError as e:
@@ -238,7 +238,7 @@ def test_using_incorrect_booleans(test_pbf):
 
 
     try:
-        gdf = osm.get_osm_by_custom_criteria(custom_filter=custom_filter,
+        gdf = osm.get_data_by_custom_criteria(custom_filter=custom_filter,
                                              keep_relations=False,
                                              keep_ways=False,
                                              keep_nodes=False
@@ -258,7 +258,7 @@ def test_using_incorrect_osm_keys(test_pbf):
     custom_filter = {"building": ["retail"]}
     # Test that passing incorrect data works as should
     try:
-        gdf = osm.get_osm_by_custom_criteria(custom_filter=custom_filter,
+        gdf = osm.get_data_by_custom_criteria(custom_filter=custom_filter,
                                              osm_keys_to_keep=osm_keys
                                              )
     except ValueError as e:
@@ -281,7 +281,7 @@ def test_reading_with_custom_filters_with_including(test_pbf):
     cnts = gdf_all['building'].value_counts()
     for filter_, cnt in cnts.items():
         # Use the custom filter
-        filtered = osm.get_osm_by_custom_criteria(custom_filter={'building': [filter_]},
+        filtered = osm.get_data_by_custom_criteria(custom_filter={'building': [filter_]},
                                                   filter_type="keep")
 
         assert isinstance(filtered, GeoDataFrame)
@@ -310,7 +310,7 @@ def test_reading_with_custom_filters_with_excluding(test_pbf):
     n = len(gdf_all)
     for filter_, cnt in cnts.items():
         # Use the custom filter
-        filtered = osm.get_osm_by_custom_criteria(custom_filter={'building': [filter_]},
+        filtered = osm.get_data_by_custom_criteria(custom_filter={'building': [filter_]},
                                                   filter_type="exclude")
 
         assert isinstance(filtered, GeoDataFrame)
@@ -334,7 +334,7 @@ def test_reading_with_custom_filters_selecting_specific_osm_element(helsinki_pbf
 
     # Test getting only relations
     # ---------------------------
-    filtered = osm.get_osm_by_custom_criteria(custom_filter={'building': True},
+    filtered = osm.get_data_by_custom_criteria(custom_filter={'building': True},
                                               filter_type="keep",
                                               keep_nodes=False,
                                               keep_ways=False,
@@ -348,7 +348,7 @@ def test_reading_with_custom_filters_selecting_specific_osm_element(helsinki_pbf
 
     # Test getting only ways
     # ---------------------------
-    filtered = osm.get_osm_by_custom_criteria(custom_filter={'building': True},
+    filtered = osm.get_data_by_custom_criteria(custom_filter={'building': True},
                                               filter_type="keep",
                                               keep_nodes=False,
                                               keep_ways=True,
@@ -362,7 +362,7 @@ def test_reading_with_custom_filters_selecting_specific_osm_element(helsinki_pbf
 
     # Test getting only nodes
     # ---------------------------
-    filtered = osm.get_osm_by_custom_criteria(custom_filter={'building': True},
+    filtered = osm.get_data_by_custom_criteria(custom_filter={'building': True},
                                               filter_type="keep",
                                               keep_nodes=True,
                                               keep_ways=False,
@@ -375,19 +375,19 @@ def test_reading_with_custom_filters_selecting_specific_osm_element(helsinki_pbf
     assert len(filtered) == 36
 
 
-def test_custom_filters_with_custom_keys(helsinki_pbf):
+def test_custom_filters_with_custom_keys(helsinki_region_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
 
     # Get first all data
-    osm = OSM(filepath=helsinki_pbf)
+    osm = OSM(filepath=helsinki_region_pbf)
 
     # Test reading public transport related data
-    filtered = osm.get_osm_by_custom_criteria(custom_filter={'public_transport': True},
+    filtered = osm.get_data_by_custom_criteria(custom_filter={'public_transport': True},
                                               filter_type="keep",
                                               )
     assert isinstance(filtered, GeoDataFrame)
-    assert len(filtered) == 63
+    assert len(filtered) == 5542
 
     # Test a more complicated query
     # -----------------------------
@@ -398,7 +398,7 @@ def test_custom_filters_with_custom_keys(helsinki_pbf):
     rails = ["tramway", "light_rail", "rail", "subway", "tram"]
     bus = ['yes']
 
-    transit = osm.get_osm_by_custom_criteria(custom_filter={
+    transit = osm.get_data_by_custom_criteria(custom_filter={
         'route': routes,
         'railway': rails,
         'bus': bus,
@@ -406,8 +406,12 @@ def test_custom_filters_with_custom_keys(helsinki_pbf):
         filter_type="keep",
         keep_nodes=False)
 
+    required_columns = ["railway", "bus", "route", "public_transport"]
+    for col in required_columns:
+        assert col in transit.columns
+
     assert isinstance(transit, GeoDataFrame)
-    assert len(transit) == 317
+    assert len(transit) == 3230
 
 
 def test_reading_custom_from_area_having_none(helsinki_pbf):
@@ -421,11 +425,28 @@ def test_reading_custom_from_area_having_none(helsinki_pbf):
 
     # The tool should warn if no buildings were found
     with pytest.warns(UserWarning) as w:
-        gdf = osm.get_osm_by_custom_criteria({"highway": ["primary"]})
+        gdf = osm.get_data_by_custom_criteria({"highway": ["primary"]})
         # Check the warning text
         if "could not find any OSM data" in str(w):
             pass
 
-    # Result should be empty GeoDataFrame
+    # Result should be None
+    assert gdf is None
+
+
+def test_adding_extra_attribute(helsinki_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    osm = OSM(filepath=helsinki_pbf)
+    gdf = osm.get_data_by_custom_criteria({"highway": True})
+    extra_col = "wikidata"
+    extra = osm.get_data_by_custom_criteria({"highway": True}, extra_attributes=[extra_col])
+
+    # The extra should have one additional column compared to the original one
+    assert extra.shape[1] == gdf.shape[1]+1
+    # Should have same number of rows
+    assert extra.shape[0] == gdf.shape[0]
+    assert extra_col in extra.columns
+    assert len(extra[extra_col].dropna().unique()) > 0
     assert isinstance(gdf, GeoDataFrame)
-    assert gdf.shape == (0, 0)

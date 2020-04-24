@@ -1,0 +1,21 @@
+name: test
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.6
+  # required
+  - geopandas
+  - pygeos
+  - cython
+  - pyrobuf
+  - python-rapidjson
+  # testing
+  - pytest
+  - pytest-cov
+  - codecov
+  - pip
+  - pip:
+      - git+https://github.com/HTenkanen/cykhash.git
+
