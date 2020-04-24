@@ -1,10 +1,12 @@
 Pyrosm
 ======
 
-Pyrosm is a Python library for reading OpenStreetMap from protobuf files (*.osm.pbf) into Geopandas GeoDataFrames.
+Pyrosm is a Python library for reading OpenStreetMap from `Protocolbuffer Binary Format <https://wiki.openstreetmap.org/wiki/PBF_Format>`__ -files (*.osm.pbf)
+into `Geopandas <https://geopandas.org/>`__ GeoDataFrames.
 Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks, buildings,
-Points of Interest (POI), landuse and natural elements. Also fully customized queries are supported which makes it possible
-to parse the data from OSM with more specific filters.
+Points of Interest (POI), landuse, natural elements, administrative boundaries and much more.
+Fully customized queries are supported which makes it possible to parse in principle any kind of data from OSM
+even with more specific filters.
 
 Pyrosm is easy to use and it provides a somewhat similar user interface as `OSMnx <https://github.com/gboeing/osmnx>`__.
 The main difference between pyrosm and OSMnx is that OSMnx reads the data using an OverPass API, whereas pyrosm reads
