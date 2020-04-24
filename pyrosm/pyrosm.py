@@ -115,7 +115,7 @@ class OSM:
         elif net_type == "all":
             return None
 
-    def get_network(self, network_type="walking"):
+    def get_network(self, network_type="walking", extra_attributes=None):
         """
         Parses street networks from OSM
         for walking, driving, and cycling.
@@ -132,6 +132,9 @@ class OSM:
               - `'driving+service'`
               - `'all'`.
 
+        extra_attributes : list (optional)
+            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+
         See Also
         --------
 
@@ -142,6 +145,10 @@ class OSM:
         # Get filter
         network_filter = self._get_network_filter(network_type)
         tags_as_columns = self.conf.tags.highway
+
+        if extra_attributes is not None:
+            validate_tags_as_columns(extra_attributes)
+            tags_as_columns += extra_attributes
 
         if self._nodes is None or self._way_records is None:
             self._read_pbf()
@@ -162,7 +169,7 @@ class OSM:
 
         return gdf
 
-    def get_buildings(self, custom_filter=None):
+    def get_buildings(self, custom_filter=None, extra_attributes=None):
         """
         Parses buildings from OSM.
 
@@ -178,6 +185,9 @@ class OSM:
             a custom filter which is a Python dictionary with following format:
               - `custom_filter={'building': ['residential', 'retail']}`
 
+        extra_attributes : list (optional)
+            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+
         See Also
         --------
 
@@ -187,6 +197,10 @@ class OSM:
         """
         # Default tags to keep as columns
         tags_as_columns = self.conf.tags.building
+
+        if extra_attributes is not None:
+            validate_tags_as_columns(extra_attributes)
+            tags_as_columns += extra_attributes
 
         if self._nodes is None or self._way_records is None:
             self._read_pbf()
@@ -206,7 +220,7 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def get_landuse(self, custom_filter=None):
+    def get_landuse(self, custom_filter=None, extra_attributes=None):
         """
         Parses landuse from OSM.
 
@@ -222,6 +236,9 @@ class OSM:
             a custom filter which is a Python dictionary with following format:
               `custom_filter={'landuse': ['construction', 'industrial']}`
 
+        extra_attributes : list (optional)
+            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+
         See Also
         --------
 
@@ -236,6 +253,10 @@ class OSM:
 
         # Default tags to keep as columns
         tags_as_columns = self.conf.tags.landuse
+
+        if extra_attributes is not None:
+            validate_tags_as_columns(extra_attributes)
+            tags_as_columns += extra_attributes
 
         # If nodes are still in chunks, merge before passing forward
         if isinstance(self._nodes, list):
@@ -257,7 +278,7 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def get_natural(self, custom_filter=None):
+    def get_natural(self, custom_filter=None, extra_attributes=None):
         """
         Parses natural from OSM.
 
@@ -273,6 +294,9 @@ class OSM:
             a custom filter which is a Python dictionary with following format:
               `custom_filter={'natural': ['wood', 'tree']}`
 
+        extra_attributes : list (optional)
+            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+
         See Also
         --------
 
@@ -287,6 +311,10 @@ class OSM:
 
         # Default tags to keep as columns
         tags_as_columns = self.conf.tags.natural
+
+        if extra_attributes is not None:
+            validate_tags_as_columns(extra_attributes)
+            tags_as_columns += extra_attributes
 
         # If nodes are still in chunks, merge before passing forward
         if isinstance(self._nodes, list):
@@ -307,7 +335,7 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def get_boundaries(self, boundary_type="administrative", name=None, custom_filter=None):
+    def get_boundaries(self, boundary_type="administrative", name=None, custom_filter=None, extra_attributes=None):
         """
         Parses boundaries from OSM.
 
@@ -335,6 +363,9 @@ class OSM:
         custom_filter : dict (optional)
             Additional filter for what kind of boundary to parse.
 
+        extra_attributes : list (optional)
+            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+
 
         See Also
         --------
@@ -350,6 +381,10 @@ class OSM:
 
         # Default tags to keep as columns
         tags_as_columns = self.conf.tags.boundary
+
+        if extra_attributes is not None:
+            validate_tags_as_columns(extra_attributes)
+            tags_as_columns += extra_attributes
 
         # If nodes are still in chunks, merge before passing forward
         if isinstance(self._nodes, list):
@@ -379,7 +414,7 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def get_pois(self, custom_filter=None):
+    def get_pois(self, custom_filter=None, extra_attributes=None):
         """
         Parse Point of Interest (POI) from OSM.
 
@@ -389,6 +424,9 @@ class OSM:
         custom_filter : dict
             An optional custom filter to filter only specific POIs from OpenStreetMap,
             see details below.
+
+        extra_attributes : list (optional)
+            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
 
 
         Notes
@@ -453,6 +491,10 @@ class OSM:
         for k in custom_filter.keys():
             tags_as_columns += getattr(self.conf.tags, k)
 
+        if extra_attributes is not None:
+            validate_tags_as_columns(extra_attributes)
+            tags_as_columns += extra_attributes
+
         # If nodes are still in chunks, merge before passing forward
         if isinstance(self._nodes, list):
             self._nodes = concatenate_dicts_of_arrays(self._nodes)
@@ -472,14 +514,15 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def get_osm_by_custom_criteria(self,
+    def get_data_by_custom_criteria(self,
                                    custom_filter,
                                    osm_keys_to_keep=None,
                                    filter_type="keep",
                                    tags_as_columns=None,
                                    keep_nodes=True,
                                    keep_ways=True,
-                                   keep_relations=True):
+                                   keep_relations=True,
+                                   extra_attributes=None):
         """
         Parse OSM data based on custom criteria.
 
@@ -507,6 +550,9 @@ class OSM:
 
         keep_relations : bool
             Whether or not the relations should be kept in the resulting GeoDataFrame if they are found.
+
+        extra_attributes : list (optional)
+            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
 
         """
 
@@ -542,6 +588,10 @@ class OSM:
         else:
             # Validate tags
             validate_tags_as_columns(tags_as_columns)
+
+        if extra_attributes is not None:
+            validate_tags_as_columns(extra_attributes)
+            tags_as_columns += extra_attributes
 
         # Validate booleans
         validate_booleans(keep_nodes, keep_ways, keep_relations)

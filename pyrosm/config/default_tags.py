@@ -814,6 +814,7 @@ waterway_columns = ["boatyard",
                     "wadi",
                     "water_point",
                     "waterfall",
+                    "waterway",
                     "weir",
                     ]
 
@@ -821,7 +822,8 @@ waterway_columns = ["boatyard",
 # GEOLOGICAL TAGS
 # ========================
 # See: https://wiki.openstreetmap.org/wiki/Key%3Ageological
-geological_columns = ["moraine",
+geological_columns = ["geological",
+                      "moraine",
                       "outcrop",
                       "palaeontological_site",
                       ]
@@ -844,6 +846,7 @@ power_columns = ["cable",
                  "plant",
                  "pole",
                  "portal",
+                 "power",
                  "substation",
                  "switch",
                  "switchgear",
@@ -859,6 +862,7 @@ power_columns = ["cable",
 public_transport_columns = basic_info_tags + \
                            ["stop_position",
                             "platform",
+                            "public_transport",
                             "station",
                             "stop_area",
                             ]
@@ -920,6 +924,7 @@ route_columns = ["bicycle",
                  "piste",
                  "railway",
                  "road",
+                 "route",
                  "running",
                  "ski",
                  "subway",
@@ -953,6 +958,7 @@ place_columns = ["allotments",
                  "municipality",
                  "neighbourhood",
                  "ocean",
+                 "place",
                  "plot",
                  "province",
                  "quarter",
@@ -968,7 +974,8 @@ place_columns = ["allotments",
 # AERIALWAY TAGS
 # ========================
 # See: https://wiki.openstreetmap.org/wiki/Key%3Aaerialway
-aerialway_columns = ["cable_car",
+aerialway_columns = ["aerialway",
+                     "cable_car",
                      "gondola",
                      "mixed_lift",
                      "chair_lift",
@@ -988,6 +995,7 @@ aerialway_columns = ["cable_car",
 # ========================
 # See: https://wiki.openstreetmap.org/wiki/Key%3Aaeroway
 aeroway_columns = ["aerodrome",
+                   "aeroway",
                    "apron",
                    "control_tower",
                    "control_center",

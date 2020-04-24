@@ -226,3 +226,21 @@ def test_passing_custom_filter_without_element_key(test_pbf):
     gdf = osm.get_buildings(custom_filter={"start_date": True})
     assert isinstance(gdf, GeoDataFrame)
 
+
+def test_adding_extra_attribute(helsinki_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    osm = OSM(filepath=helsinki_pbf)
+    gdf = osm.get_buildings()
+    extra_col = "wikidata"
+    extra = osm.get_buildings(extra_attributes=[extra_col])
+
+    # The extra should have one additional column compared to the original one
+    assert extra.shape[1] == gdf.shape[1]+1
+    # Should have same number of rows
+    assert extra.shape[0] == gdf.shape[0]
+    assert extra_col in extra.columns
+    assert len(extra[extra_col].dropna().unique()) > 0
+    assert isinstance(gdf, GeoDataFrame)
+

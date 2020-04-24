@@ -8,6 +8,12 @@ def test_pbf():
     return pbf_path
 
 
+@pytest.fixture
+def helsinki_pbf():
+    pbf_path = get_path("helsinki_pbf")
+    return pbf_path
+
+
 def test_network(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
@@ -52,7 +58,15 @@ def test_custom(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
     osm = OSM(test_pbf)
-    gdf = osm.get_osm_by_custom_criteria({"highway": ["secondary"]})
+    gdf = osm.get_data_by_custom_criteria({"highway": ["secondary"]})
+    assert isinstance(gdf, GeoDataFrame)
+
+
+def test_boundaries(helsinki_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+    osm = OSM(helsinki_pbf)
+    gdf = osm.get_boundaries()
     assert isinstance(gdf, GeoDataFrame)
 
 

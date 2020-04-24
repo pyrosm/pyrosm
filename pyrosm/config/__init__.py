@@ -16,7 +16,7 @@ class Tags:
     # inserted into a JSON that is stored in "tags" column.
     # These follow more or less OSM Wiki documentation:
     # https://wiki.openstreetmap.org/wiki/Map_Features
-    available = ["aerialway", "aeroway", "amenity", "building", "craft",
+    available = ["aerialway", "aeroway", "amenity", "boundary", "building", "craft",
                  "emergency", "geological", "highway", "historic", "landuse",
                  "leisure", "natural", "office", "power", "public_transport",
                  "railway", "route", "place", "shop", "tourism", "waterway"]
