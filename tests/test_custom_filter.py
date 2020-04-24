@@ -375,19 +375,19 @@ def test_reading_with_custom_filters_selecting_specific_osm_element(helsinki_pbf
     assert len(filtered) == 36
 
 
-def test_custom_filters_with_custom_keys(helsinki_pbf):
+def test_custom_filters_with_custom_keys(helsinki_region_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
 
     # Get first all data
-    osm = OSM(filepath=helsinki_pbf)
+    osm = OSM(filepath=helsinki_region_pbf)
 
     # Test reading public transport related data
     filtered = osm.get_osm_by_custom_criteria(custom_filter={'public_transport': True},
                                               filter_type="keep",
                                               )
     assert isinstance(filtered, GeoDataFrame)
-    assert len(filtered) == 63
+    assert len(filtered) == 5542
 
     # Test a more complicated query
     # -----------------------------
@@ -406,8 +406,12 @@ def test_custom_filters_with_custom_keys(helsinki_pbf):
         filter_type="keep",
         keep_nodes=False)
 
+    required_columns = ["railway", "bus", "route", "public_transport"]
+    for col in required_columns:
+        assert col in transit.columns
+
     assert isinstance(transit, GeoDataFrame)
-    assert len(transit) == 317
+    assert len(transit) == 3230
 
 
 def test_reading_custom_from_area_having_none(helsinki_pbf):
@@ -428,3 +432,21 @@ def test_reading_custom_from_area_having_none(helsinki_pbf):
 
     # Result should be None
     assert gdf is None
+
+
+def test_adding_extra_attribute(helsinki_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    osm = OSM(filepath=helsinki_pbf)
+    gdf = osm.get_osm_by_custom_criteria({"highway": True})
+    extra_col = "wikidata"
+    extra = osm.get_osm_by_custom_criteria({"highway": True}, extra_attributes=[extra_col])
+
+    # The extra should have one additional column compared to the original one
+    assert extra.shape[1] == gdf.shape[1]+1
+    # Should have same number of rows
+    assert extra.shape[0] == gdf.shape[0]
+    assert extra_col in extra.columns
+    assert len(extra[extra_col].dropna().unique()) > 0
+    assert isinstance(gdf, GeoDataFrame)
