@@ -52,7 +52,15 @@ def test_custom(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
     osm = OSM(test_pbf)
-    gdf = osm.get_osm_by_custom_criteria({"highway": ["secondary"]})
+    gdf = osm.get_data_by_custom_criteria({"highway": ["secondary"]})
+    assert isinstance(gdf, GeoDataFrame)
+
+
+def test_boundary(test_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+    osm = OSM(test_pbf)
+    gdf = osm.get_boundary()
     assert isinstance(gdf, GeoDataFrame)
 
 

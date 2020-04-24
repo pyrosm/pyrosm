@@ -514,7 +514,7 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def get_osm_by_custom_criteria(self,
+    def get_data_by_custom_criteria(self,
                                    custom_filter,
                                    osm_keys_to_keep=None,
                                    filter_type="keep",
