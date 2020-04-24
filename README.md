@@ -174,7 +174,7 @@ osm = OSM(fp)
 routes = ["bus", "ferry", "railway", "subway", "train", "tram", "trolleybus"]
 rails = ["tramway", "light_rail", "rail", "subway", "tram"]
 bus = ['yes']
-transit = osm.get_osm_by_custom_criteria(custom_filter={
+transit = osm.get_data_by_custom_criteria(custom_filter={
                                         'route': routes,
                                         'railway': rails,
                                         'bus': bus,
