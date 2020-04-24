@@ -8,6 +8,12 @@ def test_pbf():
     return pbf_path
 
 
+@pytest.fixture
+def helsinki_pbf():
+    pbf_path = get_path("helsinki_pbf")
+    return pbf_path
+
+
 def test_network(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
