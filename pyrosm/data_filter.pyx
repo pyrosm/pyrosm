@@ -108,6 +108,7 @@ cdef filter_osm_records(data_records,
     for i in range(0, N):
         filter_out = False
         record = data_records[i]
+        record_keys = list(record.keys())
         # If way is part of relation it should be kept
         # (ways that are part of relation might not have any tags)
         if relation_check:
@@ -115,16 +116,24 @@ cdef filter_osm_records(data_records,
                 filtered_data.append(record)
                 continue
 
-        if not has_osm_data_type(osm_data_type, list(record.keys())):
+        if not has_osm_data_type(osm_data_type, record_keys):
             continue
 
         # Check if should be filtered based on given data_filter
         if data_filter is not None:
+            filter_was_in_record = False
             for k, v in record.items():
                 if k in filter_keys:
+                    filter_was_in_record = True
                     if solver.check(v, data_filter[k]):
                         filter_out = True
                         break
+
+            # If none of the filter keys are present in the element,
+            # it should not be kept
+            if not filter_was_in_record:
+                continue
+
             if not filter_out:
                 filtered_data.append(record)
         else:
@@ -156,7 +165,6 @@ cdef nodes_for_way_exist_khash(nodes, node_lookup):
     if True in result:
         return True
     return False
-
 
 cdef record_should_be_kept(tag, osm_keys, data_filter):
     if tag is None:
