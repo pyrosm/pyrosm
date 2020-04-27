@@ -1,6 +1,11 @@
 Changelog
 =========
 
+v0.4.3
+------
+
+- Fixes a bug related to filtering with custom filters (see details [here](https://github.com/HTenkanen/pyrosm/issues/22#issuecomment-620005087).)
+
 v0.4.2
 ------
 

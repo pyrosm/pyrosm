@@ -1,6 +1,11 @@
 Changelog
 =========
 
+v0.4.3 (April 27, 2020)
+-----------------------
+
+- Fixes a bug related to filtering with custom filters (see details `here <https://github.com/HTenkanen/pyrosm/issues/22#issuecomment-620005087>`__.)
+
 v0.4.2 (April 23, 2020)
 -----------------------
 
