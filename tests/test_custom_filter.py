@@ -411,7 +411,14 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
         assert col in transit.columns
 
     assert isinstance(transit, GeoDataFrame)
-    assert len(transit) == 3230
+    assert len(transit) == 2869
+
+    # When using custom filters all records should have a value
+    # at least on one of the attributes specified in the custom_filter
+    selected = transit[required_columns]
+    # Try dropping out rows with NaNs on all columns
+    no_nans = selected.dropna(subset=required_columns, how="all")
+    assert selected.shape == no_nans.shape
 
 
 def test_reading_custom_from_area_having_none(helsinki_pbf):
