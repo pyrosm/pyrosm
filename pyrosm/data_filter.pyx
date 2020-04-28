@@ -170,19 +170,29 @@ cdef record_should_be_kept(tag, osm_keys, data_filter):
     if tag is None:
         return False
 
-    cdef str k, v, k2, v2
-    for k, v in tag.items():
-        # Check if required OSM key can be found
-        for osm_key in osm_keys:
-            if osm_key == k:
-                for k2, v2 in tag.items():
-                    if k2 in data_filter.keys():
-                        # Check match with data filter
-                        if v2 in data_filter[k2]:
-                            return True
-                        # If filter is not defined, check for osm_key
-                        elif data_filter[k2] == [True]:
-                            return True
+    cdef str k, osm_key
+    filter_keys = list(data_filter.keys())
+    tag_keys = list(tag.keys())
+
+    # Check if OSM key exist for the given element
+    osm_key_was_found = False
+    for osm_key in osm_keys:
+        if osm_key in tag_keys:
+            osm_key_was_found = True
+            break
+
+    if not osm_key_was_found:
+        return False
+
+    # Iterate over filter and check if record match is found
+    for k, v in data_filter.items():
+        if k in tag_keys:
+            # Check match with data filter
+            if tag[k] in v:
+                return True
+            # If filter is not defined, check for 'osm_key': True
+            elif v == [True]:
+                return True
     return False
 
 cdef filter_relation_indices(relations, osm_keys, data_filter):
@@ -195,22 +205,10 @@ cdef filter_relation_indices(relations, osm_keys, data_filter):
     else:
         relation_filter = {key: value for key, value in data_filter.items()}
 
-    for osm_key in osm_keys:
-        if osm_key not in relation_filter.keys():
-            relation_filter[osm_key] = [True]
-
     for i in range(0, n):
         tag = relations["tags"][i]
-        if "type" in tag.keys():
-            # https://wiki.openstreetmap.org/wiki/Types_of_relation
-            if tag["type"] in ["multipolygon", "boundary",
-                               "route", "route_master",
-                               "restriction", "public_transport",
-                               "network", "waterway", "connectivity",
-                               "enforcement", "destination_sign"
-                               ]:
-                if record_should_be_kept(tag, osm_keys, relation_filter):
-                    indices.append(i)
+        if record_should_be_kept(tag, osm_keys, relation_filter):
+            indices.append(i)
     return indices
 
 
@@ -222,6 +220,10 @@ cdef filter_node_indices(node_arrays, osm_keys, data_filter):
         relation_filter = {}
     else:
         relation_filter = {key: value for key, value in data_filter.items()}
+
+    for osm_key in osm_keys:
+        if osm_key not in relation_filter.keys():
+            relation_filter[osm_key] = [True]
 
     for osm_key in osm_keys:
         if osm_key not in relation_filter.keys():
