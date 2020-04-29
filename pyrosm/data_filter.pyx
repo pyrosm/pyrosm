@@ -140,6 +140,9 @@ cdef filter_osm_records(data_records,
             filtered_data.append(record)
     return filtered_data
 
+cpdef _filter_array_dict_by_indices_or_mask(array_dict, indices):
+    return filter_array_dict_by_indices_or_mask(array_dict, indices)
+
 cdef filter_array_dict_by_indices_or_mask(array_dict, indices):
     return {k: v[indices] for k, v in array_dict.items()}
 
@@ -181,17 +184,23 @@ cdef record_should_be_kept(tag, osm_keys, data_filter):
             osm_key_was_found = True
             break
 
+    # If not, the element shouldn't be kept
     if not osm_key_was_found:
         return False
 
-    # Iterate over filter and check if record match is found
+    # If there is no filter but the element is correct kind
+    # it should be kept
+    if len(filter_keys) == 0:
+        return True
+
+    # If there is a filter, check if match is found
     for k, v in data_filter.items():
         if k in tag_keys:
             # Check match with data filter
             if tag[k] in v:
                 return True
             # If filter is not defined, check for 'osm_key': True
-            elif v == [True]:
+            elif v == [True] or v == True:
                 return True
     return False
 
