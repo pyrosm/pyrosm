@@ -98,6 +98,9 @@ cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, da
 
     return way_arrays, relation_arrays
 
+cpdef _get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type):
+    return get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type)
+
 cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type):
 
     # Tags that should always be kept
