@@ -1,9 +1,13 @@
 from pyrosm.data_filter cimport filter_array_dict_by_indices_or_mask
-from pyrosm.geometry cimport pygeos_to_shapely, create_relation_geometry
+from pyrosm.geometry cimport pygeos_to_shapely, create_relation_geometry, fix_geometry
 from pyrosm._arrays cimport convert_to_arrays_and_drop_empty, convert_way_records_to_lists
-from pygeos import multipolygons
+from pygeos import multipolygons, multilinestrings
+from pygeos.predicates import is_valid
 import numpy as np
 import geopandas as gpd
+
+cpdef _get_ways_for_relation(member_ids, member_roles, building_relation_ways):
+    return get_ways_for_relation(member_ids, member_roles, building_relation_ways)
 
 cdef get_ways_for_relation(member_ids, member_roles, building_relation_ways):
     # Ensure there are no duplicate member_ids/roles
@@ -32,52 +36,70 @@ cdef get_relations(relations, relation_ways, node_coordinates):
     cdef int i, j, n2, m_cnt, n = len(relations["id"])
 
     prepared_relations = []
-
     for i in range(0, n):
         rel = filter_array_dict_by_indices_or_mask(relations, [i])
-        geometries = []
         tag_keys = list(rel["tags"][0].keys())
+        tag = rel["tags"][0]
 
-        # There might be multiple features part of the same relation
-        n2 = len(rel["members"])
-        for j in range(0, n2):
-            member_ids = rel["members"][j]["member_id"]
-            member_roles = rel["members"][j]["member_role"]
+        # Check if geometry should NOT be polygon
+        force_linestring = False
+        if "barrier" in tag_keys or "route" in tag_keys:
+            force_linestring = True
+        if "area" in tag_keys:
+            if tag["area"] == "no":
+                force_linestring = True
 
-            boundary = False
-            if "boundary" in tag_keys \
-                    or "route" in tag_keys \
-                        or member_ids[0] == member_ids[-1]:
-                boundary = True
+        make_multipolygon = False
+        if "type" in tag_keys:
+            if tag["type"] == "multipolygon":
+                make_multipolygon = True
+            elif tag["type"] == "public_transport":
+                if "public_transport" in tag_keys:
+                    if tag["public_transport"] in ["stop_area", "platform"]:
+                        make_multipolygon = True
 
-            # Get ways for given relation
-            member_ids, member_roles, ways = get_ways_for_relation(member_ids,
-                                                                   member_roles,
-                                                                   relation_ways)
+        if len(rel["members"]) > 1:
+            raise ValueError("More than 1 members detected.")
 
-            if ways is None:
-                continue
+        member_ids = rel["members"][0]["member_id"]
+        member_roles = rel["members"][0]["member_role"]
 
-            geometry = create_relation_geometry(node_coordinates,
-                                                ways,
-                                                member_roles,
-                                                boundary
-                                                )
+        # Get ways for given relation
+        member_ids, member_roles, ways = get_ways_for_relation(member_ids,
+                                                               member_roles,
+                                                               relation_ways)
 
-            if geometry is not None:
-                geometries.append(geometry)
-
-        if len(geometries) == 0:
+        if ways is None:
             continue
 
-        elif len(geometries) == 1:
-            # Create MultiPolygon if there were multiple geometries for given relation
-            if isinstance(geometries[0], np.ndarray):
-                geometry = pygeos_to_shapely(multipolygons(geometries[0]))
+        geometry = create_relation_geometry(node_coordinates,
+                                            ways,
+                                            member_roles,
+                                            force_linestring,
+                                            make_multipolygon,
+                                            )
+
+        if geometry is None:
+            continue
+
+        if len(geometry) > 1:
+            if not force_linestring:
+                geometry = multipolygons(geometry)
             else:
-                geometry = pygeos_to_shapely(geometries[0])
+                geometry = multilinestrings(geometry)
         else:
-            raise ValueError("Invalid relation geometry.")
+            geometry = geometry[0]
+
+        # Check if geometry is valid
+        is_valid_geom = is_valid(geometry)
+
+        # Convert to shapely
+        geometry = pygeos_to_shapely(geometry)
+
+        # If geometry was invalid polygon try to fix
+        if not force_linestring:
+            if not is_valid_geom:
+                geometry = fix_geometry(geometry)
 
         relation = dict(
             id=rel["id"][0],
@@ -92,6 +114,7 @@ cdef get_relations(relations, relation_ways, node_coordinates):
             relation[k] = v
 
         prepared_relations.append(relation)
+
     return prepared_relations
 
 cdef _prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep):
