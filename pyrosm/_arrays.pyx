@@ -74,8 +74,23 @@ cdef convert_to_arrays_and_drop_empty(data):
             if len(unique) < 2:
                 if unique[0] is None:
                     continue
+        try:
+            arrays[key] = np.array(value_list, dtype=get_dtype(key))
+        except ValueError as e:
+            if "invalid literal for int" in str(e):
+                # Try first converting to int via floats
+                try:
+                    value_list = list(map(int, list(map(float, value_list))))
+                    arrays[key] = np.array(value_list, dtype=np.int64)
+                except ValueError as e:
+                    # If there is a string, keep as is
+                    if "convert string" in str(e):
+                        arrays[key] = np.array(value_list, dtype=object)
+                except Exception as e:
+                    raise e
+        except Exception as e:
+            raise e
 
-        arrays[key] = np.array(value_list, dtype=get_dtype(key))
     return arrays
 
 
