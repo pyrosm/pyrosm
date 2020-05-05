@@ -5,7 +5,8 @@ from pyrosm.geometry import create_node_coordinates_lookup
 from pyrosm.frames import create_nodes_gdf
 from pyrosm.utils import validate_custom_filter, validate_osm_keys, \
     validate_tags_as_columns, validate_booleans, validate_boundary_type, \
-    validate_bounding_box
+    validate_bounding_box, validate_input_file, get_bounding_box
+from pyrosm.utils.download import get_file_size
 from shapely.geometry import Polygon, MultiPolygon, \
     LineString, LinearRing, MultiLineString
 from pyrosm.boundary import get_boundary_data
@@ -37,13 +38,9 @@ class OSM:
             as a Shapely Polygon/MultiPolygon or closed LineString/LinearRing.
 
         """
-        if not isinstance(filepath, str):
-            raise ValueError("'filepath' should be a string.")
-        if not filepath.endswith(".pbf"):
-            raise ValueError(f"Input data should be in Protobuf format (*.osm.pbf). "
-                             f"Found: {filepath.split('.')[-1]}")
 
-        self.filepath = filepath
+        # Check input file
+        self.filepath = validate_input_file(filepath)
 
         if bounding_box is None:
             self.bounding_box = None
@@ -61,6 +58,12 @@ class OSM:
 
         self.conf = Conf
         self.keep_node_info = False
+
+        # Update file size
+        self.file_size = get_file_size(self.filepath)
+
+        # Get bounding box
+        self._data_bounding_box = get_bounding_box(self.filepath)
 
         # TODO: Add logging as a parameter?
         self._verbose = False
@@ -80,11 +83,13 @@ class OSM:
             bounding_box = self.bounding_box
 
         nodes, ways, relations, way_tags = parse_osm_data(self.filepath,
-                                                          bounding_box,
-                                                          exclude_relations=False)
+                                             bounding_box,
+                                             exclude_relations=False)
 
-        self._nodes, self._way_records, \
-        self._relations, self._all_way_tags = nodes, ways, relations, way_tags
+        self._nodes = nodes
+        self._way_records = ways
+        self._relations = relations
+        self._all_way_tags = way_tags
 
         # Prepare node coordinates lookup table
         self._node_coordinates = create_node_coordinates_lookup(self._nodes)
@@ -515,14 +520,14 @@ class OSM:
         return gdf
 
     def get_data_by_custom_criteria(self,
-                                   custom_filter,
-                                   osm_keys_to_keep=None,
-                                   filter_type="keep",
-                                   tags_as_columns=None,
-                                   keep_nodes=True,
-                                   keep_ways=True,
-                                   keep_relations=True,
-                                   extra_attributes=None):
+                                    custom_filter,
+                                    osm_keys_to_keep=None,
+                                    filter_type="keep",
+                                    tags_as_columns=None,
+                                    keep_nodes=True,
+                                    keep_ways=True,
+                                    keep_relations=True,
+                                    extra_attributes=None):
         """
         Parse OSM data based on custom criteria.
 
