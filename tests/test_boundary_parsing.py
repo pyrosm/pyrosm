@@ -1,16 +1,16 @@
 import pytest
-from pyrosm import get_path
+from pyrosm import get_data
 
 
 @pytest.fixture
 def helsinki_pbf():
-    pbf_path = get_path("helsinki_pbf")
+    pbf_path = get_data("helsinki_pbf")
     return pbf_path
 
 
 @pytest.fixture
 def helsinki_region_pbf():
-    pbf_path = get_path("helsinki_region_pbf")
+    pbf_path = get_data("helsinki_region_pbf")
     return pbf_path
 
 

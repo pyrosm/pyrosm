@@ -1,22 +1,22 @@
 import pytest
-from pyrosm import get_path
+from pyrosm import get_data
 
 
 @pytest.fixture
 def test_pbf():
-    pbf_path = get_path("test_pbf")
+    pbf_path = get_data("test_pbf")
     return pbf_path
 
 
 @pytest.fixture
 def helsinki_pbf():
-    pbf_path = get_path("helsinki_pbf")
+    pbf_path = get_data("helsinki_pbf")
     return pbf_path
 
 
 @pytest.fixture
 def helsinki_region_pbf():
-    pbf_path = get_path("helsinki_region_pbf")
+    pbf_path = get_data("helsinki_region_pbf")
     return pbf_path
 
 
@@ -410,8 +410,18 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
     for col in required_columns:
         assert col in transit.columns
 
+    # Check individual counts
+    correct_counts = {'railway': 1430, 'route': 1058,
+                      'public_transport': 542, 'bus': 69}
+
+    for col in required_columns:
+        cnt = len(transit[col].dropna())
+        correct = correct_counts[col]
+        assert cnt == correct, f"Incorrect count for {col}. " \
+                               f"Should have {correct}, found {cnt}."
+
     assert isinstance(transit, GeoDataFrame)
-    assert len(transit) == 2869
+    assert len(transit) == 3075
 
     # When using custom filters all records should have a value
     # at least on one of the attributes specified in the custom_filter
