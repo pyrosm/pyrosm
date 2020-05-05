@@ -1,6 +1,10 @@
 from shapely import ops
 from shapely.geometry import MultiLineString, \
-    Polygon, MultiPolygon
+    Polygon, MultiPolygon, box
+from pyrosm_proto import BlobHeader, Blob, HeaderBlock
+from pyrosm.exceptions import PBFNotImplemented
+import zlib
+from struct import unpack
 
 
 def validate_custom_filter(custom_filter):
@@ -93,3 +97,40 @@ def validate_bounding_box(geom):
         )
     return Polygon(geom)
 
+
+def get_bounding_box(filepath):
+    with open(filepath, 'rb') as f:
+
+        # Check that the data stream is valid OSM
+        # =======================================
+
+        buf = f.read(4)
+        msg_len = unpack('!L', buf)[0]
+        msg = BlobHeader()
+        msg.ParseFromString(f.read(msg_len))
+        blob_header = msg
+
+        msg = Blob()
+        msg.ParseFromString(f.read(blob_header.datasize))
+        blob_data = zlib.decompress(msg.zlib_data)
+        header_block = HeaderBlock()
+        header_block.ParseFromString(blob_data)
+
+        for feature in header_block.required_features:
+            if not (feature in ('OsmSchema-V0.6', 'DenseNodes')):
+                raise PBFNotImplemented(
+                    'Required feature %s not implemented!',
+                    feature)
+
+        # Parse bounding box
+        try:
+            bb = header_block.bbox.SerializeToDict()
+            div = 1000000000
+            bbox = box(bb["left"] / div,
+                       bb["bottom"] / div,
+                       bb["right"] / div,
+                       bb["top"] / div,
+                       )
+        except Exception:
+            bbox = None
+        return bbox
