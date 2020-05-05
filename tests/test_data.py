@@ -16,7 +16,7 @@ def helsinki_pbf():
 
 def test_available():
     import pyrosm
-    assert isinstance(pyrosm.data.available, list)
+    assert isinstance(pyrosm.data.available, dict)
 
 
 def test_not_available():
