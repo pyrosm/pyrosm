@@ -43,23 +43,62 @@ cdef get_relations(relations, relation_ways, node_coordinates):
 
         # Check if geometry should NOT be polygon
         force_linestring = False
-        if "barrier" in tag_keys or "route" in tag_keys:
-            force_linestring = True
+
+        # ==========================================
+        # Determine if relation should be LineString
+        # ==========================================
+        # OSM Relation keys that are typically LineStrings
+        linestring_keys = ["barrier", "route",
+                           "railway", "highway",
+                           "waterway"]
+        for lsk in linestring_keys:
+            if lsk in tag_keys:
+                # Railway
+                # -------
+                if lsk == "railway":
+                    # https://wiki.openstreetmap.org/wiki/Key:railway
+                    if tag["railway"] not in ["platform", "station", "turntable",
+                                              "roundhouse", "traverser", "wash"]:
+                        force_linestring = True
+                        break
+                # Highway
+                # -------
+                elif lsk == "highway":
+                    # https://wiki.openstreetmap.org/wiki/Key:highway
+                    if tag["highway"] == "pedestrian":
+                        if "area" in tag_keys:
+                            # If highway is pedestrian area, it should be a Polygon
+                            if tag["area"] != "yes":
+                                force_linestring = True
+                            break
+                    elif tag["highway"] not in ["platform", "rest_area", "services"]:
+                        force_linestring = True
+                        break
+                # Waterway
+                # --------
+                elif lsk == "waterway":
+                    # https://wiki.openstreetmap.org/wiki/Key:waterway
+                    if tag["waterway"] not in ["riverbank", "dock", "boatyard",
+                                               "dam", "fuel"]:
+                        force_linestring = True
+                        break
+                else:
+                    force_linestring = True
+                    break
+
         if "area" in tag_keys:
             if tag["area"] == "no":
                 force_linestring = True
 
+        # =========================================================
+        # Determine if element should be made as MultiPolygon
+        # Notice: If 'force_linestring = True', this doesn't apply
+        # =========================================================
         make_multipolygon = False
         if "type" in tag_keys:
-            if tag["type"] == "multipolygon":
+            if tag["type"] in ["multipolygon", "public_transport",
+                               "site", "cluster"]:
                 make_multipolygon = True
-            elif tag["type"] == "public_transport":
-                if "public_transport" in tag_keys:
-                    if tag["public_transport"] in ["stop_area", "platform"]:
-                        make_multipolygon = True
-
-        if len(rel["members"]) > 1:
-            raise ValueError("More than 1 members detected.")
 
         member_ids = rel["members"][0]["member_id"]
         member_roles = rel["members"][0]["member_role"]
@@ -76,9 +115,8 @@ cdef get_relations(relations, relation_ways, node_coordinates):
                                             ways,
                                             member_roles,
                                             force_linestring,
-                                            make_multipolygon,
+                                            make_multipolygon
                                             )
-
         if geometry is None:
             continue
 
