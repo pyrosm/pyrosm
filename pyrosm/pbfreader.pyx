@@ -102,23 +102,28 @@ cdef parse_dense(pblock, data, string_table, bounding_box):
     # Tags
     tags = np.empty(len(data.id), dtype=object)
     parsed = parse_dense_tags(data.keys_vals, string_table)
+
     # In some cases node-tags are not available at all
     if len(parsed) != 0:
-        tags = np.empty(len(parsed), dtype=object)
         tags[:] = parsed
+
+    # Metadata might not be available, if so add empty
+    # This can happen with BBBike data
+    if versions.shape[0] != 0:
+        versions = np.empty(len(data.id), dtype=np.int8)
+    if changesets.shape[0] != 0:
+        changesets = np.empty(len(data.id), dtype=np.int8)
+    if timestamps.shape[0] != 0:
+        timestamps = np.empty(len(data.id), dtype=np.int8)
 
     if bounding_box is not None:
         # Filter
         xmin, ymin, xmax, ymax = bounding_box
         mask = (xmin <= lons) & (lons <= xmax) & (ymin <= lats) & (lats <= ymax)
         ids = ids[mask]
-        # Metadata might not be available, so check
-        if versions.shape[0] != 0:
-            versions = versions[mask]
-        if changesets.shape[0] != 0:
-            changesets = changesets[mask]
-        if timestamps.shape[0] != 0:
-            timestamps = timestamps[mask]
+        versions = versions[mask]
+        changesets = changesets[mask]
+        timestamps = timestamps[mask]
         lons = lons[mask]
         lats = lats[mask]
         tags = tags[mask]
