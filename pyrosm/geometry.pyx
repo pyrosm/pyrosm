@@ -26,9 +26,18 @@ cpdef fix_geometry(geometry, diff_threshold=20):
         # Sometimes taking buffer 0 totally breaks down
         # the original geometry having hundred/thousand-fold
         # difference in area
-        diff = abs(1 - geometry.area / fix_candidate.area)
-        if diff < diff_threshold:
-            return fix_candidate
+        try:
+            diff = abs(1 - geometry.area / fix_candidate.area)
+            if diff < diff_threshold:
+                return fix_candidate
+        except ZeroDivisionError:
+            pass
+        except Exception as e:
+            raise e
+
+    # If geometry is MultiPolygon do not try fix bowtie
+    if isinstance(geometry, MultiPolygon):
+        return geometry
 
     # Try fixing "bowtie" geometry
     ext = geometry.exterior
@@ -36,9 +45,14 @@ cpdef fix_geometry(geometry, diff_threshold=20):
     polys = polygonize(mls)
     fix_candidate = MultiPolygon(polys)
     if fix_candidate.is_valid:
-        diff = abs(1 - geometry.area / fix_candidate.area)
-        if diff < diff_threshold:
-            return fix_candidate
+        try:
+            diff = abs(1 - geometry.area / fix_candidate.area)
+            if diff < diff_threshold:
+                return fix_candidate
+        except ZeroDivisionError:
+            pass
+        except Exception as e:
+            raise e
     # Otherwise return original geometry
     return geometry
 
@@ -172,16 +186,16 @@ cdef create_relation_geometry(node_coordinates, ways,
     # e.g. routes should be linestrings
     if force_linestring:
         geoms = shell + holes
+
         if len(geoms) == 1:
             return geoms
         else:
             geom = line_merge(multilinestrings(geoms))
+
             if isinstance(geom, np.ndarray):
                 return geom.tolist()
-            elif is_geometry(geom):
-                return [geom]
             else:
-                raise ValueError("not a geometry or ndarray")
+                return [geom]
 
     if len(holes) == 0:
         holes = None
@@ -311,7 +325,12 @@ cdef _create_way_geometries(node_coordinates, way_elements):
 
     cdef long long node
     cdef list coords
-    cdef int n = len(way_elements['id'])
+    cdef int n
+    try:
+        n = len(way_elements['id'])
+    except Exception as e:
+        keys = list(way_elements.keys())
+        n = len(way_elements[keys[0]])
     cdef int i
 
     geometries = []
