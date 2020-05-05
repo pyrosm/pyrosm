@@ -31,7 +31,7 @@ def test_filter_network_by_walking(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (238, 18)
+    assert gdf.shape == (265, 20)
 
     required_cols = ['access', 'bridge', 'foot', 'highway', 'lanes', 'lit', 'maxspeed',
                      'name', 'oneway', 'ref', 'service', 'surface', 'id',
@@ -54,7 +54,7 @@ def test_filter_network_by_driving(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (200, 18)
+    assert gdf.shape == (207, 18)
 
     required_cols = ['access', 'bridge', 'highway', 'int_ref', 'lanes', 'lit', 'maxspeed',
                      'name', 'oneway', 'ref', 'service', 'surface', 'id', 'geometry', 'tags',
@@ -78,7 +78,7 @@ def test_filter_network_by_driving_with_service_roads(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (200, 18)
+    assert gdf.shape == (207, 18)
 
     required_cols = ['access', 'bridge', 'highway', 'int_ref', 'lanes', 'lit', 'maxspeed',
                      'name', 'oneway', 'ref', 'service', 'surface', 'id', 'geometry', 'tags',
@@ -174,7 +174,7 @@ def test_parse_network_with_bbox(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (65, 18)
+    assert gdf.shape == (74, 20)
 
     required_cols = ['access', 'bridge', 'foot', 'highway', 'lanes', 'lit', 'maxspeed',
                      'name', 'oneway', 'ref', 'service', 'surface', 'id',
@@ -206,7 +206,7 @@ def test_parse_network_with_shapely_bbox(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (65, 18)
+    assert gdf.shape == (74, 20)
 
     required_cols = ['access', 'bridge', 'foot', 'highway', 'lanes', 'lit', 'maxspeed',
                      'name', 'oneway', 'ref', 'service', 'surface', 'id',
