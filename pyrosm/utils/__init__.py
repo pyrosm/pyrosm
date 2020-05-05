@@ -5,6 +5,7 @@ from pyrosm_proto import BlobHeader, Blob, HeaderBlock
 from pyrosm.exceptions import PBFNotImplemented
 import zlib
 from struct import unpack
+import os
 
 
 def validate_custom_filter(custom_filter):
@@ -96,6 +97,18 @@ def validate_bounding_box(geom):
             "Ensure that you pass a Polygon or LinearRing."
         )
     return Polygon(geom)
+
+
+def validate_input_file(filepath):
+    if not isinstance(filepath, str):
+        raise ValueError("'filepath' should be a string.")
+    if not filepath.endswith(".pbf"):
+        raise ValueError(f"Input data should be in Protobuf format (*.osm.pbf). "
+                         f"Found: {filepath.split('.')[-1]}")
+    if not os.path.exists(filepath):
+        raise ValueError(f"File does not exist: "
+                         f"Found: {filepath}")
+    return filepath
 
 
 def get_bounding_box(filepath):
