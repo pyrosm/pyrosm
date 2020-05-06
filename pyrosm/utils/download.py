@@ -36,12 +36,12 @@ def download(url, filename, update, target_dir):
             raise ValueError(f"The provided directory does not exist: "
                              f"{target_dir}")
 
-    filepath = os.path.join(target_dir, os.path.basename(filename))
+    filepath = os.path.abspath(os.path.join(target_dir, os.path.basename(filename)))
 
     if not os.path.exists(target_dir):
         os.makedirs(target_dir)
 
-    # Check if file exists already in temp
+    # Check if file exists
     file_exists = False
     if os.path.exists(filepath):
         file_exists = True
@@ -66,5 +66,5 @@ def download(url, filename, update, target_dir):
                              "This is likely a temporary issue, try again later."
                              )
         print(f"Downloaded Protobuf data '{os.path.basename(filepath)}' "
-              f"({filesize} MB) to TEMP:\n'{filepath}'")
+              f"({filesize} MB) to:\n'{filepath}'")
     return filepath
