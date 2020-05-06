@@ -5,3 +5,6 @@ cdef get_nodeid_lookup_khash(nodes)
 cdef nodes_for_way_exist_khash(nodes, node_lookup)
 cdef filter_relation_indices(relations, osm_keys, data_filter)
 cdef filter_node_indices(node_arrays, osm_keys, data_filter)
+
+# For debuggin purposes
+cpdef _filter_array_dict_by_indices_or_mask(array_dict, indices)

@@ -1,16 +1,16 @@
 import pytest
-from pyrosm import get_path
+from pyrosm import get_data
 
 
 @pytest.fixture
 def test_pbf():
-    pbf_path = get_path("test_pbf")
+    pbf_path = get_data("test_pbf")
     return pbf_path
 
 
 @pytest.fixture
 def helsinki_pbf():
-    pbf_path = get_path("helsinki_pbf")
+    pbf_path = get_data("helsinki_pbf")
     return pbf_path
 
 
@@ -60,7 +60,7 @@ def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
         assert col in gdf.columns
 
     # Test shape
-    assert len(gdf) == 1783
+    assert len(gdf) == 1782
     assert gdf.crs == pyproj.CRS.from_epsg(4326)
 
 

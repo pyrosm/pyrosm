@@ -15,64 +15,62 @@ cdef get_primitive_blocks_and_string_tables(filepath):
     cdef bytes blob_data
     cdef str feature
 
-    f = open(filepath, 'rb')
+    with open(filepath, 'rb') as f:
 
-    # Check that the data stream is valid OSM
-    # =======================================
+        # Check that the data stream is valid OSM
+        # =======================================
 
-    buf = f.read(4)
-    msg_len = unpack('!L', buf)[0]
-    msg = BlobHeader()
-    msg.ParseFromString(f.read(msg_len))
-    blob_header = msg
-
-    msg = Blob()
-    msg.ParseFromString(f.read(blob_header.datasize))
-    blob_data = zlib.decompress(msg.zlib_data)
-    header_block = HeaderBlock()
-    header_block.ParseFromString(blob_data)
-
-    for feature in header_block.required_features:
-        if not (feature in ('OsmSchema-V0.6', 'DenseNodes')):
-            raise PBFNotImplemented(
-                'Required feature %s not implemented!',
-                feature)
-
-    # Gather primitive blocks and string tables
-    primitive_blocks = []
-    string_tables = []
-
-    while True:
-        # Read header
         buf = f.read(4)
-
-        # Stop when the end has been reached
-        if len(buf) == 0:
-            break
-
         msg_len = unpack('!L', buf)[0]
-
         msg = BlobHeader()
         msg.ParseFromString(f.read(msg_len))
         blob_header = msg
 
-        # Get data
         msg = Blob()
         msg.ParseFromString(f.read(blob_header.datasize))
         blob_data = zlib.decompress(msg.zlib_data)
+        header_block = HeaderBlock()
+        header_block.ParseFromString(blob_data)
 
-        # Get primite block
-        pblock = PrimitiveBlock()
-        pblock.ParseFromString(blob_data)
+        for feature in header_block.required_features:
+            if not (feature in ('OsmSchema-V0.6', 'DenseNodes')):
+                raise PBFNotImplemented(
+                    'Required feature %s not implemented!',
+                    feature)
 
-        # Get string table and decode
-        str_table = [tounicode(s) for s in pblock.stringtable.s]
+        # Gather primitive blocks and string tables
+        primitive_blocks = []
+        string_tables = []
 
-        primitive_blocks.append(pblock)
-        string_tables.append(str_table)
+        while True:
+            # Read header
+            buf = f.read(4)
 
-    # Close file when finished reading
-    f.close()
+            # Stop when the end has been reached
+            if len(buf) == 0:
+                break
+
+            msg_len = unpack('!L', buf)[0]
+
+            msg = BlobHeader()
+            msg.ParseFromString(f.read(msg_len))
+            blob_header = msg
+
+            # Get data
+            msg = Blob()
+            msg.ParseFromString(f.read(blob_header.datasize))
+            blob_data = zlib.decompress(msg.zlib_data)
+
+            # Get primite block
+            pblock = PrimitiveBlock()
+            pblock.ParseFromString(blob_data)
+
+            # Get string table and decode
+            str_table = [tounicode(s) for s in pblock.stringtable.s]
+
+            primitive_blocks.append(pblock)
+            string_tables.append(str_table)
+
     return primitive_blocks, string_tables
 
 
@@ -104,9 +102,19 @@ cdef parse_dense(pblock, data, string_table, bounding_box):
     # Tags
     tags = np.empty(len(data.id), dtype=object)
     parsed = parse_dense_tags(data.keys_vals, string_table)
+
     # In some cases node-tags are not available at all
     if len(parsed) != 0:
         tags[:] = parsed
+
+    # Metadata might not be available, if so add empty
+    # This can happen with BBBike data
+    if versions.shape[0] != 0:
+        versions = np.empty(len(data.id), dtype=np.int8)
+    if changesets.shape[0] != 0:
+        changesets = np.empty(len(data.id), dtype=np.int8)
+    if timestamps.shape[0] != 0:
+        timestamps = np.empty(len(data.id), dtype=np.int8)
 
     if bounding_box is not None:
         # Filter
