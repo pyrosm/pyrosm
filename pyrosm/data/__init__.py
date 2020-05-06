@@ -2,10 +2,20 @@ import os
 from pyrosm.utils.download import download
 from pyrosm.data.geofabrik import Africa, Antarctica, Asia, AustraliaOceania, \
     Europe, NorthAmerica, SouthAmerica, CentralAmerica, Brazil, Canada, France, \
-    Germany, GreatBritain, Italy, Japan, Netherlands, Poland, Russia, USA
+    Germany, GreatBritain, Italy, Japan, Netherlands, Poland, Russia, USA, SubRegions
 from pyrosm.data.bbbike import Cities
 import warnings
 
+__all__ = ["available", "get_data", "get_path"]
+_module_path = os.path.dirname(__file__)
+_package_files = {"test_pbf": "test.osm.pbf", "helsinki_pbf": "Helsinki.osm.pbf"}
+
+# Static test data
+_helsinki_region_pbf = {"name": "Helsinki_region.osm.pbf",
+                        "url": "https://gist.github.com/HTenkanen/"
+                               "02dcfce32d447e65024d93d39ddb1812/"
+                               "raw/5fe7ffb625f091591d8c29128a9e3b37870a5012/"
+                               "Helsinki_region.osm.pbf"}
 
 class DataSources:
     def __init__(self):
@@ -18,19 +28,8 @@ class DataSources:
         self.south_america = SouthAmerica()
         self.central_america = CentralAmerica()
 
-        self.brazil = Brazil()
-        self.canada = Canada()
-        self.france = France()
-        self.germany = Germany()
-        self.great_britain = GreatBritain()
-        self.italy = Italy()
-        self.japan = Japan()
-        self.netherlands = Netherlands()
-        self.poland = Poland()
-        self.russia = Russia()
-        self.usa = USA()
-
         self.cities = Cities()
+        self.subregions = SubRegions()
 
         self.available = {
             "africa": self.africa.available,
@@ -41,41 +40,41 @@ class DataSources:
             "europe": self.europe.available,
             "north_america": self.north_america.available,
             "south_america": self.south_america.available,
-
-            "brazil": self.brazil.available,
-            "canada": self.canada.available,
-            "france": self.france.available,
-            "germany": self.germany.available,
-            "great_britain": self.great_britain.available,
-            "italy": self.italy.available,
-            "japan": self.japan.available,
-            "netherlands": self.netherlands.available,
-            "poland": self.poland.available,
-            "russia": self.russia.available,
-            "usa": self.usa.available,
-
             "cities": self.cities.available,
+            "subregions": self.subregions.available,
         }
+
+        # Gather all data sources
+        # Keep hidden to avoid encouraging iteration of the whole
+        # world at once which most likely would end up
+        # in memory error / filling the disk etc.
+        self._all_sources = [k for k in self.available.keys()
+                             if k not in ["cities", "subregions"]]
+
+        for source, available in self.available.items():
+            self._all_sources += available
+
+        for subregion in self.subregions.available:
+            self._all_sources += self.subregions.__dict__[subregion].available
+
+        self._all_sources = [src.lower() for src in self._all_sources]
+
+        # Static data for Helsinki Region
+        # that should be able to download
+        # (needed for tests)
+        self._all_sources += ["helsinki_region_pbf"]
+        self._all_sources = list(set(self._all_sources))
 
 
 # Initialize DataSources
 sources = DataSources()
 
-__all__ = ["available", "get_data", "get_path"]
-_module_path = os.path.dirname(__file__)
-_package_files = {"test_pbf": "test.osm.pbf", "helsinki_pbf": "Helsinki.osm.pbf"}
-
 available = {
     "test_data": list(_package_files.keys()) + ["helsinki_region_pbf"],
-    "regions": {k: v for k, v in sources.available.items() if k != "cities"},
+    "regions": {k: v for k, v in sources.available.items() if k not in ["cities", "subregions"]},
+    "subregions": sources.subregions.available,
     "cities": sources.cities.available,
 }
-
-_helsinki_region_pbf = {"name": "Helsinki_region.osm.pbf",
-                        "url": "https://gist.github.com/HTenkanen/"
-                               "02dcfce32d447e65024d93d39ddb1812/"
-                               "raw/5fe7ffb625f091591d8c29128a9e3b37870a5012/"
-                               "Helsinki_region.osm.pbf"}
 
 
 def retrieve(data, update, directory):
@@ -84,6 +83,22 @@ def retrieve(data, update, directory):
                     update=update,
                     target_dir=directory
                     )
+
+
+def search_source(name):
+    for source, available in sources.available.items():
+        # Cities are kept as CamelCase, so need to make lower
+        if source == "cities":
+            available = [src.lower() for src in available]
+        if isinstance(available, list):
+            if name in available:
+                return sources.__dict__[source].__dict__[name]
+        elif isinstance(available, dict):
+            # Sub-regions should be looked one level further down
+            for subregion, available2 in available.items():
+                if name in available2:
+                    return sources.subregions.__dict__[subregion].__dict__[name]
+    raise ValueError(f"Could not retrieve url for '{name}'.")
 
 
 def get_data(dataset, update=False, directory=None):
@@ -104,14 +119,6 @@ def get_data(dataset, update=False, directory=None):
         Path to a directory where the PBF data will be downloaded.
         (does not apply for test data sets bundled with the package).
     """
-    all_sources = []
-    for source, available in sources.available.items():
-        all_sources += available
-    all_sources = [src.lower() for src in all_sources]
-
-    # Static test data for Helsinki Region
-    # that should be able to download
-    all_sources += ["helsinki_region_pbf"]
 
     if not isinstance(dataset, str):
         raise ValueError(f"'dataset' should be text. Got {dataset}.")
@@ -124,19 +131,28 @@ def get_data(dataset, update=False, directory=None):
         return retrieve(_helsinki_region_pbf,
                         update, directory)
 
-    elif dataset in all_sources:
-        for source, available in sources.available.items():
-            # Cities are kept as CamelCase, so need to make lower
-            if source == "cities":
-                available = [src.lower() for src in available]
+    elif dataset in sources._all_sources:
+        return retrieve(search_source(dataset),
+                 update, directory)
 
-            if dataset in available:
-                return retrieve(sources.__dict__[source].__dict__[dataset],
-                                update, directory)
+    # Users might pass city names with spaces (e.g. Rio De Janeiro)
+    elif dataset.replace(" ", "") in sources._all_sources:
+        return retrieve(search_source(dataset.replace(" ", "")),
+                        update, directory)
+
+    # Users might pass country names without underscores (e.g. North America)
+    elif dataset.replace(" ", "_") in sources._all_sources:
+        return retrieve(search_source(dataset.replace(" ", "_")),
+                        update, directory)
+
+    # Users might pass country names with dashes instead of underscores (e.g. canary-islands)
+    elif dataset.replace("-", "_") in sources._all_sources:
+        return retrieve(search_source(dataset.replace("-", "_")),
+                        update, directory)
 
     else:
         msg = "The dataset '{data}' is not available. ".format(data=dataset)
-        msg += "Available datasets are {}".format(", ".join(available))
+        msg += "Available datasets are {}".format(", ".join(sources._all_sources))
         raise ValueError(msg)
 
 

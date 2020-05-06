@@ -85,6 +85,8 @@ class USA:
     available = regions + ["southern_california", "northern_california"]
     available.sort()
 
+    country = {"name": "us" + suffix, "url": URL + north_america_url + "us" + suffix}
+
     # Create data sources
     _sources = {
         region: {"name": region.replace("_", "-") + suffix, "url": URL + usa_url + region.replace("_", "-") + suffix}
@@ -142,6 +144,8 @@ class France:
 
     available = regions
     available.sort()
+
+    country = {"name": "france" + suffix, "url": URL + europe_url + "france" + suffix}
 
     # Create data sources
     _sources = {
@@ -230,10 +234,12 @@ class England:
 
 class GreatBritain:
     regions = ["england", "scotland", "wales"]
-    england_sub_regions = England()
+    england = England()
 
-    available = regions + england_sub_regions.available
+    available = regions + england.available
     available.sort()
+
+    country = {"name": "great-britain" + suffix, "url": URL + europe_url + "great-britain" + suffix}
 
     # Create data sources
     _sources = {
@@ -241,7 +247,7 @@ class GreatBritain:
         for region in regions
     }
 
-    for region in england_sub_regions.available:
+    for region in england.available:
         _sources[region] = {"name": region.replace("_", "-") + suffix,
                             "url": URL + england_url + region.replace("_", "-") + suffix}
 
@@ -255,10 +261,12 @@ class GreatBritain:
 
 
 class Italy:
-    regions = ['centro', 'isole', 'nord_est', 'nord_ovest', 'sud']
+    regions = ["centro", "isole", "nord_est", "nord_ovest", "sud"]
 
     available = regions
     available.sort()
+
+    country = {"name": "italy" + suffix, "url": URL + europe_url + "italy" + suffix}
 
     # Create data sources
     _sources = {
@@ -276,19 +284,21 @@ class Italy:
 
 
 class Russia:
-    regions = ['central_fed_district',
-               'crimean_fed_district',
-               'far_eastern_fed_district',
-               'kaliningrad',
-               'north_caucasus_fed_district',
-               'northwestern_fed_district',
-               'siberian_fed_district',
-               'south_fed_district',
-               'ural_fed_district',
-               'volga_fed_district']
+    regions = ["central_fed_district",
+               "crimean_fed_district",
+               "far_eastern_fed_district",
+               "kaliningrad",
+               "north_caucasus_fed_district",
+               "northwestern_fed_district",
+               "siberian_fed_district",
+               "south_fed_district",
+               "ural_fed_district",
+               "volga_fed_district"]
 
     available = regions
     available.sort()
+
+    country = {"name": "russia" + suffix, "url": URL + russia_url + "russia" + suffix}
 
     # Create data sources
     _sources = {
@@ -306,26 +316,28 @@ class Russia:
 
 
 class Poland:
-    regions = ['dolnoslaskie',
-               'kujawsko_pomorskie',
-               'lodzkie',
-               'lubelskie',
-               'lubuskie',
-               'malopolskie',
-               'mazowieckie',
-               'opolskie',
-               'podkarpackie',
-               'podlaskie',
-               'pomorskie',
-               'slaskie',
-               'swietokrzyskie',
-               'warminsko_mazurskie',
-               'wielkopolskie',
-               'zachodniopomorskie'
+    regions = ["dolnoslaskie",
+               "kujawsko_pomorskie",
+               "lodzkie",
+               "lubelskie",
+               "lubuskie",
+               "malopolskie",
+               "mazowieckie",
+               "opolskie",
+               "podkarpackie",
+               "podlaskie",
+               "pomorskie",
+               "slaskie",
+               "swietokrzyskie",
+               "warminsko_mazurskie",
+               "wielkopolskie",
+               "zachodniopomorskie"
                ]
 
     available = regions
     available.sort()
+
+    country = {"name": "poland" + suffix, "url": URL + europe_url + "poland" + suffix}
 
     # Create data sources
     _sources = {
@@ -343,10 +355,10 @@ class Poland:
 
 
 class BadenWuerttemberg:
-    regions = ['freiburg_regbez',
-               'karlsruhe_regbez',
-               'stuttgart_regbez',
-               'tuebingen_regbez']
+    regions = ["freiburg_regbez",
+               "karlsruhe_regbez",
+               "stuttgart_regbez",
+               "tuebingen_regbez"]
 
     available = regions
     available.sort()
@@ -368,11 +380,11 @@ class BadenWuerttemberg:
 
 
 class NordrheinWestfalen:
-    regions = ['arnsberg_regbez',
-               'detmold_regbez',
-               'duesseldorf_regbez',
-               'koeln_regbez',
-               'muenster_regbez']
+    regions = ["arnsberg_regbez",
+               "detmold_regbez",
+               "duesseldorf_regbez",
+               "koeln_regbez",
+               "muenster_regbez"]
 
     available = regions
     available.sort()
@@ -394,13 +406,13 @@ class NordrheinWestfalen:
 
 
 class Bayern:
-    regions = ['mittelfranken',
-               'niederbayern',
-               'oberbayern',
-               'oberfranken',
-               'oberpfalz',
-               'schwaben',
-               'unterfranken']
+    regions = ["mittelfranken",
+               "niederbayern",
+               "oberbayern",
+               "oberfranken",
+               "oberpfalz",
+               "schwaben",
+               "unterfranken"]
 
     available = regions
     available.sort()
@@ -422,22 +434,22 @@ class Bayern:
 
 
 class Germany:
-    regions = ['baden_wuerttemberg',
-               'bayern',
-               'berlin',
-               'brandenburg',
-               'bremen',
-               'hamburg',
-               'hessen',
-               'mecklenburg_vorpommern',
-               'niedersachsen',
-               'nordrhein_westfalen',
-               'rheinland_pfalz',
-               'saarland',
-               'sachsen_anhalt',
-               'sachsen',
-               'schleswig_holstein',
-               'thueringen']
+    regions = ["baden_wuerttemberg",
+               "bayern",
+               "berlin",
+               "brandenburg",
+               "bremen",
+               "hamburg",
+               "hessen",
+               "mecklenburg_vorpommern",
+               "niedersachsen",
+               "nordrhein_westfalen",
+               "rheinland_pfalz",
+               "saarland",
+               "sachsen_anhalt",
+               "sachsen",
+               "schleswig_holstein",
+               "thueringen"]
 
     baden_wuerttemberg = BadenWuerttemberg()
     bayern = Bayern()
@@ -446,6 +458,8 @@ class Germany:
     available = regions + bayern.available + baden_wuerttemberg.available \
                 + nordrhein_westfalen.available
     available.sort()
+
+    country = {"name": "germany" + suffix, "url": URL + europe_url + "germany" + suffix}
 
     # Create data sources
     _sources = {
@@ -476,20 +490,22 @@ class Germany:
 
 
 class Netherlands:
-    regions = ['drenthe',
-               'flevoland',
-               'friesland',
-               'gelderland',
-               'groningen',
-               'limburg',
-               'noord_brabant',
-               'noord_holland',
-               'overijssel',
-               'utrecht',
-               'zeeland',
-               'zuid_holland']
+    regions = ["drenthe",
+               "flevoland",
+               "friesland",
+               "gelderland",
+               "groningen",
+               "limburg",
+               "noord_brabant",
+               "noord_holland",
+               "overijssel",
+               "utrecht",
+               "zeeland",
+               "zuid_holland"]
     available = regions
     available.sort()
+
+    country = {"name": "netherlands" + suffix, "url": URL + europe_url + "netherlands" + suffix}
 
     # Create data sources
     _sources = {
@@ -508,21 +524,23 @@ class Netherlands:
 
 
 class Canada:
-    regions = ['alberta',
-               'british_columbia',
-               'manitoba',
-               'new_brunswick',
-               'newfoundland_and_labrador',
-               'northwest_territories',
-               'nova_scotia',
-               'nunavut',
-               'ontario',
-               'prince_edward_island',
-               'quebec',
-               'saskatchewan',
-               'yukon']
+    regions = ["alberta",
+               "british_columbia",
+               "manitoba",
+               "new_brunswick",
+               "newfoundland_and_labrador",
+               "northwest_territories",
+               "nova_scotia",
+               "nunavut",
+               "ontario",
+               "prince_edward_island",
+               "quebec",
+               "saskatchewan",
+               "yukon"]
     available = regions
     available.sort()
+
+    country = {"name": "canada" + suffix, "url": URL + north_america_url + "canada" + suffix}
 
     # Create data sources
     _sources = {
@@ -540,9 +558,11 @@ class Canada:
 
 
 class Brazil:
-    regions = ['centro_oeste', 'nordeste', 'norte', 'sudeste', 'sul']
+    regions = ["centro_oeste", "nordeste", "norte", "sudeste", "sul"]
     available = regions
     available.sort()
+
+    country = {"name": "brazil" + suffix, "url": URL + south_america_url + "brazil" + suffix}
 
     # Create data sources
     _sources = {
@@ -560,17 +580,19 @@ class Brazil:
 
 
 class Japan:
-    regions = ['chubu',
-               'chugoku',
-               'hokkaido',
-               'kansai',
-               'kanto',
-               'kyushu',
-               'shikoku',
-               'tohoku']
+    regions = ["chubu",
+               "chugoku",
+               "hokkaido",
+               "kansai",
+               "kanto",
+               "kyushu",
+               "shikoku",
+               "tohoku"]
 
     available = regions
     available.sort()
+
+    country = {"name": "japan" + suffix, "url": URL + asia_url + "japan" + suffix}
 
     # Create data sources
     _sources = {
@@ -588,26 +610,28 @@ class Japan:
 
 
 class AustraliaOceania:
-    regions = ['australia',
-               'cook_islands',
-               'fiji',
-               'kiribati',
-               'marshall_islands',
-               'micronesia',
-               'nauru',
-               'new_caledonia',
-               'new_zealand',
-               'niue',
-               'palau',
-               'papua_new_guinea',
-               'samoa',
-               'solomon_islands',
-               'tonga',
-               'tuvalu',
-               'vanuatu']
+    regions = ["australia",
+               "cook_islands",
+               "fiji",
+               "kiribati",
+               "marshall_islands",
+               "micronesia",
+               "nauru",
+               "new_caledonia",
+               "new_zealand",
+               "niue",
+               "palau",
+               "papua_new_guinea",
+               "samoa",
+               "solomon_islands",
+               "tonga",
+               "tuvalu",
+               "vanuatu"]
 
     available = regions
     available.sort()
+
+    continent = {"name": "australia-oceania" + suffix, "url": URL + "australia-oceania" + suffix}
 
     # Create data sources
     _sources = {
@@ -626,15 +650,15 @@ class AustraliaOceania:
 
 
 class NorthAmerica:
-    regions = ['canada',
-               'greenland',
-               'mexico',
-               'us',
-               'us_midwest',
-               'us_northeast',
-               'us_pacific',
-               'us_south',
-               'us_west']
+    regions = ["canada",
+               "greenland",
+               "mexico",
+               "usa",
+               "us_midwest",
+               "us_northeast",
+               "us_pacific",
+               "us_south",
+               "us_west"]
 
     usa = USA()
     canada = Canada()
@@ -642,12 +666,17 @@ class NorthAmerica:
     available = regions
     available.sort()
 
+    continent = {"name": "north-america" + suffix, "url": URL + "north-america" + suffix}
+
     # Create data sources
     _sources = {
         region: {"name": region.replace("_", "-") + suffix,
                  "url": URL + north_america_url + region.replace("_", "-") + suffix}
-        for region in regions
+        for region in regions if region != "usa"
     }
+    # USA is "us" in GeoFabrik
+    _sources["usa"] = {"name": "us" + suffix,
+                       "url": URL + north_america_url + "us" + suffix}
 
     __dict__ = _sources
 
@@ -659,23 +688,25 @@ class NorthAmerica:
 
 
 class SouthAmerica:
-    regions = ['argentina',
-               'bolivia',
-               'brazil',
-               'chile',
-               'colombia',
-               'ecuador',
-               'paraguay',
-               'peru',
-               'suriname',
-               'uruguay',
-               'venezuela']
+    regions = ["argentina",
+               "bolivia",
+               "brazil",
+               "chile",
+               "colombia",
+               "ecuador",
+               "paraguay",
+               "peru",
+               "suriname",
+               "uruguay",
+               "venezuela"]
 
     brazil = Brazil()
 
     available = regions
     available.sort()
     available.sort()
+
+    continent = {"name": "south-america" + suffix, "url": URL + "south-america" + suffix}
 
     # Create data sources
     _sources = {
@@ -693,16 +724,18 @@ class SouthAmerica:
 
 
 class CentralAmerica:
-    regions = ['bahamas',
-               'belize',
-               'cuba',
-               'guatemala',
-               'haiti_and_domrep',
-               'jamaica',
-               'nicaragua']
+    regions = ["bahamas",
+               "belize",
+               "cuba",
+               "guatemala",
+               "haiti_and_domrep",
+               "jamaica",
+               "nicaragua"]
 
     available = regions
     available.sort()
+
+    continent = {"name": "central-america" + suffix, "url": URL + "central-america" + suffix}
 
     # Create data sources
     _sources = {
@@ -785,6 +818,8 @@ class Europe:
     available = regions
     available.sort()
 
+    continent = {"name": "europe" + suffix, "url": URL + "europe" + suffix}
+
     # Create data sources
     _sources = {
         region: {"name": region.replace("_", "-") + suffix, "url": URL + europe_url + region.replace("_", "-") + suffix}
@@ -804,65 +839,67 @@ class Europe:
 
 
 class Africa:
-    regions = ['algeria',
-               'angola',
-               'benin',
-               'botswana',
-               'burkina_faso',
-               'burundi',
-               'cameroon',
-               'canary_islands',
-               'cape_verde',
-               'central_african_republic',
-               'chad',
-               'comores',
-               'congo_brazzaville',
-               'congo_democratic_republic',
-               'djibouti',
-               'egypt',
-               'equatorial_guinea',
-               'eritrea',
-               'ethiopia',
-               'gabon',
-               'ghana',
-               'guinea_bissau',
-               'guinea',
-               'ivory_coast',
-               'kenya',
-               'lesotho',
-               'liberia',
-               'libya',
-               'madagascar',
-               'malawi',
-               'mali',
-               'mauritania',
-               'mauritius',
-               'morocco',
-               'mozambique',
-               'namibia',
-               'niger',
-               'nigeria',
-               'rwanda',
-               'saint_helena_ascension_and_tristan_da_cunha',
-               'sao_tome_and_principe',
-               'senegal_and_gambia',
-               'seychelles',
-               'sierra_leone',
-               'somalia',
-               'south_africa_and_lesotho',
-               'south_africa',
-               'south_sudan',
-               'sudan',
-               'swaziland',
-               'tanzania',
-               'togo',
-               'tunisia',
-               'uganda',
-               'zambia',
-               'zimbabwe']
+    regions = ["algeria",
+               "angola",
+               "benin",
+               "botswana",
+               "burkina_faso",
+               "burundi",
+               "cameroon",
+               "canary_islands",
+               "cape_verde",
+               "central_african_republic",
+               "chad",
+               "comores",
+               "congo_brazzaville",
+               "congo_democratic_republic",
+               "djibouti",
+               "egypt",
+               "equatorial_guinea",
+               "eritrea",
+               "ethiopia",
+               "gabon",
+               "ghana",
+               "guinea_bissau",
+               "guinea",
+               "ivory_coast",
+               "kenya",
+               "lesotho",
+               "liberia",
+               "libya",
+               "madagascar",
+               "malawi",
+               "mali",
+               "mauritania",
+               "mauritius",
+               "morocco",
+               "mozambique",
+               "namibia",
+               "niger",
+               "nigeria",
+               "rwanda",
+               "saint_helena_ascension_and_tristan_da_cunha",
+               "sao_tome_and_principe",
+               "senegal_and_gambia",
+               "seychelles",
+               "sierra_leone",
+               "somalia",
+               "south_africa_and_lesotho",
+               "south_africa",
+               "south_sudan",
+               "sudan",
+               "swaziland",
+               "tanzania",
+               "togo",
+               "tunisia",
+               "uganda",
+               "zambia",
+               "zimbabwe"]
 
     available = regions
     available.sort()
+
+    continent = {"name": "africa" + suffix, "url": URL + "africa" + suffix}
 
     # Create data sources
     _sources = {
@@ -880,48 +917,50 @@ class Africa:
 
 
 class Asia:
-    regions = ['afghanistan',
-               'armenia',
-               'azerbaijan',
-               'bangladesh',
-               'bhutan',
-               'cambodia',
-               'china',
-               'gcc_states',
-               'india',
-               'indonesia',
-               'iran',
-               'iraq',
-               'israel_and_palestine',
-               'japan',
-               'jordan',
-               'kazakhstan',
-               'kyrgyzstan',
-               'laos',
-               'lebanon',
-               'malaysia_singapore_brunei',
-               'maldives',
-               'mongolia',
-               'myanmar',
-               'nepal',
-               'north_korea',
-               'pakistan',
-               'philippines',
-               'south_korea',
-               'sri_lanka',
-               'syria',
-               'taiwan',
-               'tajikistan',
-               'thailand',
-               'turkmenistan',
-               'uzbekistan',
-               'vietnam',
-               'yemen']
+    regions = ["afghanistan",
+               "armenia",
+               "azerbaijan",
+               "bangladesh",
+               "bhutan",
+               "cambodia",
+               "china",
+               "gcc_states",
+               "india",
+               "indonesia",
+               "iran",
+               "iraq",
+               "israel_and_palestine",
+               "japan",
+               "jordan",
+               "kazakhstan",
+               "kyrgyzstan",
+               "laos",
+               "lebanon",
+               "malaysia_singapore_brunei",
+               "maldives",
+               "mongolia",
+               "myanmar",
+               "nepal",
+               "north_korea",
+               "pakistan",
+               "philippines",
+               "south_korea",
+               "sri_lanka",
+               "syria",
+               "taiwan",
+               "tajikistan",
+               "thailand",
+               "turkmenistan",
+               "uzbekistan",
+               "vietnam",
+               "yemen"]
 
     japan = Japan()
 
     available = regions
     available.sort()
+
+    continent = {"name": "asia" + suffix, "url": URL + "asia" + suffix}
 
     # Create data sources
     _sources = {
@@ -943,6 +982,8 @@ class Antarctica:
     available = regions
     available.sort()
 
+    continent = {"name": "antarctica" + suffix, "url": URL + "antarctica" + suffix}
+
     # Create data sources
     _sources = {
         region: {"name": region + suffix, "url": URL + region + suffix}
@@ -950,6 +991,33 @@ class Antarctica:
     }
 
     __dict__ = _sources
+
+    def __getattr__(self, name):
+        return self.__dict__[name]
+
+    def __call__(self):
+        return self.available
+
+
+class SubRegions:
+    def __init__(self):
+        self.regions = ["brazil", "canada", "france", "germany", "great_britain", "italy", "japan", "netherlands", "poland", "russia", "usa"]
+        available = self.regions
+        available.sort()
+
+        self.brazil = Brazil()
+        self.canada = Canada()
+        self.france = France()
+        self.germany = Germany()
+        self.great_britain = GreatBritain()
+        self.italy = Italy()
+        self.japan = Japan()
+        self.netherlands = Netherlands()
+        self.poland = Poland()
+        self.russia = Russia()
+        self.usa = USA()
+
+        self.available = {name: self.__dict__[name].available for name in self.regions}
 
     def __getattr__(self, name):
         return self.__dict__[name]
