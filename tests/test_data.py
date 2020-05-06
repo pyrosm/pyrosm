@@ -119,7 +119,7 @@ def test_bbbike_download_to_directory(directory):
     assert os.path.exists(fp)
 
 
-@pytest.mark.skipif("sys.version_info >= (3,6)")
+@pytest.mark.skipif("sys.version_info > (3,6)")
 def test_geofabrik_sources(geofabrik_urls):
     import requests
     # There might be some sources that are not available
@@ -135,7 +135,7 @@ def test_geofabrik_sources(geofabrik_urls):
         raise ValueError(msg)
 
 
-@pytest.mark.skipif("sys.version_info >= (3,6)")
+@pytest.mark.skipif("sys.version_info > (3,6)")
 def test_bbbike_sources(bbbike_urls):
     import requests
     # There might be some sources that are not available
