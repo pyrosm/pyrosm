@@ -22,7 +22,7 @@ copyright = "2020, Henrikki Tenkanen"
 author = "Henrikki Tenkanen"
 
 # The full version, including alpha/beta/rc tags
-version = release = "0.4.2"
+version = release = "0.4.3"
 
 # -- General configuration ---------------------------------------------------
 
@@ -59,8 +59,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 #
 # html_theme = "alabaster"
 
-html_theme = "sphinx_rtd_theme"
-html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
+html_theme = 'pydata_sphinx_theme'
 
 html_context = {
     # Enable the "Edit in GitHub link within the header of each page.
@@ -99,6 +98,9 @@ html_context = {
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ["_static"]
 
+html_css_files = [
+    'css/custom.css',
+]
 
 # ======================
 # Do not skip class init
