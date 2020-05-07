@@ -113,3 +113,23 @@ def test_adding_extra_attribute(helsinki_pbf):
     assert extra_col in extra.columns
     assert len(extra[extra_col].dropna().unique()) > 0
     assert isinstance(gdf, GeoDataFrame)
+
+
+def test_using_multiple_filters(helsinki_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    osm = OSM(filepath=helsinki_pbf)
+    gdf = osm.get_pois({"shop": ["alcohol"], "amenity": ["pub"]})
+
+    # shop and amenity columns should only contain alcohol and pub as requested
+    # (in addition to None values)
+    shop = gdf["shop"].unique().tolist()
+    shop = [item for item in shop if isinstance(item, str)]
+    amenity = gdf["amenity"].unique().tolist()
+    amenity = [item for item in amenity if isinstance(item, str)]
+
+    assert isinstance(gdf, GeoDataFrame)
+    assert shop == ["alcohol"]
+    assert amenity == ["pub"]
+    assert gdf.shape == (59, 32)
