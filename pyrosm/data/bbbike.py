@@ -160,7 +160,7 @@ class Cities:
                  'Muenster',
                  'NewDelhi',
                  'NewOrleans',
-                 'NewYork',
+                 'NewYorkCity',
                  'Nuernberg',
                  'Oldenburg',
                  'Oranienburg',
@@ -245,8 +245,13 @@ class Cities:
     # Create data sources
     _sources = {
         city.lower(): {"name": city + suffix, "url": f"{URL}/{city}/{city}{suffix}"}
-        for city in available
+        for city in available if city not in ["NewYorkCity"]
     }
+    # Add New York City separately as there is also a state with the same name
+    # NewYork ==> NewYorkCity
+    _ny = "NewYorkCity"
+    _ny_src = "NewYork"
+    _sources[_ny] = {"name": _ny + suffix, "url": f"{URL}/{_ny_src}/{_ny_src}{suffix}"}
 
     __dict__ = _sources
 

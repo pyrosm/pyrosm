@@ -120,11 +120,13 @@ cdef get_relations(relations, relation_ways, node_coordinates):
         if geometry is None:
             continue
 
-        if len(geometry) > 1:
-            if not force_linestring:
-                geometry = multipolygons(geometry)
-            else:
-                geometry = multilinestrings(geometry)
+        # Check for multigeometries
+        if isinstance(geometry[0], list):
+            if len(geometry[0]) > 1:
+                if not force_linestring:
+                    geometry = multipolygons(geometry)
+                else:
+                    geometry = multilinestrings(geometry)
         else:
             geometry = geometry[0]
 

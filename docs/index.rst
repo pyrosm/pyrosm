@@ -10,7 +10,7 @@ even with more specific filters.
 
 Pyrosm is easy to use and it provides a somewhat similar user interface as `OSMnx <https://github.com/gboeing/osmnx>`__.
 The main difference between pyrosm and OSMnx is that OSMnx reads the data using an OverPass API, whereas pyrosm reads
-the data from local OSM data dumps that can be downloaded e.g. from GeoFabrik's website.
+the data from local OSM data dumps that are downloaded from PBF data providers (Geofabrik, BBBike).
 This makes it possible to read data much faster, thus allowing parsing OSM data
 covering large regions in a matter of minutes instead of hours.
 
@@ -24,6 +24,7 @@ takes less than **3 minutes** and parsing the buildings from the same region tak
 Current features
 ----------------
 
+ - download PBF data easily from hundreds of locations across the world
  - read street networks (separately for driving, cycling, walking and all-combined)
  - read buildings from PBF
  - read Points of Interest (POI) from PBF

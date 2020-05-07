@@ -2,6 +2,7 @@ from libc.stdlib cimport malloc
 import cython
 import numpy as np
 from rapidjson import dumps
+from geopandas import GeoSeries
 
 cdef get_dtype(key):
     dtypes = {"id": np.int64,
@@ -49,6 +50,7 @@ cdef convert_way_records_to_lists(ways, tags_to_separate_as_arrays):
             data["tags"].append(dumps(other_tags))
         else:
             data["tags"].append(None)
+
     return data
 
 cdef convert_to_arrays_and_drop_empty(data):
@@ -61,9 +63,10 @@ cdef convert_to_arrays_and_drop_empty(data):
     # Convert to arrays
     arrays = {}
     for key, value_list in data.items():
-        # Geometry should always be kept
+        # Parse geometry separately for handling multi-geoms correctly
         if key == "geometry":
-            pass
+            arrays[key] = GeoSeries(value_list).values
+            continue
 
         # Nodes are in a list and should always be kept
         elif not isinstance(value_list[0], list):

@@ -207,7 +207,7 @@ cdef record_should_be_kept(tag, osm_keys, data_filter):
         # present in the 'data_filter' keys, it means that
         # the given record should be kept
         # --> ("osm-key: True" -situation)
-        if osm_key not in tag_keys:
+        if osm_key not in filter_keys:
             osm_key_include_all = True
 
     # If not, the element shouldn't be kept
@@ -252,21 +252,17 @@ cdef filter_node_indices(node_arrays, osm_keys, data_filter):
     indices = []
 
     if len(data_filter) == 0:
-        relation_filter = {}
+        node_filter = {}
     else:
-        relation_filter = {key: value for key, value in data_filter.items()}
+        node_filter = {key: value for key, value in data_filter.items()}
 
     for osm_key in osm_keys:
-        if osm_key not in relation_filter.keys():
-            relation_filter[osm_key] = [True]
-
-    for osm_key in osm_keys:
-        if osm_key not in relation_filter.keys():
-            relation_filter[osm_key] = [True]
+        if osm_key not in node_filter.keys():
+            node_filter[osm_key] = [True]
 
     for i in range(0, n):
         tag = node_arrays["tags"][i]
-        if record_should_be_kept(tag, osm_keys, relation_filter):
+        if record_should_be_kept(tag, osm_keys, node_filter):
             indices.append(i)
 
     return indices
