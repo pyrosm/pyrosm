@@ -24,6 +24,7 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
 
 ## Current features
 
+ - download PBF data easily from hundreds of locations across the world
  - read street networks (separately for driving, cycling, walking and all-combined)
  - read buildings from PBF
  - read Points of Interest (POI) from PBF
@@ -38,7 +39,6 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
 
  - add possibility to crop PBF and save a subset into new PBF.
  - add Cython specific tests
- - automate PBF downloading from Geofabrik (?)
 
 ## Install
 
