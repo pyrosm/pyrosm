@@ -539,6 +539,10 @@ class OSM:
             "keep" | "exclude"
             Whether the filters should be used to keep or exclude the data from OSM.
 
+            Note: "exclude" works only with ways and relations. With nodes, only "keep" is supported,
+            because with "exclude" almost all nodes would always be part of the end result as
+            most nodes do not have tag information.
+
         tags_as_columns : list
             Which tags should be kept as columns in the resulting GeoDataFrame.
 
