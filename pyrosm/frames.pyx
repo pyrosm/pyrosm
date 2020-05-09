@@ -79,6 +79,10 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
 
     # Merge all
     gdf = pd.concat([node_gdf, way_gdf, relation_gdf])
+
+    if len(gdf) == 0:
+        return None
+
     gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
 
     # Filter by bounding box if it was used

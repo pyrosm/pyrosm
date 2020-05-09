@@ -29,7 +29,7 @@ def get_building_data(node_coordinates, way_records, relations,
 
     # If there weren't any data, return empty GeoDataFrame
     if nodes is None and ways is None and relations is None:
-        warnings.warn("Could not find any landuse elements for given area.",
+        warnings.warn("Could not find any building elements for given area.",
                       UserWarning,
                       stacklevel=2)
         return None

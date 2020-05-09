@@ -1,22 +1,22 @@
 import pytest
-from pyrosm import get_path
+from pyrosm import get_data
 
 
 @pytest.fixture
 def test_pbf():
-    pbf_path = get_path("test_pbf")
+    pbf_path = get_data("test_pbf")
     return pbf_path
 
 
 @pytest.fixture
 def helsinki_pbf():
-    pbf_path = get_path("helsinki_pbf")
+    pbf_path = get_data("helsinki_pbf")
     return pbf_path
 
 
 @pytest.fixture
 def helsinki_region_pbf():
-    pbf_path = get_path("helsinki_region_pbf")
+    pbf_path = get_data("helsinki_region_pbf")
     return pbf_path
 
 
@@ -410,8 +410,25 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
     for col in required_columns:
         assert col in transit.columns
 
+    # Check individual counts
+    correct_counts = {'railway': 1430, 'route': 1058,
+                      'public_transport': 542, 'bus': 69}
+
+    for col in required_columns:
+        cnt = len(transit[col].dropna())
+        correct = correct_counts[col]
+        assert cnt == correct, f"Incorrect count for {col}. " \
+                               f"Should have {correct}, found {cnt}."
+
     assert isinstance(transit, GeoDataFrame)
-    assert len(transit) == 3230
+    assert len(transit) == 3075
+
+    # When using custom filters all records should have a value
+    # at least on one of the attributes specified in the custom_filter
+    selected = transit[required_columns]
+    # Try dropping out rows with NaNs on all columns
+    no_nans = selected.dropna(subset=required_columns, how="all")
+    assert selected.shape == no_nans.shape
 
 
 def test_reading_custom_from_area_having_none(helsinki_pbf):
@@ -450,3 +467,23 @@ def test_adding_extra_attribute(helsinki_pbf):
     assert extra_col in extra.columns
     assert len(extra[extra_col].dropna().unique()) > 0
     assert isinstance(gdf, GeoDataFrame)
+
+
+def test_using_multiple_filters(helsinki_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    osm = OSM(filepath=helsinki_pbf)
+    gdf = osm.get_data_by_custom_criteria({"shop": ["alcohol"], "amenity": ["pub"]})
+
+    # shop and amenity columns should only contain alcohol and pub as requested
+    # (in addition to None values)
+    shop = gdf["shop"].unique().tolist()
+    shop = [item for item in shop if isinstance(item, str)]
+    amenity = gdf["amenity"].unique().tolist()
+    amenity = [item for item in amenity if isinstance(item, str)]
+
+    assert isinstance(gdf, GeoDataFrame)
+    assert shop == ["alcohol"]
+    assert amenity == ["pub"]
+    assert gdf.shape == (59, 32)

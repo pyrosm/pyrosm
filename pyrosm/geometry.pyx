@@ -1,7 +1,60 @@
 import numpy as np
-from pygeos import linestrings, polygons, points, linearrings, multilinestrings
+from pygeos import linestrings, polygons, points, linearrings, \
+    multilinestrings, multipolygons
 from pygeos import GEOSException
+from pygeos.linear import line_merge
+from pygeos.coordinates import get_coordinates
+from pygeos.predicates import is_geometry
 import shapely
+from shapely.geometry import MultiPolygon
+from shapely.ops import polygonize
+
+cpdef fix_geometry(geometry, diff_threshold=20):
+    """
+    Fix for invalid geometries using two strategies:
+        1. buffer(0) --> works in most cases.
+        2. bowtie fix --> used if buffer breaks down the geometry
+        3. If the difference is still huge between the
+        original geometry and fix-candidate, returns
+        invalid geometry
+    """
+    # Then try fixing with buffer
+    fix_candidate = geometry.buffer(0)
+    if fix_candidate.is_valid:
+        # Ensure that the area of the geometry
+        # hasn't changed dramatically
+        # Sometimes taking buffer 0 totally breaks down
+        # the original geometry having hundred/thousand-fold
+        # difference in area
+        try:
+            diff = abs(1 - geometry.area / fix_candidate.area)
+            if diff < diff_threshold:
+                return fix_candidate
+        except ZeroDivisionError:
+            pass
+        except Exception as e:
+            raise e
+
+    # If geometry is MultiPolygon do not try fix bowtie
+    if isinstance(geometry, MultiPolygon):
+        return geometry
+
+    # Try fixing "bowtie" geometry
+    ext = geometry.exterior
+    mls = ext.intersection(ext)
+    polys = polygonize(mls)
+    fix_candidate = MultiPolygon(polys)
+    if fix_candidate.is_valid:
+        try:
+            diff = abs(1 - geometry.area / fix_candidate.area)
+            if diff < diff_threshold:
+                return fix_candidate
+        except ZeroDivisionError:
+            pass
+        except Exception as e:
+            raise e
+    # Otherwise return original geometry
+    return geometry
 
 cdef _create_node_coordinates_lookup(nodes):
     cdef int i
@@ -82,67 +135,132 @@ cdef _create_point_geometries(xarray, yarray):
          for geom in geometries],
         dtype=object))
 
-cdef create_relation_geometry(node_coordinates, relation_ways,
-                              member_roles, boundary):
+cdef create_relation_geometry(node_coordinates, ways,
+                              member_roles, force_linestring,
+                              make_multipolygon):
     cdef int i, m_cnt
     cdef str role
-
     # Get coordinates for relation
-    coordinates = get_way_coordinates_for_polygon(node_coordinates, relation_ways)
+    coordinates = get_way_coordinates_for_polygon(node_coordinates, ways)
 
     shell = []
     holes = []
     m_cnt = len(member_roles)
+
     for i in range(0, m_cnt):
         role = member_roles[i]
         coords = coordinates[i]
 
-        if role == "outer":
-            if boundary:
-                geometry = create_linestring(coords)
-            else:
-                geometry = create_linear_ring(coords)
-            if geometry is not None:
-                shell.append(geometry)
+        # Points are skipped
+        if len(coords) < 2:
+            continue
 
-        elif role == "inner":
-            if boundary:
-                geometry = create_linestring(coords)
-            else:
-                geometry = create_linear_ring(coords)
-            if geometry is not None:
-                holes.append(geometry)
+        # In case element should constitute a multipolygon,
+        # geometries having less than 3 coordinates should be
+        # skipped as it is not possible to create a polygon
+        if make_multipolygon:
+            if len(coords) < 3:
+                continue
 
-        elif boundary:
-            geometry = create_linestring(coords)
-            if geometry is not None:
-                shell.append(geometry)
+        geometry = create_linestring(coords)
 
-        # With all other roles try making Polygon
+        if geometry is None:
+            continue
+
+        if role == "inner":
+            holes.append(geometry)
         else:
-            geometry = create_linear_ring(coords)
-            if geometry is not None:
-                shell.append(geometry)
+            shell.append(geometry)
 
     if len(shell) == 0:
-        return None
-
-    # Check if should build LineString
-    if boundary:
-        geoms = shell + holes
-        if len(geoms) == 1:
-            return geoms[0]
+        if len(holes) == 0:
+            return None
+        # If shell wasn't found at all, but holes were,
+        # use the holes to construct the geometry
+        # (might happen sometimes with incorrect tagging)
         else:
-            return multilinestrings(geoms)
+            shell = holes
+            holes = []
 
-    # Otherwise build Polygon (possibly with holes)
-    if len(shell) == 1:
-        shell = shell[0]
+    # Check if should build a LineString
+    # e.g. routes should be linestrings
+    if force_linestring:
+        geoms = shell + holes
+
+        if len(geoms) == 1:
+            return geoms
+        else:
+            geom = line_merge(multilinestrings(geoms))
+
+            if isinstance(geom, np.ndarray):
+                return geom.tolist()
+            else:
+                return [geom]
 
     if len(holes) == 0:
         holes = None
 
-    return polygons(shell, holes)
+    # Ensure holes are valid LinearRings
+    else:
+        # Parse rings
+        rings = []
+        for hole in holes:
+            # In some cases, there are insufficient number
+            # of coordinates for constructing LinearRing
+            ring = create_linear_ring(get_coordinates(hole))
+            if ring is not None:
+                rings.append(ring)
+        holes = rings
+        if len(holes) == 0:
+            holes = None
+
+    if len(shell) > 1:
+        if not make_multipolygon:
+            ring = create_linear_ring(
+                get_coordinates(
+                    line_merge(multilinestrings(shell))
+                ))
+            if ring is None:
+                return None
+            geom = polygons(ring, holes)
+        else:
+            # Parse rings
+            rings = []
+            for part in shell:
+                # In some cases, there are insufficient number
+                # of coordinates for constructing LinearRing
+                ring = create_linear_ring(get_coordinates(part))
+                if ring is not None:
+                    rings.append(ring)
+
+            if len(rings) == 0:
+                return None
+
+            if len(rings) > 1:
+                geom = multipolygons(polygons(rings, holes))
+            else:
+                geom = polygons(rings, holes)
+
+    else:
+        ring = create_linear_ring(get_coordinates(shell))
+        if ring is None:
+            return None
+
+        geom = polygons(ring,
+                        holes)
+
+    if isinstance(geom, np.ndarray):
+        return geom.tolist()
+    elif is_geometry(geom):
+        return [geom]
+    else:
+        # TODO: Remove this if no errors arise
+        raise NotImplementedError(
+            "'create_relation_geometry': "
+            "not a geometry or ndarray.\n"
+            "Raise an issue at: "
+            "https://github.com/HTenkanen/pyrosm/issues"
+        )
 
 cpdef create_node_coordinates_lookup(nodes):
     return _create_node_coordinates_lookup(nodes)
@@ -207,7 +325,12 @@ cdef _create_way_geometries(node_coordinates, way_elements):
 
     cdef long long node
     cdef list coords
-    cdef int n = len(way_elements['id'])
+    cdef int n
+    try:
+        n = len(way_elements['id'])
+    except Exception as e:
+        keys = list(way_elements.keys())
+        n = len(way_elements[keys[0]])
     cdef int i
 
     geometries = []
@@ -219,8 +342,8 @@ cdef _create_way_geometries(node_coordinates, way_elements):
         # If first and last node are the same, it's a closed way
         if nodes[0] == nodes[-1]:
             tag_keys = way_elements.keys()
-            # Create Polygon unless way is of type 'highway', 'barrier' or 'boundary'
-            if "highway" in tag_keys or "barrier" in tag_keys or "boundary" in tag_keys:
+            # Create Polygon by default unless way is of type 'highway', 'barrier' or 'route'
+            if "highway" in tag_keys or "barrier" in tag_keys or "route" in tag_keys:
                 geom = create_linestring_geometry(nodes, node_coordinates)
             else:
                 geom = create_polygon_geometry(nodes, node_coordinates)
