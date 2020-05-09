@@ -273,6 +273,7 @@ You can run tests with `pytest` by executing:
 Pyrosm is licensed under MIT (see [license](LICENSE)). 
 
 The OSM data is downloaded from two sources:
+
 [![Website](https://img.shields.io/website/https/download.geofabrik.de?label=Data%20source&up_color=9cf&up_message=http%3A%2F%2Fdownload.geofabrik.de)](https://download.geofabrik.de/)
 [![Website](https://img.shields.io/website/https/download.bbbike.org/osm?label=Data%20source&up_color=9cf&up_message=http%3A%2F%2Fdownload.bbbike.org%2Fosm)](https://download.bbbike.org/osm/)
 
