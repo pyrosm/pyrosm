@@ -411,8 +411,8 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
         assert col in transit.columns
 
     # Check individual counts
-    correct_counts = {'railway': 1430, 'route': 1058,
-                      'public_transport': 542, 'bus': 69}
+    correct_counts = {'railway': 1457, 'route': 824,
+                      'public_transport': 542, 'bus': 70}
 
     for col in required_columns:
         cnt = len(transit[col].dropna())
@@ -421,7 +421,7 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
                                f"Should have {correct}, found {cnt}."
 
     assert isinstance(transit, GeoDataFrame)
-    assert len(transit) == 3075
+    assert len(transit) == 2869
 
     # When using custom filters all records should have a value
     # at least on one of the attributes specified in the custom_filter
@@ -487,3 +487,19 @@ def test_using_multiple_filters(helsinki_pbf):
     assert shop == ["alcohol"]
     assert amenity == ["pub"]
     assert gdf.shape == (59, 32)
+
+
+def test_using_two_level_custom_filter(helsinki_region_pbf):
+    from pyrosm import OSM
+
+    osm = OSM(filepath=helsinki_region_pbf)
+    osm_keys = ["building"]
+    custom_filter = {"amenity": ["school"]}
+    gdf = osm.get_data_by_custom_criteria(custom_filter=custom_filter,
+                                          osm_keys_to_keep=osm_keys)
+
+    assert gdf.shape == (72, 25)
+
+    # Now 'building' and 'amenity' should not have NaNs
+    assert not gdf["building"].hasnans
+    assert not gdf["amenity"].hasnans

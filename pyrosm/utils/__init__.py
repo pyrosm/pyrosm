@@ -19,6 +19,7 @@ def validate_custom_filter(custom_filter):
             raise ValueError(f"OSM key in 'custom_filter' should be string. "
                              f"Got {k} of type {type(k)}")
         if v is True:
+            custom_filter[k] = [v]
             continue
 
         if not isinstance(v, list):
@@ -26,9 +27,12 @@ def validate_custom_filter(custom_filter):
                              f"Got {v} of type {type(v)}")
 
         for item in v:
+            if item is True:
+                continue
             if not isinstance(item, str):
                 raise ValueError(f"OSM tag (value) in 'custom_filter' should be string. "
                                  f"Got {item} of type {type(item)}")
+    return custom_filter
 
 
 def validate_osm_keys(osm_keys):

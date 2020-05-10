@@ -15,19 +15,21 @@ cdef get_data_filter_and_osm_keys(custom_filter):
                                  f"Got: {key} with type {type(key)}.")
             osm_keys.append(key)
 
-            # If osm-key has been defined as True,
-            # all tags should be kept, hence, no further filtering
-            # should be done.
-            if tags == True:
-                continue
+            # # If osm-key has been defined as True,
+            # # all tags should be kept, hence, no further filtering
+            # # should be done.
+            # if tags == True:
+            #     continue
 
-            elif isinstance(tags, list):
-                # Check that all values used for filtering are text (except None).
+            if isinstance(tags, list):
+                # Check that all values used for filtering are text (except None/True).
                 # Even numeric data should be passed as string.
                 for tag in tags:
                     if tag is None:
                         continue
-                    if not isinstance(tag, str):
+                    if tag is True:
+                        continue
+                    elif not isinstance(tag, str):
                         raise ValueError(f"OSM tag of the 'custom_filter' "
                                          f"should be text. "
                                          f"Got: {tag} with type {type(tag)}.")

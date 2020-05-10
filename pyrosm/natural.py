@@ -8,14 +8,14 @@ def get_natural_data(nodes, node_coordinates, way_records, relations,
                      tags_as_columns, custom_filter, bounding_box):
     # If custom_filter has not been defined, initialize with default
     if custom_filter is None:
-        custom_filter = {"natural": True}
+        custom_filter = {"natural": [True]}
     else:
         # Check that the custom filter is in correct format
-        validate_custom_filter(custom_filter)
+        custom_filter = validate_custom_filter(custom_filter)
 
         # Ensure that the "landuse" tag exists
         if "natural" not in custom_filter.keys():
-            custom_filter["natural"] = True
+            custom_filter["natural"] = [True]
 
     # Call signature for fetching buildings
     nodes, ways, relation_ways, relations = get_osm_data(node_arrays=nodes,
