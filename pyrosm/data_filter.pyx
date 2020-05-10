@@ -98,16 +98,30 @@ cdef filter_osm_records(data_records,
             data_filter = None
 
     if data_filter is not None:
-        filter_keys = list(data_filter.keys())
         # Check if there are duplicate filter values
         # e.g. a situation where {"route": "tram"} and {"railway": "tram"}
         # filters are present simultaneously.
         overlapping_filter = False
 
         filter_values = []
-        for vals in data_filter.values():
-            filter_values += vals
+        way_filter = {}
+        for key, vals in data_filter.items():
 
+            # Check for {osm-key: True} cases
+            if vals is True or vals == [True]:
+                continue
+
+            filter_values += vals
+            way_filter[key] = vals
+
+        # Update data filter
+        if len(way_filter) == 0:
+            data_filter = None
+        else:
+            data_filter = {k: v for k, v in way_filter.items()}
+            filter_keys = list(data_filter.keys())
+
+        # Check for overlapping filter
         if len(filter_values) > len(list(set(filter_values))):
             overlapping_filter = True
 
@@ -156,6 +170,8 @@ cdef filter_osm_records(data_records,
             if not filter_out:
                 filtered_data.append(record)
 
+        # If data_filter has not been specified,
+        # all data for specified osm-keys should be kept.
         else:
             filtered_data.append(record)
     return filtered_data
@@ -199,24 +215,16 @@ cdef record_should_be_kept(tag, osm_keys, data_filter):
 
     # Check if OSM key exist for the given element
     osm_key_was_found = False
-    osm_key_include_all = False
     for osm_key in osm_keys:
         if osm_key in tag_keys:
             osm_key_was_found = True
-        # If OSM key exists in the record, but it is not
-        # present in the 'data_filter' keys, it means that
-        # the given record should be kept
-        # --> ("osm-key: True" -situation)
-        if osm_key not in filter_keys:
-            osm_key_include_all = True
 
     # If not, the element shouldn't be kept
     if not osm_key_was_found:
         return False
 
     # If there is no filter but the element is correct kind
-    # it should be kept as well as when "include_all" is True
-    if len(filter_keys) == 0 or osm_key_include_all:
+    if len(filter_keys) == 0:
         return True
 
     # If there is a filter, check if match is found
@@ -246,7 +254,6 @@ cdef filter_relation_indices(relations, osm_keys, data_filter):
             indices.append(i)
     return indices
 
-
 cdef filter_node_indices(node_arrays, osm_keys, data_filter):
     cdef int i, n = len(node_arrays["tags"])
     indices = []
@@ -255,10 +262,6 @@ cdef filter_node_indices(node_arrays, osm_keys, data_filter):
         node_filter = {}
     else:
         node_filter = {key: value for key, value in data_filter.items()}
-
-    for osm_key in osm_keys:
-        if osm_key not in node_filter.keys():
-            node_filter[osm_key] = [True]
 
     for i in range(0, n):
         tag = node_arrays["tags"][i]

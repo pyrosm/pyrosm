@@ -22,7 +22,7 @@ def get_boundary_data(node_coordinates, way_records, relations,
         custom_filter["boundary"] = True
 
     # Check that the custom filter is in correct format
-    validate_custom_filter(custom_filter)
+    custom_filter = validate_custom_filter(custom_filter)
 
     # Call signature for fetching buildings
     nodes, ways, relation_ways, relations = get_osm_data(node_arrays=None,

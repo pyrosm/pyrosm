@@ -566,7 +566,7 @@ class OSM:
         """
 
         # Check that the custom filter is in correct format
-        validate_custom_filter(custom_filter)
+        custom_filter = validate_custom_filter(custom_filter)
 
         if not isinstance(filter_type, str):
             raise ValueError("'filter_type' -parameter should be either 'keep' or 'exclude'. ")

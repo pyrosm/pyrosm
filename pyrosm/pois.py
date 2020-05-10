@@ -7,7 +7,7 @@ import warnings
 def get_poi_data(nodes, node_coordinates, way_records, relations, tags_as_columns,
                  custom_filter, bounding_box):
     # Validate filter
-    validate_custom_filter(custom_filter)
+    custom_filter = validate_custom_filter(custom_filter)
 
     # Call signature for fetching POIs
     nodes, ways, relation_ways, relations = get_osm_data(node_arrays=nodes,
