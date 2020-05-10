@@ -396,23 +396,24 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
     # Exclude nodes (not keeping stops, etc.)
     routes = ["bus", "ferry", "railway", "subway", "train", "tram", "trolleybus"]
     rails = ["tramway", "light_rail", "rail", "subway", "tram"]
-    bus = ['yes']
+    # 'express' comes with routes
+    bus = ['yes', "express"]
 
     transit = osm.get_data_by_custom_criteria(custom_filter={
         'route': routes,
         'railway': rails,
-        'bus': bus,
-        'public_transport': True},
+        'bus': bus},
         filter_type="keep",
         keep_nodes=False)
 
-    required_columns = ["railway", "bus", "route", "public_transport"]
+    required_columns = ["railway", "bus", "route"]
     for col in required_columns:
         assert col in transit.columns
 
     # Check individual counts
-    correct_counts = {'railway': 1457, 'route': 824,
-                      'public_transport': 542, 'bus': 70}
+    correct_counts = {'railway': 1456,
+                      'route': 824,
+                      'bus': 79}
 
     for col in required_columns:
         cnt = len(transit[col].dropna())
@@ -420,8 +421,35 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
         assert cnt == correct, f"Incorrect count for {col}. " \
                                f"Should have {correct}, found {cnt}."
 
+    # Ensure that the data contains only data specified in the filters
+    unique_route = transit["route"].unique()
+    for v in unique_route:
+        if v is None:
+            continue
+        elif str(v) == "nan":
+            continue
+        assert v in routes
+
+    unique_rails = transit["railway"].unique()
+    for v in unique_rails:
+        if v is None:
+            continue
+        elif str(v) == "nan":
+            continue
+        assert v in rails
+
+    unique_bus = transit["bus"].unique()
+    for v in unique_bus:
+        if v is None:
+            continue
+        elif str(v) == "nan":
+            continue
+
+        assert v in bus
+
+
     assert isinstance(transit, GeoDataFrame)
-    assert len(transit) == 2869
+    assert len(transit) == 2357
 
     # When using custom filters all records should have a value
     # at least on one of the attributes specified in the custom_filter
