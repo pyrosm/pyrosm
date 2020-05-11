@@ -1,12 +1,19 @@
 Changelog
 =========
 
+v0.5.1/2 (May 11, 2020)
+---------------------
+
+- Fix multi-level filtering
+- Add support for using "exclude" also with nodes and relations
+- Fix data source for New York City
+
 v0.5.0 (May 7, 2020)
 --------------------
 
 - Adds a function to download PBF data from Geofabrik and BBBike easily from hundreds of locations across the world
 - Improved geometry parsing for relations
-- Parse boundary geometries as Polygons instead of LinearRings (as should be OSM definition)
+- Parse boundary geometries as Polygons instead of LinearRings (following OSM definition)
 - Fix invalid geometries automatically (self-intersection and "bowties")
 - Add better documentation about custom filters
 - Make parsing more robust for incorrectly tagged OSM entries.

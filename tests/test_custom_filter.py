@@ -311,7 +311,7 @@ def test_reading_with_custom_filters_with_excluding(test_pbf):
     for filter_, cnt in cnts.items():
         # Use the custom filter
         filtered = osm.get_data_by_custom_criteria(custom_filter={'building': [filter_]},
-                                                  filter_type="exclude")
+                                                   filter_type="exclude")
 
         assert isinstance(filtered, GeoDataFrame)
         assert isinstance(filtered.loc[0, "geometry"], Polygon)
@@ -531,3 +531,31 @@ def test_using_two_level_custom_filter(helsinki_region_pbf):
     # Now 'building' and 'amenity' should not have NaNs
     assert not gdf["building"].hasnans
     assert not gdf["amenity"].hasnans
+
+
+def test_exclude_filtering_nodes_and_relations(helsinki_pbf):
+    from pyrosm import OSM
+    # Initialize the reader
+    osm = OSM(helsinki_pbf)
+    custom_filter = {"amenity": ["library"]}
+
+    gdf = osm.get_data_by_custom_criteria(custom_filter,
+                                          filter_type="exclude",
+                                          )
+    assert gdf.shape == (1081, 37)
+    assert "library" not in gdf["amenity"].unique().tolist()
+
+    # There should be nodes, ways and relations
+    assert gdf["osm_type"].unique().tolist() == ["node", "way", "relation"]
+
+    # Test other way around
+    gdf = osm.get_data_by_custom_criteria(custom_filter,
+                                          filter_type="keep",
+                                          )
+    assert gdf.shape == (7, 23)
+    assert gdf["amenity"].unique().tolist() == ["library"]
+
+    # There should be nodes and ways (no relations)
+    assert gdf["osm_type"].unique().tolist() == ["node", "way"]
+
+

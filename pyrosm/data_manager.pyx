@@ -43,11 +43,11 @@ cdef get_data_filter_and_osm_keys(custom_filter):
                          f"Got {custom_filter} with type {type(custom_filter)}.")
 
 
-cdef get_relation_arrays(relations, osm_keys, data_filter):
+cdef get_relation_arrays(relations, osm_keys, data_filter, filter_type):
     # Combine all blocks
     relations = concatenate_dicts_of_arrays(relations)
     # Get indices for MultiPolygons that also passes data_filter
-    indices = filter_relation_indices(relations, osm_keys, data_filter)
+    indices = filter_relation_indices(relations, osm_keys, data_filter, filter_type)
     # If no building relations were found, return None
     if len(indices) == 0:
         return None
@@ -114,7 +114,7 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
 
     # Get relations for specified OSM keys (one or multiple)
     if relations is not None:
-        filtered_relations = get_relation_arrays(relations, osm_keys, data_filter)
+        filtered_relations = get_relation_arrays(relations, osm_keys, data_filter, filter_type)
 
         # Get all way-ids that are associated with relations
         relation_way_ids = None
@@ -146,9 +146,9 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
 
     return ways, relation_ways, filtered_relations
 
-cdef get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter):
+cdef get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter, filter_type):
     # Get indices for Nodes that passes data_filter
-    indices = filter_node_indices(node_arrays, osm_keys, data_filter)
+    indices = filter_node_indices(node_arrays, osm_keys, data_filter, filter_type)
     # If no nodes were found, return None
     if len(indices) == 0:
         return None
@@ -168,7 +168,7 @@ cdef _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_fi
 
     if node_arrays is not None:
         # Get nodes
-        node_arrays = get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter)
+        node_arrays = get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter, filter_type)
 
     # Parse ways and relations
     ways, relation_ways, filtered_relations = get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type)
