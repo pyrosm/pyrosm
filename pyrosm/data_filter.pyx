@@ -205,7 +205,7 @@ cdef nodes_for_way_exist_khash(nodes, node_lookup):
         return True
     return False
 
-cdef record_should_be_kept(tag, osm_keys, data_filter):
+cdef record_should_be_kept(tag, osm_keys, data_filter, filter_type):
     if tag is None:
         return False
 
@@ -225,20 +225,32 @@ cdef record_should_be_kept(tag, osm_keys, data_filter):
 
     # If there is no filter but the element is correct kind
     if len(filter_keys) == 0:
-        return True
+        if filter_type == "keep":
+            return True
+        else:
+            return False
 
     # If there is a filter, check if match is found
     for k, v in data_filter.items():
         if k in tag_keys:
             # Check match with data filter
             if tag[k] in v:
-                return True
+                if filter_type == "keep":
+                    return True
+                else:
+                    return False
             # If filter is not defined, check for 'osm_key': True
             elif v == [True] or v == True:
-                return True
-    return False
+                if filter_type == "keep":
+                    return True
+                else:
+                    return False
 
-cdef filter_relation_indices(relations, osm_keys, data_filter):
+    if filter_type == "keep":
+        return False
+    return True
+
+cdef filter_relation_indices(relations, osm_keys, data_filter, filter_type):
     cdef int i, n = len(relations["tags"])
     indices = []
 
@@ -250,11 +262,11 @@ cdef filter_relation_indices(relations, osm_keys, data_filter):
 
     for i in range(0, n):
         tag = relations["tags"][i]
-        if record_should_be_kept(tag, osm_keys, relation_filter):
+        if record_should_be_kept(tag, osm_keys, relation_filter, filter_type):
             indices.append(i)
     return indices
 
-cdef filter_node_indices(node_arrays, osm_keys, data_filter):
+cdef filter_node_indices(node_arrays, osm_keys, data_filter, filter_type):
     cdef int i, n = len(node_arrays["tags"])
     indices = []
 
@@ -265,7 +277,7 @@ cdef filter_node_indices(node_arrays, osm_keys, data_filter):
 
     for i in range(0, n):
         tag = node_arrays["tags"][i]
-        if record_should_be_kept(tag, osm_keys, node_filter):
+        if record_should_be_kept(tag, osm_keys, node_filter, filter_type):
             indices.append(i)
 
     return indices
