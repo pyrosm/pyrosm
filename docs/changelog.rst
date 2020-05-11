@@ -1,11 +1,12 @@
 Changelog
 =========
 
-v0.5.1 (May 11, 2020)
+v0.5.1/2 (May 11, 2020)
 ---------------------
 
 - Fix multi-level filtering
 - Add support for using "exclude" also with nodes and relations
+- Fix data source for New York City
 
 v0.5.0 (May 7, 2020)
 --------------------

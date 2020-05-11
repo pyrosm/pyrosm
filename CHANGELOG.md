@@ -1,6 +1,11 @@
 Changelog
 =========
 
+v0.5.2
+------
+
+- Fix data source for New York City 
+
 v0.5.1
 ------
 
