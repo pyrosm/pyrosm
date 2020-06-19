@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- encoding: utf-8 -*-
 from __future__ import absolute_import
 from __future__ import print_function
@@ -19,20 +19,20 @@ import os
 try:
     from Cython.Build import cythonize
 except ImportError:
-    os.system('pip install Cython')
+    os.system('pip3 install Cython')
     from Cython.Build import cythonize
 
 # Cykhash needs to be installed before running setup
 try:
     import cykhash
 except ImportError:
-    os.system('pip install https://github.com/HTenkanen/cykhash/archive/master.zip')
+    os.system('pip3 install https://github.com/HTenkanen/cykhash/archive/master.zip')
 
 # Pyrobuf needs to be installed before running setup
 try:
     import pyrobuf_list
 except ImportError:
-    os.system('pip install pyrobuf')
+    os.system('pip3 install pyrobuf')
 
 
 def read(*names, **kwargs):
