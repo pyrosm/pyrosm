@@ -66,14 +66,14 @@ setup(
         'Topic :: Utilities',
     ],
     project_urls={
-        # 'Documentation': 'https://pyrosm.github.io/',
+        'Documentation': 'https://pyrosm.github.io/',
         'Issue Tracker': 'https://github.com/htenkanen/pyrosm/issues',
     },
     keywords=[
-        # eg: 'keyword1', 'keyword2', 'keyword3',
+        'OpenStreetMap', 'Geopandas', 'GeoDataFrame', 'parser', 'protobuf', 'PBF'
     ],
 
-    python_requires='>=3, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*, <3.9',
+    python_requires='>=3.6',
     install_requires=requirements,
     setup_requires=requirements,
     pyrobuf_modules="proto",
