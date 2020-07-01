@@ -47,7 +47,13 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
 
 ## Install
 
-Pyrosm is distributed via PyPi and it can be installed with pip:
+Pyrosm is distributed via PyPi and conda-forge. 
+
+The recommended way to install pyrosm is using `conda` package manager:
+
+`$ conda install -c conda-forge pyrosm`
+
+You can also install the package with pip:
 
 `$ pip install pyrosm`
 
