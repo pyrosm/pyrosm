@@ -3,36 +3,13 @@
 from __future__ import absolute_import
 from __future__ import print_function
 import io
-import re
 from os.path import dirname
 from os.path import join
 from os import path
 from setuptools import find_packages
 from setuptools import setup
 import os
-
-# TODO: The installation of Cython, Cykhash and Pyrobuf this way is a hack.
-#  Integrate cykhash function directly to pyrosm to avoid these and publish in conda-forge.
-
-# Cython needs to be installed before running setup
-# https://luminousmen.com/post/resolve-cython-and-numpy-dependencies
-try:
-    from Cython.Build import cythonize
-except ImportError:
-    os.system('pip install Cython')
-    from Cython.Build import cythonize
-
-# Cykhash needs to be installed before running setup
-try:
-    import cykhash
-except ImportError:
-    os.system('pip install https://github.com/HTenkanen/cykhash/archive/master.zip')
-
-# Pyrobuf needs to be installed before running setup
-try:
-    import pyrobuf_list
-except ImportError:
-    os.system('pip install pyrobuf')
+from Cython.Build import cythonize
 
 
 def read(*names, **kwargs):
@@ -51,10 +28,12 @@ def read_long_description():
 
 
 requirements = [
-    'python-rapidjson',
-    'setuptools>=18.0',
-    'geopandas',
-    'pygeos',
+    "python-rapidjson",
+    "setuptools>=18.0",
+    "geopandas",
+    "pygeos",
+    "cykhash",
+    "pyrobuf",
 ]
 
 setup(
