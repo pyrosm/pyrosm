@@ -4,5 +4,5 @@ graft proto
 graft tests
 graft pyrobuf
 
-include .travis.yml .appveyor.yml
+include .travis.yml .appveyor.yml pyproject.toml
 global-exclude __pycache__/*

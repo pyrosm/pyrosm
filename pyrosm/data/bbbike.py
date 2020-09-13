@@ -249,7 +249,7 @@ class Cities:
     }
     # Add New York City separately as there is also a state with the same name
     # NewYork ==> NewYorkCity
-    _ny = "NewYorkCity"
+    _ny = "newyorkcity"
     _ny_src = "NewYork"
     _sources[_ny] = {"name": _ny + suffix, "url": f"{URL}/{_ny_src}/{_ny_src}{suffix}"}
 

@@ -1,10 +1,13 @@
 # Pyrosm 
+[![Conda version](https://anaconda.org/conda-forge/pyrosm/badges/version.svg)](https://anaconda.org/conda-forge/pyrosm/)
 [![PyPI version](https://badge.fury.io/py/pyrosm.svg)](https://badge.fury.io/py/pyrosm)
 [![build status](https://api.travis-ci.org/HTenkanen/pyrosm.svg?branch=master)](https://travis-ci.org/HTenkanen/pyrosm)
 [![Documentation Status](https://readthedocs.org/projects/pyrosm/badge/?version=latest)](https://pyrosm.readthedocs.io/en/latest/?badge=latest)
 [![Coverage Status](https://codecov.io/gh/HTenkanen/pyrosm/branch/master/graph/badge.svg)](https://codecov.io/gh/HTenkanen/pyrosm) 
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/pyrosm?color=yellow&label=Downloads)](https://pypistats.org/packages/pyrosm)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.3818244.svg)](https://doi.org/10.5281/zenodo.3818244)
+[![License](https://anaconda.org/conda-forge/pyrosm/badges/license.svg)](https://anaconda.org/conda-forge/pyrosm/)
+
 
 **Pyrosm** is a Python library for reading OpenStreetMap data from Protocolbuffer Binary Format -files (`*.osm.pbf`) into Geopandas GeoDataFrames. 
 Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks, buildings, 
@@ -47,7 +50,13 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
 
 ## Install
 
-Pyrosm is distributed via PyPi and it can be installed with pip:
+Pyrosm is distributed via PyPi and conda-forge. 
+
+The recommended way to install pyrosm is using `conda` package manager:
+
+`$ conda install -c conda-forge pyrosm`
+
+You can also install the package with pip:
 
 `$ pip install pyrosm`
 
