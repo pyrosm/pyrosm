@@ -96,6 +96,8 @@ cdef create_linear_ring(coordinates):
     # At least 3 different coordinates are needed for valid linearring
     if len(coordinates) < 3:
         return None
+    if len(coordinates) < 4 and coordinates[0] == coordinates[-1]:
+        return None
     try:
         return linearrings(coordinates)
     except GEOSException as e:
