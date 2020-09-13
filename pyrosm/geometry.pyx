@@ -321,6 +321,10 @@ cdef create_polygon_geometry(nodes, node_coordinates):
                 return None
             else:
                 raise e
+        # pygeos 0.8.0 throws ValueError
+        except ValueError as e:
+            if "Provide at least 4 coordinates" in str(e):
+                return None
         except Exception as e:
             raise e
     else:
