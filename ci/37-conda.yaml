@@ -9,6 +9,7 @@ dependencies:
   - geopandas
   - pygeos
   - cython
+  - cykhash
   - pyrobuf
   - python-rapidjson
   # testing
@@ -16,7 +17,3 @@ dependencies:
   - pytest-cov
   - codecov
   - requests
-  - pip
-  - pip:
-      - git+https://github.com/HTenkanen/cykhash.git
-
