@@ -93,6 +93,9 @@ cdef get_way_coordinates_for_polygon(node_coordinate_lookup, way_elements):
     return features
 
 cdef create_linear_ring(coordinates):
+    # At least 3 different coordinates are needed for valid linearring
+    if len(coordinates) < 3:
+        return None
     try:
         return linearrings(coordinates)
     except GEOSException as e:
