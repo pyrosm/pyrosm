@@ -1,12 +1,20 @@
 Changelog
 =========
 
+v0.5.3 (Sep 13, 2020)
+---------------------
+
+Changes:
+
+ - Ensures that geometry construction works with new Pygeos release v0.8.0 (#46)
+
 v0.5.1/2 (May 11, 2020)
 ---------------------
 
 - Fix multi-level filtering
 - Add support for using "exclude" also with nodes and relations
 - Fix data source for New York City
+
 
 v0.5.0 (May 7, 2020)
 --------------------
