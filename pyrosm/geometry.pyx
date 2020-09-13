@@ -93,19 +93,19 @@ cdef get_way_coordinates_for_polygon(node_coordinate_lookup, way_elements):
     return features
 
 cdef create_linear_ring(coordinates):
-    # At least 3 different coordinates are needed for valid linearring
-    if len(coordinates) < 3:
-        return None
-    if len(coordinates) < 4 and coordinates[0] == coordinates[-1]:
-        return None
     try:
         return linearrings(coordinates)
+    # pygeos 0.7.1 throws GEOSException
     except GEOSException as e:
         if "Invalid number of points" in str(e):
             return None
         elif "point array must contain" in str(e):
             return None
         raise e
+    # pygeos 0.8.0 throws ValueError
+    except ValueError as e:
+        if "Provide at least 4 coordinates" in str(e):
+            return None
     except Exception as e:
         raise e
 
@@ -119,6 +119,8 @@ cdef create_linestring(coordinates):
             return None
         raise e
     except ValueError as e:
+        if "Provide at least 2 coordinates" in str(e):
+            return None
         if "not have enough dimensions" in str(e):
             raise e
     except Exception as e:
