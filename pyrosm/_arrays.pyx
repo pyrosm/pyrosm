@@ -17,7 +17,7 @@ cdef get_dtype(key):
               }
     if key in dtypes.keys():
         return dtypes[key]
-    return None
+    return object
 
 cdef convert_way_records_to_lists(ways, tags_to_separate_as_arrays):
     """
