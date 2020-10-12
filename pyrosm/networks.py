@@ -19,9 +19,9 @@ def get_network_data(node_coordinates, way_records, tags_as_columns,
                                                          osm_keys="highway",
                                                          )
 
-    # If there weren't any data, return empty GeoDataFrame
+    # If there weren't any data, return None
     if ways is None:
-        warnings.warn("Could not find any buildings for given area.",
+        warnings.warn("Could not find any edges for given area.",
                       UserWarning,
                       stacklevel=2)
         return None
@@ -29,7 +29,9 @@ def get_network_data(node_coordinates, way_records, tags_as_columns,
     # Prepare GeoDataFrame
     gdf = prepare_geodataframe(nodes, node_coordinates, ways,
                                relations, relation_ways,
-                               tags_as_columns, bounding_box)
+                               tags_as_columns, bounding_box,
+                               keep_vertex_ids=True)
+
     return gdf
 
 
