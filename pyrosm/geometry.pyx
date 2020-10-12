@@ -346,12 +346,17 @@ cdef _create_way_geometries(node_coordinates, way_elements):
 
     geometries = []
 
+    # Highway specific containers
+    us, vs = [], []
+
     for i in range(0, n):
         nodes = way_elements['nodes'][i]
         coords = []
+        u = nodes[0]
+        v = nodes[-1]
 
         # If first and last node are the same, it's a closed way
-        if nodes[0] == nodes[-1]:
+        if  u == v:
             tag_keys = way_elements.keys()
             # Create Polygon by default unless way is of type 'highway', 'barrier' or 'route'
             if "highway" in tag_keys or "barrier" in tag_keys or "route" in tag_keys:
@@ -362,10 +367,11 @@ cdef _create_way_geometries(node_coordinates, way_elements):
         # Otherwise create LineString
         else:
             geom = create_linestring_geometry(nodes, node_coordinates)
-
         geometries.append(geom)
+        us.append(u)
+        vs.append(v)
 
-    return to_shapely(geometries)
+    return to_shapely(geometries), us, vs
 
 cpdef create_way_geometries(node_coordinates, way_elements):
     return _create_way_geometries(node_coordinates, way_elements)
