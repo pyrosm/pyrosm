@@ -1,16 +1,27 @@
 import pandas as pd
 import geopandas as gpd
+import numpy as np
 from pyrosm._arrays cimport concatenate_dicts_of_arrays
 from pyrosm.geometry cimport _create_point_geometries
 from pyrosm.geometry cimport create_way_geometries
 from pyrosm.relations import prepare_relations
 from shapely.geometry import box
+from pyrosm.data_filter import get_mask_by_osmid, _filter_array_dict_by_indices_or_mask
 
-
-cpdef create_nodes_gdf(nodes):
+cpdef create_nodes_gdf(nodes, osmids_to_keep=None):
     cdef str k
     if isinstance(nodes, list):
         nodes = concatenate_dicts_of_arrays(nodes)
+
+    # Check if nodes should be filtered
+    if osmids_to_keep is not None:
+        if isinstance(osmids_to_keep, np.ndarray):
+            # Get mask for nodeid array
+            mask = get_mask_by_osmid(nodes["id"], osmids_to_keep)
+            nodes = _filter_array_dict_by_indices_or_mask(nodes, mask)
+        else:
+            raise ValueError("'indices_to_keep' should be a numpy array.")
+
     df = pd.DataFrame()
     for k, v in nodes.items():
         df[k] = v
@@ -32,13 +43,17 @@ cpdef create_gdf(data_arrays, geometry_array):
     df['geometry'] = geometry_array
     return gpd.GeoDataFrame(df, crs='epsg:4326')
 
-cpdef prepare_way_gdf(node_coordinates, ways):
+cpdef prepare_way_gdf(node_coordinates, ways, keep_edge_ids):
     if ways is not None:
-        geometries = create_way_geometries(node_coordinates,
-                                           ways)
+        geometries, us, vs = create_way_geometries(node_coordinates,
+                                                   ways)
         # Convert to GeoDataFrame
         way_gdf = create_gdf(ways, geometries)
         way_gdf['osm_type'] = "way"
+
+        if keep_edge_ids:
+            way_gdf["u"] = us
+            way_gdf["v"] = vs
     else:
         way_gdf = gpd.GeoDataFrame()
     return way_gdf
@@ -67,12 +82,13 @@ cpdef prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_c
 
 cpdef prepare_geodataframe(nodes, node_coordinates, ways,
                            relations, relation_ways,
-                           tags_as_columns, bounding_box):
+                           tags_as_columns, bounding_box,
+                           keep_edge_ids=False):
     # Prepare nodes
     node_gdf = prepare_node_gdf(nodes)
 
     # Prepare ways
-    way_gdf = prepare_way_gdf(node_coordinates, ways)
+    way_gdf = prepare_way_gdf(node_coordinates, ways, keep_edge_ids)
 
     # Prepare relation data
     relation_gdf = prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns)
