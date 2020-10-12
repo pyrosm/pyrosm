@@ -43,7 +43,7 @@ cpdef create_gdf(data_arrays, geometry_array):
     df['geometry'] = geometry_array
     return gpd.GeoDataFrame(df, crs='epsg:4326')
 
-cpdef prepare_way_gdf(node_coordinates, ways, keep_edge_ids):
+cpdef prepare_way_gdf(node_coordinates, ways, keep_vertex_ids):
     if ways is not None:
         geometries, us, vs = create_way_geometries(node_coordinates,
                                                    ways)
@@ -51,7 +51,7 @@ cpdef prepare_way_gdf(node_coordinates, ways, keep_edge_ids):
         way_gdf = create_gdf(ways, geometries)
         way_gdf['osm_type'] = "way"
 
-        if keep_edge_ids:
+        if keep_vertex_ids:
             way_gdf["u"] = us
             way_gdf["v"] = vs
     else:
@@ -83,12 +83,12 @@ cpdef prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_c
 cpdef prepare_geodataframe(nodes, node_coordinates, ways,
                            relations, relation_ways,
                            tags_as_columns, bounding_box,
-                           keep_edge_ids=False):
+                           keep_vertex_ids=False):
     # Prepare nodes
     node_gdf = prepare_node_gdf(nodes)
 
     # Prepare ways
-    way_gdf = prepare_way_gdf(node_coordinates, ways, keep_edge_ids)
+    way_gdf = prepare_way_gdf(node_coordinates, ways, keep_vertex_ids)
 
     # Prepare relation data
     relation_gdf = prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns)
