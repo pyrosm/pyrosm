@@ -110,11 +110,11 @@ cdef parse_dense(pblock, data, string_table, bounding_box):
     # Metadata might not be available, if so add empty
     # This can happen with BBBike data
     if versions.shape[0] == 0:
-        versions = np.empty(len(data.id), dtype=np.int8)
+        versions = np.zeros(len(data.id), dtype=np.int8)
     if changesets.shape[0] == 0:
-        changesets = np.empty(len(data.id), dtype=np.int8)
+        changesets = np.zeros(len(data.id), dtype=np.int8)
     if timestamps.shape[0] == 0:
-        timestamps = np.empty(len(data.id), dtype=np.int8)
+        timestamps = np.zeros(len(data.id), dtype=np.int8)
 
     if bounding_box is not None:
         # Filter
