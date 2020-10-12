@@ -61,8 +61,8 @@ def test_creating_building_geometries(test_pbf):
                                                          filter_type="keep")
     assert isinstance(ways, dict)
 
-    geometries = create_way_geometries(osm._node_coordinates,
-                                       ways)
+    geometries, us, vs = create_way_geometries(osm._node_coordinates,
+                                               ways)
     assert isinstance(geometries, ndarray)
     assert isinstance(geometries[0], Polygon)
     assert len(geometries) == len(ways["id"])
@@ -237,10 +237,9 @@ def test_adding_extra_attribute(helsinki_pbf):
     extra = osm.get_buildings(extra_attributes=[extra_col])
 
     # The extra should have one additional column compared to the original one
-    assert extra.shape[1] == gdf.shape[1]+1
+    assert extra.shape[1] == gdf.shape[1] + 1
     # Should have same number of rows
     assert extra.shape[0] == gdf.shape[0]
     assert extra_col in extra.columns
     assert len(extra[extra_col].dropna().unique()) > 0
     assert isinstance(gdf, GeoDataFrame)
-
