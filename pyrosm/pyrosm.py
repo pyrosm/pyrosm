@@ -199,8 +199,8 @@ class OSM:
             osmids = np.unique(np.concatenate([edges['u'].unique(), edges['v'].unique()]))
             nodes_gdf = create_nodes_gdf(self._nodes, osmids_to_keep=osmids)
             # Ensure the gdf follows osmnx structure
-            nodes_gdf = nodes_gdf.rename(columns={'id': 'osmid', 'lat': 'y', 'lon': 'x'})
-            nodes_gdf = nodes_gdf.set_index("osmid", drop=False)
+            nodes_gdf = nodes_gdf.rename(columns={'lat': 'y', 'lon': 'x'})
+            nodes_gdf = nodes_gdf.set_index("id", drop=False)
             nodes_gdf = nodes_gdf.rename_axis(index=None)
             return (nodes_gdf, edges)
 
