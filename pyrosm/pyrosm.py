@@ -183,10 +183,6 @@ class OSM:
                                  self.bounding_box,
                                  )
 
-        # For compatibility with OSMnx ensure gdf has "key" column
-        # TODO: Contact Geoff and ask why this is used.
-        edges["key"] = 0
-
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
         if not self.keep_node_info and edges is not None:

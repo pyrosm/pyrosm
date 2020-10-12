@@ -32,6 +32,9 @@ def get_network_data(node_coordinates, way_records, tags_as_columns,
                                tags_as_columns, bounding_box,
                                keep_vertex_ids=True)
 
+    # For compatibility with OSMnx ensure gdf has "key" column
+    gdf["key"] = 0
+
     return gdf
 
 
