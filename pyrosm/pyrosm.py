@@ -1,3 +1,4 @@
+import numpy as np
 from pyrosm.config import Conf
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm._arrays import concatenate_dicts_of_arrays
@@ -83,8 +84,8 @@ class OSM:
             bounding_box = self.bounding_box
 
         nodes, ways, relations, way_tags = parse_osm_data(self.filepath,
-                                             bounding_box,
-                                             exclude_relations=False)
+                                                          bounding_box,
+                                                          exclude_relations=False)
 
         self._nodes = nodes
         self._way_records = ways
@@ -120,7 +121,11 @@ class OSM:
         elif net_type == "all":
             return None
 
-    def get_network(self, network_type="walking", extra_attributes=None):
+    def get_network(self,
+                    network_type="walking",
+                    extra_attributes=None,
+                    nodes=False,
+                    ):
         """
         Parses street networks from OSM
         for walking, driving, and cycling.
@@ -140,12 +145,24 @@ class OSM:
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
 
+        nodes : bool (default: False)
+            If True, also the nodes associated with the network will be returned.
+
+        Returns
+        -------
+
+        gdf_edges or (gdf_nodes, gdf_edges)
+
+        Return type
+        -----------
+
+        geopandas.GeoDataFrame or tuple
+
         See Also
         --------
 
         Take a look at the OSM documentation for further details about the data:
         `https://wiki.openstreetmap.org/wiki/Key:highway <https://wiki.openstreetmap.org/wiki/Key:highway>`__
-
         """
         # Get filter
         network_filter = self._get_network_filter(network_type)
@@ -159,20 +176,35 @@ class OSM:
             self._read_pbf()
 
         # Filter network data with given filter
-        gdf = get_network_data(self._node_coordinates,
-                               self._way_records,
-                               tags_as_columns,
-                               network_filter,
-                               self.bounding_box
-                               )
+        edges = get_network_data(self._node_coordinates,
+                                 self._way_records,
+                                 tags_as_columns,
+                                 network_filter,
+                                 self.bounding_box,
+                                 )
+
+        # For compatibility with OSMnx ensure gdf has "key" column
+        # TODO: Contact Geoff and ask why this is used.
+        edges["key"] = 0
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and gdf is not None:
-            if "nodes" in gdf.columns:
-                gdf = gdf.drop("nodes", axis=1)
+        if not self.keep_node_info and edges is not None:
+            if "nodes" in edges.columns:
+                edges = edges.drop("nodes", axis=1)
 
-        return gdf
+        # In case both edges and nodes are requested
+        if nodes:
+            # Get all ids that are part of the network
+            osmids = np.unique(np.concatenate([edges['u'].unique(), edges['v'].unique()]))
+            nodes_gdf = create_nodes_gdf(self._nodes, osmids_to_keep=osmids)
+            # Ensure the gdf follows osmnx structure
+            nodes_gdf = nodes_gdf.rename(columns={'id': 'osmid', 'lat': 'y', 'lon': 'x'})
+            nodes_gdf = nodes_gdf.set_index("osmid", drop=False)
+            nodes_gdf = nodes_gdf.rename_axis(index=None)
+            return (nodes_gdf, edges)
+
+        return edges
 
     def get_buildings(self, custom_filter=None, extra_attributes=None):
         """
