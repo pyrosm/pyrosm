@@ -96,9 +96,7 @@ class OSM:
         self._node_coordinates = create_node_coordinates_lookup(self._nodes)
 
     def _get_network_filter(self, net_type):
-        possible_filters = [a for a in self.conf.network_filters.__dir__()
-                            if "__" not in a]
-        possible_filters += ["all", "driving+service"]
+        possible_filters = self.conf._possible_network_filters
         possible_values = ", ".join(possible_filters)
         msg = "'network_type' should be one of the following: " + possible_values
         if not isinstance(net_type, str):
@@ -183,6 +181,9 @@ class OSM:
                                  self.bounding_box,
                                  )
 
+        # Add metadata
+        edges._metadata.append(network_type)
+
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
         if not self.keep_node_info and edges is not None:
@@ -195,9 +196,11 @@ class OSM:
             osmids = np.unique(np.concatenate([edges['u'].unique(), edges['v'].unique()]))
             nodes_gdf = create_nodes_gdf(self._nodes, osmids_to_keep=osmids)
             # Ensure the gdf follows osmnx structure
+            # TODO: this should be done only when exporting to graph
             nodes_gdf = nodes_gdf.rename(columns={'lat': 'y', 'lon': 'x'})
             nodes_gdf = nodes_gdf.set_index("id", drop=False)
             nodes_gdf = nodes_gdf.rename_axis(index=None)
+            nodes_gdf._metadata.append(network_type)
             return (nodes_gdf, edges)
 
         return edges
