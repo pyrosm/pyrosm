@@ -181,8 +181,9 @@ class OSM:
                                  self.bounding_box,
                                  )
 
-        # Add metadata
-        edges._metadata.append(network_type)
+        if edges is not None:
+            # Add metadata
+            edges._metadata.append(network_type)
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
