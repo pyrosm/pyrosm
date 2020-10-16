@@ -12,8 +12,11 @@ dependencies:
   - pyrobuf
   - cykhash
   - python-rapidjson
+  # optional
+  - python-igraph
   # testing
   - pytest
   - pytest-cov
   - codecov
   - requests
+
