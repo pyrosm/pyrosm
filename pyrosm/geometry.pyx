@@ -8,6 +8,8 @@ from pygeos.predicates import is_geometry
 import shapely
 from shapely.geometry import MultiPolygon
 from shapely.ops import polygonize
+from pyrosm.distance import Unit, haversine
+
 
 cpdef fix_geometry(geometry, diff_threshold=20):
     """
@@ -277,7 +279,7 @@ cpdef create_point_geometries(xarray, yarray):
 
 cdef create_linestring_geometry(nodes, node_coordinates):
     coords = []
-    n = len(nodes)
+    cdef int i, n = len(nodes)
     for i in range(0, n):
         node = nodes[i]
         try:
@@ -288,17 +290,25 @@ cdef create_linestring_geometry(nodes, node_coordinates):
 
     if len(coords) > 1:
         try:
-            return linestrings(coords)
+            geom = linestrings(coords)
+            # Calculate the length of the geometry
+            # (considering the "curvature" of the line)
+            coords = np.array(coords, dtype=np.float).transpose()
+            lon1, lat1 = coords[0][:-1], coords[1][:-1]
+            lon2, lat2 = coords[0][1:], coords[1][1:]
+            geom_length = haversine(lat1, lon1, lat2, lon2, unit=Unit.METERS).sum().round(3)
+
+            return geom, geom_length
         except GEOSException as e:
             if "Invalid number of points" in str(e):
-                return None
+                return None, None
             else:
                 raise e
         except Exception as e:
             raise e
 
     else:
-        return None
+        return None, None
 
 cdef create_polygon_geometry(nodes, node_coordinates):
     cdef int i, n = len(nodes)
@@ -330,28 +340,26 @@ cdef create_polygon_geometry(nodes, node_coordinates):
     else:
         return None
 
-cdef _create_way_geometries(node_coordinates, way_elements):
+cdef _create_way_geometries(node_coordinates, way_elements, parse_network):
     # Info for constructing geometries:
     # https://wiki.openstreetmap.org/wiki/Way
 
     cdef long long node
     cdef list coords
-    cdef int n
+    cdef int n, i
     try:
         n = len(way_elements['id'])
     except Exception as e:
         keys = list(way_elements.keys())
         n = len(way_elements[keys[0]])
-    cdef int i
 
+    # Containers for geoms and node-ids
     geometries = []
-
-    # Highway specific containers
+    geom_lengths = []
     us, vs = [], []
 
     for i in range(0, n):
         nodes = way_elements['nodes'][i]
-        coords = []
         u = nodes[0]
         v = nodes[-1]
 
@@ -360,18 +368,22 @@ cdef _create_way_geometries(node_coordinates, way_elements):
             tag_keys = way_elements.keys()
             # Create Polygon by default unless way is of type 'highway', 'barrier' or 'route'
             if "highway" in tag_keys or "barrier" in tag_keys or "route" in tag_keys:
-                geom = create_linestring_geometry(nodes, node_coordinates)
+                geom, geom_length = create_linestring_geometry(nodes, node_coordinates)
             else:
                 geom = create_polygon_geometry(nodes, node_coordinates)
 
         # Otherwise create LineString
         else:
-            geom = create_linestring_geometry(nodes, node_coordinates)
+            geom, geom_length = create_linestring_geometry(nodes, node_coordinates)
+
         geometries.append(geom)
-        us.append(u)
-        vs.append(v)
 
-    return to_shapely(geometries), us, vs
+        if parse_network:
+            geom_lengths.append(geom_length)
+            us.append(u)
+            vs.append(v)
 
-cpdef create_way_geometries(node_coordinates, way_elements):
-    return _create_way_geometries(node_coordinates, way_elements)
+    return to_shapely(geometries), geom_lengths, us, vs
+
+cpdef create_way_geometries(node_coordinates, way_elements, parse_network):
+    return _create_way_geometries(node_coordinates, way_elements, parse_network)
