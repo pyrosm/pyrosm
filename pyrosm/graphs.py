@@ -2,6 +2,8 @@ from pyrosm.graph_export import _create_igraph
 from pyrosm.config import Conf
 
 def to_networkx(nodes, edges, network_type=None):
+    # For compatibility with OSMnx ensure gdf has "key" column
+    edges["key"] = 0
     pass
 
 
