@@ -43,17 +43,20 @@ cpdef create_gdf(data_arrays, geometry_array):
     df['geometry'] = geometry_array
     return gpd.GeoDataFrame(df, crs='epsg:4326')
 
-cpdef prepare_way_gdf(node_coordinates, ways, keep_vertex_ids):
+cpdef prepare_way_gdf(node_coordinates, ways, parse_network):
     if ways is not None:
-        geometries, us, vs = create_way_geometries(node_coordinates,
-                                                   ways)
+        geometries, geom_lengths, us, vs = create_way_geometries(node_coordinates,
+                                                                 ways,
+                                                                 parse_network)
         # Convert to GeoDataFrame
         way_gdf = create_gdf(ways, geometries)
         way_gdf['osm_type'] = "way"
 
-        if keep_vertex_ids:
+        if parse_network:
             way_gdf["u"] = us
             way_gdf["v"] = vs
+            way_gdf["length"] = geom_lengths
+
     else:
         way_gdf = gpd.GeoDataFrame()
     return way_gdf
@@ -83,12 +86,12 @@ cpdef prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_c
 cpdef prepare_geodataframe(nodes, node_coordinates, ways,
                            relations, relation_ways,
                            tags_as_columns, bounding_box,
-                           keep_vertex_ids=False):
+                           parse_network=False):
     # Prepare nodes
     node_gdf = prepare_node_gdf(nodes)
 
     # Prepare ways
-    way_gdf = prepare_way_gdf(node_coordinates, ways, keep_vertex_ids)
+    way_gdf = prepare_way_gdf(node_coordinates, ways, parse_network)
 
     # Prepare relation data
     relation_gdf = prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns)
