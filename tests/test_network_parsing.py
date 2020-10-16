@@ -31,11 +31,11 @@ def test_filter_network_by_walking(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (265, 20)
+    assert gdf.shape == (265, 23)
 
     required_cols = ['access', 'bridge', 'foot', 'highway', 'lanes', 'lit', 'maxspeed',
                      'name', 'oneway', 'ref', 'service', 'surface', 'id',
-                     'geometry', 'tags', 'osm_type']
+                     'geometry', 'tags', 'osm_type', 'length']
     for col in required_cols:
         assert col in gdf.columns
 
@@ -54,11 +54,11 @@ def test_filter_network_by_driving(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (207, 18)
+    assert gdf.shape == (207, 21)
 
     required_cols = ['access', 'bridge', 'highway', 'int_ref', 'lanes', 'lit', 'maxspeed',
                      'name', 'oneway', 'ref', 'service', 'surface', 'id', 'geometry', 'tags',
-                     'osm_type']
+                     'osm_type', 'length']
     for col in required_cols:
         assert col in gdf.columns
 
@@ -78,11 +78,11 @@ def test_filter_network_by_driving_with_service_roads(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (207, 18)
+    assert gdf.shape == (207, 21)
 
     required_cols = ['access', 'bridge', 'highway', 'int_ref', 'lanes', 'lit', 'maxspeed',
                      'name', 'oneway', 'ref', 'service', 'surface', 'id', 'geometry', 'tags',
-                     'osm_type']
+                     'osm_type', 'length']
     for col in required_cols:
         assert col in gdf.columns
 
@@ -102,11 +102,11 @@ def test_filter_network_by_cycling(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (290, 20)
+    assert gdf.shape == (290, 23)
 
     required_cols = ['access', 'bicycle', 'bridge', 'foot', 'highway', 'lanes', 'lit',
                      'maxspeed', 'name', 'oneway', 'ref', 'service', 'surface', 'tunnel',
-                     'id', 'geometry', 'tags', 'osm_type']
+                     'id', 'geometry', 'tags', 'osm_type', 'length']
     for col in required_cols:
         assert col in gdf.columns
 
@@ -126,11 +126,11 @@ def test_filter_network_by_all(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (331, 21)
+    assert gdf.shape == (331, 24)
 
     required_cols = ['access', 'bicycle', 'bridge', 'foot', 'highway', 'lanes', 'lit',
                      'maxspeed', 'name', 'oneway', 'ref', 'service', 'surface', 'tunnel',
-                     'id', 'geometry', 'tags', 'osm_type']
+                     'id', 'geometry', 'tags', 'osm_type', 'length']
     for col in required_cols:
         assert col in gdf.columns
 
@@ -174,11 +174,11 @@ def test_parse_network_with_bbox(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (74, 20)
+    assert gdf.shape == (74, 23)
 
     required_cols = ['access', 'bridge', 'foot', 'highway', 'lanes', 'lit', 'maxspeed',
                      'name', 'oneway', 'ref', 'service', 'surface', 'id',
-                     'geometry', 'tags', 'osm_type']
+                     'geometry', 'tags', 'osm_type', 'length']
     for col in required_cols:
         assert col in gdf.columns
 
@@ -206,11 +206,11 @@ def test_parse_network_with_shapely_bbox(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (74, 20)
+    assert gdf.shape == (74, 23)
 
     required_cols = ['access', 'bridge', 'foot', 'highway', 'lanes', 'lit', 'maxspeed',
                      'name', 'oneway', 'ref', 'service', 'surface', 'id',
-                     'geometry', 'tags', 'osm_type']
+                     'geometry', 'tags', 'osm_type', 'length']
     for col in required_cols:
         assert col in gdf.columns
 
@@ -300,3 +300,42 @@ def test_adding_extra_attribute(helsinki_pbf):
     assert extra_col in extra.columns
     assert len(extra[extra_col].dropna().unique()) > 0
     assert isinstance(gdf, GeoDataFrame)
+
+
+def test_getting_nodes_and_edges(test_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+    from shapely.geometry import Point, LineString
+
+    osm = OSM(filepath=test_pbf)
+
+    nodes, edges = osm.get_network(nodes=True)
+    orig_edges = osm.get_network()
+
+    # Edges with nodes and without nodes should be the same
+    assert edges.shape == orig_edges.shape
+
+    nodes = nodes.reset_index(drop=True)
+
+    assert isinstance(edges, GeoDataFrame)
+    assert isinstance(edges.loc[0, 'geometry'], LineString)
+
+    assert isinstance(nodes, GeoDataFrame)
+    assert isinstance(nodes.loc[0, 'geometry'], Point)
+
+    # Test shape
+    assert edges.shape == (265, 23)
+    assert nodes.shape == (382, 8)
+
+    # Edges should have "u" and "v" columns
+    required = ["u", "v"]
+    ecols = edges.columns
+    for col in required:
+        assert col in ecols
+
+    # Nodes should have (at least) "id", "x", and "y" columns
+    required = ["id", "x", "y"]
+    ncols = nodes.columns
+    for col in required:
+        assert col in ncols
+

@@ -48,3 +48,8 @@ class Tags:
 class Conf:
     network_filters = NetworkFilter()
     tags = Tags()
+    _possible_network_filters = [a for a in network_filters.__dir__() if "__" not in a]
+    _possible_network_filters += ["all", "driving+service"]
+
+    # One way tags
+    oneway_values = ['yes', 'true', '1', '-1', 'T', 'F']

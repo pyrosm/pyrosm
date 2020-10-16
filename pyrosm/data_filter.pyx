@@ -205,6 +205,18 @@ cdef nodes_for_way_exist_khash(nodes, node_lookup):
         return True
     return False
 
+cpdef get_mask_by_osmid(src_array, osm_ids):
+    """
+    Creates a (boolean) mask for the given source array flagging True
+    all items that exist in the 'osm_ids' array. Can be used to filter items
+    e.g. from OSM node data arrays.
+    """
+    n = len(src_array)
+    lookup = Int64Set_from_buffer(osm_ids)
+    result = np.empty(src_array.size, dtype=np.bool)
+    isin_int64(src_array, lookup, result)
+    return result
+
 cdef record_should_be_kept(tag, osm_keys, data_filter, filter_type):
     if tag is None:
         return False
