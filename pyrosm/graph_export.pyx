@@ -1,4 +1,8 @@
 from pyrosm.utils._compat import HAS_IGRAPH
+from pyrosm.config import Conf
+
+# The values used to determine oneway road in OSM
+oneway_values = Conf.oneway_values
 
 cpdef _create_igraph(nodes,
                      edges,
@@ -19,7 +23,6 @@ cpdef _create_igraph(nodes,
 
     from_id_int = from_id_col + "_seq"
     to_id_int = to_id_col + "_seq"
-    oneway_values = ['yes', 'true', '1', '-1', 'T', 'F']
 
     edge_list = []
 
@@ -43,7 +46,7 @@ cpdef _create_igraph(nodes,
     node_dict = {k: v for k, v in zip(nodes["id"].to_list(), nodes["node_id"].to_list())}
 
     # Node attributes
-    node_attributes = nodes[["node_id", "id", "x", "y"]].to_dict(orient='list')
+    node_attributes = nodes.to_dict(orient='list')
 
     # Generate edge dictionary
     for i in range(0, n_edges):
