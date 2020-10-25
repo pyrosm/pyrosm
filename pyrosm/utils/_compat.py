@@ -23,3 +23,10 @@ try:
 except ImportError:
     HAS_IGRAPH = False
 
+# networkx is an optional dependency
+try:
+    import networkx
+    HAS_NETWORKX = True
+except ImportError:
+    HAS_NETWORKX = False
+

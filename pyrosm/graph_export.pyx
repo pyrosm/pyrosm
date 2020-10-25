@@ -1,4 +1,4 @@
-from pyrosm.utils._compat import HAS_IGRAPH
+from pyrosm.utils._compat import HAS_IGRAPH, HAS_NETWORKX
 from pyrosm.config import Conf
 
 # The values used to determine oneway road in OSM
