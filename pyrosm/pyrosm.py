@@ -122,7 +122,7 @@ class OSM:
     def get_network(self,
                     network_type="walking",
                     extra_attributes=None,
-                    nodes=False,
+                    to_graph=False,
                     ):
         """
         Parses street networks from OSM
@@ -143,8 +143,9 @@ class OSM:
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
 
-        nodes : bool (default: False)
-            If True, also the nodes associated with the network will be returned.
+        to_graph : bool (default: False)
+            If True, 1) the nodes associated with the network will be returned, and 2) every segment of a road
+            constituting a way is returned as a separate row (to enable full connectivity in the graph).
 
         Returns
         -------
@@ -179,6 +180,7 @@ class OSM:
                                  tags_as_columns,
                                  network_filter,
                                  self.bounding_box,
+                                 slice_to_segments=to_graph
                                  )
 
         if edges is not None:
@@ -192,15 +194,10 @@ class OSM:
                 edges = edges.drop("nodes", axis=1)
 
         # In case both edges and nodes are requested
-        if nodes:
+        if to_graph:
             # Get all ids that are part of the network
             osmids = np.unique(np.concatenate([edges['u'].unique(), edges['v'].unique()]))
             nodes_gdf = create_nodes_gdf(self._nodes, osmids_to_keep=osmids)
-            # Ensure the gdf follows osmnx structure
-            # TODO: this should be done only when exporting to graph
-            nodes_gdf = nodes_gdf.rename(columns={'lat': 'y', 'lon': 'x'})
-            nodes_gdf = nodes_gdf.set_index("id", drop=False)
-            nodes_gdf = nodes_gdf.rename_axis(index=None)
             nodes_gdf._metadata.append(network_type)
             return (nodes_gdf, edges)
 
