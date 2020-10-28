@@ -4,7 +4,7 @@ import warnings
 
 
 def get_network_data(node_coordinates, way_records, tags_as_columns,
-                     network_filter, bounding_box):
+                     network_filter, bounding_box, slice_to_segments):
     # Tags to keep as separate columns
     tags_as_columns += ["id", "nodes", "timestamp", "changeset", "version"]
 
@@ -30,7 +30,8 @@ def get_network_data(node_coordinates, way_records, tags_as_columns,
     gdf = prepare_geodataframe(nodes, node_coordinates, ways,
                                relations, relation_ways,
                                tags_as_columns, bounding_box,
-                               parse_network=True)
+                               parse_network=True,
+                               calculate_seg_lengths=slice_to_segments)
 
     return gdf
 
