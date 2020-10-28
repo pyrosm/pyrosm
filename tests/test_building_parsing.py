@@ -61,9 +61,10 @@ def test_creating_building_geometries(test_pbf):
                                                          filter_type="keep")
     assert isinstance(ways, dict)
 
-    geometries, lengths, us, vs = create_way_geometries(osm._node_coordinates,
-                                                        ways,
-                                                        parse_network=False)
+    geometries, lengths, from_ids, to_ids, seg_lengths = create_way_geometries(osm._node_coordinates,
+                                                                               ways,
+                                                                               parse_network=False,
+                                                                               calculate_seg_lengths=False)
     assert isinstance(geometries, ndarray)
     assert isinstance(geometries[0], Polygon)
     assert len(geometries) == len(ways["id"])
