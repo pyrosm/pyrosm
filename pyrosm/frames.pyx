@@ -43,19 +43,42 @@ cpdef create_gdf(data_arrays, geometry_array):
     df['geometry'] = geometry_array
     return gpd.GeoDataFrame(df, crs='epsg:4326')
 
-cpdef prepare_way_gdf(node_coordinates, ways, parse_network):
+cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengths):
     if ways is not None:
-        geometries, geom_lengths, us, vs = create_way_geometries(node_coordinates,
-                                                                 ways,
-                                                                 parse_network)
+        geometries, geom_lengths, from_ids, to_ids, seg_lengths = create_way_geometries(node_coordinates,
+                                                                                        ways,
+                                                                                        parse_network,
+                                                                                        calculate_seg_lengths)
         # Convert to GeoDataFrame
         way_gdf = create_gdf(ways, geometries)
         way_gdf['osm_type'] = "way"
 
-        if parse_network:
-            way_gdf["u"] = us
-            way_gdf["v"] = vs
+        # In case network is parsed, include way-level length info
+        if parse_network and calculate_seg_lengths == False:
             way_gdf["length"] = geom_lengths
+
+        # In case network is parsed and requested for graph export,
+        # include segment-level length info
+        if parse_network and calculate_seg_lengths:
+
+            # Ensure that the records match always (possible dropped rows)
+            way_gdf["u"] = from_ids
+            way_gdf["v"] = to_ids
+            way_gdf["length"] = seg_lengths
+            # Drop rows without geometry
+            way_gdf = way_gdf.dropna(subset=['geometry']).reset_index(drop=True)
+            # Parse from/to-ids and segment lengths
+            u = np.concatenate(way_gdf["u"].to_list())
+            v = np.concatenate(way_gdf["v"].to_list())
+            l = np.concatenate(way_gdf["length"].to_list())
+
+            # Explode multi-geometries
+            way_gdf = way_gdf.explode().reset_index(drop=True)
+
+            # Update from/to-ids and segment lengths for exploded gdf
+            way_gdf["u"] = u
+            way_gdf["v"] = v
+            way_gdf["length"] = l
 
     else:
         way_gdf = gpd.GeoDataFrame()
@@ -86,12 +109,13 @@ cpdef prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_c
 cpdef prepare_geodataframe(nodes, node_coordinates, ways,
                            relations, relation_ways,
                            tags_as_columns, bounding_box,
-                           parse_network=False):
+                           parse_network=False,
+                           calculate_seg_lengths=False):
     # Prepare nodes
     node_gdf = prepare_node_gdf(nodes)
 
     # Prepare ways
-    way_gdf = prepare_way_gdf(node_coordinates, ways, parse_network)
+    way_gdf = prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengths)
 
     # Prepare relation data
     relation_gdf = prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns)
