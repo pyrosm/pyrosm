@@ -6,7 +6,8 @@ from pyrosm.geometry import create_node_coordinates_lookup
 from pyrosm.frames import create_nodes_gdf
 from pyrosm.utils import validate_custom_filter, validate_osm_keys, \
     validate_tags_as_columns, validate_booleans, validate_boundary_type, \
-    validate_bounding_box, validate_input_file, get_bounding_box
+    validate_bounding_box, validate_input_file, validate_graph_type, \
+    get_bounding_box
 from pyrosm.utils.download import get_file_size
 from shapely.geometry import Polygon, MultiPolygon, \
     LineString, LinearRing, MultiLineString
@@ -17,6 +18,7 @@ from pyrosm.natural import get_natural_data
 from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
+from pyrosm.graphs import to_networkx, to_igraph, to_pandana
 
 
 class OSM:
@@ -658,6 +660,94 @@ class OSM:
             if "nodes" in gdf.columns:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
+
+    def to_graph(self,
+                 nodes,
+                 edges,
+                 graph_type="networkx",
+                 direction='oneway',
+                 from_id_col='u',
+                 to_id_col='v',
+                 edge_id_col='id',
+                 node_id_col='id',
+                 force_bidirectional=False,
+                 network_type=None,
+                 retain_all=False,
+                 osmnx_compatible=True):
+        """
+        Export OSM network to routable graph. Supported output graph types are:
+          - "networkx" (default),
+          - "igraph", and
+          - "pandana"
+
+        For walking and cycling, the output graph will be bidirectional by default
+        (i.e. travel along the street is allowed to both directions). For driving,
+        one-way streets are taken into account by default and the travel is restricted
+        based on the rules in OSM data (based on "oneway" attribute).
+
+        Parameters
+        ----------
+
+        nodes : GeoDataFrame
+            GeoDataFrame containing nodes of the road network.
+            Note: Use `osm.get_network(nodes=True)` to retrieve both the nodes and edges.
+
+        edges : GeoDataFrame
+            GeoDataFrame containing the edges of the road network.
+
+        graph_type : str
+            Type of the output graph. Available graphs are:
+              - "networkx" --> returns a networkx.MultiDiGraph -object.
+              - "igraph" --> returns an igraph.Graph -object.
+              - "pandana" --> returns an pandana.Network -object.
+
+        direction : str
+            Name for the column containing information about the allowed driving directions
+
+        from_id_col : str
+            Name for the column having the from-node-ids of edges.
+
+        to_id_col : str
+            Name for the column having the to-node-ids of edges.
+
+        edge_id_col : str
+            Name for the column having the unique id for edges.
+
+        node_id_col : str
+            Name for the column having the unique id for nodes.
+
+        force_bidirectional : bool
+            If True, all edges will be created as bidirectional (allow travel to both directions).
+
+        network_type : str (optional)
+            Network type for the given data. Determines how the graph will be constructed.
+            The network type is typically extracted automatically from the metadata of
+            the edges/nodes GeoDataFrames. This parameter can be used if this metadata is not
+            available for a reason or another. By default, bidirectional graph is created for walking, cycling and all,
+            and directed graph for driving (i.e. oneway streets are taken into account).
+            Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'.
+
+        retain_all : bool
+            if True, return the entire graph even if it is not connected.
+            otherwise, retain only the connected edges.
+
+        osmnx_compatible : bool (default True)
+            if True, modifies the edge and node-attribute naming to be compatible with OSMnx
+            (allows utilizing all OSMnx functionalities).
+            NOTE: Only applicable with "networkx" graph type.
+        """
+        graph_type = validate_graph_type(graph_type)
+
+        if graph_type == "networkx":
+            return to_networkx(nodes, edges, direction, from_id_col, to_id_col,
+                               edge_id_col, node_id_col, force_bidirectional,
+                               network_type, retain_all, osmnx_compatible)
+        elif graph_type == "igraph":
+            return to_igraph(nodes, edges, direction, from_id_col, to_id_col,
+                             node_id_col, force_bidirectional,
+                             network_type, retain_all)
+        elif graph_type == "pandana":
+            raise NotImplementedError("'pandana' is not supported yet.")
 
     def __getattribute__(self, name):
         # If node-gdf is requested convert to gdf before returning
