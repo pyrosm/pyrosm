@@ -6,6 +6,7 @@ from pyrosm.exceptions import PBFNotImplemented
 import zlib
 from struct import unpack
 import os
+import geopandas as gpd
 
 
 def validate_custom_filter(custom_filter):
@@ -113,6 +114,33 @@ def validate_input_file(filepath):
         raise ValueError(f"File does not exist: "
                          f"Found: {filepath}")
     return filepath
+
+
+def validate_graph_type(graph_type):
+    if not isinstance(graph_type, str):
+        raise ValueError("'graph_type' should be a string.")
+    graph_type = graph_type.lower()
+    if graph_type not in ["networkx", "igraph", "pandana"]:
+        raise ValueError(f"'graph_type' should be 'networkx', 'igraph', or 'panadana'. "
+                         f"Got '{graph_type}'.")
+    return graph_type
+
+
+def validate_node_gdf(nodes):
+    if not isinstance(nodes, gpd.GeoDataFrame):
+        raise ValueError(f"'nodes' should be a GeoDataFrame, got '{type(nodes)}'.")
+    geom_types = nodes.geometry.geom_type.unique().tolist()
+    if len(geom_types) != 1 or geom_types[0] != "Point":
+        raise ValueError("'nodes' should contain only 'Point' geometries.")
+
+
+def validate_edge_gdf(edges):
+    if not isinstance(edges, gpd.GeoDataFrame):
+        raise ValueError(f"'edges' should be a GeoDataFrame, got '{type(edges)}'.")
+    geom_types = edges.geometry.geom_type.unique().tolist()
+    for gtype in geom_types:
+        if gtype not in ["LineString", "MultiLineString"]:
+            raise ValueError("'edges' should contain only 'LineString' or 'MultiLineString' geometries.")
 
 
 def get_bounding_box(filepath):
