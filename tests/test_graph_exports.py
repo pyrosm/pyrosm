@@ -20,7 +20,7 @@ def walk_nodes_and_edges():
     # (unmodified, i.e. not cropped)
     pbf_path = get_data("ulanbator")
     osm = OSM(pbf_path)
-    return osm.get_network(to_graph=True)
+    return osm.get_network(nodes=True)
 
 
 @pytest.fixture
@@ -30,7 +30,7 @@ def bike_nodes_and_edges():
     # (unmodified, i.e. not cropped)
     pbf_path = get_data("ulanbator")
     osm = OSM(pbf_path)
-    return osm.get_network(to_graph=True, network_type="cycling")
+    return osm.get_network(nodes=True, network_type="cycling")
 
 
 @pytest.fixture
@@ -38,7 +38,7 @@ def driving_nodes_and_edges():
     from pyrosm import OSM
     pbf_path = get_data("ulanbator")
     osm = OSM(pbf_path)
-    return osm.get_network(network_type="driving", to_graph=True)
+    return osm.get_network(network_type="driving", nodes=True)
 
 
 @pytest.fixture
@@ -46,7 +46,7 @@ def immutable_nodes_and_edges():
     from pyrosm import OSM
     pbf_path = get_data("test_pbf")
     osm = OSM(pbf_path)
-    return osm.get_network(to_graph=True)
+    return osm.get_network(nodes=True)
 
 
 def test_igraph_export_by_walking(walk_nodes_and_edges):
@@ -173,7 +173,7 @@ def test_igraph_immutable_counts(test_pbf):
     import igraph
     from pyrosm import OSM
     osm = OSM(test_pbf)
-    nodes, edges = osm.get_network(to_graph=True)
+    nodes, edges = osm.get_network(nodes=True)
     g = to_igraph(nodes, edges, retain_all=True)
     n_nodes = len(nodes)
 
@@ -236,7 +236,7 @@ def test_nxgraph_immutable_counts(test_pbf):
     import networkx as nx
     from pyrosm import OSM
     osm = OSM(test_pbf)
-    nodes, edges = osm.get_network(to_graph=True)
+    nodes, edges = osm.get_network(nodes=True)
     g = to_networkx(nodes, edges, retain_all=True)
     n_nodes = len(nodes)
 
@@ -251,7 +251,7 @@ def test_directed_edge_generator(test_pbf):
     from pyrosm.graphs import generate_directed_edges
     from pyrosm import OSM
     osm = OSM(test_pbf)
-    nodes, edges = osm.get_network(to_graph=True)
+    nodes, edges = osm.get_network(nodes=True)
 
     # Calculate the number of edges that should be oneway + bidirectional
     mask = edges[oneway_col].isin(oneway_values)
@@ -364,3 +364,15 @@ def test_nxgraph_connectivity(immutable_nodes_and_edges):
     assert arr.min() == 0
     assert arr.max().round(0) == 2343
     assert arr.mean().round(0) == 1141
+
+
+def test_to_graph_api(test_pbf):
+    from pyrosm import OSM
+    import networkx as nx
+    import igraph
+    osm = OSM(test_pbf)
+    nodes, edges = osm.get_network(nodes=True)
+    nxg = osm.to_graph(nodes, edges)
+    ig = osm.to_graph(nodes, edges, graph_type="igraph")
+    assert isinstance(nxg, nx.MultiDiGraph)
+    assert isinstance(ig, igraph.Graph)
