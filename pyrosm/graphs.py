@@ -1,5 +1,6 @@
 from pyrosm.graph_export import _create_igraph, _create_nxgraph, generate_directed_edges
 from pyrosm.graph_connectivity import get_connected_edges
+from pyrosm.utils import validate_edge_gdf, validate_node_gdf
 from pyrosm.config import Conf
 
 
@@ -13,6 +14,10 @@ def _prepare_for_graph(nodes,
                        network_type):
     """Prepares the edges and nodes for exporting to different graphs."""
     allowed_network_types = Conf._possible_network_filters
+
+    # Validate nodes and edges
+    validate_node_gdf(nodes)
+    validate_edge_gdf(edges)
 
     for col in [direction, from_id_col, to_id_col]:
         if col not in edges.columns:
