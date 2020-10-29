@@ -313,7 +313,7 @@ def test_getting_nodes_and_edges(test_pbf):
 
     osm = OSM(filepath=test_pbf)
 
-    nodes, edges = osm.get_network(to_graph=True)
+    nodes, edges = osm.get_network(nodes=True)
     nodes = nodes.reset_index(drop=True)
 
     assert isinstance(edges, GeoDataFrame)
