@@ -331,3 +331,36 @@ def test_igraph_connectivity(immutable_nodes_and_edges):
     assert arr.min() == 0
     assert arr.max().round(0) == 2343
     assert arr.mean().round(0) == 1141
+
+
+def test_nxgraph_connectivity(immutable_nodes_and_edges):
+    from pyrosm.graphs import to_networkx
+    import networkx as nx
+    import numpy as np
+
+    nodes, edges = immutable_nodes_and_edges
+    g = to_networkx(nodes, edges, retain_all=False)
+
+    # Test that graph source and target nodes matches with the ones in attribute table
+    for fr, to, edge in g.edges(data=True):
+        assert fr == edge['u']
+        assert to == edge['v']
+
+    # Test that finding shortest paths works for all nodes
+    node_ids = [n for n in g.nodes()]
+    source = node_ids[5]
+    shortest_paths = []
+    for target in node_ids:
+        shortest_path_length = nx.shortest_path_length(g, source=source, target=target, weight='length')
+        shortest_paths.append(shortest_path_length)
+
+    # Check couple of exact lengths
+    assert round(shortest_paths[0], 0) == 807
+    assert round(shortest_paths[-1], 0) == 1940
+
+    # Check summaries
+    arr = np.array(shortest_paths)
+    arr[arr == np.inf] = 0
+    assert arr.min() == 0
+    assert arr.max().round(0) == 2343
+    assert arr.mean().round(0) == 1141
