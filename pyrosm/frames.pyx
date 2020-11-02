@@ -7,6 +7,8 @@ from pyrosm.geometry cimport create_way_geometries
 from pyrosm.relations import prepare_relations
 from shapely.geometry import box
 from pyrosm.data_filter import get_mask_by_osmid, _filter_array_dict_by_indices_or_mask
+from pygeos import multilinestrings
+from pyrosm.distance import calculate_geom_length, calculate_geom_array_length
 
 cpdef create_nodes_gdf(nodes, osmids_to_keep=None):
     cdef str k
@@ -29,6 +31,11 @@ cpdef create_nodes_gdf(nodes, osmids_to_keep=None):
     return gpd.GeoDataFrame(df, crs='epsg:4326')
 
 cpdef create_gdf(data_arrays, geometry_array):
+    df = create_df(data_arrays)
+    df['geometry'] = geometry_array
+    return gpd.GeoDataFrame(df, crs='epsg:4326')
+
+cpdef create_df(data_arrays):
     cdef str key
     df = pd.DataFrame()
     for key, data in data_arrays.items():
@@ -40,49 +47,70 @@ cpdef create_gdf(data_arrays, geometry_array):
         else:
             df[key] = data
 
-    df['geometry'] = geometry_array
-    return gpd.GeoDataFrame(df, crs='epsg:4326')
+    return df
 
 cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengths):
     if ways is not None:
-        geometries, geom_lengths, from_ids, to_ids, seg_lengths = create_way_geometries(node_coordinates,
-                                                                                        ways,
-                                                                                        parse_network,
-                                                                                        calculate_seg_lengths)
-        # Convert to GeoDataFrame
-        way_gdf = create_gdf(ways, geometries)
+        geometries, from_ids, to_ids, node_attributes = create_way_geometries(node_coordinates,
+                                                                              ways,
+                                                                              parse_network
+                                                                              )
+        # Convert to DataFrame
+        way_gdf = create_df(ways)
         way_gdf['osm_type'] = "way"
+        way_gdf["geometry"] = geometries
 
         # In case network is parsed, include way-level length info
-        if parse_network and calculate_seg_lengths == False:
-            way_gdf["length"] = geom_lengths
+        if parse_network and not calculate_seg_lengths:
+            # Drop rows without geometry
+            way_gdf = way_gdf.dropna(subset=['geometry']).reset_index(drop=True)
+
+            # Create MultiLineStrings and calculate the length
+            way_gdf["geometry"] = [multilinestrings(geom) for geom in way_gdf["geometry"]]
+            way_gdf["length"] = [calculate_geom_length(geom) for geom in way_gdf["geometry"]]
+            way_gdf = gpd.GeoDataFrame(way_gdf, crs="epsg:4326")
+
+            # If only edges are requested, clean node_attributes
+            node_attributes = None
 
         # In case network is parsed and requested for graph export,
         # include segment-level length info
-        if parse_network and calculate_seg_lengths:
-
-            # Ensure that the records match always (possible dropped rows)
+        elif parse_network and calculate_seg_lengths:
+            # Insert way-level from/to ids
             way_gdf["u"] = from_ids
             way_gdf["v"] = to_ids
-            way_gdf["length"] = seg_lengths
+
             # Drop rows without geometry
             way_gdf = way_gdf.dropna(subset=['geometry']).reset_index(drop=True)
-            # Parse from/to-ids and segment lengths
+
+            # Parse segment level from/to-ids
             u = np.concatenate(way_gdf["u"].to_list())
             v = np.concatenate(way_gdf["v"].to_list())
-            l = np.concatenate(way_gdf["length"].to_list())
 
             # Explode multi-geometries
-            way_gdf = way_gdf.explode().reset_index(drop=True)
+            # TODO: Update using geopandas new "explode()" function when available:
+            #  https://github.com/geopandas/geopandas/issues/1672
+            #  For now, use the pandas implementation
+            way_gdf = way_gdf.explode("geometry").reset_index(drop=True)
+            way_gdf = gpd.GeoDataFrame(way_gdf, crs="epsg:4326")
 
-            # Update from/to-ids and segment lengths for exploded gdf
+            # Update from/to-ids
             way_gdf["u"] = u
             way_gdf["v"] = v
-            way_gdf["length"] = l
+
+            # Calculate the length of the geometries
+            way_gdf["length"] = calculate_geom_array_length(way_gdf.geometry.values.data)
+
+        # For cases not related to networks
+        else:
+            way_gdf = gpd.GeoDataFrame(way_gdf, crs="epsg:4326")
+            node_attributes = None
 
     else:
         way_gdf = gpd.GeoDataFrame()
-    return way_gdf
+        node_attributes = None
+
+    return way_gdf, node_attributes
 
 cpdef prepare_node_gdf(nodes):
     if nodes is not None:
@@ -115,7 +143,10 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
     node_gdf = prepare_node_gdf(nodes)
 
     # Prepare ways
-    way_gdf = prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengths)
+    way_gdf, node_attr = prepare_way_gdf(node_coordinates,
+                                         ways,
+                                         parse_network,
+                                         calculate_seg_lengths)
 
     # Prepare relation data
     relation_gdf = prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns)
@@ -124,14 +155,21 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
     gdf = pd.concat([node_gdf, way_gdf, relation_gdf])
 
     if len(gdf) == 0:
+        if parse_network:
+            return None, None
         return None
 
     gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
 
+    if node_attr is not None:
+        node_attr = pd.DataFrame(node_attr)
+        node_attr = gpd.GeoDataFrame(node_attr,
+                                     crs="epsg:4326",
+                                     geometry=gpd.points_from_xy(node_attr["lon"],
+                                                                 node_attr["lat"])
+                                     ).drop_duplicates("id").reset_index(drop=True)
+
     # Filter by bounding box if it was used
-    # This would be faster using Pygeos,
-    # but as GeoPandas 0.8.0 should start supporting it natively,
-    # let's keep things simple
     if bounding_box is not None:
         if isinstance(bounding_box, list):
             bounding_box = box(*bounding_box)
@@ -143,7 +181,13 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
         gdf = gpd.sjoin(gdf, filter_gdf, how="inner")
         gdf = gdf[orig_cols].reset_index(drop=True)
 
+        # TODO: Also nodes should be filtered
+
     if len(gdf) == 0:
+        if parse_network:
+            return None, None
         return None
 
+    if parse_network:
+        return gdf, node_attr
     return gdf
