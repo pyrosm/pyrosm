@@ -673,7 +673,6 @@ class OSM:
         Export OSM network to routable graph. Supported output graph types are:
           - "igraph" (default),
           - "networkx",
-          - "pandana"
 
         For walking and cycling, the output graph will be bidirectional by default
         (i.e. travel along the street is allowed to both directions). For driving,
@@ -694,7 +693,6 @@ class OSM:
             Type of the output graph. Available graphs are:
               - "igraph" --> returns an igraph.Graph -object.
               - "networkx" --> returns a networkx.MultiDiGraph -object.
-              - "pandana" --> returns an pandana.Network -object.
 
         direction : str
             Name for the column containing information about the allowed driving directions
@@ -741,8 +739,6 @@ class OSM:
             return to_networkx(nodes, edges, direction, from_id_col, to_id_col,
                                edge_id_col, node_id_col, force_bidirectional,
                                network_type, retain_all, osmnx_compatible)
-        elif graph_type == "pandana":
-            raise NotImplementedError("'pandana' is not supported yet.")
 
     def __getattribute__(self, name):
         # If node-gdf is requested convert to gdf before returning
