@@ -15,6 +15,7 @@ dependencies:
   # optional
   - python-igraph
   - networkx
+  - pandana
   # testing
   - pytest
   - pytest-cov
