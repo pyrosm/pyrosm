@@ -178,13 +178,13 @@ class OSM:
             self._read_pbf()
 
         # Filter network data with given filter
-        edges = get_network_data(self._node_coordinates,
-                                 self._way_records,
-                                 tags_as_columns,
-                                 network_filter,
-                                 self.bounding_box,
-                                 slice_to_segments=nodes
-                                 )
+        edges, node_gdf = get_network_data(self._node_coordinates,
+                                           self._way_records,
+                                           tags_as_columns,
+                                           network_filter,
+                                           self.bounding_box,
+                                           slice_to_segments=nodes
+                                           )
 
         if edges is not None:
             # Add metadata
@@ -198,12 +198,7 @@ class OSM:
 
         # In case both edges and nodes are requested
         if nodes:
-            # Get all ids that are part of the network
-            osmids = np.unique(np.concatenate([edges['u'].unique(), edges['v'].unique()]))
-            nodes_gdf = create_nodes_gdf(self._nodes, osmids_to_keep=osmids)
-            nodes_gdf._metadata.append(network_type)
-            return (nodes_gdf, edges)
-
+            return (node_gdf, edges)
         return edges
 
     def get_buildings(self, custom_filter=None, extra_attributes=None):
@@ -664,7 +659,7 @@ class OSM:
     def to_graph(self,
                  nodes,
                  edges,
-                 graph_type="networkx",
+                 graph_type="igraph",
                  direction='oneway',
                  from_id_col='u',
                  to_id_col='v',
@@ -676,8 +671,8 @@ class OSM:
                  osmnx_compatible=True):
         """
         Export OSM network to routable graph. Supported output graph types are:
-          - "networkx" (default),
-          - "igraph", and
+          - "igraph" (default),
+          - "networkx",
           - "pandana"
 
         For walking and cycling, the output graph will be bidirectional by default
@@ -697,8 +692,8 @@ class OSM:
 
         graph_type : str
             Type of the output graph. Available graphs are:
-              - "networkx" --> returns a networkx.MultiDiGraph -object.
               - "igraph" --> returns an igraph.Graph -object.
+              - "networkx" --> returns a networkx.MultiDiGraph -object.
               - "pandana" --> returns an pandana.Network -object.
 
         direction : str
@@ -738,14 +733,14 @@ class OSM:
         """
         graph_type = validate_graph_type(graph_type)
 
-        if graph_type == "networkx":
-            return to_networkx(nodes, edges, direction, from_id_col, to_id_col,
-                               edge_id_col, node_id_col, force_bidirectional,
-                               network_type, retain_all, osmnx_compatible)
-        elif graph_type == "igraph":
+        if graph_type == "igraph":
             return to_igraph(nodes, edges, direction, from_id_col, to_id_col,
                              node_id_col, force_bidirectional,
                              network_type, retain_all)
+        elif graph_type == "networkx":
+            return to_networkx(nodes, edges, direction, from_id_col, to_id_col,
+                               edge_id_col, node_id_col, force_bidirectional,
+                               network_type, retain_all, osmnx_compatible)
         elif graph_type == "pandana":
             raise NotImplementedError("'pandana' is not supported yet.")
 
