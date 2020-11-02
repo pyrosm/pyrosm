@@ -1,5 +1,6 @@
 from enum import Enum
 import numpy as np
+from pygeos.coordinates import get_coordinates
 
 
 class Unit(Enum):
@@ -69,3 +70,19 @@ def haversine(lat1, lng1, lat2, lng2, unit=Unit.KILOMETERS):
     d = np.sin(lat * 0.5) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(lng * 0.5) ** 2
 
     return 2 * avg_earth_radius * np.arcsin(np.sqrt(d))
+
+
+def calculate_geom_length(geom):
+    return calculate_geom_array_length(geom).sum().round(0)
+
+
+def calculate_geom_array_length(geom_array):
+    coords = get_coordinates(geom_array).T
+
+    # Only every second element should be taken from the coordinates
+    lon1, lat1 = coords[0][:-1:2], coords[1][:-1:2]
+    lon2, lat2 = coords[0][1::2], coords[1][1::2]
+
+    # Length of the segments
+    geom_lengths = haversine(lat1, lon1, lat2, lon2, unit=Unit.METERS).round(3)
+    return geom_lengths
