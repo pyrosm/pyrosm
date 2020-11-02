@@ -24,15 +24,13 @@ def get_network_data(node_coordinates, way_records, tags_as_columns,
         warnings.warn("Could not find any edges for given area.",
                       UserWarning,
                       stacklevel=2)
-        return None
+        return None, None
 
     # Prepare GeoDataFrame
-    gdf = prepare_geodataframe(nodes, node_coordinates, ways,
-                               relations, relation_ways,
-                               tags_as_columns, bounding_box,
-                               parse_network=True,
-                               calculate_seg_lengths=slice_to_segments)
+    edges, nodes = prepare_geodataframe(nodes, node_coordinates, ways,
+                                        relations, relation_ways,
+                                        tags_as_columns, bounding_box,
+                                        parse_network=True,
+                                        calculate_seg_lengths=slice_to_segments)
 
-    return gdf
-
-
+    return edges, nodes
