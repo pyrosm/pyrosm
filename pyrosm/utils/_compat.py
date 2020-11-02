@@ -23,3 +23,10 @@ try:
 except ImportError:
     HAS_NETWORKX = False
 
+# pandana is an optional dependency
+try:
+    import pandana
+    HAS_PANDANA = True
+except ImportError:
+    HAS_PANDANA = False
+
