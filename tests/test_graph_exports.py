@@ -322,15 +322,15 @@ def test_igraph_connectivity(immutable_nodes_and_edges):
     shortest_paths = g.shortest_paths_dijkstra(source=5, target=[i for i in range(N)], weights='length')
 
     # Check couple of exact lengths
-    assert round(shortest_paths[0][0], 0) == 807
-    assert round(shortest_paths[0][-1], 0) == 1940
+    assert round(shortest_paths[0][0], 0) == 500
+    assert round(shortest_paths[0][-1], 0) == 2315
 
     # Check summaries
     arr = np.array(shortest_paths[0])
     arr[arr == np.inf] = 0
     assert arr.min() == 0
-    assert arr.max().round(0) == 2343
-    assert arr.mean().round(0) == 1141
+    assert arr.max().round(0) == 2838
+    assert arr.mean().round(0) == 1372
 
 
 def test_nxgraph_connectivity(immutable_nodes_and_edges):
@@ -355,15 +355,15 @@ def test_nxgraph_connectivity(immutable_nodes_and_edges):
         shortest_paths.append(shortest_path_length)
 
     # Check couple of exact lengths
-    assert round(shortest_paths[0], 0) == 807
-    assert round(shortest_paths[-1], 0) == 1940
+    assert round(shortest_paths[0], 0) == 500
+    assert round(shortest_paths[-1], 0) == 2315
 
     # Check summaries
     arr = np.array(shortest_paths)
     arr[arr == np.inf] = 0
     assert arr.min() == 0
-    assert arr.max().round(0) == 2343
-    assert arr.mean().round(0) == 1141
+    assert arr.max().round(0) == 2838
+    assert arr.mean().round(0) == 1372
 
 
 def test_to_graph_api(test_pbf):

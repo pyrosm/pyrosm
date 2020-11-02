@@ -48,7 +48,7 @@ def test_creating_building_geometries(test_pbf):
     from pyrosm.data_manager import get_osm_data
     from pyrosm.geometry import create_way_geometries
     from numpy import ndarray
-    from shapely.geometry import Polygon
+    from pygeos import Geometry
 
     osm = OSM(filepath=test_pbf)
     osm._read_pbf()
@@ -61,12 +61,12 @@ def test_creating_building_geometries(test_pbf):
                                                          filter_type="keep")
     assert isinstance(ways, dict)
 
-    geometries, lengths, from_ids, to_ids, seg_lengths = create_way_geometries(osm._node_coordinates,
-                                                                               ways,
-                                                                               parse_network=False,
-                                                                               calculate_seg_lengths=False)
-    assert isinstance(geometries, ndarray)
-    assert isinstance(geometries[0], Polygon)
+    geometries, lengths, from_ids, to_ids = create_way_geometries(osm._node_coordinates,
+                                                                  ways,
+                                                                  parse_network=False
+                                                                  )
+    assert isinstance(geometries, list), f"Type should be list, got {type(geometries)}."
+    assert isinstance(geometries[0], Geometry)
     assert len(geometries) == len(ways["id"])
 
 
