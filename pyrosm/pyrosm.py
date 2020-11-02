@@ -668,11 +668,13 @@ class OSM:
                  force_bidirectional=False,
                  network_type=None,
                  retain_all=False,
-                 osmnx_compatible=True):
+                 osmnx_compatible=True,
+                 pandana_weights=["length"]):
         """
         Export OSM network to routable graph. Supported output graph types are:
           - "igraph" (default),
           - "networkx",
+          - "pandana"
 
         For walking and cycling, the output graph will be bidirectional by default
         (i.e. travel along the street is allowed to both directions). For driving,
@@ -693,6 +695,7 @@ class OSM:
             Type of the output graph. Available graphs are:
               - "igraph" --> returns an igraph.Graph -object.
               - "networkx" --> returns a networkx.MultiDiGraph -object.
+              - "pandana" --> returns an pandana.Network -object.
 
         direction : str
             Name for the column containing information about the allowed driving directions
@@ -728,6 +731,9 @@ class OSM:
             if True, modifies the edge and node-attribute naming to be compatible with OSMnx
             (allows utilizing all OSMnx functionalities).
             NOTE: Only applicable with "networkx" graph type.
+
+        pandana_weights : list
+            Columns that are used as weights when exporting to Pandana graph. By default uses "length" column.
         """
         graph_type = validate_graph_type(graph_type)
 
@@ -739,6 +745,10 @@ class OSM:
             return to_networkx(nodes, edges, direction, from_id_col, to_id_col,
                                edge_id_col, node_id_col, force_bidirectional,
                                network_type, retain_all, osmnx_compatible)
+        elif graph_type == "pandana":
+            return to_pandana(nodes, edges, direction, from_id_col, to_id_col,
+                              node_id_col, force_bidirectional,
+                              network_type, retain_all, pandana_weights)
 
     def __getattribute__(self, name):
         # If node-gdf is requested convert to gdf before returning

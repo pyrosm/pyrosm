@@ -1,4 +1,4 @@
-from pyrosm.graph_export import _create_igraph, _create_nxgraph, generate_directed_edges
+from pyrosm.graph_export import _create_igraph, _create_nxgraph, _create_pdgraph, generate_directed_edges
 from pyrosm.graph_connectivity import get_connected_edges
 from pyrosm.utils import validate_edge_gdf, validate_node_gdf
 from pyrosm.config import Conf
@@ -256,5 +256,36 @@ def to_igraph(nodes,
     return _create_igraph(nodes, edges, from_id_col, to_id_col, node_id_col)
 
 
-def to_pandana(nodes, edges, network_type=None):
-    pass
+def to_pandana(nodes,
+               edges,
+               direction='oneway',
+               from_id_col='u',
+               to_id_col='v',
+               node_id_col='id',
+               force_bidirectional=False,
+               network_type=None,
+               retain_all=False,
+               weight_cols=["length"]):
+    # Prepare the data
+    nodes, edges = _prepare_for_graph(nodes,
+                                      edges,
+                                      direction,
+                                      from_id_col,
+                                      to_id_col,
+                                      node_id_col,
+                                      force_bidirectional,
+                                      network_type)
+
+    # Keep only strongly connected component if not specifically requested otherwise
+    if not retain_all:
+        nodes, edges = get_connected_edges(nodes,
+                                           edges,
+                                           from_id_col,
+                                           to_id_col,
+                                           node_id_col)
+
+    nodes = nodes.rename(columns={'lat': 'y', 'lon': 'x'})
+    nodes = nodes.set_index('id', drop=False)
+    nodes = nodes.rename_axis([None])
+
+    return _create_pdgraph(nodes, edges, from_id_col, to_id_col, weight_cols)

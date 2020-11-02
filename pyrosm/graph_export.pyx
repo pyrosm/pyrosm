@@ -1,4 +1,4 @@
-from pyrosm.utils._compat import HAS_IGRAPH, HAS_NETWORKX
+from pyrosm.utils._compat import HAS_IGRAPH, HAS_NETWORKX, HAS_PANDANA
 from pyrosm.config import Conf
 import geopandas as gpd
 
@@ -162,6 +162,26 @@ cpdef _create_nxgraph(nodes,
     graph.graph["name"] = "Made with Pyrosm library."
 
     return graph
+
+cpdef _create_pdgraph(nodes,
+                      edges,
+                      from_id_col,
+                      to_id_col,
+                      weight_cols):
+    """
+    Creates a Pandana Network from directed edges and nodes.
+    NOTE: Assumes that the input edges GeoDataFrame is directed.
+    """
+    if not HAS_PANDANA:
+        raise ImportError("'pandana' needs to be installed "
+                          "in order to export the network for it.")
+    from pandana import Network
+    return Network(node_x=nodes["x"],
+                   node_y=nodes["y"],
+                   edge_from=edges[from_id_col],
+                   edge_to=edges[to_id_col],
+                   edge_weights=edges[weight_cols],
+                   twoway=False)
 
 cpdef generate_directed_edges(edges,
                               direction,
