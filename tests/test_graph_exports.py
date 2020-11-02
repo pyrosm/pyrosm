@@ -372,7 +372,8 @@ def test_to_graph_api(test_pbf):
     import igraph
     osm = OSM(test_pbf)
     nodes, edges = osm.get_network(nodes=True)
-    nxg = osm.to_graph(nodes, edges)
-    ig = osm.to_graph(nodes, edges, graph_type="igraph")
+    # igraph is the default
+    ig = osm.to_graph(nodes, edges)
+    nxg = osm.to_graph(nodes, edges, graph_type="networkx")
     assert isinstance(nxg, nx.MultiDiGraph)
     assert isinstance(ig, igraph.Graph)
