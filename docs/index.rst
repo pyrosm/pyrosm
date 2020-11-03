@@ -24,15 +24,15 @@ takes less than **3 minutes** and parsing the buildings from the same region tak
 Current features
 ----------------
 
- - download PBF data easily from hundreds of locations across the world
- - read street networks (separately for driving, cycling, walking and all-combined)
- - read buildings from PBF
- - read Points of Interest (POI) from PBF
- - read landuse from PBF
- - read "natural" from PBF
- - read boundaries from PBF (such as administrative borders)
- - read any other data from PBF by using a custom user-defined filter
- - filter data based on bounding box
+- download PBF data easily from hundreds of locations across the world
+- read street networks (separately for driving, cycling, walking and all-combined)
+- read buildings from PBF
+- read Points of Interest (POI) from PBF
+- read landuse from PBF
+- read "natural" from PBF
+- read boundaries from PBF (such as administrative borders)
+- read any other data from PBF by using a custom user-defined filter
+- filter data based on bounding box
 
 
 License
@@ -48,20 +48,19 @@ Getting started
 
 
 .. toctree::
-   :maxdepth: 2
+    :caption: Contents
 
-   installation.ipynb
-   basics.ipynb
-   custom_filter.ipynb
-   benchmarking.ipynb
+    installation.ipynb
+    basics.ipynb
+    custom_filter.ipynb
+    benchmarking.ipynb
 
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Reference Guide
+    :caption: Reference Guide
 
-   Reference to All Attributes and Methods <reference>
-   Changelog <changelog>
+    Reference to All Attributes and Methods <reference>
+    Changelog <changelog>
 
 Indices and tables
 ==================
