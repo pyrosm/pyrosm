@@ -14,6 +14,8 @@ dependencies:
   - python-rapidjson
   # optional
   - python-igraph
+  - networkx
+  - pandana
   # testing
   - pytest
   - pytest-cov
