@@ -366,14 +366,72 @@ def test_nxgraph_connectivity(immutable_nodes_and_edges):
     assert arr.mean().round(0) == 1372
 
 
+def test_pdgraph_connectivity():
+    from pyrosm.graphs import to_pandana
+    import pandas as pd
+    from pyrosm import OSM
+    osm = OSM(get_data("helsinki_pbf"))
+    nodes, edges = osm.get_network(nodes=True)
+
+    # Prerare some test data for aggregations
+    restaurants = osm.get_pois(custom_filter={"amenity": ["restaurant"]})
+    restaurants = restaurants.loc[restaurants["osm_type"] == "node"]
+    restaurants["employee_cnt"] = 1
+    x = restaurants["lon"]
+    y = restaurants["lat"]
+
+    g = to_pandana(nodes, edges, retain_all=False)
+
+    # Nodes and edges should be in DataFrames
+    assert isinstance(g.nodes_df, pd.DataFrame)
+    assert isinstance(g.edges_df, pd.DataFrame)
+
+    # Precompute up to 1000 meters
+    g.precompute(1000)
+
+    # Link restaurants to graph
+    g.set_pois("restaurants", 1000, 5, x, y)
+
+    # Find the distance to nearest 5 restaurants from each node
+    nearest_restaurants = g.nearest_pois(1000, "restaurants", num_pois=5)
+    assert isinstance(nearest_restaurants, pd.DataFrame)
+    assert nearest_restaurants.shape == (5750, 5)
+
+    # Get closest node_ids for each restaurant
+    node_ids = g.get_node_ids(x, y)
+    assert isinstance(node_ids, pd.Series)
+    assert node_ids.min() > 0
+    restaurants["node_id"] = node_ids
+
+    # Attach employee counts to the graph
+    g.set(node_ids, variable=restaurants.employee_cnt, name="employee_cnt")
+
+    # Aggregate the number of employees within 500 meters from each node
+    access = g.aggregate(500, type="sum", decay="linear", name="employee_cnt")
+    assert isinstance(access, pd.Series)
+    assert len(access) == 5750
+
+    # Test shortest path calculations
+    shortest_distances = g.shortest_path_lengths(node_ids[0:100], node_ids[100:200], imp_name="length")
+    assert isinstance(shortest_distances, list)
+    assert len(shortest_distances) == 100
+    shortest_distances = pd.Series(shortest_distances)
+    assert shortest_distances.min().round(0) == 22
+    assert shortest_distances.max().round(0) == 2453
+    assert shortest_distances.mean().round(0) == 856
+
+
 def test_to_graph_api(test_pbf):
     from pyrosm import OSM
     import networkx as nx
     import igraph
+    import pandana
     osm = OSM(test_pbf)
     nodes, edges = osm.get_network(nodes=True)
     # igraph is the default
     ig = osm.to_graph(nodes, edges)
     nxg = osm.to_graph(nodes, edges, graph_type="networkx")
+    pdg = osm.to_graph(nodes, edges, graph_type="pandana")
     assert isinstance(nxg, nx.MultiDiGraph)
     assert isinstance(ig, igraph.Graph)
+    assert isinstance(pdg, pandana.Network)
