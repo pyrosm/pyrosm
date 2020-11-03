@@ -6,10 +6,10 @@ v0.5.3 (Sep 13, 2020)
 
 Changes:
 
- - Ensures that geometry construction works with new Pygeos release v0.8.0 (#46)
+- Ensures that geometry construction works with new Pygeos release v0.8.0 (#46)
 
 v0.5.1/2 (May 11, 2020)
----------------------
+-----------------------
 
 - Fix multi-level filtering
 - Add support for using "exclude" also with nodes and relations
@@ -27,6 +27,7 @@ v0.5.0 (May 7, 2020)
 - Make parsing more robust for incorrectly tagged OSM entries.
 - Bug fixes
 - Update website to a new theme.
+
 
 v0.4.3 (April 27, 2020)
 -----------------------
@@ -77,6 +78,7 @@ v0.1.8 (April 8, 2020)
 
 - read street networks from PBF into GeoDataFrame (separately for driving, cycling, walking and all-combined)
 - filter data based on bounding box
+
 
 v0.1.0 (April 7, 2020)
 ----------------------
