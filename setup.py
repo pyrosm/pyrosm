@@ -75,12 +75,11 @@ setup(
 
     python_requires='>=3.6',
     install_requires=requirements,
-    setup_requires=requirements,
     pyrobuf_modules="proto",
     ext_modules=cythonize(os.path.join("pyrosm", "*.pyx"),
                           annotate=False,
                           compiler_directives={'language_level': "3",
-                                               #'linetrace': True
+                                               # 'linetrace': True
                                                }
                           )
 )
