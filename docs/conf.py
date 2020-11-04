@@ -10,8 +10,6 @@
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 
-import sphinx_rtd_theme
-
 # sys.path.insert(0, os.path.abspath(".."))
 # sys.path.append(os.path.join(os.path.dirname(__name__), ".."))
 
@@ -22,27 +20,24 @@ copyright = "2020, Henrikki Tenkanen"
 author = "Henrikki Tenkanen"
 
 # The full version, including alpha/beta/rc tags
-version = release = "0.5.2"
+version = release = "0.6.0"
 
 # -- General configuration ---------------------------------------------------
 
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named "sphinx.ext.*") or your custom
 # ones.
+
 extensions = [
-    "sphinx.ext.autodoc",
-    "sphinx.ext.coverage",
-    "sphinx.ext.napoleon",
-    "sphinx_rtd_theme",
-    "sphinx.ext.intersphinx",
-
-    # Ipython
-    "IPython.sphinxext.ipython_console_highlighting",
-    "IPython.sphinxext.ipython_directive",
-
-    # NBsphinx
-    "nbsphinx",
+    'sphinx.ext.mathjax',
+    'sphinx.ext.autodoc',
+    "sphinx_thebe",
+    'IPython.sphinxext.ipython_console_highlighting',
+    'IPython.sphinxext.ipython_directive',
+    'myst_nb',
+    'jupyter_sphinx',
 ]
+
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
@@ -59,39 +54,39 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 #
 # html_theme = "alabaster"
 
-html_theme = 'pydata_sphinx_theme'
+html_theme = 'sphinx_book_theme'
+html_title = "Pyrosm"
+
+html_theme_options = {
+    "single_page": False,
+    #"external_links": [],
+    "repository_url": "https://github.com/HTenkanen/pyrosm/",
+    "repository_branch": "master",
+    #"path_to_docs": "docs/",
+    #"twitter_url": "https://twitter.com/pythongis",
+    #"google_analytics_id": "UA-159257488-1",
+    "use_edit_page_button": True,
+    "use_repository_button": True,
+    "launch_buttons": {
+        "binderhub_url": "https://mybinder.org",
+        "notebook_interface": "jupyterlab",
+    "collapse_navigation" : False
+    },
+}
 
 html_context = {
     # Enable the "Edit in GitHub link within the header of each page.
     'display_github': True,
     # Set the following variables to generate the resulting github URL for each page.
     # Format Template: https://{{ github_host|default("github.com") }}/{{ github_user }}/{{ github_repo }}/blob/{{ github_version }}{{ conf_py_path }}{{ pagename }}{{ suffix }}
-    'github_user': 'HTenkanen',
+    'github_user': 'htenkanen',
     'github_repo': 'pyrosm',
     'github_version': 'master/',
-    'conf_py_path': 'docs/'
+    'conf_py_path': '/docs/'
 }
 
-
-# Theme options for sphinx_rtd_theme:
-# -----------------------------------
-
-# html_theme_options = {
-#     "canonical_url": "",
-#     "analytics_id": "UA-XXXXXXX-1",  #  Provided by Google in your dashboard
-#     "logo_only": False,
-#     "display_version": True,
-#     "prev_next_buttons_location": "bottom",
-#     "style_external_links": False,
-#     "vcs_pageview_mode": "",
-#     "style_nav_header_background": "white",
-#     # Toc options
-#     "collapse_navigation": True,
-#     "sticky_navigation": True,
-#     "navigation_depth": 4,
-#     "includehidden": True,
-#     "titles_only": False
-# }
+# The master toctree document.
+master_doc = 'index'
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
@@ -102,15 +97,26 @@ html_css_files = [
     'css/custom.css',
 ]
 
+# The name of the Pygments (syntax highlighting) style to use.
+pygments_style = 'sphinx'
+
+# Allow errors
+execution_allow_errors = True
+
+# Do not execute cells
+jupyter_execute_notebooks = "off"
+
+show_navbar_depth = 2
+
 # ======================
 # Do not skip class init
 # ======================
 
-def skip(app, what, name, obj, would_skip, options):
-    if name == "__init__":
-        return False
-    return would_skip
-
-
-def setup(app):
-    app.connect("autodoc-skip-member", skip)
+# def skip(app, what, name, obj, would_skip, options):
+#     if name == "__init__":
+#         return False
+#     return would_skip
+#
+#
+# def setup(app):
+#     app.connect("autodoc-skip-member", skip)

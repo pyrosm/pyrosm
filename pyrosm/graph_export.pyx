@@ -1,6 +1,8 @@
 from pyrosm.utils._compat import HAS_IGRAPH, HAS_NETWORKX, HAS_PANDANA
 from pyrosm.config import Conf
 import geopandas as gpd
+import pandas as pd
+import numpy as np
 
 # The values used to determine oneway road in OSM
 oneway_values = Conf.oneway_values
@@ -183,6 +185,7 @@ cpdef _create_pdgraph(nodes,
                    edge_weights=edges[weight_cols],
                    twoway=False)
 
+
 cpdef generate_directed_edges(edges,
                               direction,
                               from_id_col,
@@ -194,53 +197,42 @@ cpdef generate_directed_edges(edges,
     
     If 'force_bidirectional=True' travel to both direction is allowed for all edges.
     """
-    cdef int i, n_edges = len(edges)
+    if force_bidirectional:
+        # Flip from/to values
+        edges_dir2 = edges.copy(deep=True).rename(
+            columns={to_id_col: from_id_col,
+                     from_id_col: to_id_col}
+        )
+        return pd.concat([edges, edges_dir2], ignore_index=True)
 
-    # Convert edges to dict
-    edge_attributes = edges.to_dict(orient="records")
+    # ========================================
+    # Directed edges according 'oneway' rules
+    # ========================================
 
-    # Generate directed set of edges
-    for i in range(0, n_edges):
+    if "junction" in edges.columns:
+        roundabouts = True
+    else:
+        roundabouts = False
 
-        # Get nodeids for the edge
-        # ------------------------
-        from_node_id = edge_attributes[i][from_id_col]
-        to_node_id = edge_attributes[i][to_id_col]
+    if roundabouts:
+        # Edge is oneway if it is tagged as such OR if it tagged as roundabout
+        oneway_mask = (edges[direction].isin(oneway_values)) | (edges["junction"] == "roundabout")
+    else:
+        oneway_mask = edges[direction].isin(oneway_values)
 
-        # Create edges
-        # ------------
+    edge_cnt = len(edges)
+    oneway_edges = edges.loc[oneway_mask].copy()
+    twoway_edges = edges.loc[~oneway_mask].copy()
+    twoway_edges_dir2 = twoway_edges.copy(deep=True).rename(columns={to_id_col: from_id_col, from_id_col: to_id_col})
+    twoway_edges_dir2.index = np.arange(edge_cnt, edge_cnt + len(twoway_edges))
 
-        # Oneway streets
-        if edge_attributes[i][direction] in oneway_values and not force_bidirectional:
-            # When travelling is allowed only against digitization direction
-            # flip the order of link nodes
-            if edge_attributes[i][direction] in ['-1', 'T']:
-                edge_attributes[i]["u"] = to_node_id
-                edge_attributes[i]["v"] = from_node_id
+    # Select edges that are allowed only to opposite direction
+    against_mask = oneway_edges[direction].isin(["-1", "T"])
+    against_edges = oneway_edges.loc[against_mask].copy()
+    along_edges = oneway_edges.loc[~against_mask].copy()  # Nothing needs to be done for these
 
-            # Do nothing if travel is allowed along the digitization direction
-            else:
-                continue
+    # Flip the from/to ids for against edges
+    against_edges = against_edges.rename(columns={from_id_col: to_id_col, to_id_col: from_id_col})
 
-        # Roundabouts are oneways
-        elif 'junction' in edge_attributes[i].keys() \
-                and edge_attributes[i]['junction'] == 'roundabout' \
-                and not force_bidirectional:
-            # Do nothing
-            continue
-
-        else:
-
-            # If road is bi-directional add the "against" direction
-            # -----------------------------------------------------
-            # Take a deepcopy with dict-comprehension,
-            # so that from_node_id and to_node_id attribute info stays correct
-            # in the dictionary. This is needed only with bi-directional road segments.
-            e_attributes = {k: v for k, v in edge_attributes[i].items()}
-
-            # Append the opposite direction link nodes and attributes
-            e_attributes["u"] = to_node_id
-            e_attributes["v"] = from_node_id
-            edge_attributes.append(e_attributes)
-
-    return gpd.GeoDataFrame(edge_attributes, geometry="geometry", crs=edges.crs)
+    # Stack everything (keep order)
+    return pd.concat([along_edges, against_edges, twoway_edges, twoway_edges_dir2])
