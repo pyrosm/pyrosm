@@ -52,25 +52,19 @@ def _prepare_for_graph(nodes,
 
     # Generate directed edges
     # Check if user wants to force bidirectional graph
-    if force_bidirectional:
+    # or if the graph is walking, cycling or all
+    if force_bidirectional or net_type in ["walking", "cycling", "all"]:
         edges = generate_directed_edges(edges,
                                         direction,
                                         from_id_col,
                                         to_id_col,
-                                        force_bidirectional)
+                                        force_bidirectional=True)
     else:
-        if net_type in ["walking", "cycling", "all"]:
-            edges = generate_directed_edges(edges,
-                                            direction,
-                                            from_id_col,
-                                            to_id_col,
-                                            force_bidirectional=True)
-        else:
-            edges = generate_directed_edges(edges,
-                                            direction,
-                                            from_id_col,
-                                            to_id_col,
-                                            force_bidirectional=False)
+        edges = generate_directed_edges(edges,
+                                        direction,
+                                        from_id_col,
+                                        to_id_col,
+                                        force_bidirectional=False)
 
     return nodes, edges
 
