@@ -88,9 +88,6 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
             v = np.concatenate(way_gdf["v"].to_list())
 
             # Explode multi-geometries
-            # TODO: Update using geopandas new "explode()" function when available:
-            #  https://github.com/geopandas/geopandas/issues/1672
-            #  For now, use the pandas implementation
             way_gdf = way_gdf.explode("geometry").reset_index(drop=True)
             way_gdf = gpd.GeoDataFrame(way_gdf, crs="epsg:4326")
 
