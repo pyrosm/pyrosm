@@ -79,7 +79,7 @@ setup(
     ext_modules=cythonize(os.path.join("pyrosm", "*.pyx"),
                           annotate=False,
                           compiler_directives={'language_level': "3",
-                                               #'linetrace': True
+                                               # 'linetrace': True
                                                }
                           )
 )
