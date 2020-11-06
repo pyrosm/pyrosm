@@ -7,4 +7,3 @@ jupyter_client
 ipykernel
 git+https://github.com/jelmer/googleanalytics.git@master
 git+https://github.com/executablebooks/MyST-NB.git@master
-pyrosm
