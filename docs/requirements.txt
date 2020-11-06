@@ -1,4 +1,5 @@
-sphinx==3.2.1
+pip==20.3b1
+sphinx
 sphinx-book-theme==0.0.36
 ipython
 jupyter-sphinx
