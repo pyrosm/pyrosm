@@ -133,3 +133,13 @@ def test_using_multiple_filters(helsinki_pbf):
     assert shop == ["alcohol"]
     assert amenity == ["pub"]
     assert gdf.shape == (59, 32)
+
+
+def test_using_rare_tag(helsinki_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    osm = OSM(filepath=helsinki_pbf)
+    # There aren't any but should not raise an error still (#47)
+    gdf = osm.get_pois({"park_ride": ["yes"]})
+    assert gdf is None
