@@ -31,7 +31,7 @@ version = release = "0.6.0"
 extensions = [
     'sphinx.ext.mathjax',
     'sphinx.ext.autodoc',
-    #"sphinx_thebe",
+    "sphinx_thebe",
     'IPython.sphinxext.ipython_console_highlighting',
     'IPython.sphinxext.ipython_directive',
     'myst_nb',
