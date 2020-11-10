@@ -6,6 +6,7 @@ channels:
 dependencies:
   - sphinx
   - sphinx-book-theme
+  - sphinx-thebe
   - ipython
   - jupyter-sphinx
   - IPython
