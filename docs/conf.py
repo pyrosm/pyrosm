@@ -55,7 +55,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 # html_theme = "alabaster"
 
 html_theme = 'sphinx_book_theme'
-html_title = "Pyrosm"
+html_title = ""
 html_logo = 'img/logo.PNG'
 
 html_theme_options = {
