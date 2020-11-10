@@ -44,6 +44,9 @@ class Tags:
     tourism = tourism_columns
     waterway = waterway_columns
 
+    # Basic info tags
+    _basic_tags = basic_info_tags
+
 
 class Conf:
     network_filters = NetworkFilter()
@@ -53,3 +56,5 @@ class Conf:
 
     # One way tags
     oneway_values = ['yes', 'true', '1', '-1', 'T', 'F']
+
+
