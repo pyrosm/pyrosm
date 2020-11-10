@@ -59,17 +59,17 @@ html_title = ""
 html_logo = 'img/logo.PNG'
 
 html_theme_options = {
-    "single_page": False,
     #"external_links": [],
     "repository_url": "https://github.com/HTenkanen/pyrosm/",
     "repository_branch": "master",
-    #"path_to_docs": "docs/",
+    "path_to_docs": "docs/",
     #"twitter_url": "https://twitter.com/pythongis",
     #"google_analytics_id": "UA-159257488-1",
     "use_edit_page_button": True,
     "use_repository_button": True,
     "launch_buttons": {
         "binderhub_url": "https://mybinder.org",
+        "thebe": True,
         "notebook_interface": "jupyterlab",
     "collapse_navigation" : False
     },
