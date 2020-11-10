@@ -14,3 +14,4 @@ matplotlib
 descartes
 pyrosm
 igraph
+networkx
