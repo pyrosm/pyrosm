@@ -13,3 +13,4 @@ geopandas
 matplotlib
 descartes
 pyrosm
+igraph
