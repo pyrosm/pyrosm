@@ -1,7 +1,6 @@
-{% extends "pydata_sphinx_theme/layout.html" %}
+{% extends "!layout.html" %}
 
-<!-- Docs TOC is "d-none d-xl-block col-xl-2" -->
-
-{# Silence the navbar #}
-{% block docs_navbar %}
+{% block extrahead %}
+    <link href="{{ pathto("_static/css/custom.css", True) }}" rel="stylesheet" type="text/css">
+    {{ super() }}
 {% endblock %}
