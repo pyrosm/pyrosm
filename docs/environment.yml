@@ -1,0 +1,16 @@
+name: docs
+
+channels:
+  - conda-forge
+
+dependencies:
+  - sphinx
+  - sphinx-book-theme
+  - ipython
+  - jupyter-sphinx
+  - IPython
+  - jupyter_client
+  - ipykernel
+  - pip
+  - pip:
+    - myst-nb

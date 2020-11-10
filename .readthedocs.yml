@@ -1,9 +1,5 @@
 version: 2
 formats: []
 
-python:
-    version: 3
-    install:
-        - requirements: docs/requirements.txt
-        - method: pip
-          path: .
+conda:
+  environment: docs/environment.yml
