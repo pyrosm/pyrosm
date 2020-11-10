@@ -1,6 +1,21 @@
 Changelog
 =========
 
+v0.6.0
+------
+
+ - Adds possibility to export street networks to igraph, networkx and pandana (#57, #58, #70)
+   - Add functionality to parse/return the nodes of the network when requested (#52)
+   - Calculate length of the edge for networks in meters (#56, #70)
+   - Filter out weakly connected component by default when exporting to graph (#59)
+   - Add (vectorized) functionality to create directed edges according `oneway` rules (#68)
+ - Fix installation issue with pip on Windows (#61)
+ - Fix numpy deprecation warning (#50)
+ - Update the documentation to use new theme (#74)
+ - Add possibility to test the tool using JupyterLab in browser (#75)
+ - Fix issue when parsing POIs using rare tags as a custom filter (#47)
+ 
+
 v0.5.3
 ------
 
