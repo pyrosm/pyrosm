@@ -56,6 +56,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = 'sphinx_book_theme'
 html_title = "Pyrosm"
+html_logo = 'img/logo.PNG'
 
 html_theme_options = {
     "single_page": False,
@@ -93,9 +94,7 @@ master_doc = 'index'
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ["_static"]
 
-html_css_files = [
-    'css/custom.css',
-]
+#html_css_files = ['css/custom.css']
 
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'
@@ -105,18 +104,3 @@ execution_allow_errors = True
 
 # Do not execute cells
 jupyter_execute_notebooks = "off"
-
-show_navbar_depth = 2
-
-# ======================
-# Do not skip class init
-# ======================
-
-# def skip(app, what, name, obj, would_skip, options):
-#     if name == "__init__":
-#         return False
-#     return would_skip
-#
-#
-# def setup(app):
-#     app.connect("autodoc-skip-member", skip)
