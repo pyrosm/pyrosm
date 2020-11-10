@@ -13,6 +13,3 @@ geopandas
 matplotlib
 descartes
 pyrosm
-osmnx
-igraph
-pandana
