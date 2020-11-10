@@ -15,3 +15,4 @@ descartes
 pyrosm
 igraph
 networkx
+pandana
