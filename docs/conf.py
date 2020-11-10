@@ -69,7 +69,7 @@ html_theme_options = {
     "use_repository_button": True,
     "launch_buttons": {
         "binderhub_url": "https://mybinder.org",
-        "thebe": True,
+        "thebe": False,
         "notebook_interface": "jupyterlab",
     "collapse_navigation" : False
     },
