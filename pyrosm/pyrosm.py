@@ -521,7 +521,12 @@ class OSM:
         # Default tags to keep as columns
         tags_as_columns = []
         for k in custom_filter.keys():
-            tags_as_columns += getattr(self.conf.tags, k)
+            try:
+                tags_as_columns += getattr(self.conf.tags, k)
+            except AttributeError:
+                tags_as_columns += self.conf.tags._basic_tags
+            except Exception as e:
+                raise e
 
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
