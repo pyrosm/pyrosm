@@ -1,6 +1,7 @@
 import numpy as np
 from pygeos import linestrings, polygons, points, linearrings, \
     multilinestrings, multipolygons, get_geometry
+from pygeos import Geometry
 from pygeos import GEOSException
 from pygeos.linear import line_merge
 from pygeos.coordinates import get_coordinates
@@ -403,12 +404,26 @@ cdef _create_way_geometries(node_coordinates,
         else:
             geom, from_id, to_id, node_data = create_linestring_geometry(nodes, node_coordinates)
 
-        geometries.append(geom)
-
         if parse_network:
             from_ids.append(from_id)
             to_ids.append(to_id)
             node_attributes += node_data
+            # Geometries should be an array of LineStrings at this point
+            geometries.append(geom)
+
+        # In case e.g. amenities have line features,
+        # ensure that geometry is in correct form
+        else:
+            if isinstance(geom, Geometry):
+                geometries.append(geom)
+            elif geom is None:
+                geometries.append(geom)
+            else:
+                # LineStrings are in an array
+                if len(geom) == 1:
+                    geometries.append(geom[0])
+                else:
+                    geometries.append(multilinestrings(geom))
 
     return geometries, from_ids, to_ids, node_attributes
 
