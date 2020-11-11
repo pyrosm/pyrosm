@@ -68,7 +68,7 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
             # Create MultiLineStrings and calculate the length
             way_gdf["geometry"] = [multilinestrings(geom) for geom in way_gdf["geometry"]]
             way_gdf["length"] = [calculate_geom_length(geom) for geom in way_gdf["geometry"]]
-            way_gdf = gpd.GeoDataFrame(way_gdf, crs="epsg:4326")
+            way_gdf = gpd.GeoDataFrame(way_gdf, geometry="geometry", crs="epsg:4326")
 
             # If only edges are requested, clean node_attributes
             node_attributes = None
@@ -89,7 +89,7 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
 
             # Explode multi-geometries
             way_gdf = way_gdf.explode("geometry").reset_index(drop=True)
-            way_gdf = gpd.GeoDataFrame(way_gdf, crs="epsg:4326")
+            way_gdf = gpd.GeoDataFrame(way_gdf, geometry="geometry", crs="epsg:4326")
 
             # Update from/to-ids
             way_gdf["u"] = u
@@ -100,7 +100,7 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
 
         # For cases not related to networks
         else:
-            way_gdf = gpd.GeoDataFrame(way_gdf, crs="epsg:4326")
+            way_gdf = gpd.GeoDataFrame(way_gdf, geometry="geometry", crs="epsg:4326")
             node_attributes = None
 
     else:
