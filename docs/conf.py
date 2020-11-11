@@ -104,3 +104,6 @@ execution_allow_errors = True
 
 # Do not execute cells
 jupyter_execute_notebooks = "off"
+
+# Allow myst admonition style
+myst_admonition_enable = True
