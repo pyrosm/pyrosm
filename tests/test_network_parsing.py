@@ -338,3 +338,36 @@ def test_getting_nodes_and_edges(test_pbf):
     for col in required:
         assert col in ncols
 
+def test_getting_nodes_and_edges_with_bbox(test_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+    from shapely.geometry import Point, LineString, box
+
+    bounds = [26.94, 60.525, 26.96, 60.535]
+    # Init with bounding box
+    osm = OSM(filepath=test_pbf, bounding_box=bounds)
+
+    nodes, edges = osm.get_network(nodes=True)
+    nodes = nodes.reset_index(drop=True)
+
+    assert isinstance(edges, GeoDataFrame)
+    assert isinstance(edges.loc[0, 'geometry'], LineString)
+
+    assert isinstance(nodes, GeoDataFrame)
+    assert isinstance(nodes.loc[0, 'geometry'], Point)
+
+    # Test shape
+    assert edges.shape == (321, 23)
+    assert nodes.shape == (317, 8)
+
+    # Edges should have "u" and "v" columns
+    required = ["u", "v", "length"]
+    ecols = edges.columns
+    for col in required:
+        assert col in ecols
+
+    # Nodes should have (at least) "id", "lat", and "lon" columns
+    required = ["id", "lat", "lon"]
+    ncols = nodes.columns
+    for col in required:
+        assert col in ncols
