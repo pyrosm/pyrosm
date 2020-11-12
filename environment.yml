@@ -1,0 +1,16 @@
+name: test
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.8
+  - geopandas
+  - matplotlib
+  - python-igraph
+  - networkx
+  - pandana
+  - pip
+  - pip:
+      # Install latest version of pyrosm from GitHub
+      - git+https://github.com/HTenkanen/pyrosm.git@master
