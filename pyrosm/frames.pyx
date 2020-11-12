@@ -136,8 +136,6 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
                            tags_as_columns, bounding_box,
                            parse_network=False,
                            calculate_seg_lengths=False):
-    # Prepare nodes
-    node_gdf = prepare_node_gdf(nodes)
 
     # Prepare ways
     way_gdf, node_attr = prepare_way_gdf(node_coordinates,
@@ -147,6 +145,14 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
 
     # Prepare relation data
     relation_gdf = prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns)
+
+    # When not parsing the network,
+    # nodes should be kept as part of the main output
+    if not parse_network:
+        # Prepare nodes
+        node_gdf = prepare_node_gdf(nodes)
+    else:
+        node_gdf = pd.DataFrame()
 
     # Merge all
     gdf = pd.concat([node_gdf, way_gdf, relation_gdf])
@@ -158,6 +164,7 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
 
     gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
 
+    # When parsing the network with nodes, prepare the nodes frame
     if node_attr is not None:
         node_attr = pd.DataFrame(node_attr)
         node_attr = gpd.GeoDataFrame(node_attr,
@@ -178,7 +185,10 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
         gdf = gpd.sjoin(gdf, filter_gdf, how="inner")
         gdf = gdf[orig_cols].reset_index(drop=True)
 
-        # TODO: Also nodes should be filtered
+        if node_attr is not None:
+            orig_node_cols = list(node_attr.columns)
+            node_attr = gpd.sjoin(node_attr, filter_gdf, how="inner")
+            node_attr = node_attr[orig_node_cols]
 
     if len(gdf) == 0:
         if parse_network:
