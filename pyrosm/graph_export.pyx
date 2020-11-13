@@ -108,7 +108,7 @@ cpdef _create_nxgraph(nodes,
     nodes = nodes.copy()
     edges = edges.copy()
 
-    crs = f"EPSG:{edges.crs.to_epsg(min_confidence=25)}
+    crs = f"EPSG:{edges.crs.to_epsg(min_confidence=25)}"
     n_edges = len(edges)
     edge_list = []
 
