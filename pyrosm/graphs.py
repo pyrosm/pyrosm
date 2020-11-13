@@ -4,14 +4,14 @@ from pyrosm.utils import validate_edge_gdf, validate_node_gdf
 from pyrosm.config import Conf
 
 
-def _prepare_for_graph(nodes,
+def get_directed_edges(nodes,
                        edges,
-                       direction,
-                       from_id_col,
-                       to_id_col,
-                       node_id_col,
-                       force_bidirectional,
-                       network_type):
+                       direction='oneway',
+                       from_id_col='u',
+                       to_id_col='v',
+                       node_id_col='id',
+                       force_bidirectional=False,
+                       network_type=None):
     """Prepares the edges and nodes for exporting to different graphs."""
     allowed_network_types = Conf._possible_network_filters
 
@@ -135,7 +135,7 @@ def to_networkx(nodes,
     """
 
     # Prepare the data
-    nodes, edges = _prepare_for_graph(nodes,
+    nodes, edges = get_directed_edges(nodes,
                                       edges,
                                       direction,
                                       from_id_col,
@@ -230,7 +230,7 @@ def to_igraph(nodes,
 
     """
     # Prepare the data
-    nodes, edges = _prepare_for_graph(nodes,
+    nodes, edges = get_directed_edges(nodes,
                                       edges,
                                       direction,
                                       from_id_col,
@@ -261,7 +261,7 @@ def to_pandana(nodes,
                retain_all=False,
                weight_cols=["length"]):
     # Prepare the data
-    nodes, edges = _prepare_for_graph(nodes,
+    nodes, edges = get_directed_edges(nodes,
                                       edges,
                                       direction,
                                       from_id_col,
