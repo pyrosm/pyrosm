@@ -74,9 +74,9 @@ def _strongly_connected_components(list_of_nodes, node_successors):
 
 def get_connected_edges(nodes,
                         edges,
-                        from_id_col,
-                        to_id_col,
-                        node_id_col):
+                        from_id_col="u",
+                        to_id_col="v",
+                        node_id_col="id"):
     """Filters the network data (directed) to include only connected edges and nodes."""
     node_successors = _get_node_successors(edges, from_id_col, to_id_col)
     node_ids = nodes[node_id_col].to_list()
