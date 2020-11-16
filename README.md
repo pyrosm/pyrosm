@@ -45,6 +45,8 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
  
 ## Roadmap
 
+ - add graph export features
+ - add memory optimization
  - add possibility to crop PBF and save a subset into new PBF.
  - add Cython specific tests
 
