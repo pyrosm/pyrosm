@@ -53,6 +53,7 @@ Getting started
     installation.ipynb
     basics.ipynb
     custom_filter.ipynb
+    graphs.ipynb
     benchmarking.ipynb
 
 
