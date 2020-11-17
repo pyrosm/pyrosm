@@ -16,8 +16,8 @@
 # -- Project information -----------------------------------------------------
 
 project = "pyrosm"
-copyright = "2020, Henrikki Tenkanen"
-author = "Henrikki Tenkanen"
+copyright = "2020, Henrikki Tenkanen + pyrosm contributors"
+author = "Henrikki Tenkanen + pyrosm contributors"
 
 # The full version, including alpha/beta/rc tags
 version = release = "0.6.0"
