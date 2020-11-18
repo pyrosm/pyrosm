@@ -22,25 +22,27 @@ from pyrosm.graphs import to_networkx, to_igraph, to_pandana
 
 
 class OSM:
+    """
+    OpenStreetMap PBF reader object.
+
+    Parameters
+    ----------
+
+    filepath : str
+        Filepath to input OSM dataset ( *.osm.pbf )
+
+    bounding_box : list | shapely geometry
+        Filtering OSM data spatially is allowed by passing a
+        bounding box either as a list `[minx, miny, maxx, maxy]` or
+        as a Shapely Polygon/MultiPolygon or closed LineString/LinearRing.
+    """
+
     from pyrosm.utils._compat import PYGEOS_SHAPELY_COMPAT
     allowed_bbox_types = [Polygon, MultiPolygon, MultiLineString,
                           LineString, LinearRing]
 
     def __init__(self, filepath,
                  bounding_box=None):
-        """
-        Parameters
-        ----------
-
-        filepath : str
-            Filepath to input OSM dataset ( *.osm.pbf )
-
-        bounding_box : list | shapely geometry
-            Filtering OSM data spatially is allowed by passing a
-            bounding box either as a list `[minx, miny, maxx, maxy]` or
-            as a Shapely Polygon/MultiPolygon or closed LineString/LinearRing.
-
-        """
 
         # Check input file
         self.filepath = validate_input_file(filepath)
