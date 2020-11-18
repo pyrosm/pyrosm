@@ -1,7 +1,7 @@
 Changelog
 =========
 
-v0.6.0 (Nov X, 2020)
+v0.6.0 (Nov 18, 2020)
 --------------------
 
 - NEW: Adds possibility to export street networks to igraph, networkx and pandana (#57, #58, #70)
@@ -17,6 +17,7 @@ v0.6.0 (Nov X, 2020)
 - Fix issue when parsing POIs using rare tags as a custom filter (#47)
 - Fix issue when filtering with bounding box polygon (#54)
 - Add documentation about exporting the networks to graphs (#69)
+- Improve documentation overall
 
 
 v0.5.3 (Sep 13, 2020)

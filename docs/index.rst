@@ -11,8 +11,8 @@ even with more specific filters.
 Pyrosm is easy to use and it provides a somewhat similar user interface as `OSMnx <https://github.com/gboeing/osmnx>`__.
 The main difference between pyrosm and OSMnx is that OSMnx reads the data using an OverPass API, whereas pyrosm reads
 the data from local OSM data dumps that are downloaded from the PBF data providers (Geofabrik, BBBike).
-This makes it possible to read data much faster, thus allowing to parse OSM data
-covering large regions in a matter of minutes instead of hours.
+This makes it possible to read data faster, thus allowing to parse OSM data
+covering large regions faster.
 
 For instance, parsing all roads from the state of New York (USA) with a "basic" work laptop (16GB memory, SSD, and Intel Core i5 CPU),
 takes less than **3 minutes** and parsing the buildings from the same region takes less than
@@ -33,7 +33,18 @@ Current features
 - read boundaries from PBF (such as administrative borders)
 - read any other data from PBF by using a custom user-defined filter
 - filter data based on bounding box
+- export networks as a directed graph to `igraph`, `networkx` and `pandana`
 
+When should I use Pyrosm?
+-------------------------
+
+Pyrosm can of course be used whenever you need to parse data from OSM into geopandas GeoDataFrames.
+However, `pyrosm` is better suited for situations where you want to fetch data for whole city or larger regions (even whole country).
+
+If you are interested to fetch OSM data for smaller areas such as neighborhoods, or search data around a specific location/address,
+we recommend using `OSMnx <https://github.com/gboeing/osmnx>`__ which is more flexible in terms of specifying the area of interest.
+That being said, it is also possible to extract neighborhood level information with pyrosm and filter data based on a bounding box
+(see `docs <https://pyrosm.readthedocs.io/en/latest/basics.html#filtering-data-based-on-bounding-box>`__).
 
 License
 -------
