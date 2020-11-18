@@ -16,3 +16,4 @@ pyrosm
 igraph
 networkx
 pandana
+pyrosm
