@@ -2,7 +2,7 @@ Changelog
 =========
 
 v0.6.0 (Nov 18, 2020)
---------------------
+---------------------
 
 - NEW: Adds possibility to export street networks to igraph, networkx and pandana (#57, #58, #70)
   - Add functionality to parse/return the nodes of the network when requested (#52)
