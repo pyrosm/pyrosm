@@ -13,7 +13,7 @@ geopandas
 matplotlib
 descartes
 pyrosm
-igraph
+python-igraph
 networkx
 pandana
 pyrosm
