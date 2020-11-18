@@ -44,7 +44,7 @@ setup(
     long_description=read_long_description(),
     long_description_content_type="text/markdown",
     author='Henrikki Tenkanen',
-    author_email='h.tenkanen@ucl.ac.uk',
+    author_email='henrikki.tenkanen@aalto.fi',
     url='https://pyrosm.readthedocs.io/',
     packages=find_packages(),
     include_package_data=True,
