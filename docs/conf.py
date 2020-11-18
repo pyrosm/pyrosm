@@ -31,7 +31,10 @@ version = release = "0.6.0"
 extensions = [
     'sphinx.ext.mathjax',
     'sphinx.ext.autodoc',
-    "sphinx_thebe",
+
+    # Support numpy style autodoc
+    'sphinx.ext.napoleon',
+
     'IPython.sphinxext.ipython_console_highlighting',
     'IPython.sphinxext.ipython_directive',
     'myst_nb',
@@ -69,7 +72,6 @@ html_theme_options = {
     "use_repository_button": True,
     "launch_buttons": {
         "binderhub_url": "https://mybinder.org",
-        "thebe": False,
         "notebook_interface": "jupyterlab",
     "collapse_navigation" : False
     },
