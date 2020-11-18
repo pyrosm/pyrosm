@@ -12,7 +12,4 @@ dependencies:
   - python-igraph
   - networkx
   - pandana
-  - pip
-  - pip:
-      # Install latest version of pyrosm from GitHub
-      - git+https://github.com/HTenkanen/pyrosm.git@master
+  - pyrosm
