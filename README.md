@@ -5,7 +5,7 @@
 [![Documentation Status](https://readthedocs.org/projects/pyrosm/badge/?version=latest)](https://pyrosm.readthedocs.io/en/latest/?badge=latest)
 [![Coverage Status](https://codecov.io/gh/HTenkanen/pyrosm/branch/master/graph/badge.svg)](https://codecov.io/gh/HTenkanen/pyrosm) 
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/pyrosm?color=yellow&label=Downloads)](https://pypistats.org/packages/pyrosm)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.3818244.svg)](https://doi.org/10.5281/zenodo.4279527)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.4279527.svg)](https://doi.org/10.5281/zenodo.4279527)
 [![License](https://anaconda.org/conda-forge/pyrosm/badges/license.svg)](https://anaconda.org/conda-forge/pyrosm/)
 
 
