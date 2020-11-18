@@ -561,6 +561,7 @@ class OSM:
                                     keep_relations=True,
                                     extra_attributes=None):
         """
+        `
         Parse OSM data based on custom criteria.
 
         Parameters
@@ -676,6 +677,7 @@ class OSM:
                  osmnx_compatible=True,
                  pandana_weights=["length"]):
         """
+        `
         Export OSM network to routable graph. Supported output graph types are:
           - "igraph" (default),
           - "networkx",
