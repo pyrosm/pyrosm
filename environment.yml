@@ -14,3 +14,4 @@ dependencies:
   - networkx
   - pandana
   - pyrosm
+  - osmnx
