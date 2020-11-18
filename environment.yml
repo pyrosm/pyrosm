@@ -6,11 +6,11 @@ channels:
 dependencies:
   - python=3.8
   - geopandas
+  - descartes
   - matplotlib
+  - mapclassify
+  - scikit-learn
   - python-igraph
   - networkx
   - pandana
-  - pip
-  - pip:
-      # Install latest version of pyrosm from GitHub
-      - git+https://github.com/HTenkanen/pyrosm.git@master
+  - pyrosm

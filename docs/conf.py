@@ -16,8 +16,8 @@
 # -- Project information -----------------------------------------------------
 
 project = "pyrosm"
-copyright = "2020, Henrikki Tenkanen"
-author = "Henrikki Tenkanen"
+copyright = "2020, Henrikki Tenkanen + pyrosm contributors"
+author = "Henrikki Tenkanen + pyrosm contributors"
 
 # The full version, including alpha/beta/rc tags
 version = release = "0.6.0"
@@ -31,7 +31,10 @@ version = release = "0.6.0"
 extensions = [
     'sphinx.ext.mathjax',
     'sphinx.ext.autodoc',
-    "sphinx_thebe",
+
+    # Support numpy style autodoc
+    'sphinx.ext.napoleon',
+
     'IPython.sphinxext.ipython_console_highlighting',
     'IPython.sphinxext.ipython_directive',
     'myst_nb',
@@ -69,7 +72,6 @@ html_theme_options = {
     "use_repository_button": True,
     "launch_buttons": {
         "binderhub_url": "https://mybinder.org",
-        "thebe": False,
         "notebook_interface": "jupyterlab",
     "collapse_navigation" : False
     },
@@ -92,8 +94,7 @@ master_doc = 'index'
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ["_static"]
-
+#html_static_path = ["_static"]
 #html_css_files = ['css/custom.css']
 
 # The name of the Pygments (syntax highlighting) style to use.
