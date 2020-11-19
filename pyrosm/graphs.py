@@ -162,9 +162,9 @@ def to_networkx(nodes,
         edges = edges.rename(columns={edge_id_col: 'osmid'})
         node_id_col = "osmid"
 
-        # Add 'osmid' as index
-        nodes = nodes.set_index('osmid', drop=False)
-        nodes = nodes.rename_axis([None])
+    # Add node-id as index
+    nodes = nodes.set_index(node_id_col, drop=False)
+    nodes = nodes.rename_axis([None])
 
     # Create NetworkX graph
     return _create_nxgraph(nodes, edges, from_id_col, to_id_col, node_id_col)
