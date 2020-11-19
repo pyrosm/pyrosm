@@ -435,3 +435,16 @@ def test_to_graph_api(test_pbf):
     assert isinstance(nxg, nx.MultiDiGraph)
     assert isinstance(ig, igraph.Graph)
     assert isinstance(pdg, pandana.Network)
+
+
+def test_graph_exports_correct_number_of_nodes(test_pbf):
+    """
+    Check issue: #97
+    """
+    from pyrosm import OSM
+    osm = OSM(test_pbf)
+    # NetworkX
+    nodes, edges = osm.get_network(nodes=True)
+    node_cnt = len(nodes)
+    nxg = osm.to_graph(nodes, edges, graph_type="networkx", osmnx_compatible=False, retain_all=True)
+    assert node_cnt == nxg.number_of_nodes()
