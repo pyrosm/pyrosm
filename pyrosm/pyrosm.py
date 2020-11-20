@@ -69,6 +69,10 @@ class OSM:
 
         self.conf = Conf
         self.keep_node_info = False
+
+        if not isinstance(keep_meta, bool):
+            raise ValueError("'keep_meta' should be a boolean (True or False).")
+
         self.keep_meta = keep_meta
 
         # Update file size
