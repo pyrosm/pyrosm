@@ -73,33 +73,20 @@ cdef get_primitive_blocks_and_string_tables(filepath):
 
     return primitive_blocks, string_tables
 
-
-cdef parse_dense(pblock, data, string_table, bounding_box):
+cdef parse_dense(pblock,
+                 data,
+                 string_table,
+                 bounding_box,
+                 keep_meta):
     cdef:
         int node_granularity = pblock.granularity
         int timestamp_granularity = pblock.date_granularity
         int lon_offset = pblock.lon_offset
         int lat_offset = pblock.lat_offset
 
-    # Get latitudes
     lats = delta_decode_latitude(data, node_granularity, lat_offset)
-
-    # Get longitudes
     lons = delta_decode_longitude(data, node_granularity, lon_offset)
-
-    # Version
-    versions = np.array(list(data.denseinfo.version), dtype=np.int64)
-
-    # Ids
     ids = delta_decode_id(data)
-
-    # Timestamp
-    timestamps = delta_decode_timestamp(data, timestamp_granularity)
-
-    # Changeset
-    changesets = delta_decode_changeset(data)
-
-    # Tags
     tags = np.empty(len(data.id), dtype=object)
     parsed = parse_dense_tags(data.keys_vals, string_table)
 
@@ -107,38 +94,50 @@ cdef parse_dense(pblock, data, string_table, bounding_box):
     if len(parsed) != 0:
         tags[:] = parsed
 
-    # Metadata might not be available, if so add empty
-    # This can happen with BBBike data
-    if versions.shape[0] == 0:
-        versions = np.zeros(len(data.id), dtype=np.int8)
-    if changesets.shape[0] == 0:
-        changesets = np.zeros(len(data.id), dtype=np.int8)
-    if timestamps.shape[0] == 0:
-        timestamps = np.zeros(len(data.id), dtype=np.int8)
+    if keep_meta:
+        versions = np.array(list(data.denseinfo.version), dtype=np.int64)
+        timestamps = delta_decode_timestamp(data, timestamp_granularity)
+        changesets = delta_decode_changeset(data)
+
+        # Metadata might not be available, if so add empty
+        # This can happen with BBBike data
+        if versions.shape[0] == 0:
+            versions = np.zeros(len(data.id), dtype=np.int8)
+        if changesets.shape[0] == 0:
+            changesets = np.zeros(len(data.id), dtype=np.int8)
+        if timestamps.shape[0] == 0:
+            timestamps = np.zeros(len(data.id), dtype=np.int8)
 
     if bounding_box is not None:
-        # Filter
+        # Filter by bounding box if that is provided
         xmin, ymin, xmax, ymax = bounding_box
         mask = (xmin <= lons) & (lons <= xmax) & (ymin <= lats) & (lats <= ymax)
         ids = ids[mask]
-        versions = versions[mask]
-        changesets = changesets[mask]
-        timestamps = timestamps[mask]
         lons = lons[mask]
         lats = lats[mask]
         tags = tags[mask]
 
+        if keep_meta:
+            versions = versions[mask]
+            changesets = changesets[mask]
+            timestamps = timestamps[mask]
+
+    if keep_meta:
+        return [dict(id=ids,
+                     version=versions,
+                     changeset=changesets,
+                     timestamp=timestamps,
+                     lon=lons,
+                     lat=lats,
+                     tags=tags,
+                     )]
     return [dict(id=ids,
-                 version=versions,
-                 changeset=changesets,
-                 timestamp=timestamps,
                  lon=lons,
                  lat=lats,
                  tags=tags,
                  )]
 
-
-cdef parse_nodes(pblock, data, bounding_box):
+cdef parse_nodes(pblock, data, bounding_box, keep_meta):
     ids = []
     versions = []
     changesets = []
@@ -152,38 +151,49 @@ cdef parse_nodes(pblock, data, bounding_box):
     div = 1000000000
 
     for node in data:
-        try:
-            changesets.append(int(node.info.changeset))
-        except:
-            changesets.append(0)
-        versions.append(node.info.version)
         ids.append(node.id)
-        timestamps.append(node.info.timestamp)
         lons.append(node.lon)
         lats.append(node.lat)
 
+        if keep_meta:
+            try:
+                changesets.append(int(node.info.changeset))
+            except:
+                changesets.append(0)
+            versions.append(node.info.version)
+            timestamps.append(node.info.timestamp)
+
     id_ = np.array(ids, dtype=np.int64)
-    version = np.array(versions, dtype=np.int64)
-    changeset = np.array(changesets, dtype=np.int64)
-    timestamp = np.array(timestamps, dtype=np.int64)
     lon = (np.array(lons, dtype=np.int64) * granularity + lon_offset) / div
     lat = (np.array(lats, dtype=np.int64) * granularity + lat_offset) / div
 
+    if keep_meta:
+        version = np.array(versions, dtype=np.int64)
+        changeset = np.array(changesets, dtype=np.int64)
+        timestamp = np.array(timestamps, dtype=np.int64)
+
     if bounding_box is not None:
-        # Filter
+        # Filter by bounding box if provided
         xmin, ymin, xmax, ymax = bounding_box
         mask = (xmin <= lon) & (lon <= xmax) & (ymin <= lat) & (lat <= ymax)
         id_ = id_[mask]
-        version = version[mask]
-        changeset = changeset[mask]
-        timestamp = timestamp[mask]
         lon = lon[mask]
         lat = lat[mask]
 
+        if keep_meta:
+            version = version[mask]
+            changeset = changeset[mask]
+            timestamp = timestamp[mask]
+
+    if keep_meta:
+        return dict(id=id_,
+                    version=version,
+                    changeset=changeset,
+                    timestamp=timestamp,
+                    lon=lon,
+                    lat=lat
+                    )
     return dict(id=id_,
-                version=version,
-                changeset=changeset,
-                timestamp=timestamp,
                 lon=lon,
                 lat=lat
                 )
@@ -192,8 +202,8 @@ cdef parse_nodes(pblock, data, bounding_box):
 cdef parse_nodeids_from_ref_deltas(refs):
     cdef long long delta, nid = 0
     cdef int i, N = len(refs)
-    cdef long long * refs_c = to_clong_array(refs)
-    cdef long long *nodes = <long long *>malloc(N*sizeof(long long))
+    cdef long long *refs_c = to_clong_array(refs)
+    cdef long long *nodes = <long long *> malloc(N * sizeof(long long))
 
     try:
         for i in range(N):
@@ -205,10 +215,9 @@ cdef parse_nodeids_from_ref_deltas(refs):
         free(nodes)
         free(refs_c)
 
-
 cdef parse_ways(data, string_table, node_lookup):
     cdef long long id
-    cdef int version, i, timestamp, n=len(data)
+    cdef int version, i, timestamp, n = len(data)
 
     way_set = []
     for i in range(0, n):
@@ -237,17 +246,16 @@ cdef parse_ways(data, string_table, node_lookup):
             )
     return way_set
 
-
 cdef get_relation_members(relation, str_table):
     relation_types = {
         0: b"node",
         1: b"way",
         2: b"relation"
-        }
+    }
 
     # Member-ids
     member_N = len(relation.memids)
-    member_id_deltas = np.zeros(member_N+1, dtype=np.int64)
+    member_id_deltas = np.zeros(member_N + 1, dtype=np.int64)
     member_id_deltas[1:] = list(relation.memids)
     member_ids = np.cumsum(member_id_deltas)[1:]
 
@@ -264,8 +272,7 @@ cdef get_relation_members(relation, str_table):
         member_id=member_ids,
         member_type=member_types,
         member_role=member_roles,
-        )
-
+    )
 
 cdef parse_relations(data, string_table):
     N = len(data)
@@ -274,7 +281,7 @@ cdef parse_relations(data, string_table):
     versions = np.array([rel.info.version for rel in data], dtype=np.int64)
 
     # Ids (delta coded)
-    id_deltas = np.zeros(N+1, dtype=np.int64)
+    id_deltas = np.zeros(N + 1, dtype=np.int64)
     id_deltas[1:] = [rel.id for rel in data]
     ids = np.cumsum(id_deltas)[1:]
 
@@ -289,31 +296,31 @@ cdef parse_relations(data, string_table):
         get_relation_members(rel, string_table)
         for rel in data],
         dtype=object
-        )
+    )
 
     # Tags
     tags = np.array([
-            parse_tags(rel.keys, rel.vals, string_table)
-            for rel in data],
-            dtype=object
-            )
+        parse_tags(rel.keys, rel.vals, string_table)
+        for rel in data],
+        dtype=object
+    )
 
     return [dict(id=ids,
-                version=versions,
-                changeset=changesets,
-                timestamp=timestamps,
-                members=members,
-                tags=tags,
-                )]
+                 version=versions,
+                 changeset=changesets,
+                 timestamp=timestamps,
+                 members=members,
+                 tags=tags,
+                 )]
 
+cpdef parse_osm_data(filepath,
+                     bounding_box,
+                     keep_meta):
+    return _parse_osm_data(filepath, bounding_box, keep_meta)
 
-cpdef parse_osm_data(filepath, bounding_box,
-                     exclude_relations):
-    return _parse_osm_data(filepath, bounding_box, exclude_relations)
-
-
-cdef _parse_osm_data(filepath, bounding_box,
-                     exclude_relations):
+cdef _parse_osm_data(filepath,
+                     bounding_box,
+                     keep_meta):
     all_ways = []
     all_nodes = []
     all_relations = []
@@ -324,9 +331,9 @@ cdef _parse_osm_data(filepath, bounding_box,
     for pblock, str_table in zip(primitive_blocks, string_tables):
         for pgroup in pblock.primitivegroup:
             if len(pgroup.dense.id) > 0:
-                all_nodes += parse_dense(pblock, pgroup.dense, str_table, bounding_box)
+                all_nodes += parse_dense(pblock, pgroup.dense, str_table, bounding_box, keep_meta)
             elif len(pgroup.nodes) > 0:
-                all_nodes += parse_nodes(pblock, pgroup.nodes, bounding_box)
+                all_nodes += parse_nodes(pblock, pgroup.nodes, bounding_box, keep_meta)
             elif len(pgroup.ways) > 0:
                 # Once all the nodes have been parsed comes Ways
                 if bounding_box is not None:
@@ -338,8 +345,6 @@ cdef _parse_osm_data(filepath, bounding_box,
                 else:
                     all_ways += parse_ways(pgroup.ways, str_table, None)
             elif len(pgroup.relations) > 0:
-                if exclude_relations:
-                    continue
                 all_relations += parse_relations(pgroup.relations, str_table)
 
     # Explode the way tags

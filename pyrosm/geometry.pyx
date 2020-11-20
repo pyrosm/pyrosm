@@ -65,17 +65,28 @@ cdef _create_node_coordinates_lookup(nodes):
     lats = np.concatenate([group['lat'] for group in nodes])
     lons = np.concatenate([group['lon'] for group in nodes])
     tags = np.concatenate([group['tags'] for group in nodes])
-    timestamps = np.concatenate([group['timestamp'] for group in nodes])
-    versions = np.concatenate([group['version'] for group in nodes])
-    changesets = np.concatenate([group['changeset'] for group in nodes])
 
+    keep_meta = False
+    if "timestamp" in nodes[0].keys():
+        keep_meta = True
+
+    if keep_meta:
+        timestamps = np.concatenate([group['timestamp'] for group in nodes])
+        versions = np.concatenate([group['version'] for group in nodes])
+        changesets = np.concatenate([group['changeset'] for group in nodes])
+
+        return {ids[i]: {"lon": lons[i],
+                         "lat": lats[i],
+                         "tags": tags[i],
+                         "timestamp": timestamps[i],
+                         "version": versions[i],
+                         "changeset": changesets[i],
+                         } for i in range(0, len(ids))}
     return {ids[i]: {"lon": lons[i],
-                     "lat": lats[i],
-                     "tags": tags[i],
-                     "timestamp": timestamps[i],
-                     "version": versions[i],
-                     "changeset": changesets[i],
-                     } for i in range(0, len(ids))}
+                 "lat": lats[i],
+                 "tags": tags[i],
+                 } for i in range(0, len(ids))}
+
 
 cdef pygeos_to_shapely(geom):
     if geom is None:

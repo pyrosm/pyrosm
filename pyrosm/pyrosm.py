@@ -35,14 +35,20 @@ class OSM:
         Filtering OSM data spatially is allowed by passing a
         bounding box either as a list `[minx, miny, maxx, maxy]` or
         as a Shapely Polygon/MultiPolygon or closed LineString/LinearRing.
+
+    keep_meta : bool
+        Whether or not to parse OSM metadata (version, timestamp, changeset)
+        as part of the result.
     """
 
     from pyrosm.utils._compat import PYGEOS_SHAPELY_COMPAT
     allowed_bbox_types = [Polygon, MultiPolygon, MultiLineString,
                           LineString, LinearRing]
 
-    def __init__(self, filepath,
-                 bounding_box=None):
+    def __init__(self,
+                 filepath,
+                 bounding_box=None,
+                 keep_meta=True):
 
         # Check input file
         self.filepath = validate_input_file(filepath)
@@ -63,6 +69,7 @@ class OSM:
 
         self.conf = Conf
         self.keep_node_info = False
+        self.keep_meta = keep_meta
 
         # Update file size
         self.file_size = get_file_size(self.filepath)
@@ -89,7 +96,7 @@ class OSM:
 
         nodes, ways, relations, way_tags = parse_osm_data(self.filepath,
                                                           bounding_box,
-                                                          exclude_relations=False)
+                                                          keep_meta=False)
 
         self._nodes = nodes
         self._way_records = ways
