@@ -96,7 +96,7 @@ class OSM:
 
         nodes, ways, relations, way_tags = parse_osm_data(self.filepath,
                                                           bounding_box,
-                                                          keep_meta=False)
+                                                          keep_meta=self.keep_meta)
 
         self._nodes = nodes
         self._way_records = ways

@@ -35,8 +35,7 @@ cdef get_primitive_blocks_and_string_tables(filepath):
         for feature in header_block.required_features:
             if not (feature in ('OsmSchema-V0.6', 'DenseNodes')):
                 raise PBFNotImplemented(
-                    'Required feature %s not implemented!',
-                    feature)
+                    f'Required feature "{feature}" not implemented!')
 
         # Gather primitive blocks and string tables
         primitive_blocks = []
@@ -215,7 +214,23 @@ cdef parse_nodeids_from_ref_deltas(refs):
         free(nodes)
         free(refs_c)
 
-cdef parse_ways(data, string_table, node_lookup):
+cdef get_way_info(way, nodes, string_table, keep_meta, tags_to_keep):
+    if keep_meta:
+        return dict(
+                    id=way.id,
+                    version=way.info.version,
+                    timestamp=way.info.timestamp,
+                    tags=parse_tags(way.keys, way.vals, string_table),
+                    nodes=nodes,
+                )
+    # In case metadata should not be kept
+    return dict(
+                id=way.id,
+                tags=parse_tags(way.keys, way.vals, string_table),
+                nodes=nodes,
+                )
+
+cdef parse_ways(data, string_table, node_lookup, keep_meta):
     cdef long long id
     cdef int version, i, timestamp, n = len(data)
 
@@ -226,23 +241,13 @@ cdef parse_ways(data, string_table, node_lookup):
         if node_lookup is not None:
             if nodes_for_way_exist_khash(nodes, node_lookup):
                 way_set.append(
-                    dict(
-                        id=way.id,
-                        version=way.info.version,
-                        timestamp=way.info.timestamp,
-                        tags=parse_tags(way.keys, way.vals, string_table),
-                        nodes=nodes,
-                    )
+                    get_way_info(way, nodes, string_table,
+                                 keep_meta, tags_to_keep="TODO")
                 )
         else:
             way_set.append(
-                dict(
-                    id=way.id,
-                    version=way.info.version,
-                    timestamp=way.info.timestamp,
-                    tags=parse_tags(way.keys, way.vals, string_table),
-                    nodes=nodes,
-                )
+                get_way_info(way, nodes, string_table,
+                                 keep_meta, tags_to_keep="TODO")
             )
     return way_set
 
@@ -274,22 +279,13 @@ cdef get_relation_members(relation, str_table):
         member_role=member_roles,
     )
 
-cdef parse_relations(data, string_table):
+cdef parse_relations(data, string_table, keep_meta):
     N = len(data)
-
-    # Version
-    versions = np.array([rel.info.version for rel in data], dtype=np.int64)
 
     # Ids (delta coded)
     id_deltas = np.zeros(N + 1, dtype=np.int64)
     id_deltas[1:] = [rel.id for rel in data]
     ids = np.cumsum(id_deltas)[1:]
-
-    # Timestamp
-    timestamps = np.array([rel.info.timestamp for rel in data], dtype=np.int64)
-
-    # Changeset
-    changesets = np.array([rel.info.changeset for rel in data], dtype=np.int64)
 
     # Relation members
     members = np.array([
@@ -305,13 +301,31 @@ cdef parse_relations(data, string_table):
         dtype=object
     )
 
+    if keep_meta:
+
+        # Version
+        versions = np.array([rel.info.version for rel in data], dtype=np.int64)
+
+        # Timestamp
+        timestamps = np.array([rel.info.timestamp for rel in data], dtype=np.int64)
+
+        # Changeset
+        changesets = np.array([rel.info.changeset for rel in data], dtype=np.int64)
+
+        return [dict(id=ids,
+                     version=versions,
+                     changeset=changesets,
+                     timestamp=timestamps,
+                     members=members,
+                     tags=tags,
+                     )]
+
+    # In case metadata is not kept
     return [dict(id=ids,
-                 version=versions,
-                 changeset=changesets,
-                 timestamp=timestamps,
                  members=members,
                  tags=tags,
                  )]
+
 
 cpdef parse_osm_data(filepath,
                      bounding_box,
@@ -339,13 +353,13 @@ cdef _parse_osm_data(filepath,
                 if bounding_box is not None:
                     if not node_lookup_created:
                         node_lookup = get_nodeid_lookup_khash(all_nodes)
-                        all_ways += parse_ways(pgroup.ways, str_table, node_lookup)
+                        all_ways += parse_ways(pgroup.ways, str_table, node_lookup, keep_meta)
                     else:
-                        all_ways += parse_ways(pgroup.ways, str_table, node_lookup)
+                        all_ways += parse_ways(pgroup.ways, str_table, node_lookup, keep_meta)
                 else:
-                    all_ways += parse_ways(pgroup.ways, str_table, None)
+                    all_ways += parse_ways(pgroup.ways, str_table, None, keep_meta)
             elif len(pgroup.relations) > 0:
-                all_relations += parse_relations(pgroup.relations, str_table)
+                all_relations += parse_relations(pgroup.relations, str_table, keep_meta)
 
     # Explode the way tags
     all_ways, all_way_tag_keys = explode_way_tags(all_ways)

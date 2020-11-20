@@ -82,6 +82,8 @@ cdef _create_node_coordinates_lookup(nodes):
                          "version": versions[i],
                          "changeset": changesets[i],
                          } for i in range(0, len(ids))}
+
+    # If metadata is not kept, return only tags and coords
     return {ids[i]: {"lon": lons[i],
                  "lat": lats[i],
                  "tags": tags[i],
