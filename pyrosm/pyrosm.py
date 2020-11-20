@@ -156,12 +156,14 @@ class OSM:
               - `'all'`.
 
         extra_attributes : list (optional)
-            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+            In addition to the default tags that are kept as columns (see `osm.conf.tags.highway`),
+            you can specify additional tag keys that will be converted into columns
+            in the resulting GeoDataFrame (which will otherwise be part of the json in 'tags' column).
 
         nodes : bool (default: False)
-            If True, 1) the nodes associated with the network will be returned in addition to edges,
-            and 2) every segment of a road constituting a way is parsed as a separate row
-            (to enable full connectivity in the graph).
+            If True, 1) the nodes associated with the network will be returned as a GeoDataFrame
+            in addition to edges, and 2) every segment of a road constituting a way is
+            parsed as a separate geometry/row (to enable full connectivity in the graph).
 
         Returns
         -------
@@ -231,7 +233,9 @@ class OSM:
               - `custom_filter={'building': ['residential', 'retail']}`
 
         extra_attributes : list (optional)
-            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+            In addition to the default tags that are kept as columns (see `osm.conf.tags.building`),
+            you can specify additional tag keys that will be converted into columns
+            in the resulting GeoDataFrame (which will otherwise be part of the json in 'tags' column).
 
         See Also
         --------
@@ -282,7 +286,9 @@ class OSM:
               `custom_filter={'landuse': ['construction', 'industrial']}`
 
         extra_attributes : list (optional)
-            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+            In addition to the default tags that are kept as columns (see `osm.conf.tags.landuse`),
+            you can specify additional tag keys that will be converted into columns
+            in the resulting GeoDataFrame (which will otherwise be part of the json in 'tags' column).
 
         See Also
         --------
@@ -340,7 +346,9 @@ class OSM:
               `custom_filter={'natural': ['wood', 'tree']}`
 
         extra_attributes : list (optional)
-            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+            In addition to the default tags that are kept as columns (see `osm.conf.tags.natural`),
+            you can specify additional tag keys that will be converted into columns
+            in the resulting GeoDataFrame (which will otherwise be part of the json in 'tags' column).
 
         See Also
         --------
@@ -409,8 +417,9 @@ class OSM:
             Additional filter for what kind of boundary to parse.
 
         extra_attributes : list (optional)
-            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
-
+            In addition to the default tags that are kept as columns (see `osm.conf.tags.boundary`),
+            you can specify additional tag keys that will be converted into columns
+            in the resulting GeoDataFrame (which will otherwise be part of the json in 'tags' column).
 
         See Also
         --------
@@ -471,8 +480,10 @@ class OSM:
             see details below.
 
         extra_attributes : list (optional)
-            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
-
+            In addition to the default tags that are kept as columns,
+            you can specify additional tag keys that will be converted into columns
+            in the resulting GeoDataFrame (which will otherwise be part of the json in 'tags' column).
+            (see `osm.conf.tags.amenity`, `osm.conf.tags.shop` and `osm.conf.tags.tourism` for defaults)
 
         Notes
         -----
@@ -603,8 +614,9 @@ class OSM:
             Whether or not the relations should be kept in the resulting GeoDataFrame if they are found.
 
         extra_attributes : list (optional)
-            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
-
+            In addition to the default tags that are kept as columns,
+            you can specify additional tag keys that will be converted into columns
+            in the resulting GeoDataFrame (which will otherwise be part of the json in 'tags' column).
         """
 
         # Check that the custom filter is in correct format
