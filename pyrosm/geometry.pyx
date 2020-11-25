@@ -64,30 +64,35 @@ cdef _create_node_coordinates_lookup(nodes):
     ids = np.concatenate([group['id'] for group in nodes])
     lats = np.concatenate([group['lat'] for group in nodes])
     lons = np.concatenate([group['lon'] for group in nodes])
-    tags = np.concatenate([group['tags'] for group in nodes])
+
+    tags_found = False
+    if "tags" in nodes[0].keys():
+        tags_found = True
+        tags = np.concatenate([group['tags'] for group in nodes])
 
     keep_meta = False
     if "timestamp" in nodes[0].keys():
         keep_meta = True
-
-    if keep_meta:
         timestamps = np.concatenate([group['timestamp'] for group in nodes])
         versions = np.concatenate([group['version'] for group in nodes])
         changesets = np.concatenate([group['changeset'] for group in nodes])
 
-        return {ids[i]: {"lon": lons[i],
-                         "lat": lats[i],
-                         "tags": tags[i],
-                         "timestamp": timestamps[i],
-                         "version": versions[i],
-                         "changeset": changesets[i],
-                         } for i in range(0, len(ids))}
+    data = {}
+    for i in range(0, len(ids)):
+        item = {"lon": lons[i],
+                "lat": lats[i]}
 
-    # If metadata is not kept, return only tags and coords
-    return {ids[i]: {"lon": lons[i],
-                 "lat": lats[i],
-                 "tags": tags[i],
-                 } for i in range(0, len(ids))}
+        if tags_found:
+            item["tags"] = tags[i]
+
+        if keep_meta:
+            item["timestamp"] = timestamps[i]
+            item["version"] = versions[i]
+            item["changeset"] = changesets[i]
+
+        data[ids[i]] = item
+
+    return data
 
 
 cdef pygeos_to_shapely(geom):
