@@ -2,6 +2,7 @@ from pyrosm.graph_export import _create_igraph, _create_nxgraph, _create_pdgraph
 from pyrosm.graph_connectivity import get_connected_edges
 from pyrosm.utils import validate_edge_gdf, validate_node_gdf
 from pyrosm.config import Conf
+import warnings
 
 
 def get_directed_edges(nodes,
@@ -19,12 +20,21 @@ def get_directed_edges(nodes,
     validate_node_gdf(nodes)
     validate_edge_gdf(edges)
 
-    for col in [direction, from_id_col, to_id_col]:
+    for col in [from_id_col, to_id_col]:
         if col not in edges.columns:
             raise ValueError(
                 "Required column '{col}' does not exist in edges.".format(
                     col=col)
             )
+
+    if direction not in edges.columns:
+        warnings.warn(f"Column '{direction}' missing in the edges GeoDataFrame. "
+                      f"Assuming all edges to be bidirectional "
+                      f"(travel allowed to both directions).",
+                      UserWarning,
+                      stacklevel=2)
+        edges[direction] = None
+
     if node_id_col not in nodes.columns:
         raise ValueError(
             "Required column '{col}' does not exist in nodes.".format(
