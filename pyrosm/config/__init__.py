@@ -48,13 +48,41 @@ class Tags:
     _basic_tags = basic_info_tags
 
 
+class MinimalTags:
+    aerialway = ["aerialway"]
+    aeroway = ["aeroway"]
+    amenity = ["amenity"]
+    boundary = ["boundary"]
+    building = ["building"]
+    craft = ["craft"]
+    emergency = ["emergency"]
+    geological = ["geological"]
+    highway = ["highway", "oneway", "junction"]
+    historic = ["historic"]
+    landuse = ["landuse"]
+    leisure = ["leisure"]
+    natural = ["natural"]
+    office = ["office"]
+    power = ["power"]
+    public_transport = ["public_transport"]
+    railway = ["railway"]
+    route = ["route"]
+    place = ["place"]
+    shop = ["shop"]
+    tourism = ["tourism"]
+    waterway = ["waterway"]
+
+
 class Conf:
     network_filters = NetworkFilter()
+    # Default tags
     tags = Tags()
+
+    # Minimal tags required
+    minimal_tags = MinimalTags()
+
     _possible_network_filters = [a for a in network_filters.__dir__() if "__" not in a]
     _possible_network_filters += ["all", "driving+service"]
 
     # One way tags
     oneway_values = ['yes', 'true', '1', '-1', 'T', 'F']
-
-
