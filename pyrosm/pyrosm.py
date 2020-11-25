@@ -5,9 +5,9 @@ from pyrosm._arrays import concatenate_dicts_of_arrays
 from pyrosm.geometry import create_node_coordinates_lookup
 from pyrosm.frames import create_nodes_gdf
 from pyrosm.utils import validate_custom_filter, validate_osm_keys, \
-    validate_tags_as_columns, validate_booleans, validate_boundary_type, \
+    validate_tags_as_columns, validate_booleans, validate_boolean, \
     validate_bounding_box, validate_input_file, validate_graph_type, \
-    get_bounding_box
+    get_bounding_box, validate_boundary_type
 from pyrosm.utils.download import get_file_size
 from shapely.geometry import Polygon, MultiPolygon, \
     LineString, LinearRing, MultiLineString
@@ -39,6 +39,25 @@ class OSM:
     keep_meta : bool
         Whether or not to parse OSM metadata (version, timestamp, changeset)
         as part of the result.
+
+    optimize_memory : bool
+        If true, will use a strategy that reduces the use of memory when reading the data. If this option is used,
+        the speed of reading data will decrease when reading multiple datasets (e.g. roads and buildings). This is due
+        to the fact that raw data records are not kept in memory, hence, the data from PBF is read separately for each
+        dataset.
+
+    tag_filter : list
+        An optional filter that can be used to control which tags are read by the OSM parser class.
+        (default `None`, i.e. "keep all").
+
+        **Warning**: Use with extra care. The list of tags specified here influences how the OSM parser and its
+        methods function as a whole. For instance, if you specify ``tag_filter=["id", "highway", "geometry"]``,
+        you can read the street networks into GeoDataFrame, but you cannot export the network to graph, because creating
+        a directed graph also requires having a ``oneway`` tag (hence it should be included in the ``tag_filter`` as well).
+        `"id"` is always kept, anything else can be modified.
+
+        The purpose of `tag_filter` is to help reducing the needed memory (RAM) when parsing very large datasets.
+        To achieve the best memory efficiency, use together with `optimize_memory=True`.
     """
 
     from pyrosm.utils._compat import PYGEOS_SHAPELY_COMPAT
@@ -48,7 +67,9 @@ class OSM:
     def __init__(self,
                  filepath,
                  bounding_box=None,
-                 keep_meta=True):
+                 keep_meta=True,
+                 optimize_memory=False,
+                 tag_filter=None):
 
         # Check input file
         self.filepath = validate_input_file(filepath)
@@ -69,11 +90,11 @@ class OSM:
 
         self.conf = Conf
         self.keep_node_info = False
+        self.keep_meta = validate_boolean(keep_meta, parameter="keep_meta")
+        self.optimize_memory = validate_boolean(optimize_memory, parameter="optimize_memory")
 
-        if not isinstance(keep_meta, bool):
-            raise ValueError("'keep_meta' should be a boolean (True or False).")
-
-        self.keep_meta = keep_meta
+        # Tag pre-filter
+        self.tag_filter = tag_filter
 
         # Update file size
         self.file_size = get_file_size(self.filepath)
@@ -100,7 +121,9 @@ class OSM:
 
         nodes, ways, relations, way_tags = parse_osm_data(self.filepath,
                                                           bounding_box,
-                                                          keep_meta=self.keep_meta)
+                                                          keep_meta=self.keep_meta,
+                                                          optimize_memory=self.optimize_memory,
+                                                          tag_filter=self.tag_filter)
 
         self._nodes = nodes
         self._way_records = ways
@@ -138,6 +161,8 @@ class OSM:
                     network_type="walking",
                     extra_attributes=None,
                     nodes=False,
+                    minimal_tags=False,
+                    tags_to_keep=["id", "geometry"]
                     ):
         """
         Parses street networks from OSM
@@ -165,6 +190,16 @@ class OSM:
             in addition to edges, and 2) every segment of a road constituting a way is
             parsed as a separate geometry/row (to enable full connectivity in the graph).
 
+        minimal_tags : bool
+            If True, will only parse minimum number of tags from the data (by default "id" and "geometry") to
+            optimize the memory usage. You can control which tags are parsed with `'tags_to_keep'` -parameter.
+            Notice: If `minimal_tags=True`, `extra_attributes` -parameter won't have any effect.
+
+        tags_to_keep : list
+            A list of attributes that will be parsed from OpenStreetMap (by default `["id", "highway", "oneway", "geometry"]`).
+            `"id"` is always kept, anything else can be modified. If you want to export the network to graph,
+            `highway` and `oneway` tags are required. Notice: Only has effect if `minimal_tags=True`.
+
         Returns
         -------
 
@@ -183,11 +218,15 @@ class OSM:
         """
         # Get filter
         network_filter = self._get_network_filter(network_type)
-        tags_as_columns = self.conf.tags.highway
 
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        if minimal_tags:
+            tags_as_columns = tags_to_keep
+        else:
+            tags_as_columns = self.conf.tags.highway
+
+            if extra_attributes is not None:
+                validate_tags_as_columns(extra_attributes)
+                tags_as_columns += extra_attributes
 
         if self._nodes is None or self._way_records is None:
             self._read_pbf()
