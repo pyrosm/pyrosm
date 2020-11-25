@@ -448,3 +448,21 @@ def test_graph_exports_correct_number_of_nodes(test_pbf):
     node_cnt = len(nodes)
     nxg = osm.to_graph(nodes, edges, graph_type="networkx", osmnx_compatible=False, retain_all=True)
     assert node_cnt == nxg.number_of_nodes()
+
+
+def test_graph_export_works_without_oneway_column(test_pbf):
+    """
+    Check issue: #100
+    """
+    from pyrosm import OSM
+    osm = OSM(test_pbf)
+    # NetworkX
+    nodes, edges = osm.get_network(nodes=True)
+    # Drop "oneway" column to test
+    edges = edges.drop("oneway", axis=1)
+
+    with pytest.warns(UserWarning) as w:
+        nxg = osm.to_graph(nodes, edges, graph_type="networkx")
+        # Check the warning text
+        if "missing in the edges" in str(w):
+            pass
