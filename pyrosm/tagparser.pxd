@@ -1,5 +1,5 @@
 cdef unicode tounicode(char *s)
-cdef parse_tags(keys, vals, stringtable)
-cdef parse_dense_tags(keys_vals, string_table)
+cdef parse_tags(keys, vals, stringtable, tag_filter)
+cdef parse_dense_tags(keys_vals, string_table, tag_filter)
 cdef explode_way_tags(ways)
 cdef explode_tag_array(tag_array, tags_as_columns)
