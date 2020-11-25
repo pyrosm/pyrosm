@@ -76,22 +76,26 @@ cdef parse_dense(pblock,
                  data,
                  string_table,
                  bounding_box,
-                 keep_meta):
+                 keep_meta,
+                 optimize_memory,
+                 tag_filter):
     cdef:
         int node_granularity = pblock.granularity
         int timestamp_granularity = pblock.date_granularity
         int lon_offset = pblock.lon_offset
         int lat_offset = pblock.lat_offset
+        int N = len(data.id)
 
+    # Latitude and longitude are parsed as 32 bit floats
+    # Id is parsed as 64 bit integer
     lats = delta_decode_latitude(data, node_granularity, lat_offset)
     lons = delta_decode_longitude(data, node_granularity, lon_offset)
     ids = delta_decode_id(data)
-    tags = np.empty(len(data.id), dtype=object)
-    parsed = parse_dense_tags(data.keys_vals, string_table)
 
-    # In some cases node-tags are not available at all
-    if len(parsed) != 0:
-        tags[:] = parsed
+    tags = None
+    if not optimize_memory:
+        tags = np.array(parse_dense_tags(data.keys_vals, string_table, tag_filter=tag_filter),
+                        dtype=object)
 
     if keep_meta:
         versions = np.array(list(data.denseinfo.version), dtype=np.int64)
@@ -114,27 +118,28 @@ cdef parse_dense(pblock,
         ids = ids[mask]
         lons = lons[mask]
         lats = lats[mask]
-        tags = tags[mask]
+
+        if tags is not None:
+            tags = tags[mask]
 
         if keep_meta:
             versions = versions[mask]
             changesets = changesets[mask]
             timestamps = timestamps[mask]
 
+    data = dict(id=ids,
+                lon=lons,
+                lat=lats)
+
     if keep_meta:
-        return [dict(id=ids,
-                     version=versions,
-                     changeset=changesets,
-                     timestamp=timestamps,
-                     lon=lons,
-                     lat=lats,
-                     tags=tags,
-                     )]
-    return [dict(id=ids,
-                 lon=lons,
-                 lat=lats,
-                 tags=tags,
-                 )]
+        data["version"] = versions
+        data["changeset"] = changesets
+        data["timestamp"] = timestamps
+
+    if tags is not None:
+        data["tags"] = tags
+    return [data]
+
 
 cdef parse_nodes(pblock, data, bounding_box, keep_meta):
     ids = []
@@ -197,7 +202,6 @@ cdef parse_nodes(pblock, data, bounding_box, keep_meta):
                 lat=lat
                 )
 
-
 cdef parse_nodeids_from_ref_deltas(refs):
     cdef long long delta, nid = 0
     cdef int i, N = len(refs)
@@ -214,23 +218,30 @@ cdef parse_nodeids_from_ref_deltas(refs):
         free(nodes)
         free(refs_c)
 
-cdef get_way_info(way, nodes, string_table, keep_meta, tags_to_keep):
+cdef get_way_info(way, nodes, string_table, keep_meta, tag_filter):
+    # Get tags
+    tags = parse_tags(way.keys, way.vals, string_table, tag_filter)
+
+    # If there weren't any tags to be kept, record is not needed at all
+    if len(tags) == 0:
+        return None
+
     if keep_meta:
         return dict(
-                    id=way.id,
-                    version=way.info.version,
-                    timestamp=way.info.timestamp,
-                    tags=parse_tags(way.keys, way.vals, string_table),
-                    nodes=nodes,
-                )
+            id=way.id,
+            version=way.info.version,
+            timestamp=way.info.timestamp,
+            tags=tags,
+            nodes=nodes,
+        )
     # In case metadata should not be kept
     return dict(
-                id=way.id,
-                tags=parse_tags(way.keys, way.vals, string_table),
-                nodes=nodes,
-                )
+        id=way.id,
+        tags=tags,
+        nodes=nodes,
+    )
 
-cdef parse_ways(data, string_table, node_lookup, keep_meta):
+cdef parse_ways(data, string_table, node_lookup, keep_meta, tag_filter):
     cdef long long id
     cdef int version, i, timestamp, n = len(data)
 
@@ -238,17 +249,25 @@ cdef parse_ways(data, string_table, node_lookup, keep_meta):
     for i in range(0, n):
         way = data[i]
         nodes = parse_nodeids_from_ref_deltas(way.refs)
+
+        # In case bounding box filter is used
         if node_lookup is not None:
             if nodes_for_way_exist_khash(nodes, node_lookup):
-                way_set.append(
-                    get_way_info(way, nodes, string_table,
-                                 keep_meta, tags_to_keep="TODO")
-                )
+                way_info = get_way_info(way, nodes, string_table,
+                                        keep_meta, tag_filter)
+
+                # If tag filter is used, record might not be needed at all
+                # (saves memory)
+                if way_info is not None:
+                    way_set.append(way_info)
+
+        # In other cases
         else:
-            way_set.append(
-                get_way_info(way, nodes, string_table,
-                                 keep_meta, tags_to_keep="TODO")
-            )
+            way_info = get_way_info(way, nodes, string_table,
+                                    keep_meta, tag_filter)
+            if way_info is not None:
+                way_set.append(way_info)
+
     return way_set
 
 cdef get_relation_members(relation, str_table):
@@ -279,38 +298,60 @@ cdef get_relation_members(relation, str_table):
         member_role=member_roles,
     )
 
-cdef parse_relations(data, string_table, keep_meta):
+cdef parse_relations(data, string_table, keep_meta, tag_filter):
     N = len(data)
+    cdef int i
 
-    # Ids (delta coded)
+    filter_tags = False
+    if tag_filter is not None:
+        filter_tags = True
+
+    # Parse Ids (delta coded)
     id_deltas = np.zeros(N + 1, dtype=np.int64)
     id_deltas[1:] = [rel.id for rel in data]
     ids = np.cumsum(id_deltas)[1:]
 
-    # Relation members
-    members = np.array([
-        get_relation_members(rel, string_table)
-        for rel in data],
-        dtype=object
-    )
+    members = []
+    tags = []
+    versions = []
+    timestamps = []
+    changesets = []
 
-    # Tags
-    tags = np.array([
-        parse_tags(rel.keys, rel.vals, string_table)
-        for rel in data],
-        dtype=object
-    )
+    # Container for tag_filter
+    indices_to_drop = []
+
+    for i in range(0, N):
+        relation = data[i]
+
+        tag = parse_tags(relation.keys, relation.vals,
+                         string_table, tag_filter=tag_filter)
+
+        # If relation is filtered out by tag_filter
+        if filter_tags:
+            if len(tag) == 0:
+                indices_to_drop.append(i)
+                continue
+
+        tags.append(tag)
+        members.append(get_relation_members(relation, string_table))
+
+        if keep_meta:
+            versions.append(relation.info.version)
+            timestamps.append(relation.info.timestamp)
+            changesets.append(relation.info.changeset)
+
+    # Check if ids should be filtered
+    if len(indices_to_drop) > 0:
+        ids = np.delete(ids, indices_to_drop)
+
+    # Make arrays
+    members = np.array(members, dtype=object)
+    tags = np.array(tags, dtype=object)
 
     if keep_meta:
-
-        # Version
-        versions = np.array([rel.info.version for rel in data], dtype=np.int64)
-
-        # Timestamp
-        timestamps = np.array([rel.info.timestamp for rel in data], dtype=np.int64)
-
-        # Changeset
-        changesets = np.array([rel.info.changeset for rel in data], dtype=np.int64)
+        versions = np.array(versions, dtype=np.int64)
+        timestamps = np.array(timestamps, dtype=np.int64)
+        changesets = np.array(changesets, dtype=np.int64)
 
         return [dict(id=ids,
                      version=versions,
@@ -326,15 +367,18 @@ cdef parse_relations(data, string_table, keep_meta):
                  tags=tags,
                  )]
 
-
 cpdef parse_osm_data(filepath,
                      bounding_box,
-                     keep_meta):
-    return _parse_osm_data(filepath, bounding_box, keep_meta)
+                     keep_meta,
+                     optimize_memory,
+                     tag_filter):
+    return _parse_osm_data(filepath, bounding_box, keep_meta, optimize_memory, tag_filter)
 
 cdef _parse_osm_data(filepath,
                      bounding_box,
-                     keep_meta):
+                     keep_meta,
+                     optimize_memory,
+                     tag_filter):
     all_ways = []
     all_nodes = []
     all_relations = []
@@ -345,7 +389,10 @@ cdef _parse_osm_data(filepath,
     for pblock, str_table in zip(primitive_blocks, string_tables):
         for pgroup in pblock.primitivegroup:
             if len(pgroup.dense.id) > 0:
-                all_nodes += parse_dense(pblock, pgroup.dense, str_table, bounding_box, keep_meta)
+                all_nodes += parse_dense(pblock, pgroup.dense,
+                                         str_table, bounding_box,
+                                         keep_meta, optimize_memory,
+                                         tag_filter)
             elif len(pgroup.nodes) > 0:
                 all_nodes += parse_nodes(pblock, pgroup.nodes, bounding_box, keep_meta)
             elif len(pgroup.ways) > 0:
@@ -353,13 +400,29 @@ cdef _parse_osm_data(filepath,
                 if bounding_box is not None:
                     if not node_lookup_created:
                         node_lookup = get_nodeid_lookup_khash(all_nodes)
-                        all_ways += parse_ways(pgroup.ways, str_table, node_lookup, keep_meta)
+                        all_ways += parse_ways(pgroup.ways,
+                                               str_table,
+                                               node_lookup,
+                                               keep_meta,
+                                               tag_filter)
                     else:
-                        all_ways += parse_ways(pgroup.ways, str_table, node_lookup, keep_meta)
+                        all_ways += parse_ways(pgroup.ways,
+                                               str_table,
+                                               node_lookup,
+                                               keep_meta,
+                                               tag_filter)
                 else:
-                    all_ways += parse_ways(pgroup.ways, str_table, None, keep_meta)
+                    all_ways += parse_ways(pgroup.ways,
+                                           str_table,
+                                           None,
+                                           keep_meta,
+                                           tag_filter)
+
             elif len(pgroup.relations) > 0:
-                all_relations += parse_relations(pgroup.relations, str_table, keep_meta)
+                all_relations += parse_relations(pgroup.relations,
+                                                 str_table,
+                                                 keep_meta,
+                                                 tag_filter)
 
     # Explode the way tags
     all_ways, all_way_tag_keys = explode_way_tags(all_ways)
