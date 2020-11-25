@@ -6,6 +6,7 @@ cdef delta_decode_latitude(data, node_granularity, lat_offset):
     lats_deltas = np.zeros(len(data.lat) + 1, dtype=np.int64)
     lats_deltas[1:] = list(data.lat)
     lats = (np.cumsum(lats_deltas)[1:] * node_granularity + lat_offset) / div
+    lats = lats.astype(np.float32)
     return lats
 
 
@@ -14,6 +15,7 @@ cdef delta_decode_longitude(data, node_granularity, lon_offset):
     lons_deltas = np.zeros(len(data.lon) + 1, dtype=np.int64)
     lons_deltas[1:] = list(data.lon)
     lons = (np.cumsum(lons_deltas)[1:] * node_granularity + lon_offset) / div
+    lons = lons.astype(np.float32)
     return lons
 
 
@@ -28,7 +30,7 @@ cdef delta_decode_timestamp(data, timestamp_granularity):
     timestamp_deltas = np.zeros(len(data.denseinfo.timestamp) + 1, dtype=np.int64)
     timestamp_deltas[1:] = list(data.denseinfo.timestamp)
     timestamps = (np.cumsum(timestamp_deltas)[1:]
-                  * timestamp_granularity / 1000).astype(int)
+                  * timestamp_granularity / 1000).astype(np.int32)
     return timestamps
 
 
@@ -36,7 +38,7 @@ cdef delta_decode_changeset(data):
     changeset_deltas = np.zeros(len(data.denseinfo.changeset) + 1, dtype=np.int64)
     changeset_deltas[1:] = list(data.denseinfo.changeset)
     changesets = np.cumsum(changeset_deltas)[1:]
-    return changesets
+    return changesets.astype(np.int32)
 
 
 cdef delta_encode_latitude(lat_array, node_granularity, lat_offset):
