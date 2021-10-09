@@ -1,0 +1,23 @@
+name: test
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.9
+  # required
+  - geopandas
+  - pygeos
+  - cython
+  - cykhash
+  - pyrobuf
+  - python-rapidjson
+  # optional
+  - python-igraph
+  - networkx
+  - pandana
+  # testing
+  - pytest
+  - pytest-cov
+  - codecov
+  - requests
