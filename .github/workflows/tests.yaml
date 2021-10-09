@@ -1,0 +1,82 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: "0 0 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  Linting:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-python@v2
+      - uses: pre-commit/action@v2.0.0
+
+  Test:
+    needs: Linting
+    name: ${{ matrix.os }}, ${{ matrix.env }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash -l {0}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        postgis: [false]
+        dev: [false]
+        env:
+          - ci/37-conda.yaml
+          - ci/38-conda.yaml
+          - ci/39-conda.yaml
+        include:
+          - env: ci/38-conda.yaml
+            os: macos-latest
+          - env: ci/38-conda.yaml
+            os: windows-latest
+          - env: ci/38-conda.yaml
+            os: ubuntu-latest
+          - env: ci/39-conda.yaml
+            os: macos-latest
+          - env: ci/39-conda.yaml
+            os: windows-latest
+          - env: ci/39-conda.yaml
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Setup Conda
+        uses: conda-incubator/setup-miniconda@v2
+        with:
+          auto-update-conda: true
+          auto-activate-base: false
+          activate-environment: test
+          environment-file: ${{ matrix.env }}
+          channel-priority: strict
+
+      - name: Install pyrosm
+        shell: bash -l {0}
+        run: pip install -e
+
+      - name: Check environment
+        shell: bash -l {0}
+        run: |
+          conda info
+          conda list
+      - name: Test pyrosm
+        shell: bash -l {0}
+        run: |
+          pytest --cov pyrosm -v --cov-report term-missing
+
+      - uses: codecov/codecov-action@v1
+
+
