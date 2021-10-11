@@ -3,6 +3,5 @@ graft ci
 graft proto
 graft tests
 graft pyrobuf
-
 include pyproject.toml
 global-exclude __pycache__/*
