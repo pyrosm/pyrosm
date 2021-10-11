@@ -16,22 +16,34 @@ def helsinki_region_pbf():
 
 def test_reading_boundaries_with_defaults(helsinki_pbf):
     from pyrosm import OSM
+
     osm = OSM(helsinki_pbf)
     gdf = osm.get_boundaries()
 
     # Test shape
     assert gdf.shape == (8, 11)
-    required_columns = ['name', 'admin_level', 'boundary', 'id', 'timestamp', 'version',
-                        'changeset', 'geometry', 'tags', 'osm_type']
+    required_columns = [
+        "name",
+        "admin_level",
+        "boundary",
+        "id",
+        "timestamp",
+        "version",
+        "changeset",
+        "geometry",
+        "tags",
+        "osm_type",
+    ]
     for col in required_columns:
         assert col in gdf.columns
 
     # osm_type should be 'relation'
-    assert gdf.osm_type.unique()[0] == 'relation'
+    assert gdf.osm_type.unique()[0] == "relation"
 
 
 def test_reading_boundaries_with_name_search(helsinki_pbf):
     from pyrosm import OSM
+
     osm = OSM(helsinki_pbf)
 
     # Full name and also partial name should work and produce data
@@ -44,17 +56,28 @@ def test_reading_boundaries_with_name_search(helsinki_pbf):
         # Should now only contain one row
         assert gdf.shape == (1, 11)
 
-        required_columns = ['name', 'admin_level', 'boundary', 'id', 'timestamp', 'version',
-                            'changeset', 'geometry', 'tags', 'osm_type']
+        required_columns = [
+            "name",
+            "admin_level",
+            "boundary",
+            "id",
+            "timestamp",
+            "version",
+            "changeset",
+            "geometry",
+            "tags",
+            "osm_type",
+        ]
         for col in required_columns:
             assert col in gdf.columns
 
         # osm_type should be 'relation'
-        assert gdf.osm_type.unique()[0] == 'relation'
+        assert gdf.osm_type.unique()[0] == "relation"
 
 
 def test_passing_incorrect_parameters(helsinki_pbf):
     from pyrosm import OSM
+
     osm = OSM(helsinki_pbf)
     try:
         gdf = osm.get_boundaries(boundary_type="incorrect")
@@ -83,7 +106,7 @@ def test_adding_extra_attribute(helsinki_pbf):
     extra = osm.get_boundaries(extra_attributes=[extra_col])
 
     # The extra should have one additional column compared to the original one
-    assert extra.shape[1] == gdf.shape[1]+1
+    assert extra.shape[1] == gdf.shape[1] + 1
     # Should have same number of rows
     assert extra.shape[0] == gdf.shape[0]
     assert extra_col in extra.columns
@@ -93,20 +116,31 @@ def test_adding_extra_attribute(helsinki_pbf):
 
 def test_reading_all_boundaries(helsinki_region_pbf):
     from pyrosm import OSM
+
     osm = OSM(helsinki_region_pbf)
     gdf = osm.get_boundaries(boundary_type="all")
 
     # Test shape
     assert gdf.shape == (733, 20)
 
-    required_columns = ['name', 'admin_level', 'boundary', 'id', 'timestamp', 'version',
-                        'changeset', 'geometry', 'tags', 'osm_type']
+    required_columns = [
+        "name",
+        "admin_level",
+        "boundary",
+        "id",
+        "timestamp",
+        "version",
+        "changeset",
+        "geometry",
+        "tags",
+        "osm_type",
+    ]
 
     for col in required_columns:
         assert col in gdf.columns
 
     # Test filtering different types of boundaries
-    value_counts = gdf['boundary'].value_counts()
+    value_counts = gdf["boundary"].value_counts()
 
     for boundary_type, cnt in value_counts.items():
         # Some incorrect boundary types exists in the data
@@ -115,5 +149,3 @@ def test_reading_all_boundaries(helsinki_region_pbf):
 
         gdf = osm.get_boundaries(boundary_type=boundary_type)
         assert len(gdf) >= cnt, f"Got incorrect number of rows with {boundary_type}"
-
-

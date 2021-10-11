@@ -16,6 +16,7 @@ def helsinki_pbf():
 
 def test_invalid_filter_type(test_pbf):
     from pyrosm import OSM
+
     osm = OSM(filepath=test_pbf)
     try:
         osm.get_network("MyNetwork")
@@ -23,6 +24,3 @@ def test_invalid_filter_type(test_pbf):
         pass
     except Exception as e:
         raise e
-
-
-

@@ -20,23 +20,26 @@ def test_parsing_natural_with_defaults(test_pbf):
     from geopandas import GeoDataFrame
     import pyproj
     from pyrosm._arrays import concatenate_dicts_of_arrays
+
     osm = OSM(filepath=test_pbf)
     osm._read_pbf()
     tags_as_columns = osm.conf.tags.natural
 
     nodes = concatenate_dicts_of_arrays(osm._nodes)
-    gdf = get_natural_data(nodes,
-                           osm._node_coordinates,
-                           osm._way_records,
-                           osm._relations,
-                           tags_as_columns,
-                           None,
-                           None)
+    gdf = get_natural_data(
+        nodes,
+        osm._node_coordinates,
+        osm._way_records,
+        osm._relations,
+        tags_as_columns,
+        None,
+        None,
+    )
 
     assert isinstance(gdf, GeoDataFrame)
 
     # Required keys
-    required = ['id', 'geometry']
+    required = ["id", "geometry"]
     for col in required:
         assert col in gdf.columns
 
@@ -50,7 +53,7 @@ def test_reading_natural_from_area_having_none(helsinki_pbf):
     from geopandas import GeoDataFrame
 
     # Bounding box for area that does not have any data
-    bbox = [24.939753, 60.173388, 24.941269,60.174829]
+    bbox = [24.939753, 60.173388, 24.941269, 60.174829]
 
     osm = OSM(filepath=helsinki_pbf, bounding_box=bbox)
 
@@ -63,6 +66,7 @@ def test_reading_natural_from_area_having_none(helsinki_pbf):
 
     # Result should be None
     assert gdf is None
+
 
 def test_passing_incorrect_custom_filter(test_pbf):
     from pyrosm import OSM
@@ -87,7 +91,7 @@ def test_adding_extra_attribute(helsinki_pbf):
     extra = osm.get_natural(extra_attributes=[extra_col])
 
     # The extra should have one additional column compared to the original one
-    assert extra.shape[1] == gdf.shape[1]+1
+    assert extra.shape[1] == gdf.shape[1] + 1
     # Should have same number of rows
     assert extra.shape[0] == gdf.shape[0]
     assert extra_col in extra.columns
