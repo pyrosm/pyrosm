@@ -107,8 +107,7 @@ And the result looks something like:
 If you find a bug from the tool, have question, or would like to suggest a new feature to it, you can [make a new issue here](https://github.com/HTenkanen/pyrosm/issues).
 
 We warmly welcome contributions to `pyrosm` to make it better. If you are interested in contributing to the library,
-please check the [contribution guidelines of geopandas](https://geopandas.readthedocs.io/en/latest/community/contributing.html)
-until pyrosm gets it's own guidelines (guide of geopandas will be used as the basis for this library as well).
+please check the [contribution guidelines](https://pyrosm.readthedocs.io/en/latest/contributions.html).
 
 ## Development
 
