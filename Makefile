@@ -8,6 +8,8 @@ clean:
 	rm -rf build
 	rm -rf .pytest_cache
 	rm -rf dist
+	rm -f *.so
 	cd pyrosm
 	rm -f *.pyd
 	rm -f *.c
+	rm -f *.so
