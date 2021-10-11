@@ -131,8 +131,8 @@ def get_data(dataset, update=False, directory=None):
     Parameters
     ----------
     dataset : str
-        The name of the dataset. See ``pyrosm.data.available`` for
-        all options.
+        The name of the dataset. Run ``pyrosm.data.available`` for
+        all available options.
 
     update : bool
         Whether the PBF file should be downloaded/updated if the dataset
