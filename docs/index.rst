@@ -67,7 +67,6 @@ Getting started
     benchmarking.ipynb
     contributions.rst
 
-
 .. toctree::
     :caption: Reference Guide
 
