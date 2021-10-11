@@ -1,5 +1,6 @@
 from collections import defaultdict
 
+
 def _get_node_successors(edges, from_id_col, to_id_col):
     edge_cnt = len(edges)
     node_successors = defaultdict(list)
@@ -72,17 +73,12 @@ def _strongly_connected_components(list_of_nodes, node_successors):
                         scc_queue.append(v)
 
 
-def get_connected_edges(nodes,
-                        edges,
-                        from_id_col="u",
-                        to_id_col="v",
-                        node_id_col="id"):
+def get_connected_edges(nodes, edges, from_id_col="u", to_id_col="v", node_id_col="id"):
     """Filters the network data (directed) to include only connected edges and nodes."""
     node_successors = _get_node_successors(edges, from_id_col, to_id_col)
     node_ids = nodes[node_id_col].to_list()
     scc = max(_strongly_connected_components(node_ids, node_successors), key=len)
     # Filter nodes and edges accordingly
     n = nodes[nodes[node_id_col].isin(scc)]
-    e = edges[(edges[from_id_col].isin(scc)) &
-              (edges[to_id_col].isin(scc))]
+    e = edges[(edges[from_id_col].isin(scc)) & (edges[to_id_col].isin(scc))]
     return n, e.reset_index(drop=True)

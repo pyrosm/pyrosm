@@ -16,10 +16,30 @@ class Tags:
     # inserted into a JSON that is stored in "tags" column.
     # These follow more or less OSM Wiki documentation:
     # https://wiki.openstreetmap.org/wiki/Map_Features
-    available = ["aerialway", "aeroway", "amenity", "boundary", "building", "craft",
-                 "emergency", "geological", "highway", "historic", "landuse",
-                 "leisure", "natural", "office", "power", "public_transport",
-                 "railway", "route", "place", "shop", "tourism", "waterway"]
+    available = [
+        "aerialway",
+        "aeroway",
+        "amenity",
+        "boundary",
+        "building",
+        "craft",
+        "emergency",
+        "geological",
+        "highway",
+        "historic",
+        "landuse",
+        "leisure",
+        "natural",
+        "office",
+        "power",
+        "public_transport",
+        "railway",
+        "route",
+        "place",
+        "shop",
+        "tourism",
+        "waterway",
+    ]
 
     aerialway = aerialway_columns
     aeroway = aeroway_columns
@@ -55,6 +75,4 @@ class Conf:
     _possible_network_filters += ["all", "driving+service"]
 
     # One way tags
-    oneway_values = ['yes', 'true', '1', '-1', 'T', 'F']
-
-
+    oneway_values = ["yes", "true", "1", "-1", "T", "F"]
