@@ -7,6 +7,7 @@ from pyrosm._arrays cimport to_clong_array
 from pyrosm.delta_compression cimport delta_decode_latitude, delta_decode_longitude, \
     delta_decode_id, delta_decode_timestamp, delta_decode_changeset
 from pyrosm.data_filter cimport get_nodeid_lookup_khash, nodes_for_way_exist_khash
+from pyrosm.utils import valid_header_block
 import numpy as np
 from libc.stdlib cimport malloc, free
 
@@ -32,11 +33,8 @@ cdef get_primitive_blocks_and_string_tables(filepath):
         header_block = HeaderBlock()
         header_block.ParseFromString(blob_data)
 
-        for feature in header_block.required_features:
-            if not (feature in ('OsmSchema-V0.6', 'DenseNodes')):
-                raise PBFNotImplemented(
-                    'Required feature %s not implemented!',
-                    feature)
+        if valid_header_block(header_block):
+            pass
 
         # Gather primitive blocks and string tables
         primitive_blocks = []

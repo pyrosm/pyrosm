@@ -175,6 +175,11 @@ def validate_edge_gdf(edges):
                 "'edges' should contain only 'LineString' or 'MultiLineString' geometries."
             )
 
+def valid_header_block(header_block):
+    for feature in header_block.required_features:
+        if not (feature in ("OsmSchema-V0.6", "DenseNodes", "HistoricalInformation")):
+            raise PBFNotImplemented("Required feature %s not implemented!", feature)
+    return True
 
 def get_bounding_box(filepath):
     with open(filepath, "rb") as f:
@@ -194,20 +199,19 @@ def get_bounding_box(filepath):
         header_block = HeaderBlock()
         header_block.ParseFromString(blob_data)
 
-        for feature in header_block.required_features:
-            if not (feature in ("OsmSchema-V0.6", "DenseNodes")):
-                raise PBFNotImplemented("Required feature %s not implemented!", feature)
+        # Validate header
+        if valid_header_block(header_block):
 
-        # Parse bounding box
-        try:
-            bb = header_block.bbox.SerializeToDict()
-            div = 1000000000
-            bbox = box(
-                bb["left"] / div,
-                bb["bottom"] / div,
-                bb["right"] / div,
-                bb["top"] / div,
-            )
-        except Exception:
-            bbox = None
-        return bbox
+            # Parse bounding box
+            try:
+                bb = header_block.bbox.SerializeToDict()
+                div = 1000000000
+                bbox = box(
+                    bb["left"] / div,
+                    bb["bottom"] / div,
+                    bb["right"] / div,
+                    bb["top"] / div,
+                )
+            except Exception:
+                bbox = None
+            return bbox
