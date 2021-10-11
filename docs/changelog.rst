@@ -5,9 +5,10 @@ v0.6.1 (Oct 11, 2021)
 ---------------------
 
 - Support Python 3.9 (#122, #106)
-- Use Github Actions for CI
-- Drop Travis CI
-- Follow PEP8 style guide and add linting test for CI (using black)
+- Use Github Actions for CI (#95)
+- Drop Travis CI (#95)
+- Add contribution guidelines (#90)
+- Follow PEP8 style guide and add linting test for CI using Black
 
 v0.6.0 (Nov 18, 2020)
 ---------------------
