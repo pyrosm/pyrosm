@@ -694,6 +694,7 @@ class AustraliaOceania:
         "australia",
         "cook_islands",
         "fiji",
+        "ile-de-clipperton",
         "kiribati",
         "marshall_islands",
         "micronesia",
@@ -703,11 +704,15 @@ class AustraliaOceania:
         "niue",
         "palau",
         "papua_new_guinea",
+        "pitcairn-islands",
+        "polynesie-francaise",
         "samoa",
         "solomon_islands",
+        "tokelau",
         "tonga",
         "tuvalu",
         "vanuatu",
+        "wallis-et-futuna",
     ]
 
     available = regions
@@ -832,11 +837,15 @@ class CentralAmerica:
     regions = [
         "bahamas",
         "belize",
+        "costa-rica",
         "cuba",
+        "el-salvador",
         "guatemala",
         "haiti_and_domrep",
+        "honduras",
         "jamaica",
         "nicaragua",
+        "panama",
     ]
 
     available = regions
@@ -1045,6 +1054,7 @@ class Asia:
         "bhutan",
         "cambodia",
         "china",
+        "east-timor",
         "gcc_states",
         "india",
         "indonesia",
