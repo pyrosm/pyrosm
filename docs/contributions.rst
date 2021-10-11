@@ -1,8 +1,6 @@
 Contributing to pyrosm
 ======================
 
-(Contribution guidelines are largely based on `momepy`_.)
-
 Contributions of any kind to pyrosm are more than welcome. That does not mean
 new code only, but also improvements of documentation and user guide, additional
 tests (ideally filling the gaps in existing suite) or bug report or idea what
@@ -206,9 +204,13 @@ submit a pull request to have them integrated into the *pyrosm* code base.
 
 You can find a pull request (or PR) tutorial in the `GitHub's Help Docs <https://help.github.com/articles/using-pull-requests/>`_.
 
+References
+^^^^^^^^^^
+
+These contribution guidelines are largely based on * `momepy`_ -library.
 
 .. _sphinx: https://www.sphinx-doc.org/
 
 .. _Black: https://black.readthedocs.io/en/stable/
 
-.. momepy: http://docs.momepy.org/en/stable/
+.. _momepy: http://docs.momepy.org/en/stable/
