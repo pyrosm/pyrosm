@@ -19,7 +19,7 @@ def test_distance_calculations():
 
     # Meters
     l_m = haversine(lat1, lon1, lat2, lon2, unit=Unit.METERS)
-    assert round(l_m, 2) == correct_distance_km*1000
+    assert round(l_m, 2) == correct_distance_km * 1000
 
     # Miles
     l_mi = haversine(lat1, lon1, lat2, lon2, unit=Unit.MILES)
@@ -36,7 +36,3 @@ def test_distance_calculations():
     # Inches
     l_f = haversine(lat1, lon1, lat2, lon2, unit=Unit.INCHES)
     assert round(l_f, 0) == correct_distance_inches
-
-
-
-

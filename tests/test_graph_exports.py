@@ -16,6 +16,7 @@ def test_pbf():
 @pytest.fixture
 def walk_nodes_and_edges():
     from pyrosm import OSM
+
     # UlanBator is good small dataset for testing
     # (unmodified, i.e. not cropped)
     pbf_path = get_data("ulanbator")
@@ -26,6 +27,7 @@ def walk_nodes_and_edges():
 @pytest.fixture
 def bike_nodes_and_edges():
     from pyrosm import OSM
+
     # UlanBator is good small dataset for testing
     # (unmodified, i.e. not cropped)
     pbf_path = get_data("ulanbator")
@@ -36,6 +38,7 @@ def bike_nodes_and_edges():
 @pytest.fixture
 def driving_nodes_and_edges():
     from pyrosm import OSM
+
     pbf_path = get_data("ulanbator")
     osm = OSM(pbf_path)
     return osm.get_network(network_type="driving", nodes=True)
@@ -44,6 +47,7 @@ def driving_nodes_and_edges():
 @pytest.fixture
 def immutable_nodes_and_edges():
     from pyrosm import OSM
+
     pbf_path = get_data("test_pbf")
     osm = OSM(pbf_path)
     return osm.get_network(nodes=True)
@@ -172,6 +176,7 @@ def test_igraph_immutable_counts(test_pbf):
     from pyrosm.graphs import to_igraph
     import igraph
     from pyrosm import OSM
+
     osm = OSM(test_pbf)
     nodes, edges = osm.get_network(nodes=True)
     g = to_igraph(nodes, edges, retain_all=True)
@@ -203,13 +208,13 @@ def test_nxgraph_export_by_walking(walk_nodes_and_edges):
     # Add a small threshold for the difference in the number of edges (allow 1 per mille diff)
     # as networkx automatically drops duplicates and otherwise seems
     # to filter somehow "incorrect" or duplicate edges
-    assert abs(1-(nx.number_of_edges(g) / (2 * n_edges))) < 0.001
+    assert abs(1 - (nx.number_of_edges(g) / (2 * n_edges))) < 0.001
 
     # The number of nodes should be the same
     # TODO: For some reason the number of nodes is getting duplicated here.
     #  Check why this happens and how to avoid
     #  (does not happen always so something to do with UlanBatar data.)
-    #assert nx.number_of_nodes(g) == n_nodes
+    # assert nx.number_of_nodes(g) == n_nodes
 
     # Ensure that all attributes were transfered to graph
     ecolumns = edges.columns
@@ -235,6 +240,7 @@ def test_nxgraph_immutable_counts(test_pbf):
     from pyrosm.graphs import to_networkx
     import networkx as nx
     from pyrosm import OSM
+
     osm = OSM(test_pbf)
     nodes, edges = osm.get_network(nodes=True)
     g = to_networkx(nodes, edges, retain_all=True)
@@ -250,6 +256,7 @@ def test_directed_edge_generator(test_pbf):
     from geopandas import GeoDataFrame
     from pyrosm.graphs import generate_directed_edges
     from pyrosm import OSM
+
     osm = OSM(test_pbf)
     nodes, edges = osm.get_network(nodes=True)
 
@@ -259,24 +266,26 @@ def test_directed_edge_generator(test_pbf):
     twoway_edge_cnt = len(edges.loc[~mask])
 
     # Bidirectional edges
-    bidir_edges = generate_directed_edges(edges,
-                                          direction="oneway",
-                                          from_id_col="u",
-                                          to_id_col="v",
-                                          force_bidirectional=True
-                                          )
+    bidir_edges = generate_directed_edges(
+        edges,
+        direction="oneway",
+        from_id_col="u",
+        to_id_col="v",
+        force_bidirectional=True,
+    )
 
     assert len(bidir_edges) == 2 * len(edges)
 
     # Directed edges according the rules in "oneway" column
-    dir_edges = generate_directed_edges(edges,
-                                        direction="oneway",
-                                        from_id_col="u",
-                                        to_id_col="v",
-                                        force_bidirectional=False
-                                        )
+    dir_edges = generate_directed_edges(
+        edges,
+        direction="oneway",
+        from_id_col="u",
+        to_id_col="v",
+        force_bidirectional=False,
+    )
 
-    assert len(dir_edges) == oneway_edge_cnt + twoway_edge_cnt*2
+    assert len(dir_edges) == oneway_edge_cnt + twoway_edge_cnt * 2
 
 
 def test_connected_component(immutable_nodes_and_edges):
@@ -287,12 +296,13 @@ def test_connected_component(immutable_nodes_and_edges):
     nodes, edges = immutable_nodes_and_edges
 
     # Bidirectional edges
-    bidir_edges = generate_directed_edges(edges,
-                                          direction="oneway",
-                                          from_id_col="u",
-                                          to_id_col="v",
-                                          force_bidirectional=True
-                                          )
+    bidir_edges = generate_directed_edges(
+        edges,
+        direction="oneway",
+        from_id_col="u",
+        to_id_col="v",
+        force_bidirectional=True,
+    )
 
     # After filtering the unconnected edges, the number of edges/nodes should always be lower (or equal)
     cn, ce = get_connected_edges(nodes, bidir_edges, "u", "v", "id")
@@ -314,12 +324,14 @@ def test_igraph_connectivity(immutable_nodes_and_edges):
 
     # Test that graph source and target nodes matches with the ones in attribute table
     for edge in g.es:
-        assert edge.source == edge.attributes()['u_seq']
-        assert edge.target == edge.attributes()['v_seq']
+        assert edge.source == edge.attributes()["u_seq"]
+        assert edge.target == edge.attributes()["v_seq"]
 
     # Test that finding shortest paths works for all nodes
     N = g.vcount()
-    shortest_paths = g.shortest_paths_dijkstra(source=5, target=[i for i in range(N)], weights='length')
+    shortest_paths = g.shortest_paths_dijkstra(
+        source=5, target=[i for i in range(N)], weights="length"
+    )
 
     # Check couple of exact lengths
     assert round(shortest_paths[0][0], 0) == 500
@@ -343,15 +355,17 @@ def test_nxgraph_connectivity(immutable_nodes_and_edges):
 
     # Test that graph source and target nodes matches with the ones in attribute table
     for fr, to, edge in g.edges(data=True):
-        assert fr == edge['u']
-        assert to == edge['v']
+        assert fr == edge["u"]
+        assert to == edge["v"]
 
     # Test that finding shortest paths works for all nodes
     node_ids = [n for n in g.nodes()]
     source = node_ids[5]
     shortest_paths = []
     for target in node_ids:
-        shortest_path_length = nx.shortest_path_length(g, source=source, target=target, weight='length')
+        shortest_path_length = nx.shortest_path_length(
+            g, source=source, target=target, weight="length"
+        )
         shortest_paths.append(shortest_path_length)
 
     # Check couple of exact lengths
@@ -370,6 +384,7 @@ def test_pdgraph_connectivity():
     from pyrosm.graphs import to_pandana
     import pandas as pd
     from pyrosm import OSM
+
     osm = OSM(get_data("helsinki_pbf"))
     nodes, edges = osm.get_network(nodes=True)
 
@@ -412,7 +427,9 @@ def test_pdgraph_connectivity():
     assert len(access) == 5750
 
     # Test shortest path calculations
-    shortest_distances = g.shortest_path_lengths(node_ids[0:100], node_ids[100:200], imp_name="length")
+    shortest_distances = g.shortest_path_lengths(
+        node_ids[0:100], node_ids[100:200], imp_name="length"
+    )
     assert isinstance(shortest_distances, list)
     assert len(shortest_distances) == 100
     shortest_distances = pd.Series(shortest_distances)
@@ -426,6 +443,7 @@ def test_to_graph_api(test_pbf):
     import networkx as nx
     import igraph
     import pandana
+
     osm = OSM(test_pbf)
     nodes, edges = osm.get_network(nodes=True)
     # igraph is the default
@@ -442,11 +460,14 @@ def test_graph_exports_correct_number_of_nodes(test_pbf):
     Check issue: #97
     """
     from pyrosm import OSM
+
     osm = OSM(test_pbf)
     # NetworkX
     nodes, edges = osm.get_network(nodes=True)
     node_cnt = len(nodes)
-    nxg = osm.to_graph(nodes, edges, graph_type="networkx", osmnx_compatible=False, retain_all=True)
+    nxg = osm.to_graph(
+        nodes, edges, graph_type="networkx", osmnx_compatible=False, retain_all=True
+    )
     assert node_cnt == nxg.number_of_nodes()
 
 
@@ -455,6 +476,7 @@ def test_graph_export_works_without_oneway_column(test_pbf):
     Check issue: #100
     """
     from pyrosm import OSM
+
     osm = OSM(test_pbf)
     # NetworkX
     nodes, edges = osm.get_network(nodes=True)

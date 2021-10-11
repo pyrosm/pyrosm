@@ -12,6 +12,7 @@ else:
 # python-igraph is an optional dependency
 try:
     import igraph
+
     HAS_IGRAPH = True
 except ImportError:
     HAS_IGRAPH = False
@@ -19,6 +20,7 @@ except ImportError:
 # networkx is an optional dependency
 try:
     import networkx
+
     HAS_NETWORKX = True
 except ImportError:
     HAS_NETWORKX = False
@@ -26,7 +28,7 @@ except ImportError:
 # pandana is an optional dependency
 try:
     import pandana
+
     HAS_PANDANA = True
 except ImportError:
     HAS_PANDANA = False
-

@@ -6,13 +6,13 @@ def get_osm_filter(network_type):
     see: https://github.com/gboeing/osmnx/blob/master/osmnx/downloader.py#L19
 
     """
-    if network_type == 'driving':
+    if network_type == "driving":
         return driving_filter()
-    elif network_type == 'walking':
+    elif network_type == "walking":
         return walking_filter()
-    elif network_type == 'cycling':
+    elif network_type == "cycling":
         return cycling_filter()
-    elif network_type == 'driving+psv':
+    elif network_type == "driving+psv":
         return driving_filter(exclude_public_service_vehicle_paths=False)
 
 
@@ -36,20 +36,34 @@ def driving_filter(exclude_public_service_vehicle_paths=True):
 
     """
     drive_filter = dict(
-        area=['yes'],
-        highway=['cycleway', 'footway', 'path', 'pedestrian', 'steps', 'track',
-                 'corridor', 'elevator', 'escalator', 'proposed', 'construction',
-                 'bridleway', 'abandoned', 'platform', 'raceway'],
-        motor_vehicle=['no'],
-        motorcar=['no'],
-        service=['parking', 'parking_aisle', 'private',
-                 'emergency_access']
+        area=["yes"],
+        highway=[
+            "cycleway",
+            "footway",
+            "path",
+            "pedestrian",
+            "steps",
+            "track",
+            "corridor",
+            "elevator",
+            "escalator",
+            "proposed",
+            "construction",
+            "bridleway",
+            "abandoned",
+            "platform",
+            "raceway",
+        ],
+        motor_vehicle=["no"],
+        motorcar=["no"],
+        service=["parking", "parking_aisle", "private", "emergency_access"],
     )
 
     if exclude_public_service_vehicle_paths:
-        drive_filter['psv'] = ['yes']
+        drive_filter["psv"] = ["yes"]
 
     return drive_filter
+
 
 def walking_filter():
     """
@@ -70,11 +84,20 @@ def walking_filter():
 
     """
     return dict(
-        area=['yes'],
-        highway=['cycleway', 'motor', 'proposed', 'construction', 'abandoned',
-                 'platform', 'raceway', 'motorway', 'motorway_link'],
-        foot=['no'],
-        service=['private']
+        area=["yes"],
+        highway=[
+            "cycleway",
+            "motor",
+            "proposed",
+            "construction",
+            "abandoned",
+            "platform",
+            "raceway",
+            "motorway",
+            "motorway_link",
+        ],
+        foot=["no"],
+        service=["private"],
     )
 
 
@@ -92,9 +115,22 @@ def cycling_filter():
 
     """
     return dict(
-        area=['yes'],
-        highway=['footway', 'steps', 'corridor', 'elevator', 'escalator', 'motor', 'proposed',
-                 'construction', 'abandoned', 'platform', 'raceway', 'motorway', 'motorway_link'],
-        bicycle=['no'],
-        service=['private']
+        area=["yes"],
+        highway=[
+            "footway",
+            "steps",
+            "corridor",
+            "elevator",
+            "escalator",
+            "motor",
+            "proposed",
+            "construction",
+            "abandoned",
+            "platform",
+            "raceway",
+            "motorway",
+            "motorway_link",
+        ],
+        bicycle=["no"],
+        service=["private"],
     )

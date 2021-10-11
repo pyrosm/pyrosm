@@ -16,18 +16,20 @@ def helsinki_pbf():
 
 @pytest.fixture
 def default_filter():
-    return {"amenity": True,
-            "craft": True,
-            "historic": True,
-            "leisure": True,
-            "shop": True,
-            "tourism": True
-            }
+    return {
+        "amenity": True,
+        "craft": True,
+        "historic": True,
+        "leisure": True,
+        "shop": True,
+        "tourism": True,
+    }
 
 
 @pytest.fixture
 def test_output_dir():
     import os, tempfile
+
     return os.path.join(tempfile.gettempdir(), "pyrosm_test_results")
 
 
@@ -37,6 +39,7 @@ def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
     from geopandas import GeoDataFrame
     import pyproj
     from pyrosm._arrays import concatenate_dicts_of_arrays
+
     osm = OSM(filepath=helsinki_pbf)
     osm._read_pbf()
     tags_as_columns = []
@@ -44,18 +47,20 @@ def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
         tags_as_columns += getattr(osm.conf.tags, k)
 
     nodes = concatenate_dicts_of_arrays(osm._nodes)
-    gdf = get_poi_data(nodes,
-                       osm._node_coordinates,
-                       osm._way_records,
-                       osm._relations,
-                       tags_as_columns,
-                       default_filter,
-                       None)
+    gdf = get_poi_data(
+        nodes,
+        osm._node_coordinates,
+        osm._way_records,
+        osm._relations,
+        tags_as_columns,
+        default_filter,
+        None,
+    )
 
     assert isinstance(gdf, GeoDataFrame)
 
     # Required keys
-    required = ['id', 'geometry']
+    required = ["id", "geometry"]
     for col in required:
         assert col in gdf.columns
 
@@ -107,7 +112,7 @@ def test_adding_extra_attribute(helsinki_pbf):
     extra = osm.get_pois(extra_attributes=[extra_col])
 
     # The extra should have one additional column compared to the original one
-    assert extra.shape[1] == gdf.shape[1]+1
+    assert extra.shape[1] == gdf.shape[1] + 1
     # Should have same number of rows
     assert extra.shape[0] == gdf.shape[0]
     assert extra_col in extra.columns

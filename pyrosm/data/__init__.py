@@ -1,8 +1,27 @@
 import os
 from pyrosm.utils.download import download
-from pyrosm.data.geofabrik import Africa, Antarctica, Asia, AustraliaOceania, \
-    Europe, NorthAmerica, SouthAmerica, CentralAmerica, Brazil, Canada, France, \
-    Germany, GreatBritain, Italy, Japan, Netherlands, Poland, Russia, USA, SubRegions
+from pyrosm.data.geofabrik import (
+    Africa,
+    Antarctica,
+    Asia,
+    AustraliaOceania,
+    Europe,
+    NorthAmerica,
+    SouthAmerica,
+    CentralAmerica,
+    Brazil,
+    Canada,
+    France,
+    Germany,
+    GreatBritain,
+    Italy,
+    Japan,
+    Netherlands,
+    Poland,
+    Russia,
+    USA,
+    SubRegions,
+)
 from pyrosm.data.bbbike import Cities
 import warnings
 
@@ -11,11 +30,14 @@ _module_path = os.path.dirname(__file__)
 _package_files = {"test_pbf": "test.osm.pbf", "helsinki_pbf": "Helsinki.osm.pbf"}
 
 # Static test data
-_helsinki_region_pbf = {"name": "Helsinki_region.osm.pbf",
-                        "url": "https://gist.github.com/HTenkanen/"
-                               "02dcfce32d447e65024d93d39ddb1812/"
-                               "raw/5fe7ffb625f091591d8c29128a9e3b37870a5012/"
-                               "Helsinki_region.osm.pbf"}
+_helsinki_region_pbf = {
+    "name": "Helsinki_region.osm.pbf",
+    "url": "https://gist.github.com/HTenkanen/"
+    "02dcfce32d447e65024d93d39ddb1812/"
+    "raw/5fe7ffb625f091591d8c29128a9e3b37870a5012/"
+    "Helsinki_region.osm.pbf",
+}
+
 
 class DataSources:
     def __init__(self):
@@ -48,8 +70,9 @@ class DataSources:
         # Keep hidden to avoid encouraging iteration of the whole
         # world at once which most likely would end up
         # in memory error / filling the disk etc.
-        self._all_sources = [k for k in self.available.keys()
-                             if k not in ["cities", "subregions"]]
+        self._all_sources = [
+            k for k in self.available.keys() if k not in ["cities", "subregions"]
+        ]
 
         for source, available in self.available.items():
             self._all_sources += available
@@ -71,18 +94,18 @@ sources = DataSources()
 
 available = {
     "test_data": list(_package_files.keys()) + ["helsinki_region_pbf"],
-    "regions": {k: v for k, v in sources.available.items() if k not in ["cities", "subregions"]},
+    "regions": {
+        k: v for k, v in sources.available.items() if k not in ["cities", "subregions"]
+    },
     "subregions": sources.subregions.available,
     "cities": sources.cities.available,
 }
 
 
 def retrieve(data, update, directory):
-    return download(url=data["url"],
-                    filename=data["name"],
-                    update=update,
-                    target_dir=directory
-                    )
+    return download(
+        url=data["url"], filename=data["name"], update=update, target_dir=directory
+    )
 
 
 def search_source(name):
@@ -128,27 +151,22 @@ def get_data(dataset, update=False, directory=None):
         return os.path.abspath(os.path.join(_module_path, _package_files[dataset]))
 
     elif dataset == "helsinki_region_pbf":
-        return retrieve(_helsinki_region_pbf,
-                        update, directory)
+        return retrieve(_helsinki_region_pbf, update, directory)
 
     elif dataset in sources._all_sources:
-        return retrieve(search_source(dataset),
-                 update, directory)
+        return retrieve(search_source(dataset), update, directory)
 
     # Users might pass city names with spaces (e.g. Rio De Janeiro)
     elif dataset.replace(" ", "") in sources._all_sources:
-        return retrieve(search_source(dataset.replace(" ", "")),
-                        update, directory)
+        return retrieve(search_source(dataset.replace(" ", "")), update, directory)
 
     # Users might pass country names without underscores (e.g. North America)
     elif dataset.replace(" ", "_") in sources._all_sources:
-        return retrieve(search_source(dataset.replace(" ", "_")),
-                        update, directory)
+        return retrieve(search_source(dataset.replace(" ", "_")), update, directory)
 
     # Users might pass country names with dashes instead of underscores (e.g. canary-islands)
     elif dataset.replace("-", "_") in sources._all_sources:
-        return retrieve(search_source(dataset.replace("-", "_")),
-                        update, directory)
+        return retrieve(search_source(dataset.replace("-", "_")), update, directory)
 
     else:
         msg = "The dataset '{data}' is not available. ".format(data=dataset)
@@ -161,6 +179,6 @@ def get_path(dataset, update=False, directory=None):
     warnings.warn(
         "'get_path()' is deprecated, use 'get_data()' instead.",
         DeprecationWarning,
-        stacklevel=2
+        stacklevel=2,
     )
     return get_data(dataset, update, directory)

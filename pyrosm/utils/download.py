@@ -4,6 +4,7 @@ import os
 import enum
 from urllib.error import HTTPError
 
+
 class UNIT(enum.Enum):
     BYTES = 1
     KB = 2
@@ -30,11 +31,10 @@ def get_file_size(file_name, size_type=UNIT.MB):
 def download(url, filename, update, target_dir):
     if target_dir is None:
         temp_dir = tempfile.gettempdir()
-        target_dir = os.path.join(temp_dir, 'pyrosm')
+        target_dir = os.path.join(temp_dir, "pyrosm")
     else:
         if not os.path.isdir(target_dir):
-            raise ValueError(f"The provided directory does not exist: "
-                             f"{target_dir}")
+            raise ValueError(f"The provided directory does not exist: " f"{target_dir}")
 
     filepath = os.path.abspath(os.path.join(target_dir, os.path.basename(filename)))
 
@@ -55,16 +55,20 @@ def download(url, filename, update, target_dir):
         try:
             filepath, msg = urllib.request.urlretrieve(url, filepath)
         except HTTPError:
-            raise ValueError(f"PBF-file '{url}' is temporarily unavailable. "
-                             f"Try again later.")
+            raise ValueError(
+                f"PBF-file '{url}' is temporarily unavailable. " f"Try again later."
+            )
         except Exception as e:
             raise e
 
         filesize = get_file_size(filepath)
         if filesize == 0:
-            raise ValueError(f"PBF-file '{filename}' from the provider was empty. "
-                             "This is likely a temporary issue, try again later."
-                             )
-        print(f"Downloaded Protobuf data '{os.path.basename(filepath)}' "
-              f"({filesize} MB) to:\n'{filepath}'")
+            raise ValueError(
+                f"PBF-file '{filename}' from the provider was empty. "
+                "This is likely a temporary issue, try again later."
+            )
+        print(
+            f"Downloaded Protobuf data '{os.path.basename(filepath)}' "
+            f"({filesize} MB) to:\n'{filepath}'"
+        )
     return filepath

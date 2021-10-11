@@ -17,6 +17,7 @@ def helsinki_pbf():
 def test_parsing_basic_elements_from_pbf(test_pbf):
     from pyrosm import OSM
     import numpy as np
+
     osm = OSM(filepath=test_pbf)
     osm._read_pbf()
     nodes, ways = osm._nodes, osm._way_records
@@ -25,7 +26,7 @@ def test_parsing_basic_elements_from_pbf(test_pbf):
     assert isinstance(ways, list)
 
     # Required node columns
-    node_cols = ['id', 'version', 'changeset', 'timestamp', 'lon', 'lat', 'tags']
+    node_cols = ["id", "version", "changeset", "timestamp", "lon", "lat", "tags"]
     for col in node_cols:
         for node_set in nodes:
             assert col in node_set.keys()
@@ -41,7 +42,7 @@ def test_parsing_basic_elements_from_pbf(test_pbf):
         assert isinstance(way, dict)
 
     # Required way columns
-    way_cols = ['id', 'version', 'timestamp', 'nodes']
+    way_cols = ["id", "version", "timestamp", "nodes"]
     for way in ways:
         for col in way_cols:
             assert col in way.keys()
@@ -50,6 +51,7 @@ def test_parsing_basic_elements_from_pbf(test_pbf):
 def test_getting_nodes(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
+
     osm = OSM(filepath=test_pbf)
     osm._read_pbf()
     nodes = osm._nodes_gdf
@@ -57,7 +59,7 @@ def test_getting_nodes(test_pbf):
     assert isinstance(nodes, GeoDataFrame)
 
     # Required node columns
-    node_cols = ['id', 'version', 'changeset', 'timestamp', 'lon', 'lat', 'tags']
+    node_cols = ["id", "version", "changeset", "timestamp", "lon", "lat", "tags"]
     for col in node_cols:
         assert col in nodes.columns
 
