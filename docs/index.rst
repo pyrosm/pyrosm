@@ -65,6 +65,7 @@ Getting started
     custom_filter.ipynb
     graphs.ipynb
     benchmarking.ipynb
+    contributions.rst
 
 
 .. toctree::
