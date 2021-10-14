@@ -137,7 +137,7 @@ def test_using_multiple_filters(helsinki_pbf):
     assert isinstance(gdf, GeoDataFrame)
     assert shop == ["alcohol"]
     assert amenity == ["pub"]
-    assert gdf.shape == (59, 32)
+    assert gdf.shape == (59, 33)
 
 
 def test_using_rare_tag(helsinki_pbf):
