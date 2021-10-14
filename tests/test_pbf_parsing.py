@@ -59,7 +59,16 @@ def test_getting_nodes(test_pbf):
     assert isinstance(nodes, GeoDataFrame)
 
     # Required node columns
-    node_cols = ["id", "version", "changeset", "timestamp", "lon", "lat", "tags", "visible"]
+    node_cols = [
+        "id",
+        "version",
+        "changeset",
+        "timestamp",
+        "lon",
+        "lat",
+        "tags",
+        "visible",
+    ]
     for col in node_cols:
         assert col in nodes.columns
 
