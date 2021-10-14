@@ -710,6 +710,97 @@ class OSM:
 
     def to_graph(
         self,
+        graph_type="igraph",
+        direction="oneway",
+        from_id_col="u",
+        to_id_col="v",
+        edge_id_col="id",
+        node_id_col="id",
+        force_bidirectional=False,
+        network_type="walking",
+        retain_all=False,
+        osmnx_compatible=True,
+        pandana_weights=["length"],
+    ):
+        """
+        `
+        Export OSM network to routable graph. Supported output graph types are:
+          - "igraph" (default),
+          - "networkx",
+          - "pandana"
+
+        For walking and cycling, the output graph will be bidirectional by default
+        (i.e. travel along the street is allowed to both directions). For driving,
+        one-way streets are taken into account by default and the travel is restricted
+        based on the rules in OSM data (based on "oneway" attribute).
+
+        Parameters
+        ----------
+
+        graph_type : str
+            Type of the output graph. Available graphs are:
+              - "igraph" --> returns an igraph.Graph -object.
+              - "networkx" --> returns a networkx.MultiDiGraph -object.
+              - "pandana" --> returns an pandana.Network -object.
+
+        direction : str
+            Name for the column containing information about the allowed driving directions
+
+        from_id_col : str
+            Name for the column having the from-node-ids of edges.
+
+        to_id_col : str
+            Name for the column having the to-node-ids of edges.
+
+        edge_id_col : str
+            Name for the column having the unique id for edges.
+
+        node_id_col : str
+            Name for the column having the unique id for nodes.
+
+        force_bidirectional : bool
+            If True, all edges will be created as bidirectional (allow travel to both directions).
+
+        network_type : str (default "walking")
+            What kind of network to parse.
+            Possible values are:
+              - `'walking'`
+              - `'cycling'`
+              - `'driving'`
+              - `'driving+service'`
+              - `'all'`.
+
+        retain_all : bool
+            if True, return the entire graph even if it is not connected.
+            otherwise, retain only the connected edges.
+
+        osmnx_compatible : bool (default True)
+            if True, modifies the edge and node-attribute naming to be compatible with OSMnx
+            (allows utilizing all OSMnx functionalities).
+            NOTE: Only applicable with "networkx" graph type.
+
+        pandana_weights : list
+            Columns that are used as weights when exporting to Pandana graph. By default uses "length" column.
+        """
+        nodes, edges = self.get_network(network_type=network_type, nodes=True)
+        return self.graph_from_nodes_and_edges(
+            nodes,
+            edges,
+            graph_type,
+            direction,
+            from_id_col,
+            to_id_col,
+            edge_id_col,
+            node_id_col,
+            force_bidirectional,
+            network_type,
+            retain_all,
+            osmnx_compatible,
+            pandana_weights
+        )
+
+    @staticmethod
+    def graph_from_nodes_and_edges(
         nodes,
         edges,
         graph_type="igraph",
@@ -719,14 +810,15 @@ class OSM:
         edge_id_col="id",
         node_id_col="id",
         force_bidirectional=False,
-        network_type=None,
+        network_type="walking",
         retain_all=False,
         osmnx_compatible=True,
         pandana_weights=["length"],
     ):
         """
         `
-        Export OSM network to routable graph. Supported output graph types are:
+        Convert an OSM network (consisting of `nodes` and `edges`) to a routable graph.
+        Supported output graph types are:
           - "igraph" (default),
           - "networkx",
           - "pandana"
@@ -774,8 +866,9 @@ class OSM:
             Network type for the given data. Determines how the graph will be constructed.
             The network type is typically extracted automatically from the metadata of
             the edges/nodes GeoDataFrames. This parameter can be used if this metadata is not
-            available for a reason or another. By default, bidirectional graph is created for walking, cycling and all,
-            and directed graph for driving (i.e. oneway streets are taken into account).
+            available for a reason or another. By default, bidirectional graph is created for
+            walking, cycling and all, and directed graph for driving (i.e. oneway streets are
+            taken into account).
             Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'.
 
         retain_all : bool

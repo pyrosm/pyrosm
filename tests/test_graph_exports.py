@@ -445,11 +445,27 @@ def test_to_graph_api(test_pbf):
     import pandana
 
     osm = OSM(test_pbf)
+    # igraph is the default
+    ig = osm.to_graph()
+    nxg = osm.to_graph(graph_type="networkx")
+    pdg = osm.to_graph(graph_type="pandana")
+    assert isinstance(nxg, nx.MultiDiGraph)
+    assert isinstance(ig, igraph.Graph)
+    assert isinstance(pdg, pandana.Network)
+
+
+def test_graph_from_nodes_and_edges(test_pbf):
+    from pyrosm import OSM
+    import networkx as nx
+    import igraph
+    import pandana
+
+    osm = OSM(test_pbf)
     nodes, edges = osm.get_network(nodes=True)
     # igraph is the default
-    ig = osm.to_graph(nodes, edges)
-    nxg = osm.to_graph(nodes, edges, graph_type="networkx")
-    pdg = osm.to_graph(nodes, edges, graph_type="pandana")
+    ig = osm.graph_from_nodes_and_edges(nodes, edges)
+    nxg = osm.graph_from_nodes_and_edges(nodes, edges, graph_type="networkx")
+    pdg = osm.graph_from_nodes_and_edges(nodes, edges, graph_type="pandana")
     assert isinstance(nxg, nx.MultiDiGraph)
     assert isinstance(ig, igraph.Graph)
     assert isinstance(pdg, pandana.Network)
@@ -465,7 +481,7 @@ def test_graph_exports_correct_number_of_nodes(test_pbf):
     # NetworkX
     nodes, edges = osm.get_network(nodes=True)
     node_cnt = len(nodes)
-    nxg = osm.to_graph(
+    nxg = osm.graph_from_nodes_and_edges(
         nodes, edges, graph_type="networkx", osmnx_compatible=False, retain_all=True
     )
     assert node_cnt == nxg.number_of_nodes()
@@ -484,7 +500,7 @@ def test_graph_export_works_without_oneway_column(test_pbf):
     edges = edges.drop("oneway", axis=1)
 
     with pytest.warns(UserWarning) as w:
-        nxg = osm.to_graph(nodes, edges, graph_type="networkx")
+        nxg = osm.graph_from_nodes_and_edges(nodes, edges, graph_type="networkx")
         # Check the warning text
         if "missing in the edges" in str(w):
             pass
