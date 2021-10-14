@@ -810,7 +810,7 @@ class OSM:
         edge_id_col="id",
         node_id_col="id",
         force_bidirectional=False,
-        network_type="walking",
+        network_type=None,
         retain_all=False,
         osmnx_compatible=True,
         pandana_weights=["length"],
