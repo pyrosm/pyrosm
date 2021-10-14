@@ -98,8 +98,12 @@ cdef get_way_coordinates_for_polygon(node_coordinate_lookup, way_elements):
         for ii in range(0, nn):
             node = way_nodes[ii]
             try:
-                coords.append((node_coordinate_lookup[node]["lon"],
-                               node_coordinate_lookup[node]["lat"]))
+                # Ensure lat/lon values are valid
+                lon = node_coordinate_lookup[node]["lon"]
+                lat = node_coordinate_lookup[node]["lat"]
+
+                if is_valid_coordinate_pair(lat, lon):
+                    coords.append((lon, lat))
             except:
                 pass
         features.append(coords)
@@ -288,6 +292,13 @@ cpdef create_node_coordinates_lookup(nodes):
 cpdef create_point_geometries(xarray, yarray):
     return _create_point_geometries(xarray, yarray)
 
+cdef is_valid_coordinate_pair(lat, lon):
+    if lon > 180 or lon < -180:
+        return False
+    if lat > 90 or lat < -90:
+        return False
+    return True
+
 cdef create_linestring_geometry(nodes, node_coordinates):
     coords = []
     kept_nodes = []
@@ -297,11 +308,15 @@ cdef create_linestring_geometry(nodes, node_coordinates):
         node = nodes[i]
         try:
             data = node_coordinates[node]
-            coords.append([(data["lon"],
-                            data["lat"])])
-            kept_nodes.append(node)
-            data["id"] = node
-            node_data.append(data)
+            # Ensure coordinates are valid
+            lon = data["lon"]
+            lat = data["lat"]
+
+            if is_valid_coordinate_pair(lat, lon):
+                coords.append([(lon, lat)])
+                kept_nodes.append(node)
+                data["id"] = node
+                node_data.append(data)
         except:
             pass
 
@@ -339,8 +354,11 @@ cdef create_polygon_geometry(nodes, node_coordinates):
     for i in range(0, n):
         node = nodes[i]
         try:
-            coords.append((node_coordinates[node]["lon"],
-                           node_coordinates[node]["lat"]))
+            # Ensure lat/lon values are valid
+            lon = node_coordinates[node]["lon"]
+            lat = node_coordinates[node]["lat"]
+            if is_valid_coordinate_pair(lat, lon):
+                coords.append((lon, lat))
         except:
             pass
 
