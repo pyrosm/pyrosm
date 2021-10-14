@@ -32,6 +32,7 @@ basic_info_tags = [
     "phone",
     "ref",
     "url",
+    "visible",
     "website",
     "yes",
 ]
