@@ -97,6 +97,9 @@ cdef parse_dense(pblock, data, string_table, bounding_box):
     # Changeset
     changesets = delta_decode_changeset(data)
 
+    # Visible flags (if visible is False, the element has been deleted)
+    visible = np.array(list(data.denseinfo.visible), dtype=bool)
+
     # Tags
     tags = np.empty(len(data.id), dtype=object)
     parsed = parse_dense_tags(data.keys_vals, string_table)
@@ -113,6 +116,8 @@ cdef parse_dense(pblock, data, string_table, bounding_box):
         changesets = np.zeros(len(data.id), dtype=np.int8)
     if timestamps.shape[0] == 0:
         timestamps = np.zeros(len(data.id), dtype=np.int8)
+    if visible.shape[0] == 0:
+        visible = np.zeros(len(data.id), dtype=np.int8)
 
     if bounding_box is not None:
         # Filter
@@ -125,6 +130,7 @@ cdef parse_dense(pblock, data, string_table, bounding_box):
         lons = lons[mask]
         lats = lats[mask]
         tags = tags[mask]
+        visible = visible[mask]
 
     return [dict(id=ids,
                  version=versions,
@@ -133,6 +139,7 @@ cdef parse_dense(pblock, data, string_table, bounding_box):
                  lon=lons,
                  lat=lats,
                  tags=tags,
+                 visible=visible,
                  )]
 
 
@@ -219,6 +226,7 @@ cdef parse_ways(data, string_table, node_lookup):
                         id=way.id,
                         version=way.info.version,
                         timestamp=way.info.timestamp,
+                        visible=way.info.visible,
                         tags=parse_tags(way.keys, way.vals, string_table),
                         nodes=nodes,
                     )
@@ -229,6 +237,7 @@ cdef parse_ways(data, string_table, node_lookup):
                     id=way.id,
                     version=way.info.version,
                     timestamp=way.info.timestamp,
+                    visible=way.info.visible,
                     tags=parse_tags(way.keys, way.vals, string_table),
                     nodes=nodes,
                 )
@@ -282,6 +291,9 @@ cdef parse_relations(data, string_table):
     # Changeset
     changesets = np.array([rel.info.changeset for rel in data], dtype=np.int64)
 
+    # Visible
+    visible = np.array([rel.info.visible for rel in data], dtype=bool)
+
     # Relation members
     members = np.array([
         get_relation_members(rel, string_table)
@@ -302,6 +314,7 @@ cdef parse_relations(data, string_table):
                 timestamp=timestamps,
                 members=members,
                 tags=tags,
+                visible=visible,
                 )]
 
 
