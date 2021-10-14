@@ -796,7 +796,7 @@ class OSM:
             network_type,
             retain_all,
             osmnx_compatible,
-            pandana_weights
+            pandana_weights,
         )
 
     @staticmethod
