@@ -708,8 +708,8 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
+    @staticmethod
     def to_graph(
-        self,
         nodes,
         edges,
         graph_type="igraph",
