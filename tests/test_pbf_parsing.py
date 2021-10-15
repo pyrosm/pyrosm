@@ -22,19 +22,17 @@ def test_parsing_basic_elements_from_pbf(test_pbf):
     osm._read_pbf()
     nodes, ways = osm._nodes, osm._way_records
 
-    assert isinstance(nodes, list)
+    assert isinstance(nodes, dict)
     assert isinstance(ways, list)
 
     # Required node columns
-    node_cols = ["id", "version", "changeset", "timestamp", "lon", "lat", "tags"]
+    node_cols = ["id", "version", "changeset", "timestamp", "lon", "lat", "tags", "visible"]
     for col in node_cols:
-        for node_set in nodes:
-            assert col in node_set.keys()
-            # Nodes should be in numpy arrays
-            assert isinstance(node_set[col], np.ndarray)
-
-            # Check shape
-            assert len(node_set[col]) in [6222, 8000]
+        assert col in nodes.keys()
+        # Nodes should be in numpy arrays
+        assert isinstance(nodes[col], np.ndarray)
+        # Check shape
+        assert len(nodes[col]) == 14222
 
     # Check ways shape
     assert len(ways) == 2653

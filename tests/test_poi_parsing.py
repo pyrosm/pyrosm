@@ -46,7 +46,7 @@ def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
     for k in default_filter.keys():
         tags_as_columns += getattr(osm.conf.tags, k)
 
-    nodes = concatenate_dicts_of_arrays(osm._nodes)
+    nodes = osm._nodes
     gdf = get_poi_data(
         nodes,
         osm._node_coordinates,
