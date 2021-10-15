@@ -59,23 +59,6 @@ cpdef fix_geometry(geometry, diff_threshold=20):
     # Otherwise return original geometry
     return geometry
 
-cdef _create_node_coordinates_lookup(nodes):
-    cdef int i
-    ids = np.concatenate([group['id'] for group in nodes])
-    lats = np.concatenate([group['lat'] for group in nodes])
-    lons = np.concatenate([group['lon'] for group in nodes])
-    tags = np.concatenate([group['tags'] for group in nodes])
-    timestamps = np.concatenate([group['timestamp'] for group in nodes])
-    versions = np.concatenate([group['version'] for group in nodes])
-    changesets = np.concatenate([group['changeset'] for group in nodes])
-
-    return {ids[i]: {"lon": lons[i],
-                     "lat": lats[i],
-                     "tags": tags[i],
-                     "timestamp": timestamps[i],
-                     "version": versions[i],
-                     "changeset": changesets[i],
-                     } for i in range(0, len(ids))}
 
 cdef pygeos_to_shapely(geom):
     if geom is None:
@@ -83,10 +66,12 @@ cdef pygeos_to_shapely(geom):
     geom = shapely.geos.lgeos.GEOSGeom_clone(geom._ptr)
     return shapely.geometry.base.geom_factory(geom)
 
+
 cdef to_shapely(pygeos_array):
     out = np.empty(len(pygeos_array), dtype=object)
     out[:] = [pygeos_to_shapely(geom) for geom in pygeos_array]
     return out
+
 
 cdef get_way_coordinates_for_polygon(node_coordinate_lookup, way_elements):
     cdef int i, ii, nn, n = len(way_elements["id"])
@@ -109,6 +94,7 @@ cdef get_way_coordinates_for_polygon(node_coordinate_lookup, way_elements):
         features.append(coords)
     return features
 
+
 cdef create_linear_ring(coordinates):
     try:
         return linearrings(coordinates)
@@ -126,6 +112,7 @@ cdef create_linear_ring(coordinates):
     except Exception as e:
         raise e
 
+
 cdef create_linestring(coordinates):
     try:
         return linestrings(coordinates)
@@ -142,6 +129,7 @@ cdef create_linestring(coordinates):
             raise e
     except Exception as e:
         raise e
+
 
 cdef _create_point_geometries(xarray, yarray):
     cdef:
@@ -286,11 +274,10 @@ cdef create_relation_geometry(node_coordinates, ways,
             "https://github.com/HTenkanen/pyrosm/issues"
         )
 
-cpdef create_node_coordinates_lookup(nodes):
-    return _create_node_coordinates_lookup(nodes)
 
 cpdef create_point_geometries(xarray, yarray):
     return _create_point_geometries(xarray, yarray)
+
 
 cdef is_valid_coordinate_pair(lat, lon):
     if lon > 180 or lon < -180:
@@ -298,6 +285,7 @@ cdef is_valid_coordinate_pair(lat, lon):
     if lat > 90 or lat < -90:
         return False
     return True
+
 
 cdef create_linestring_geometry(nodes, node_coordinates):
     coords = []
@@ -348,6 +336,7 @@ cdef create_linestring_geometry(nodes, node_coordinates):
         # node_data should always be a list
         return None, None, None, []
 
+
 cdef create_polygon_geometry(nodes, node_coordinates):
     cdef int i, n = len(nodes)
     coords = []
@@ -380,6 +369,7 @@ cdef create_polygon_geometry(nodes, node_coordinates):
             raise e
     else:
         return None
+
 
 cdef _create_way_geometries(node_coordinates,
                             way_elements,
@@ -444,6 +434,7 @@ cdef _create_way_geometries(node_coordinates,
                     geometries.append(multilinestrings(geom))
 
     return geometries, from_ids, to_ids, node_attributes
+
 
 cpdef create_way_geometries(node_coordinates, way_elements, parse_network):
     return _create_way_geometries(node_coordinates, way_elements, parse_network)
