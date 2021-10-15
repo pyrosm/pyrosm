@@ -446,7 +446,7 @@ def test_getting_nodes_and_edges(test_pbf):
 
     # Test shape
     assert edges.shape == (1215, 23)
-    assert nodes.shape == (1147, 8)
+    assert nodes.shape == (1147, 9)
 
     # Edges should have "u" and "v" columns
     required = ["u", "v", "length"]
@@ -481,7 +481,7 @@ def test_getting_nodes_and_edges_with_bbox(test_pbf):
 
     # Test shape
     assert edges.shape == (321, 23)
-    assert nodes.shape == (317, 8)
+    assert nodes.shape == (317, 9)
 
     # Edges should have "u" and "v" columns
     required = ["u", "v", "length"]
