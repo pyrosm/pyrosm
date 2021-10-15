@@ -293,3 +293,8 @@ cdef filter_node_indices(node_arrays, osm_keys, data_filter, filter_type):
             indices.append(i)
 
     return indices
+
+cpdef get_latest_version(df):
+    # The order of versions is always the same
+    # (newest version is the last)
+    return df.groupby("id").last().reset_index()
