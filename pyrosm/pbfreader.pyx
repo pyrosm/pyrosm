@@ -436,6 +436,8 @@ cdef _parse_osm_data(
     # Keys with numpy arrays
     all_nodes = {col: nodes_df[col].values for col in nodes_df.columns}
     all_relations = {col: relations_df[col].values for col in relations_df.columns}
-    node_coordinates_lookup = nodes_df[["id", "lat", "lon"]].set_index("id").to_dict(orient="index")
+
+    # Node coordinates lookup dictionary with all node attributes (all attributes required for graph building)
+    node_coordinates_lookup = nodes_df.set_index("id").to_dict(orient="index")
 
     return all_nodes, all_ways, all_relations, node_coordinates_lookup

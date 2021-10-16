@@ -311,7 +311,7 @@ def test_connected_component(immutable_nodes_and_edges):
 
     # Test exact shape
     assert ce.shape == (2034, 23)
-    assert cn.shape == (954, 4)
+    assert cn.shape == (954, 9)
 
 
 def test_igraph_connectivity(immutable_nodes_and_edges):
