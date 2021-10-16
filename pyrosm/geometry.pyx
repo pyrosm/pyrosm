@@ -383,19 +383,20 @@ cdef _create_way_geometries(node_coordinates,
     cdef long long node
     cdef list coords
     cdef int n, i
-    try:
-        n = len(way_elements['id'])
-    except Exception as e:
-        keys = list(way_elements.keys())
-        n = len(way_elements[keys[0]])
+    n = len(way_elements['id'])
+    keys = list(way_elements.keys())
 
     # Containers for geoms and node-ids
     geometries = []
     from_ids, to_ids = [], []
     node_attributes = []
+    parsed_way_indices = []
 
     for i in range(0, n):
         nodes = way_elements['nodes'][i]
+        # In some cases (e.g. when using clipped pbf file) the nodes list can be empty
+        if len(nodes) == 0:
+            continue
         u = nodes[0]
         v = nodes[-1]
 
@@ -433,7 +434,14 @@ cdef _create_way_geometries(node_coordinates,
                 else:
                     geometries.append(multilinestrings(geom))
 
-    return geometries, from_ids, to_ids, node_attributes
+        # Add index
+        parsed_way_indices.append(i)
+
+    # Select valid ways
+    for key in keys:
+        way_elements[key] = way_elements[key][parsed_way_indices]
+
+    return way_elements, geometries, from_ids, to_ids, node_attributes
 
 
 cpdef create_way_geometries(node_coordinates, way_elements, parse_network):

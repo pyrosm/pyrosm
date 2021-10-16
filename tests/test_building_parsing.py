@@ -67,7 +67,7 @@ def test_creating_building_geometries(test_pbf):
     )
     assert isinstance(ways, dict)
 
-    geometries, lengths, from_ids, to_ids = create_way_geometries(
+    ways, geometries, lengths, from_ids, to_ids = create_way_geometries(
         osm._node_coordinates, ways, parse_network=False
     )
     assert isinstance(geometries, list), f"Type should be list, got {type(geometries)}."
