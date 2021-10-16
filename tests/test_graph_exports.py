@@ -14,6 +14,12 @@ def test_pbf():
 
 
 @pytest.fixture
+def helsinki_history_pbf():
+    pbf_path = get_data("helsinki_test_history_pbf")
+    return pbf_path
+
+
+@pytest.fixture
 def walk_nodes_and_edges():
     from pyrosm import OSM
 
@@ -488,3 +494,39 @@ def test_graph_export_works_without_oneway_column(test_pbf):
         # Check the warning text
         if "missing in the edges" in str(w):
             pass
+
+
+def test_nxgraph_export_from_osh(helsinki_history_pbf):
+    from pyrosm import OSM
+    from pyrosm.utils import datetime_to_unix_time
+    import pandas as pd
+    from geopandas import GeoDataFrame
+    from shapely.geometry import MultiLineString
+    import networkx as nx
+
+    timestamp = "2010-01-01"
+    osm = OSM(filepath=helsinki_history_pbf)
+    nodes, edges = osm.get_network(timestamp=timestamp, nodes=True)
+
+    g = osm.to_graph(nodes, edges, graph_type="networkx", retain_all=False, osmnx_compatible=True)
+    assert isinstance(g, nx.MultiDiGraph)
+
+    # Test that graph source and target nodes matches with the ones in attribute table
+    for fr, to, edge in g.edges(data=True):
+        assert fr == edge["u"]
+        assert to == edge["v"]
+
+    # Test that finding shortest paths works for all nodes
+    node_ids = [n for n in g.nodes()]
+    source = node_ids[5]
+    shortest_paths = []
+    for target in node_ids:
+        shortest_path_length = nx.shortest_path_length(
+            g, source=source, target=target, weight="length"
+        )
+        shortest_paths.append(shortest_path_length)
+
+    # Check couple of exact lengths
+    assert round(shortest_paths[0], 0) == 478
+    assert round(shortest_paths[-1], 0) == 797
+

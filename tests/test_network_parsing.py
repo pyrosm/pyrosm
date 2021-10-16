@@ -549,5 +549,12 @@ def test_reading_network_from_osh(helsinki_history_pbf):
     assert gdf2["timestamp"].max() > unix_time
 
     # But is shouldn't be higher than the given timestamp
-    assert gdf2["timestamp"].max() < unix_time2
+    assert gdf2["timestamp"].max() <= unix_time2
 
+    # Test reading network with nodes
+    n, e = osm.get_network(timestamp=new_timestamp, nodes=True)
+    assert isinstance(n, GeoDataFrame)
+    assert isinstance(e, GeoDataFrame)
+    # Timestamp shouldn't be higher than the given timestamp
+    assert e["timestamp"].max() <= unix_time2
+    assert n["timestamp"].max() <= unix_time2
