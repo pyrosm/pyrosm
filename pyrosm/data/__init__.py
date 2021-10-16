@@ -101,7 +101,8 @@ class DataSources:
 sources = DataSources()
 
 available = {
-    "test_data": list(_package_files.keys()) + ["helsinki_region_pbf", "helsinki_history_pbf"],
+    "test_data": list(_package_files.keys())
+    + ["helsinki_region_pbf", "helsinki_history_pbf"],
     "regions": {
         k: v for k, v in sources.available.items() if k not in ["cities", "subregions"]
     },
