@@ -101,7 +101,11 @@ class DataSources:
         # Static data for Helsinki Region
         # that should be able to download
         # (needed for tests)
-        self._all_sources += ["helsinki_region_pbf", "helsinki_history_pbf", "helsinki_test_history_pbf"]
+        self._all_sources += [
+            "helsinki_region_pbf",
+            "helsinki_history_pbf",
+            "helsinki_test_history_pbf",
+        ]
         self._all_sources = list(set(self._all_sources))
 
 
