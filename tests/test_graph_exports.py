@@ -508,7 +508,9 @@ def test_nxgraph_export_from_osh(helsinki_history_pbf):
     osm = OSM(filepath=helsinki_history_pbf)
     nodes, edges = osm.get_network(timestamp=timestamp, nodes=True)
 
-    g = osm.to_graph(nodes, edges, graph_type="networkx", retain_all=False, osmnx_compatible=True)
+    g = osm.to_graph(
+        nodes, edges, graph_type="networkx", retain_all=False, osmnx_compatible=True
+    )
     assert isinstance(g, nx.MultiDiGraph)
 
     # Test that graph source and target nodes matches with the ones in attribute table
@@ -529,4 +531,3 @@ def test_nxgraph_export_from_osh(helsinki_history_pbf):
     # Check couple of exact lengths
     assert round(shortest_paths[0], 0) == 478
     assert round(shortest_paths[-1], 0) == 797
-
