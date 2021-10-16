@@ -15,6 +15,12 @@ def helsinki_pbf():
 
 
 @pytest.fixture
+def helsinki_history_pbf():
+    pbf_path = get_data("helsinki_test_history_pbf")
+    return pbf_path
+
+
+@pytest.fixture
 def test_output_dir():
     import os, tempfile
 
@@ -277,3 +283,54 @@ def test_adding_extra_attribute(helsinki_pbf):
     assert extra_col in extra.columns
     assert len(extra[extra_col].dropna().unique()) > 0
     assert isinstance(gdf, GeoDataFrame)
+
+
+def test_reading_buildings_from_osh(helsinki_history_pbf):
+    from pyrosm import OSM
+    from pyrosm.utils import datetime_to_unix_time
+    import pandas as pd
+    from geopandas import GeoDataFrame
+    from shapely.geometry import Polygon
+
+    timestamp = "2010-01-01"
+    dt = pd.to_datetime(timestamp, utc=True)
+    unix_time = datetime_to_unix_time(dt)
+
+    osm = OSM(filepath=helsinki_history_pbf)
+    gdf = osm.get_buildings(timestamp=timestamp)
+
+    assert osm._current_timestamp == unix_time
+    assert isinstance(gdf, GeoDataFrame)
+    assert isinstance(gdf.loc[0, "geometry"], Polygon)
+    assert gdf.shape == (74, 14)
+
+    required_cols = ["building", "id", "timestamp", "version", "geometry"]
+
+    for col in required_cols:
+        assert col in gdf.columns
+
+    # None of the features should be newer than the given timestamp
+    assert gdf["timestamp"].max() <= unix_time
+
+    # There should be only a single version per id
+    cnt = len(gdf)
+    assert cnt == len(gdf.drop_duplicates(subset=["id"]))
+
+    # Changing the timestamp should parse a different set of elements
+    new_timestamp = "2015-01-01"
+    dt2 = pd.to_datetime(new_timestamp, utc=True)
+    unix_time2 = datetime_to_unix_time(dt2)
+
+    gdf2 = osm.get_buildings(timestamp=new_timestamp)
+
+    # Now the "current_timestamp" should have been updated
+    assert osm._current_timestamp == unix_time2
+
+    # Number of elements should (likely) be higher
+    assert len(gdf2) > len(gdf)
+
+    # There should be newer timestamps in the data
+    assert gdf2["timestamp"].max() > unix_time
+
+    # But is shouldn't be higher than the given timestamp
+    assert gdf2["timestamp"].max() < unix_time2
