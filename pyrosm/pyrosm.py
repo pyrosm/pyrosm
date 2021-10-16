@@ -1,8 +1,6 @@
 import numpy as np
 from pyrosm.config import Conf
 from pyrosm.pbfreader import parse_osm_data
-from pyrosm._arrays import concatenate_dicts_of_arrays
-from pyrosm.geometry import create_node_coordinates_lookup
 from pyrosm.frames import create_nodes_gdf
 from pyrosm.utils import (
     validate_custom_filter,
@@ -14,6 +12,7 @@ from pyrosm.utils import (
     validate_input_file,
     validate_graph_type,
     get_bounding_box,
+    get_unix_time,
 )
 from pyrosm.utils.download import get_file_size
 from shapely.geometry import (
@@ -64,6 +63,11 @@ class OSM:
         # Check input file
         self.filepath = validate_input_file(filepath)
 
+        # Check if file contains history
+        self._osh_file = False
+        if "osh.pbf" in self.filepath.lower():
+            self._osh_file = True
+
         if bounding_box is None:
             self.bounding_box = None
         elif type(bounding_box) in self.allowed_bbox_types:
@@ -93,32 +97,46 @@ class OSM:
 
         # TODO: Add logging as a parameter?
         self._verbose = False
-
-        self._all_way_tags = None
         self._nodes = None
         self._nodes_gdf = None
         self._node_coordinates = None
         self._way_records = None
         self._relations = None
 
-    def _read_pbf(self):
+        # Timestamp
+        self._current_timestamp = None
+        self._timestamp_changed = False
+
+    def _get_pbf_elements(self, bounding_box, unix_time_filter):
+        nodes, ways, relations, node_coordinates = parse_osm_data(
+            self.filepath,
+            bounding_box,
+            exclude_relations=False,
+            unix_time_filter=unix_time_filter,
+        )
+
+        self._nodes = nodes
+        self._way_records = ways
+        self._relations = relations
+        self._node_coordinates = node_coordinates
+
+    def _read_pbf(self, unix_time_filter=None):
         # PBF reading requires a list of bounding box coordinates
         if type(self.bounding_box) in self.allowed_bbox_types:
             bounding_box = self.bounding_box.bounds
         else:
             bounding_box = self.bounding_box
 
-        nodes, ways, relations, way_tags = parse_osm_data(
-            self.filepath, bounding_box, exclude_relations=False
-        )
+        # Update current timestamp
+        self._set_current_time(unix_time_filter)
 
-        self._nodes = nodes
-        self._way_records = ways
-        self._relations = relations
-        self._all_way_tags = way_tags
+        if self._nodes is None or self._way_records is None:
+            self._get_pbf_elements(bounding_box, unix_time_filter)
+        elif self._timestamp_changed:
+            self._get_pbf_elements(bounding_box, unix_time_filter)
 
-        # Prepare node coordinates lookup table
-        self._node_coordinates = create_node_coordinates_lookup(self._nodes)
+        # Once the data has been read update the flag
+        self._timestamp_changed = False
 
     def _get_network_filter(self, net_type):
         possible_filters = self.conf._possible_network_filters
@@ -144,11 +162,19 @@ class OSM:
         elif net_type == "all":
             return None
 
+    def _set_current_time(self, unix_time):
+        if unix_time is not None:
+            # Keeps track if timestamp changed
+            if self._current_timestamp != unix_time:
+                self._current_timestamp = unix_time
+                self._timestamp_changed = True
+
     def get_network(
         self,
         network_type="walking",
         extra_attributes=None,
         nodes=False,
+        timestamp=None,
     ):
         """
         Parses street networks from OSM
@@ -174,6 +200,16 @@ class OSM:
             and 2) every segment of a road constituting a way is parsed as a separate row
             (to enable full connectivity in the graph).
 
+        timestamp: str | datetime | int
+            If provided, the data from given moment of time will be returned. The time should be provided in UTC.
+            Note: This functionality only works with OSH.PBF files that can be downloaded manually e.g. from Geofabrik
+            (requires login with OSM account).
+
+            The logic: the closest version of each element up to given timestamp will be selected to the result.
+            This means that elements can be older than the given timestamp (the most up-to-date version is selected),
+            but not newer (records having exactly the selected timestamp will be kept). In case only a date is given,
+            the time will represent midnight of the given day, such as "2021-01-01 00:00:00".
+
         Returns
         -------
 
@@ -198,8 +234,12 @@ class OSM:
             validate_tags_as_columns(extra_attributes)
             tags_as_columns += extra_attributes
 
-        if self._nodes is None or self._way_records is None:
-            self._read_pbf()
+        unix_time_filter = None
+        if timestamp is not None:
+            unix_time_filter = get_unix_time(timestamp, self._osh_file)
+
+        # Read pbf
+        self._read_pbf(unix_time_filter)
 
         # Filter network data with given filter
         edges, node_gdf = get_network_data(
@@ -226,7 +266,7 @@ class OSM:
             return (node_gdf, edges)
         return edges
 
-    def get_buildings(self, custom_filter=None, extra_attributes=None):
+    def get_buildings(self, custom_filter=None, extra_attributes=None, timestamp=None):
         """
         Parses buildings from OSM.
 
@@ -245,6 +285,17 @@ class OSM:
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
 
+        timestamp: str | datetime | int
+            If provided, the data from given moment of time will be returned. The time should be provided in UTC.
+            Note: This functionality only works with OSH.PBF files that can be downloaded manually e.g. from Geofabrik
+            (requires login with OSM account).
+
+            The logic: the closest version of each element up to given timestamp will be selected to the result.
+            This means that elements can be older than the given timestamp (the most up-to-date version is selected),
+            but not newer (records having exactly the selected timestamp will be kept). In case only a date is given,
+            the time will represent midnight of the given day, such as "2021-01-01 00:00:00".
+
+
         See Also
         --------
 
@@ -259,8 +310,11 @@ class OSM:
             validate_tags_as_columns(extra_attributes)
             tags_as_columns += extra_attributes
 
-        if self._nodes is None or self._way_records is None:
-            self._read_pbf()
+        unix_time_filter = None
+        if timestamp is not None:
+            unix_time_filter = get_unix_time(timestamp, self._osh_file)
+
+        self._read_pbf(unix_time_filter)
 
         gdf = get_building_data(
             self._node_coordinates,
@@ -278,7 +332,7 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def get_landuse(self, custom_filter=None, extra_attributes=None):
+    def get_landuse(self, custom_filter=None, extra_attributes=None, timestamp=None):
         """
         Parses landuse from OSM.
 
@@ -297,6 +351,16 @@ class OSM:
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
 
+        timestamp: str | datetime | int
+            If provided, the data from given moment of time will be returned. The time should be provided in UTC.
+            Note: This functionality only works with OSH.PBF files that can be downloaded manually e.g. from Geofabrik
+            (requires login with OSM account).
+
+            The logic: the closest version of each element up to given timestamp will be selected to the result.
+            This means that elements can be older than the given timestamp (the most up-to-date version is selected),
+            but not newer (records having exactly the selected timestamp will be kept). In case only a date is given,
+            the time will represent midnight of the given day, such as "2021-01-01 00:00:00".
+
         See Also
         --------
 
@@ -306,8 +370,11 @@ class OSM:
 
         """
 
-        if self._nodes is None or self._way_records is None:
-            self._read_pbf()
+        unix_time_filter = None
+        if timestamp is not None:
+            unix_time_filter = get_unix_time(timestamp, self._osh_file)
+
+        self._read_pbf(unix_time_filter)
 
         # Default tags to keep as columns
         tags_as_columns = self.conf.tags.landuse
@@ -315,10 +382,6 @@ class OSM:
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
             tags_as_columns += extra_attributes
-
-        # If nodes are still in chunks, merge before passing forward
-        if isinstance(self._nodes, list):
-            self._nodes = concatenate_dicts_of_arrays(self._nodes)
 
         gdf = get_landuse_data(
             self._nodes,
@@ -337,7 +400,7 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def get_natural(self, custom_filter=None, extra_attributes=None):
+    def get_natural(self, custom_filter=None, extra_attributes=None, timestamp=None):
         """
         Parses natural from OSM.
 
@@ -356,6 +419,16 @@ class OSM:
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
 
+        timestamp: str | datetime | int
+            If provided, the data from given moment of time will be returned. The time should be provided in UTC.
+            Note: This functionality only works with OSH.PBF files that can be downloaded manually e.g. from Geofabrik
+            (requires login with OSM account).
+
+            The logic: the closest version of each element up to given timestamp will be selected to the result.
+            This means that elements can be older than the given timestamp (the most up-to-date version is selected),
+            but not newer (records having exactly the selected timestamp will be kept). In case only a date is given,
+            the time will represent midnight of the given day, such as "2021-01-01 00:00:00".
+
         See Also
         --------
 
@@ -365,8 +438,11 @@ class OSM:
 
         """
 
-        if self._nodes is None or self._way_records is None:
-            self._read_pbf()
+        unix_time_filter = None
+        if timestamp is not None:
+            unix_time_filter = get_unix_time(timestamp, self._osh_file)
+
+        self._read_pbf(unix_time_filter)
 
         # Default tags to keep as columns
         tags_as_columns = self.conf.tags.natural
@@ -374,10 +450,6 @@ class OSM:
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
             tags_as_columns += extra_attributes
-
-        # If nodes are still in chunks, merge before passing forward
-        if isinstance(self._nodes, list):
-            self._nodes = concatenate_dicts_of_arrays(self._nodes)
 
         gdf = get_natural_data(
             self._nodes,
@@ -402,6 +474,7 @@ class OSM:
         name=None,
         custom_filter=None,
         extra_attributes=None,
+        timestamp=None,
     ):
         """
         Parses boundaries from OSM.
@@ -433,6 +506,15 @@ class OSM:
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
 
+        timestamp: str | datetime | int
+            If provided, the data from given moment of time will be returned. The time should be provided in UTC.
+            Note: This functionality only works with OSH.PBF files that can be downloaded manually e.g. from Geofabrik
+            (requires login with OSM account).
+
+            The logic: the closest version of each element up to given timestamp will be selected to the result.
+            This means that elements can be older than the given timestamp (the most up-to-date version is selected),
+            but not newer (records having exactly the selected timestamp will be kept). In case only a date is given,
+            the time will represent midnight of the given day, such as "2021-01-01 00:00:00".
 
         See Also
         --------
@@ -443,8 +525,11 @@ class OSM:
 
         """
 
-        if self._nodes is None or self._way_records is None:
-            self._read_pbf()
+        unix_time_filter = None
+        if timestamp is not None:
+            unix_time_filter = get_unix_time(timestamp, self._osh_file)
+
+        self._read_pbf(unix_time_filter)
 
         # Default tags to keep as columns
         tags_as_columns = self.conf.tags.boundary
@@ -452,10 +537,6 @@ class OSM:
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
             tags_as_columns += extra_attributes
-
-        # If nodes are still in chunks, merge before passing forward
-        if isinstance(self._nodes, list):
-            self._nodes = concatenate_dicts_of_arrays(self._nodes)
 
         # Check boundary type
         boundary_type = validate_boundary_type(boundary_type)
@@ -484,7 +565,7 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def get_pois(self, custom_filter=None, extra_attributes=None):
+    def get_pois(self, custom_filter=None, extra_attributes=None, timestamp=None):
         """
         Parse Point of Interest (POI) from OSM.
 
@@ -498,6 +579,15 @@ class OSM:
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
 
+        timestamp: str | datetime | int
+            If provided, the data from given moment of time will be returned. The time should be provided in UTC.
+            Note: This functionality only works with OSH.PBF files that can be downloaded manually e.g. from Geofabrik
+            (requires login with OSM account).
+
+            The logic: the closest version of each element up to given timestamp will be selected to the result.
+            This means that elements can be older than the given timestamp (the most up-to-date version is selected),
+            but not newer (records having exactly the selected timestamp will be kept). In case only a date is given,
+            the time will represent midnight of the given day, such as "2021-01-01 00:00:00".
 
         Notes
         -----
@@ -517,7 +607,6 @@ class OSM:
         For instance, you can parse all 'amenity' elements AND specific 'shop' elements,
         such as supermarkets and book stores by specifying:
           `custom_filter={"amenity": True, "shop": ["supermarket", "books"]}`
-
 
         See Also
         --------
@@ -552,8 +641,11 @@ class OSM:
                     f"Got {custom_filter} with type {type(custom_filter)}."
                 )
 
-        if self._nodes is None or self._way_records is None:
-            self._read_pbf()
+        unix_time_filter = None
+        if timestamp is not None:
+            unix_time_filter = get_unix_time(timestamp, self._osh_file)
+
+        self._read_pbf(unix_time_filter)
 
         # Default tags to keep as columns
         tags_as_columns = []
@@ -568,10 +660,6 @@ class OSM:
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
             tags_as_columns += extra_attributes
-
-        # If nodes are still in chunks, merge before passing forward
-        if isinstance(self._nodes, list):
-            self._nodes = concatenate_dicts_of_arrays(self._nodes)
 
         gdf = get_poi_data(
             self._nodes,
@@ -600,6 +688,7 @@ class OSM:
         keep_ways=True,
         keep_relations=True,
         extra_attributes=None,
+        timestamp=None,
     ):
         """
         `
@@ -632,6 +721,16 @@ class OSM:
 
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+
+        timestamp: str | datetime | int
+            If provided, the data from given moment of time will be returned. The time should be provided in UTC.
+            Note: This functionality only works with OSH.PBF files that can be downloaded manually e.g. from Geofabrik
+            (requires login with OSM account).
+
+            The logic: the closest version of each element up to given timestamp will be selected to the result.
+            This means that elements can be older than the given timestamp (the most up-to-date version is selected),
+            but not newer (records having exactly the selected timestamp will be kept). In case only a date is given,
+            the time will represent midnight of the given day, such as "2021-01-01 00:00:00".
 
         """
 
@@ -679,12 +778,11 @@ class OSM:
         # Validate booleans
         validate_booleans(keep_nodes, keep_ways, keep_relations)
 
-        if self._nodes is None or self._way_records is None:
-            self._read_pbf()
+        unix_time_filter = None
+        if timestamp is not None:
+            unix_time_filter = get_unix_time(timestamp, self._osh_file)
 
-        # If nodes are still in chunks, merge before passing forward
-        if isinstance(self._nodes, list):
-            self._nodes = concatenate_dicts_of_arrays(self._nodes)
+        self._read_pbf(unix_time_filter)
 
         gdf = get_user_defined_data(
             self._nodes,

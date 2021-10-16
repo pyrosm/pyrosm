@@ -3,12 +3,24 @@ from struct import unpack
 import zlib
 from pyrosm_proto import BlobHeader, Blob, HeaderBlock, PrimitiveBlock
 from pyrosm.tagparser cimport tounicode, parse_dense_tags, parse_tags, explode_way_tags
-from pyrosm._arrays cimport to_clong_array
-from pyrosm.delta_compression cimport delta_decode_latitude, delta_decode_longitude, \
-    delta_decode_id, delta_decode_timestamp, delta_decode_changeset
-from pyrosm.data_filter cimport get_nodeid_lookup_khash, nodes_for_way_exist_khash
+from pyrosm._arrays cimport to_clong_array, concatenate_dicts_of_arrays
+from pyrosm.delta_compression cimport (
+    delta_decode_latitude,
+    delta_decode_longitude,
+    delta_decode_id,
+    delta_decode_timestamp,
+    delta_decode_changeset,
+)
+from pyrosm.data_filter cimport (
+    get_nodeid_lookup_khash,
+    nodes_for_way_exist_khash,
+    get_latest_version,
+    clean_empty_values_from_ways,
+)
 from pyrosm.utils import valid_header_block
+from pyrosm.frames import create_df
 import numpy as np
+import pandas as pd
 from libc.stdlib cimport malloc, free
 
 cdef get_primitive_blocks_and_string_tables(filepath):
@@ -72,7 +84,13 @@ cdef get_primitive_blocks_and_string_tables(filepath):
     return primitive_blocks, string_tables
 
 
-cdef parse_dense(pblock, data, string_table, bounding_box):
+cdef parse_dense(
+        pblock,
+        data,
+        string_table,
+        bounding_box,
+        unix_time_filter,
+):
     cdef:
         int node_granularity = pblock.granularity
         int timestamp_granularity = pblock.date_granularity
@@ -123,6 +141,18 @@ cdef parse_dense(pblock, data, string_table, bounding_box):
         # Filter
         xmin, ymin, xmax, ymax = bounding_box
         mask = (xmin <= lons) & (lons <= xmax) & (ymin <= lats) & (lats <= ymax)
+        ids = ids[mask]
+        versions = versions[mask]
+        changesets = changesets[mask]
+        timestamps = timestamps[mask]
+        lons = lons[mask]
+        lats = lats[mask]
+        tags = tags[mask]
+        visible = visible[mask]
+
+    if unix_time_filter is not None:
+        # Filter out node (versions) based on time
+        mask = timestamps <= unix_time_filter
         ids = ids[mask]
         versions = versions[mask]
         changesets = changesets[mask]
@@ -211,13 +241,22 @@ cdef parse_nodeids_from_ref_deltas(refs):
         free(refs_c)
 
 
-cdef parse_ways(data, string_table, node_lookup):
+cdef parse_ways(
+        data,
+        string_table,
+        node_lookup,
+        unix_time_filter,
+):
     cdef long long id
     cdef int version, i, timestamp, n=len(data)
 
     way_set = []
     for i in range(0, n):
         way = data[i]
+        if unix_time_filter is not None:
+            # Filter way versions according the time filter
+            if way.info.timestamp > unix_time_filter:
+                continue
         nodes = parse_nodeids_from_ref_deltas(way.refs)
         if node_lookup is not None:
             if nodes_for_way_exist_khash(nodes, node_lookup):
@@ -274,7 +313,7 @@ cdef get_relation_members(relation, str_table):
         )
 
 
-cdef parse_relations(data, string_table):
+cdef parse_relations(data, string_table, unix_time_filter):
     N = len(data)
 
     # Version
@@ -308,6 +347,17 @@ cdef parse_relations(data, string_table):
             dtype=object
             )
 
+    # Filter by time
+    if unix_time_filter is not None:
+        mask = timestamps <= unix_time_filter
+        ids = ids[mask]
+        versions = versions[mask]
+        changesets = changesets[mask]
+        timestamps = timestamps[mask]
+        members = members[mask]
+        tags = tags[mask]
+        visible = visible[mask]
+
     return [dict(id=ids,
                 version=versions,
                 changeset=changesets,
@@ -318,13 +368,21 @@ cdef parse_relations(data, string_table):
                 )]
 
 
-cpdef parse_osm_data(filepath, bounding_box,
-                     exclude_relations):
-    return _parse_osm_data(filepath, bounding_box, exclude_relations)
+cpdef parse_osm_data(
+        filepath,
+        bounding_box,
+        exclude_relations,
+        unix_time_filter,
+):
+    return _parse_osm_data(filepath, bounding_box, exclude_relations, unix_time_filter)
 
 
-cdef _parse_osm_data(filepath, bounding_box,
-                     exclude_relations):
+cdef _parse_osm_data(
+        filepath,
+        bounding_box,
+        exclude_relations,
+        unix_time_filter,
+):
     all_ways = []
     all_nodes = []
     all_relations = []
@@ -335,7 +393,7 @@ cdef _parse_osm_data(filepath, bounding_box,
     for pblock, str_table in zip(primitive_blocks, string_tables):
         for pgroup in pblock.primitivegroup:
             if len(pgroup.dense.id) > 0:
-                all_nodes += parse_dense(pblock, pgroup.dense, str_table, bounding_box)
+                all_nodes += parse_dense(pblock, pgroup.dense, str_table, bounding_box, unix_time_filter)
             elif len(pgroup.nodes) > 0:
                 all_nodes += parse_nodes(pblock, pgroup.nodes, bounding_box)
             elif len(pgroup.ways) > 0:
@@ -343,17 +401,41 @@ cdef _parse_osm_data(filepath, bounding_box,
                 if bounding_box is not None:
                     if not node_lookup_created:
                         node_lookup = get_nodeid_lookup_khash(all_nodes)
-                        all_ways += parse_ways(pgroup.ways, str_table, node_lookup)
-                    else:
-                        all_ways += parse_ways(pgroup.ways, str_table, node_lookup)
+                    all_ways += parse_ways(pgroup.ways, str_table, node_lookup, unix_time_filter)
                 else:
-                    all_ways += parse_ways(pgroup.ways, str_table, None)
+                    all_ways += parse_ways(pgroup.ways, str_table, None, unix_time_filter)
             elif len(pgroup.relations) > 0:
                 if exclude_relations:
                     continue
-                all_relations += parse_relations(pgroup.relations, str_table)
+                all_relations += parse_relations(pgroup.relations, str_table, unix_time_filter)
 
     # Explode the way tags
-    all_ways, all_way_tag_keys = explode_way_tags(all_ways)
+    all_ways = explode_way_tags(all_ways)
 
-    return all_nodes, all_ways, all_relations, all_way_tag_keys
+    # Concatenate nodes and create a DataFrame
+    nodes_df = create_df(concatenate_dicts_of_arrays(all_nodes))
+    relations_df = create_df(concatenate_dicts_of_arrays(all_relations))
+
+    # Keep the closest record to the timestamp if filter is used
+    if unix_time_filter is not None:
+        ways_df = pd.DataFrame(all_ways)
+        # Drop deleted history items
+        nodes_df = nodes_df.loc[nodes_df["visible"]==True].copy()
+        ways_df = ways_df.loc[ways_df["visible"]==True].copy()
+        relations_df = relations_df[relations_df["visible"]==True].copy()
+
+        # Get latest version
+        nodes_df = get_latest_version(nodes_df)
+        all_ways = get_latest_version(ways_df).to_dict(orient="records")
+
+        # DataFrame structure produces unnecesary None values that needs to be cleaned
+        all_ways = clean_empty_values_from_ways(all_ways)
+
+        relations_df = get_latest_version(relations_df)
+
+    # Keys with numpy arrays
+    all_nodes = {col: nodes_df[col].values for col in nodes_df.columns}
+    all_relations = {col: relations_df[col].values for col in relations_df.columns}
+    node_coordinates_lookup = nodes_df[["id", "lat", "lon"]].set_index("id").to_dict(orient="index")
+
+    return all_nodes, all_ways, all_relations, node_coordinates_lookup

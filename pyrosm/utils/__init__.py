@@ -229,7 +229,15 @@ def unix_time_to_datetime(unix_time):
     return pd.Timestamp.tz_localize(pd.Timestamp.utcfromtimestamp(unix_time), tz="UTC")
 
 
-def get_unix_time(timestamp):
+def get_unix_time(timestamp, osh_file):
+    if not osh_file:
+        raise ValueError(
+            "The input file does not seem to be OSH.PBF -file. "
+            "Timestamp can only be used with OSH.PBF files. "
+            "You can download OSH.PBF files from Geofabrik (requires OSM account): "
+            "https://osm-internal.download.geofabrik.de/"
+        )
+
     if not isinstance(timestamp, int):
         dt = pd.to_datetime(timestamp, utc=True)
         unix_time = datetime_to_unix_time(dt)
