@@ -51,10 +51,12 @@ cpdef create_df(data_arrays):
 
 cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengths):
     if ways is not None:
-        geometries, from_ids, to_ids, node_attributes = create_way_geometries(node_coordinates,
-                                                                              ways,
-                                                                              parse_network
-                                                                              )
+        ways, geometries, from_ids, to_ids, node_attributes = create_way_geometries(
+            node_coordinates,
+            ways,
+            parse_network
+        )
+
         # Convert to DataFrame
         way_gdf = create_df(ways)
         way_gdf['osm_type'] = "way"

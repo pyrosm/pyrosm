@@ -1,5 +1,5 @@
-cpdef parse_osm_data(filepath, bounding_box, exclude_relations)
+cpdef parse_osm_data(filepath, bounding_box, exclude_relations, unix_time_filter)
 cdef get_primitive_blocks_and_string_tables(filepath)
-cdef parse_dense(pblock, data, string_table, bounding_box)
+cdef parse_dense(pblock, data, string_table, bounding_box, unix_time_filter)
 cdef parse_nodes(pblock, data, bounding_box)
-cdef parse_ways(data, stringtable, node_lookup)
+cdef parse_ways(data, stringtable, node_lookup, unix_time_filter)
