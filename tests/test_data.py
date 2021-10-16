@@ -86,10 +86,12 @@ def test_test_data():
     fp2 = get_data("helsinki_pbf")
     fp3 = get_data("helsinki_region_pbf")
     fp4 = get_data("helsinki_history_pbf")
+    fp5 = get_data("helsinki_test_history_pbf")
     assert os.path.exists(fp1)
     assert os.path.exists(fp2)
     assert os.path.exists(fp3)
     assert os.path.exists(fp4)
+    assert os.path.exists(fp5)
 
 
 def test_geofabrik_download_to_temp():
