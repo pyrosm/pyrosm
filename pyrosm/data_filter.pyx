@@ -39,6 +39,7 @@ cdef has_osm_data_type(osm_data_types, tag_keys):
                 return True
     return False
 
+
 cdef way_is_part_of_relation(way_record, lookup_dict):
     try:
         lookup_dict[way_record["id"]]
@@ -47,6 +48,7 @@ cdef way_is_part_of_relation(way_record, lookup_dict):
         return False
     except Exception as e:
         raise e
+
 
 cdef filter_osm_records(data_records,
                         data_filter,
@@ -176,11 +178,14 @@ cdef filter_osm_records(data_records,
             filtered_data.append(record)
     return filtered_data
 
+
 cpdef _filter_array_dict_by_indices_or_mask(array_dict, indices):
     return filter_array_dict_by_indices_or_mask(array_dict, indices)
 
+
 cdef filter_array_dict_by_indices_or_mask(array_dict, indices):
     return {k: v[indices] for k, v in array_dict.items()}
+
 
 cdef get_lookup_khash_for_int64(int64_id_array):
     return Int64Set_from_buffer(
@@ -189,11 +194,13 @@ cdef get_lookup_khash_for_int64(int64_id_array):
         )
     )
 
+
 cdef get_nodeid_lookup_khash(nodes):
     return get_lookup_khash_for_int64(
         np.concatenate([group['id'].tolist()
                         for group in nodes]).astype(np.int64)
     )
+
 
 cdef nodes_for_way_exist_khash(nodes, node_lookup):
     v = array.array('q', nodes)
@@ -204,6 +211,7 @@ cdef nodes_for_way_exist_khash(nodes, node_lookup):
     if True in result:
         return True
     return False
+
 
 cpdef get_mask_by_osmid(src_array, osm_ids):
     """
@@ -216,6 +224,7 @@ cpdef get_mask_by_osmid(src_array, osm_ids):
     result = np.empty(src_array.size, dtype=np.bool)
     isin_int64(src_array, lookup, result)
     return result
+
 
 cdef record_should_be_kept(tag, osm_keys, data_filter, filter_type):
     if tag is None:
@@ -262,6 +271,7 @@ cdef record_should_be_kept(tag, osm_keys, data_filter, filter_type):
         return False
     return True
 
+
 cdef filter_relation_indices(relations, osm_keys, data_filter, filter_type):
     cdef int i, n = len(relations["tags"])
     indices = []
@@ -277,6 +287,7 @@ cdef filter_relation_indices(relations, osm_keys, data_filter, filter_type):
         if record_should_be_kept(tag, osm_keys, relation_filter, filter_type):
             indices.append(i)
     return indices
+
 
 cdef filter_node_indices(node_arrays, osm_keys, data_filter, filter_type):
     cdef int i, n = len(node_arrays["tags"])
@@ -294,7 +305,16 @@ cdef filter_node_indices(node_arrays, osm_keys, data_filter, filter_type):
 
     return indices
 
+
 cpdef get_latest_version(df):
     # The order of versions is always the same
     # (newest version is the last)
     return df.groupby("id").last().reset_index()
+
+
+cdef clean_empty_values_from_ways(ways):
+    cdef int i, n = len(ways)
+    cleaned = []
+    for i in range(0, n):
+        cleaned.append({x: y for x, y in ways[i].items() if y != None})
+    return cleaned
