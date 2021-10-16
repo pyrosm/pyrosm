@@ -24,6 +24,7 @@ def test_timestamp_integer():
 def test_timestamp_datetime():
     from pyrosm.utils import get_unix_time
     from datetime import datetime
+
     # Test that passing date as datetime works
     t = datetime(2021, 10, 15, 7, 45)
     unix_time = get_unix_time(t, osh_file=True)
