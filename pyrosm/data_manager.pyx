@@ -44,8 +44,6 @@ cdef get_data_filter_and_osm_keys(custom_filter):
 
 
 cdef get_relation_arrays(relations, osm_keys, data_filter, filter_type):
-    # Combine all blocks
-    relations = concatenate_dicts_of_arrays(relations)
     # Get indices for MultiPolygons that also passes data_filter
     indices = filter_relation_indices(relations, osm_keys, data_filter, filter_type)
     # If no building relations were found, return None
