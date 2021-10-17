@@ -145,6 +145,8 @@ def test_using_rare_tag(helsinki_pbf):
     from geopandas import GeoDataFrame
 
     osm = OSM(filepath=helsinki_pbf)
-    # There aren't any but should not raise an error still (#47)
-    gdf = osm.get_pois({"park_ride": ["yes"]})
+    with pytest.warns(UserWarning):
+        # There aren't any but should not raise an error still (#47)
+        gdf = osm.get_pois({"park_ride": ["yes"]})
+
     assert gdf is None
