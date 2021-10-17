@@ -312,7 +312,7 @@ cdef create_linestring_geometry(nodes, node_coordinates):
         try:
             # Each geom segment should be constructed separately
             # (i.e. becomes a multilinestring)
-            coords = np.array(coords, dtype=np.float)
+            coords = np.array(coords, dtype=np.float64)
             coords = np.hstack([coords[:-1], coords[1:]])
             coord_cnt = len(coords)
             # Get an array of linestrings (segments of the way geometry)

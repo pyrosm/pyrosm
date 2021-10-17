@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from pyrosm.config import Conf
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm.frames import create_nodes_gdf
@@ -13,6 +14,7 @@ from pyrosm.utils import (
     validate_graph_type,
     get_bounding_box,
     get_unix_time,
+    warn_about_timestamp_not_set,
 )
 from pyrosm.utils.download import get_file_size
 from shapely.geometry import (
@@ -107,12 +109,12 @@ class OSM:
         self._current_timestamp = None
         self._timestamp_changed = False
 
-    def _get_pbf_elements(self, bounding_box, unix_time_filter):
+    def _get_pbf_elements(self, bounding_box):
         nodes, ways, relations, node_coordinates = parse_osm_data(
             self.filepath,
             bounding_box,
             exclude_relations=False,
-            unix_time_filter=unix_time_filter,
+            unix_time_filter=self._current_timestamp,
         )
 
         self._nodes = nodes
@@ -120,7 +122,7 @@ class OSM:
         self._relations = relations
         self._node_coordinates = node_coordinates
 
-    def _read_pbf(self, unix_time_filter=None):
+    def _read_pbf(self, timestamp=None):
         # PBF reading requires a list of bounding box coordinates
         if type(self.bounding_box) in self.allowed_bbox_types:
             bounding_box = self.bounding_box.bounds
@@ -128,12 +130,12 @@ class OSM:
             bounding_box = self.bounding_box
 
         # Update current timestamp
-        self._set_current_time(unix_time_filter)
+        self._set_current_time(timestamp)
 
         if self._nodes is None or self._way_records is None:
-            self._get_pbf_elements(bounding_box, unix_time_filter)
+            self._get_pbf_elements(bounding_box)
         elif self._timestamp_changed:
-            self._get_pbf_elements(bounding_box, unix_time_filter)
+            self._get_pbf_elements(bounding_box)
 
         # Once the data has been read update the flag
         self._timestamp_changed = False
@@ -162,12 +164,22 @@ class OSM:
         elif net_type == "all":
             return None
 
-    def _set_current_time(self, unix_time):
+    def _set_current_time(self, timestamp):
+        unix_time = None
+        if timestamp is not None:
+            unix_time = get_unix_time(timestamp, self._osh_file)
+
         if unix_time is not None:
             # Keeps track if timestamp changed
             if self._current_timestamp != unix_time:
                 self._current_timestamp = unix_time
                 self._timestamp_changed = True
+
+        # In case OSH file is used but no timestamp is provided, use current UTC time
+        elif self._osh_file:
+            unix_time = get_unix_time(pd.Timestamp.now(tz="UTC"), True)
+            self._set_current_time(unix_time)
+            warn_about_timestamp_not_set(unix_time)
 
     def get_network(
         self,
@@ -234,12 +246,8 @@ class OSM:
             validate_tags_as_columns(extra_attributes)
             tags_as_columns += extra_attributes
 
-        unix_time_filter = None
-        if timestamp is not None:
-            unix_time_filter = get_unix_time(timestamp, self._osh_file)
-
         # Read pbf
-        self._read_pbf(unix_time_filter)
+        self._read_pbf(timestamp)
 
         # Filter network data with given filter
         edges, node_gdf = get_network_data(
@@ -310,11 +318,7 @@ class OSM:
             validate_tags_as_columns(extra_attributes)
             tags_as_columns += extra_attributes
 
-        unix_time_filter = None
-        if timestamp is not None:
-            unix_time_filter = get_unix_time(timestamp, self._osh_file)
-
-        self._read_pbf(unix_time_filter)
+        self._read_pbf(timestamp)
 
         gdf = get_building_data(
             self._node_coordinates,
@@ -370,11 +374,7 @@ class OSM:
 
         """
 
-        unix_time_filter = None
-        if timestamp is not None:
-            unix_time_filter = get_unix_time(timestamp, self._osh_file)
-
-        self._read_pbf(unix_time_filter)
+        self._read_pbf(timestamp)
 
         # Default tags to keep as columns
         tags_as_columns = self.conf.tags.landuse
@@ -438,11 +438,7 @@ class OSM:
 
         """
 
-        unix_time_filter = None
-        if timestamp is not None:
-            unix_time_filter = get_unix_time(timestamp, self._osh_file)
-
-        self._read_pbf(unix_time_filter)
+        self._read_pbf(timestamp)
 
         # Default tags to keep as columns
         tags_as_columns = self.conf.tags.natural
@@ -525,11 +521,7 @@ class OSM:
 
         """
 
-        unix_time_filter = None
-        if timestamp is not None:
-            unix_time_filter = get_unix_time(timestamp, self._osh_file)
-
-        self._read_pbf(unix_time_filter)
+        self._read_pbf(timestamp)
 
         # Default tags to keep as columns
         tags_as_columns = self.conf.tags.boundary
@@ -641,11 +633,7 @@ class OSM:
                     f"Got {custom_filter} with type {type(custom_filter)}."
                 )
 
-        unix_time_filter = None
-        if timestamp is not None:
-            unix_time_filter = get_unix_time(timestamp, self._osh_file)
-
-        self._read_pbf(unix_time_filter)
+        self._read_pbf(timestamp)
 
         # Default tags to keep as columns
         tags_as_columns = []
@@ -778,11 +766,7 @@ class OSM:
         # Validate booleans
         validate_booleans(keep_nodes, keep_ways, keep_relations)
 
-        unix_time_filter = None
-        if timestamp is not None:
-            unix_time_filter = get_unix_time(timestamp, self._osh_file)
-
-        self._read_pbf(unix_time_filter)
+        self._read_pbf(timestamp)
 
         gdf = get_user_defined_data(
             self._nodes,
