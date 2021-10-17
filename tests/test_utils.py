@@ -1,4 +1,11 @@
 import pytest
+from pyrosm import get_data
+
+
+@pytest.fixture
+def helsinki_history_pbf():
+    pbf_path = get_data("helsinki_test_history_pbf")
+    return pbf_path
 
 
 def test_timestamp_string():
@@ -56,3 +63,25 @@ def test_timestamp_older_than_OSM_history():
         pass
     except Exception as e:
         raise e
+
+
+def test_API_with_timestamp(helsinki_history_pbf):
+    from pyrosm import OSM
+
+    osm = OSM(helsinki_history_pbf)
+    osm._set_current_time("2021-10-15 07:45")
+
+    # The current timestamp should be unix time as integer
+    assert osm._current_timestamp == 1634283900
+
+
+def test_OSH_file_without_timestamp(helsinki_history_pbf):
+    from pyrosm import OSM
+
+    osm = OSM(helsinki_history_pbf)
+    # Should give a warning
+    with pytest.warns(UserWarning):
+        osm._set_current_time(None)
+
+    # Should give warning and update the current_timestamp
+    assert osm._current_timestamp > 0

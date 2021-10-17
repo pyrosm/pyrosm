@@ -257,3 +257,11 @@ def get_unix_time(timestamp, osh_file):
             f"You attempt to extract older data which won't work."
         )
     return unix_time
+
+
+def warn_about_timestamp_not_set(unix_time):
+    warnings.warn(
+        f"Reading OSH.PBF file without user-defined timestamp. Using the current UTC"
+        f" time as timestamp: {unix_time_to_datetime(unix_time)}",
+        UserWarning,
+    )
