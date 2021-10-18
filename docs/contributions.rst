@@ -17,7 +17,6 @@ If you decide to contribute to the codebase, ensure that you are using an
 up-to-date `master` branch. The latest development version will always be there,
 including the documentation (powered by `sphinx`_).
 
-
 Eight Steps for Contributing
 ----------------------------
 
