@@ -8,7 +8,7 @@ cdef get_dtype(key):
     dtypes = {"id": np.int64,
               "version": np.int8,
               "changeset": np.int8,
-              "timestamp": np.int64,
+              "timestamp": np.uint32,
               "lon": np.float32,
               "lat": np.float32,
               "tags": object,

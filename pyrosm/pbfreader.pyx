@@ -97,22 +97,22 @@ cdef parse_dense(
         int lon_offset = pblock.lon_offset
         int lat_offset = pblock.lat_offset
 
-    # Get latitudes
+    # Get latitudes (32 bit float)
     lats = delta_decode_latitude(data, node_granularity, lat_offset)
 
-    # Get longitudes
+    # Get longitudes (32 bit float)
     lons = delta_decode_longitude(data, node_granularity, lon_offset)
 
     # Version
-    versions = np.array(list(data.denseinfo.version), dtype=np.int64)
+    versions = np.array(list(data.denseinfo.version), dtype=np.uint8)
 
     # Ids
     ids = delta_decode_id(data)
 
-    # Timestamp
+    # Timestamp (32 bit uint)
     timestamps = delta_decode_timestamp(data, timestamp_granularity)
 
-    # Changeset
+    # Changeset (32 bit uint)
     changesets = delta_decode_changeset(data)
 
     # Visible flags (if visible is False, the element has been deleted)
@@ -198,11 +198,14 @@ cdef parse_nodes(pblock, data, bounding_box):
         lats.append(node.lat)
 
     id_ = np.array(ids, dtype=np.int64)
-    version = np.array(versions, dtype=np.int64)
-    changeset = np.array(changesets, dtype=np.int64)
-    timestamp = np.array(timestamps, dtype=np.int64)
+    version = np.array(versions, dtype=np.uint8)
+    changeset = np.array(changesets, dtype=np.uint32)
+    timestamp = np.array(timestamps, dtype=np.uint32)
     lon = (np.array(lons, dtype=np.int64) * granularity + lon_offset) / div
     lat = (np.array(lats, dtype=np.int64) * granularity + lat_offset) / div
+
+    lon = lon.astype(np.float32)
+    lat = lat.astype(np.float32)
 
     if bounding_box is not None:
         # Filter
@@ -317,7 +320,7 @@ cdef parse_relations(data, string_table, unix_time_filter):
     N = len(data)
 
     # Version
-    versions = np.array([rel.info.version for rel in data], dtype=np.int64)
+    versions = np.array([rel.info.version for rel in data], dtype=np.uint8)
 
     # Ids (delta coded)
     id_deltas = np.zeros(N+1, dtype=np.int64)
@@ -325,10 +328,10 @@ cdef parse_relations(data, string_table, unix_time_filter):
     ids = np.cumsum(id_deltas)[1:]
 
     # Timestamp
-    timestamps = np.array([rel.info.timestamp for rel in data], dtype=np.int64)
+    timestamps = np.array([rel.info.timestamp for rel in data], dtype=np.uint32)
 
     # Changeset
-    changesets = np.array([rel.info.changeset for rel in data], dtype=np.int64)
+    changesets = np.array([rel.info.changeset for rel in data], dtype=np.uint32)
 
     # Visible
     visible = np.array([rel.info.visible for rel in data], dtype=bool)
