@@ -127,7 +127,7 @@ def test_parse_buildings_with_bbox(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (569, 16)
+    assert gdf.shape == (570, 16)
 
     required_cols = [
         "building",
