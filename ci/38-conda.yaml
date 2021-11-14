@@ -9,7 +9,7 @@ dependencies:
   - geopandas
   - pygeos
   - cython
-  - cykhash
+  - cykhash=2.0.0
   - pyrobuf
   - python-rapidjson
   # optional
