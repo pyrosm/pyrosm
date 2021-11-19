@@ -86,7 +86,7 @@ setup(
         compiler_directives={
             "language_level": "3",
             # 'linetrace': True
-        }
+        },
     ),
     include_dirs=[np.get_include()],
 )
