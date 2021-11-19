@@ -45,7 +45,7 @@ cdef explode_way_tags(ways):
                 way_keys[k] = None
         del way['tags']
         exploded.append(way)
-    return exploded, list(way_keys.keys())
+    return exploded
 
 cdef explode_tag_array(tag_array, tags_as_columns):
     lookup = dict.fromkeys(tags_as_columns, None)

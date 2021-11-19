@@ -15,6 +15,12 @@ def helsinki_pbf():
 
 
 @pytest.fixture
+def helsinki_history_pbf():
+    pbf_path = get_data("helsinki_test_history_pbf")
+    return pbf_path
+
+
+@pytest.fixture
 def test_output_dir():
     import os, tempfile
 
@@ -446,7 +452,7 @@ def test_getting_nodes_and_edges(test_pbf):
 
     # Test shape
     assert edges.shape == (1215, 23)
-    assert nodes.shape == (1147, 8)
+    assert nodes.shape == (1147, 9)
 
     # Edges should have "u" and "v" columns
     required = ["u", "v", "length"]
@@ -481,7 +487,7 @@ def test_getting_nodes_and_edges_with_bbox(test_pbf):
 
     # Test shape
     assert edges.shape == (321, 23)
-    assert nodes.shape == (317, 8)
+    assert nodes.shape == (317, 9)
 
     # Edges should have "u" and "v" columns
     required = ["u", "v", "length"]
@@ -494,3 +500,61 @@ def test_getting_nodes_and_edges_with_bbox(test_pbf):
     ncols = nodes.columns
     for col in required:
         assert col in ncols
+
+
+def test_reading_network_from_osh(helsinki_history_pbf):
+    from pyrosm import OSM
+    from pyrosm.utils import datetime_to_unix_time
+    import pandas as pd
+    from geopandas import GeoDataFrame
+    from shapely.geometry import MultiLineString
+
+    timestamp = "2010-01-01"
+    dt = pd.to_datetime(timestamp, utc=True)
+    unix_time = datetime_to_unix_time(dt)
+
+    osm = OSM(filepath=helsinki_history_pbf)
+    gdf = osm.get_network(timestamp=timestamp)
+
+    assert isinstance(gdf, GeoDataFrame)
+    assert isinstance(gdf.loc[0, "geometry"], MultiLineString)
+    assert gdf.shape == (210, 25)
+
+    required_cols = ["highway", "id", "timestamp", "version", "geometry"]
+
+    for col in required_cols:
+        assert col in gdf.columns
+
+    # None of the features should be newer than the given timestamp
+    assert gdf["timestamp"].max() <= unix_time
+
+    # There should be only a single version per id
+    cnt = len(gdf)
+    assert cnt == len(gdf.drop_duplicates(subset=["id"]))
+
+    # Changing the timestamp should parse a different set of elements
+    new_timestamp = "2015-01-01"
+    dt2 = pd.to_datetime(new_timestamp, utc=True)
+    unix_time2 = datetime_to_unix_time(dt2)
+
+    gdf2 = osm.get_network(timestamp=new_timestamp)
+
+    # Now the "current_timestamp" should have been updated
+    assert osm._current_timestamp == unix_time2
+
+    # Number of elements should (likely) be higher
+    assert len(gdf2) > len(gdf)
+
+    # There should be newer timestamps in the data
+    assert gdf2["timestamp"].max() > unix_time
+
+    # But is shouldn't be higher than the given timestamp
+    assert gdf2["timestamp"].max() <= unix_time2
+
+    # Test reading network with nodes
+    n, e = osm.get_network(timestamp=new_timestamp, nodes=True)
+    assert isinstance(n, GeoDataFrame)
+    assert isinstance(e, GeoDataFrame)
+    # Timestamp shouldn't be higher than the given timestamp
+    assert e["timestamp"].max() <= unix_time2
+    assert n["timestamp"].max() <= unix_time2

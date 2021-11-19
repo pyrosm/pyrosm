@@ -6,6 +6,8 @@ import zlib
 from struct import unpack
 import os
 import geopandas as gpd
+import pandas as pd
+import warnings
 
 
 def validate_custom_filter(custom_filter):
@@ -217,3 +219,49 @@ def get_bounding_box(filepath):
             except Exception:
                 bbox = None
             return bbox
+
+
+def datetime_to_unix_time(dt):
+    return (dt - pd.Timestamp("1970-01-01", tz="UTC")) // pd.Timedelta("1s")
+
+
+def unix_time_to_datetime(unix_time):
+    return pd.Timestamp.tz_localize(pd.Timestamp.utcfromtimestamp(unix_time), tz="UTC")
+
+
+def get_unix_time(timestamp, osh_file):
+    if not osh_file:
+        raise ValueError(
+            "The input file does not seem to be OSH.PBF -file. "
+            "Timestamp can only be used with OSH.PBF files. "
+            "You can download OSH.PBF files from Geofabrik (requires OSM account): "
+            "https://osm-internal.download.geofabrik.de/"
+        )
+
+    if not isinstance(timestamp, int):
+        dt = pd.to_datetime(timestamp, utc=True)
+        unix_time = datetime_to_unix_time(dt)
+    else:
+        # If integer is provided test that it can be parsed to datetime
+        unix_time = datetime_to_unix_time(unix_time_to_datetime(timestamp))
+
+    # If the time is in the future raise exception
+    if unix_time > datetime_to_unix_time(pd.Timestamp.utcnow()):
+        raise ValueError(f"timestamp cannot be in the future. Got: {timestamp}.")
+
+    # If the time is older than the first changeset in OSM (2005-04-09 19:54:13), raise exception
+    first_changeset = "2005-04-09 19:54:13"
+    if unix_time < datetime_to_unix_time(pd.to_datetime(first_changeset, utc=True)):
+        raise ValueError(
+            f"The first changeset to OSM was made in '{first_changeset}' by Steve. "
+            f"You attempt to extract older data which won't work."
+        )
+    return unix_time
+
+
+def warn_about_timestamp_not_set(unix_time):
+    warnings.warn(
+        f"Reading OSH.PBF file without user-defined timestamp. Using the current UTC"
+        f" time as timestamp: {unix_time_to_datetime(unix_time)}",
+        UserWarning,
+    )

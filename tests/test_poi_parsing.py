@@ -46,7 +46,7 @@ def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
     for k in default_filter.keys():
         tags_as_columns += getattr(osm.conf.tags, k)
 
-    nodes = concatenate_dicts_of_arrays(osm._nodes)
+    nodes = osm._nodes
     gdf = get_poi_data(
         nodes,
         osm._node_coordinates,
@@ -137,7 +137,7 @@ def test_using_multiple_filters(helsinki_pbf):
     assert isinstance(gdf, GeoDataFrame)
     assert shop == ["alcohol"]
     assert amenity == ["pub"]
-    assert gdf.shape == (59, 32)
+    assert gdf.shape == (59, 33)
 
 
 def test_using_rare_tag(helsinki_pbf):
@@ -145,6 +145,8 @@ def test_using_rare_tag(helsinki_pbf):
     from geopandas import GeoDataFrame
 
     osm = OSM(filepath=helsinki_pbf)
-    # There aren't any but should not raise an error still (#47)
-    gdf = osm.get_pois({"park_ride": ["yes"]})
+    with pytest.warns(UserWarning):
+        # There aren't any but should not raise an error still (#47)
+        gdf = osm.get_pois({"park_ride": ["yes"]})
+
     assert gdf is None

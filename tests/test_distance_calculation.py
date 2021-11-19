@@ -5,8 +5,8 @@ def test_distance_calculations():
     from pyrosm.distance import Unit, haversine
 
     # Example line from Null Island to 10'10 --> should be ~1569 km
-    lon1, lat1 = np.array(0.0, dtype=np.float), np.array(0.0, dtype=np.float)
-    lon2, lat2 = np.array(10.0, dtype=np.float), np.array(10.0, dtype=np.float)
+    lon1, lat1 = np.array(0.0, dtype=np.float64), np.array(0.0, dtype=np.float64)
+    lon2, lat2 = np.array(10.0, dtype=np.float64), np.array(10.0, dtype=np.float64)
     correct_distance_km = 1568.52272
     correct_distance_miles = 974.634834
     correct_distance_nautical_miles = 846.93452

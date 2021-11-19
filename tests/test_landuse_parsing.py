@@ -22,19 +22,7 @@ def test_parsing_landuse_with_defaults(test_pbf):
     from pyrosm._arrays import concatenate_dicts_of_arrays
 
     osm = OSM(filepath=test_pbf)
-    osm._read_pbf()
-    tags_as_columns = osm.conf.tags.landuse
-
-    nodes = concatenate_dicts_of_arrays(osm._nodes)
-    gdf = get_landuse_data(
-        nodes,
-        osm._node_coordinates,
-        osm._way_records,
-        osm._relations,
-        tags_as_columns,
-        None,
-        None,
-    )
+    gdf = osm.get_landuse()
 
     assert isinstance(gdf, GeoDataFrame)
 

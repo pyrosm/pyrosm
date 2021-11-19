@@ -549,7 +549,7 @@ def test_using_multiple_filters(helsinki_pbf):
     assert isinstance(gdf, GeoDataFrame)
     assert shop == ["alcohol"]
     assert amenity == ["pub"]
-    assert gdf.shape == (59, 32)
+    assert gdf.shape == (59, 33)
 
 
 def test_using_two_level_custom_filter(helsinki_region_pbf):
@@ -562,7 +562,7 @@ def test_using_two_level_custom_filter(helsinki_region_pbf):
         custom_filter=custom_filter, osm_keys_to_keep=osm_keys
     )
 
-    assert gdf.shape == (72, 25)
+    assert gdf.shape == (72, 26)
 
     # Now 'building' and 'amenity' should not have NaNs
     assert not gdf["building"].hasnans
@@ -580,7 +580,7 @@ def test_exclude_filtering_nodes_and_relations(helsinki_pbf):
         custom_filter,
         filter_type="exclude",
     )
-    assert gdf.shape == (1081, 37)
+    assert gdf.shape == (1081, 38)
     assert "library" not in gdf["amenity"].unique().tolist()
 
     # There should be nodes, ways and relations
@@ -591,7 +591,7 @@ def test_exclude_filtering_nodes_and_relations(helsinki_pbf):
         custom_filter,
         filter_type="keep",
     )
-    assert gdf.shape == (7, 23)
+    assert gdf.shape == (7, 24)
     assert gdf["amenity"].unique().tolist() == ["library"]
 
     # There should be nodes and ways (no relations)

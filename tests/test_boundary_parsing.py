@@ -121,7 +121,7 @@ def test_reading_all_boundaries(helsinki_region_pbf):
     gdf = osm.get_boundaries(boundary_type="all")
 
     # Test shape
-    assert gdf.shape == (733, 20)
+    assert gdf.shape == (733, 21)
 
     required_columns = [
         "name",
