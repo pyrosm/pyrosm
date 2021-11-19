@@ -10,7 +10,7 @@ def test_pbf():
 
 @pytest.fixture
 def helsinki_pbf():
-    pbf_path = get_data("helsinki_pbf")
+    pbf_path = get_data("helsinki")
     return pbf_path
 
 
@@ -68,9 +68,16 @@ def test_getting_nodes(test_pbf):
 
 
 def test_polygon_as_bounding_box(helsinki_pbf):
+    """Test whether clipping by a (rectangular) polygon and a bounding box results in the same data set."""
     from pyrosm import OSM
     import shapely.wkt
     from pandas.testing import assert_frame_equal
+
+    # >>> shapely.wkt.loads(
+    # ...         "POLYGON ((24.9573 60.2010, 24.9573 60.2091, 24.9673 60.2091, "
+    # ...         + "24.9673 60.2010, 24.9573 60.2010))"
+    # ...     ).bounds
+    # (24.9573, 60.201, 24.9673, 60.2091)
 
     clipped_by_bounding_box = OSM(
         helsinki_pbf,
@@ -85,6 +92,6 @@ def test_polygon_as_bounding_box(helsinki_pbf):
     ).get_network()
 
     assert_frame_equal(
-        clipped_by_polygon,
-        clipped_by_bounding_box
+        clipped_by_bounding_box,
+        clipped_by_polygon
     )

@@ -12,6 +12,8 @@ dependencies:
   - scikit-learn
   - python-igraph
   - networkx
+  - numpy
   - pandana
+  - pygeos
   - pyrosm
   - osmnx

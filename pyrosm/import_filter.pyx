@@ -2,21 +2,12 @@
 
 import numpy as np
 cimport numpy as np
+np.import_array()
 
 import shapely.geometry
 import pygeos
-#from pygeos._geos import GEOSGeometry
-#cimport pygeos._geos
-
-np.import_array()
 
 
-#cdef np.ndarray in_bounding_box(
-#        lats: np.ndarray,
-#        lons: np.ndarray,
-#        bounding_box: float[:],
-#        extent: pygeos.Geometry = pygeos.Geometry("POLYGON EMPTY")
-#):
 cdef np.ndarray in_bounding_box(lats, lons, bounding_box):
     cdef:
         np.ndarray in_bounding_box
@@ -26,7 +17,6 @@ cdef np.ndarray in_bounding_box(lats, lons, bounding_box):
         double xmax
         double ymax
         bint bounding_box_is_polygon
-        #pygeos._geos.GEOSGeometry *bounding_box_polygon
 
     bounding_box_is_polygon = isinstance(bounding_box, (shapely.geometry.Polygon, shapely.geometry.MultiPolygon))
 
@@ -34,8 +24,6 @@ cdef np.ndarray in_bounding_box(lats, lons, bounding_box):
         xmin, ymin, xmax, ymax = bounding_box.bounds
     else:
         xmin, ymin, xmax, ymax = bounding_box
-
-    print(xmin, ymin, xmax, ymax)
 
     # first, test whether the coordinates are within the bounds
     in_bounding_box = (
