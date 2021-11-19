@@ -7,6 +7,7 @@ from pyrosm._arrays cimport to_clong_array
 from pyrosm.delta_compression cimport delta_decode_latitude, delta_decode_longitude, \
     delta_decode_id, delta_decode_timestamp, delta_decode_changeset
 from pyrosm.data_filter cimport get_nodeid_lookup_khash, nodes_for_way_exist_khash
+from pyrosm.import_filter cimport in_bounding_box
 from pyrosm.utils import valid_header_block
 import numpy as np
 from libc.stdlib cimport malloc, free
@@ -115,9 +116,8 @@ cdef parse_dense(pblock, data, string_table, bounding_box):
         timestamps = np.zeros(len(data.id), dtype=np.int8)
 
     if bounding_box is not None:
-        # Filter
-        xmin, ymin, xmax, ymax = bounding_box
-        mask = (xmin <= lons) & (lons <= xmax) & (ymin <= lats) & (lats <= ymax)
+        mask = in_bounding_box(lats, lons, bounding_box)
+
         ids = ids[mask]
         versions = versions[mask]
         changesets = changesets[mask]
@@ -169,8 +169,8 @@ cdef parse_nodes(pblock, data, bounding_box):
 
     if bounding_box is not None:
         # Filter
-        xmin, ymin, xmax, ymax = bounding_box
-        mask = (xmin <= lon) & (lon <= xmax) & (ymin <= lat) & (lat <= ymax)
+        mask = in_bounding_box(lats, lons, bounding_box)
+
         id_ = id_[mask]
         version = version[mask]
         changeset = changeset[mask]

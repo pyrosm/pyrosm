@@ -1,4 +1,5 @@
 import numpy as np
+import pygeos
 from pyrosm.config import Conf
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm._arrays import concatenate_dicts_of_arrays
@@ -102,12 +103,7 @@ class OSM:
         self._relations = None
 
     def _read_pbf(self):
-        # PBF reading requires a list of bounding box coordinates
-        if type(self.bounding_box) in self.allowed_bbox_types:
-            bounding_box = self.bounding_box.bounds
-        else:
-            bounding_box = self.bounding_box
-
+        bounding_box = self.bounding_box.bounds
         nodes, ways, relations, way_tags = parse_osm_data(
             self.filepath, bounding_box, exclude_relations=False
         )

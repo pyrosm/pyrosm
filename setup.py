@@ -10,6 +10,7 @@ from setuptools import find_packages
 from setuptools import setup
 import os
 from Cython.Build import cythonize
+import numpy as np
 
 
 def read(*names, **kwargs):
@@ -85,6 +86,7 @@ setup(
         compiler_directives={
             "language_level": "3",
             # 'linetrace': True
-        },
+        }
     ),
+    include_dirs=[np.get_include()],
 )
