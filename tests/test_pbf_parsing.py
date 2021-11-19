@@ -65,3 +65,26 @@ def test_getting_nodes(test_pbf):
 
     # Check shape
     assert nodes.shape == (14222, 8)
+
+
+def test_polygon_as_bounding_box(helsinki_pbf):
+    from pyrosm import OSM
+    import shapely.wkt
+    from pandas.testing import assert_frame_equal
+
+    clipped_by_bounding_box = OSM(
+        helsinki_pbf,
+        [24.9573, 60.2010, 24.9673, 60.2091]
+    ).get_network()
+    clipped_by_polygon = OSM(
+        helsinki_pbf,
+        shapely.wkt.loads(
+            "POLYGON ((24.9573 60.2010, 24.9573 60.2091, 24.9673 60.2091, "
+            + "24.9673 60.2010, 24.9573 60.2010))"
+        )
+    ).get_network()
+
+    assert_frame_equal(
+        clipped_by_polygon,
+        clipped_by_bounding_box
+    )

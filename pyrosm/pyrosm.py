@@ -103,9 +103,8 @@ class OSM:
         self._relations = None
 
     def _read_pbf(self):
-        bounding_box = self.bounding_box.bounds
         nodes, ways, relations, way_tags = parse_osm_data(
-            self.filepath, bounding_box, exclude_relations=False
+            self.filepath, self.bounding_box, exclude_relations=False
         )
 
         self._nodes = nodes
