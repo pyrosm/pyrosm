@@ -130,7 +130,6 @@ def cycling_filter():
             "raceway",
             "motorway",
             "motorway_link",
-            "busway",
         ],
         bicycle=["no"],
         service=["private"],
