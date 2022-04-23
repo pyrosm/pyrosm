@@ -795,7 +795,7 @@ class OSM:
         nodes,
         edges,
         graph_type="igraph",
-        direction="oneway",
+        directions=("oneway", ),
         from_id_col="u",
         to_id_col="v",
         edge_id_col="id",
@@ -834,8 +834,8 @@ class OSM:
               - "networkx" --> returns a networkx.MultiDiGraph -object.
               - "pandana" --> returns an pandana.Network -object.
 
-        direction : str
-            Name for the column containing information about the allowed driving directions
+        directions : list
+            Name for the columns containing information about the allowed driving directions
 
         from_id_col : str
             Name for the column having the from-node-ids of edges.
@@ -878,7 +878,7 @@ class OSM:
             return to_igraph(
                 nodes,
                 edges,
-                direction,
+                directions,
                 from_id_col,
                 to_id_col,
                 node_id_col,
@@ -890,7 +890,7 @@ class OSM:
             return to_networkx(
                 nodes,
                 edges,
-                direction,
+                directions,
                 from_id_col,
                 to_id_col,
                 edge_id_col,
@@ -904,7 +904,7 @@ class OSM:
             return to_pandana(
                 nodes,
                 edges,
-                direction,
+                directions,
                 from_id_col,
                 to_id_col,
                 node_id_col,

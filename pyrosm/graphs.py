@@ -13,7 +13,7 @@ import warnings
 def get_directed_edges(
     nodes,
     edges,
-    direction="oneway",
+    directions=("oneway", ),
     from_id_col="u",
     to_id_col="v",
     node_id_col="id",
@@ -33,6 +33,7 @@ def get_directed_edges(
                 "Required column '{col}' does not exist in edges.".format(col=col)
             )
 
+    direction = directions[-1]
     if direction not in edges.columns:
         warnings.warn(
             f"Column '{direction}' missing in the edges GeoDataFrame. "
@@ -74,11 +75,11 @@ def get_directed_edges(
     # or if the graph is walking, cycling or all
     if force_bidirectional or net_type in ["walking", "cycling", "all"]:
         edges = generate_directed_edges(
-            edges, direction, from_id_col, to_id_col, force_bidirectional=True
+            edges, directions, from_id_col, to_id_col, force_bidirectional=True
         )
     else:
         edges = generate_directed_edges(
-            edges, direction, from_id_col, to_id_col, force_bidirectional=False
+            edges, directions, from_id_col, to_id_col, force_bidirectional=False
         )
 
     return nodes, edges
@@ -87,7 +88,7 @@ def get_directed_edges(
 def to_networkx(
     nodes,
     edges,
-    direction="oneway",
+    directions=("oneway", ),
     from_id_col="u",
     to_id_col="v",
     edge_id_col="id",
@@ -155,7 +156,7 @@ def to_networkx(
     nodes, edges = get_directed_edges(
         nodes,
         edges,
-        direction,
+        directions,
         from_id_col,
         to_id_col,
         node_id_col,
@@ -190,7 +191,7 @@ def to_networkx(
 def to_igraph(
     nodes,
     edges,
-    direction="oneway",
+    directions=("oneway", ),
     from_id_col="u",
     to_id_col="v",
     node_id_col="id",
@@ -251,7 +252,7 @@ def to_igraph(
     nodes, edges = get_directed_edges(
         nodes,
         edges,
-        direction,
+        directions,
         from_id_col,
         to_id_col,
         node_id_col,
@@ -271,7 +272,7 @@ def to_igraph(
 def to_pandana(
     nodes,
     edges,
-    direction="oneway",
+    directions=("oneway", ),
     from_id_col="u",
     to_id_col="v",
     node_id_col="id",
@@ -284,7 +285,7 @@ def to_pandana(
     nodes, edges = get_directed_edges(
         nodes,
         edges,
-        direction,
+        directions,
         from_id_col,
         to_id_col,
         node_id_col,
