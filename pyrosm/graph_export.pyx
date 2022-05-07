@@ -187,13 +187,14 @@ cpdef _create_pdgraph(nodes,
 
 
 cpdef generate_directed_edges(edges,
-                              directions,
+                              direction,
+                              direction_suffix,
                               from_id_col,
                               to_id_col,
                               force_bidirectional):
     """
     Generates directed set of edges from network 
-    following rules specified in 'directions' column.
+    following rules specified in 'direction' column.
     
     If 'force_bidirectional=True' travel to both direction is allowed for all edges.
     """
@@ -214,16 +215,19 @@ cpdef generate_directed_edges(edges,
     else:
         roundabouts = False
 
-    for _direction in directions:
-        if _direction in edges:
-            direction = edges[_direction]
-            break
+    if direction_suffix:
+        direction_suffix = edges[direction + ":" + direction_suffix]
+    else:
+        direction_suffix = pd.DataFrame()
+    direction = edges[direction]
+
+    oneway_mask = direction_suffix.isin(oneway_values)
+    if not direction_suffix.empty:
+        oneway_mask |= (direction.isin(oneway_values) & direction_suffix.isna())
 
     if roundabouts:
         # Edge is oneway if it is tagged as such OR if it tagged as roundabout
-        oneway_mask = (direction.isin(oneway_values)) | (edges["junction"] == "roundabout")
-    else:
-        oneway_mask = direction.isin(oneway_values)
+        oneway_mask |= (edges["junction"] == "roundabout")
 
     edge_cnt = len(edges)
     oneway_edges = edges.loc[oneway_mask].copy()
