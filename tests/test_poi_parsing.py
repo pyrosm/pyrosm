@@ -3,7 +3,7 @@ from pyrosm import get_data
 
 
 @pytest.fixture
-def test_pbf():
+def sample_pbf():
     pbf_path = get_data("test_pbf")
     return pbf_path
 
@@ -15,25 +15,13 @@ def helsinki_pbf():
 
 
 @pytest.fixture
-def default_filter():
-    return {
-        "amenity": True,
-        "craft": True,
-        "historic": True,
-        "leisure": True,
-        "shop": True,
-        "tourism": True,
-    }
-
-
-@pytest.fixture
 def test_output_dir():
     import os, tempfile
 
     return os.path.join(tempfile.gettempdir(), "pyrosm_test_results")
 
 
-def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
+def test_parsing_pois_with_defaults(helsinki_pbf):
     from pyrosm import OSM
     from pyrosm.pois import get_poi_data
     from geopandas import GeoDataFrame
@@ -41,21 +29,7 @@ def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
     from pyrosm._arrays import concatenate_dicts_of_arrays
 
     osm = OSM(filepath=helsinki_pbf)
-    osm._read_pbf()
-    tags_as_columns = []
-    for k in default_filter.keys():
-        tags_as_columns += getattr(osm.conf.tags, k)
-
-    nodes = osm._nodes
-    gdf = get_poi_data(
-        nodes,
-        osm._node_coordinates,
-        osm._way_records,
-        osm._relations,
-        tags_as_columns,
-        default_filter,
-        None,
-    )
+    gdf = osm.get_pois()
 
     assert isinstance(gdf, GeoDataFrame)
 
@@ -65,7 +39,7 @@ def test_parsing_pois_with_defaults(helsinki_pbf, default_filter):
         assert col in gdf.columns
 
     # Test shape
-    assert len(gdf) == 1784
+    assert len(gdf) == 1712
     assert gdf.crs == pyproj.CRS.from_epsg(4326)
 
 
@@ -89,10 +63,10 @@ def test_reading_pois_from_area_having_none(helsinki_pbf):
     assert gdf is None
 
 
-def test_passing_incorrect_custom_filter(test_pbf):
+def test_passing_incorrect_custom_filter(sample_pbf):
     from pyrosm import OSM
 
-    osm = OSM(filepath=test_pbf)
+    osm = OSM(filepath=sample_pbf)
     try:
         osm.get_pois(custom_filter="wrong")
     except ValueError as e:
@@ -100,24 +74,6 @@ def test_passing_incorrect_custom_filter(test_pbf):
             pass
     except Exception as e:
         raise e
-
-
-def test_adding_extra_attribute(helsinki_pbf):
-    from pyrosm import OSM
-    from geopandas import GeoDataFrame
-
-    osm = OSM(filepath=helsinki_pbf)
-    gdf = osm.get_pois()
-    extra_col = "wikidata"
-    extra = osm.get_pois(extra_attributes=[extra_col])
-
-    # The extra should have one additional column compared to the original one
-    assert extra.shape[1] == gdf.shape[1] + 1
-    # Should have same number of rows
-    assert extra.shape[0] == gdf.shape[0]
-    assert extra_col in extra.columns
-    assert len(extra[extra_col].dropna().unique()) > 0
-    assert isinstance(gdf, GeoDataFrame)
 
 
 def test_using_multiple_filters(helsinki_pbf):
@@ -150,3 +106,21 @@ def test_using_rare_tag(helsinki_pbf):
         gdf = osm.get_pois({"park_ride": ["yes"]})
 
     assert gdf is None
+
+
+def test_adding_extra_attribute(helsinki_pbf):
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    osm = OSM(filepath=helsinki_pbf)
+    gdf = osm.get_pois()
+    extra_col = "wikidata"
+    extra = osm.get_pois(extra_attributes=[extra_col])
+
+    # The extra should have one additional column compared to the original one
+    assert extra.shape[1] == gdf.shape[1] + 1
+    # Should have same number of rows
+    assert extra.shape[0] == gdf.shape[0]
+    assert extra_col in extra.columns
+    assert len(extra[extra_col].dropna().unique()) > 0
+    assert isinstance(gdf, GeoDataFrame)
