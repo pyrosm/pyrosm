@@ -1,6 +1,5 @@
 import numpy as np
-from cykhash.khashsets cimport Int64Set_from_buffer
-from cykhash import isin_int64
+from cykhash.khashsets cimport any_int64_from_iter, isin_int64, Int64Set_from_buffer
 from cpython cimport array
 
 
@@ -203,14 +202,7 @@ cdef get_nodeid_lookup_khash(nodes):
 
 
 cdef nodes_for_way_exist_khash(nodes, node_lookup):
-    v = array.array('q', nodes)
-    cdef int n = len(v)
-
-    result = array.array('B', [False] * n)
-    isin_int64(v, node_lookup, result)
-    if True in result:
-        return True
-    return False
+    return any_int64_from_iter(nodes, node_lookup)
 
 
 cpdef get_mask_by_osmid(src_array, osm_ids):
