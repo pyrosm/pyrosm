@@ -1,29 +1,36 @@
-name: Tests
-
+name: test
 on:
   push:
-    branches: [master]
   pull_request:
-    branches: [master]
-  schedule:
-    - cron: "0 0 * * *"
+  workflow_call:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  Linting:
+  lint:
+    name: Linting code
     runs-on: ubuntu-latest
-
+    container: python:3
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-python@v2
-      - uses: pre-commit/action@v2.0.0
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Install Python
+        uses: actions/setup-python@v3
+        with:
+          python-version: "3.10"
+      - name: Install black and flake8
+        run: python -m pip install black flake8
+      - name: Lint using black
+        run: python -m black --check pyrosm
+      - name: Lint using flake8
+        run: python -m flake8 pyrosm
 
-  Test:
-    needs: Linting
-    name: ${{ matrix.os }}, ${{ matrix.env }}
+  test:
+    name: Run tests (${{ matrix.os }}, ${{ matrix.env }})
+    needs: lint
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -31,52 +38,46 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
-        postgis: [false]
-        dev: [false]
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
         env:
           - ci/37-conda.yaml
           - ci/38-conda.yaml
           - ci/39-conda.yaml
-        include:
-          - env: ci/38-conda.yaml
-            os: macos-latest
-          - env: ci/38-conda.yaml
-            os: windows-latest
-          - env: ci/38-conda.yaml
-            os: ubuntu-latest
-          - env: ci/39-conda.yaml
-            os: macos-latest
-          - env: ci/39-conda.yaml
-            os: windows-latest
-          - env: ci/39-conda.yaml
-            os: ubuntu-latest
+          - ci/310-conda.yaml
+
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
       - name: Setup Conda
-        uses: conda-incubator/setup-miniconda@v2
+        uses: conda-incubator/setup-miniconda@v2.1.1
         with:
-          auto-update-conda: true
+          environment-file: ${{ matrix.env }}
+          miniforge-version: latest
+          miniforge-variant: Mambaforge
           auto-activate-base: false
           activate-environment: test
-          environment-file: ${{ matrix.env }}
           channel-priority: strict
 
       - name: Install pyrosm
         shell: bash -l {0}
-        run: pip install -e .
+        run: pip install .
 
       - name: Check environment
         shell: bash -l {0}
         run: |
           conda info
           conda list
+
       - name: Test pyrosm
         shell: bash -l {0}
-        run: |
-          pytest --cov pyrosm -v --cov-report term-missing
+        run: pytest --cov --cov-report xml
 
-      - uses: codecov/codecov-action@v1
-
-
+      - name: Update codecov.io
+        uses: codecov/codecov-action@v3.1.0
+        with:
+          fail_ci_if_error: true
+          token: ${{ secrets.CODECOV_TOKEN }}

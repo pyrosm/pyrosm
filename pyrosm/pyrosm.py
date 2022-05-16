@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 from pyrosm.config import Conf
 from pyrosm.pbfreader import parse_osm_data
@@ -748,7 +747,7 @@ class OSM:
             for k in custom_filter.keys():
                 try:
                     tags_as_columns += getattr(self.conf.tags, k)
-                except Exception as e:
+                except Exception:
                     pass
             # If tags weren't available in conf, store keys as columns by default
             # (all other tags in such cases will be stored in 'tags' column as JSON)

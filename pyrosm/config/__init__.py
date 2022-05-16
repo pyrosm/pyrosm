@@ -1,4 +1,28 @@
-from pyrosm.config.default_tags import *
+from pyrosm.config.default_tags import (
+    basic_info_tags,
+    highway_columns,
+    building_columns,
+    amenity_columns,
+    shop_columns,
+    craft_columns,
+    leisure_columns,
+    tourism_columns,
+    historic_columns,
+    emergency_columns,
+    office_columns,
+    landuse_columns,
+    natural_columns,
+    waterway_columns,
+    geological_columns,
+    power_columns,
+    public_transport_columns,
+    railway_columns,
+    route_columns,
+    place_columns,
+    aerialway_columns,
+    aeroway_columns,
+    boundary_columns,
+)
 from pyrosm.config.osm_filters import get_osm_filter
 
 
