@@ -1,2 +1,2 @@
 [build-system]
-requires = ["setuptools", "wheel", "Cython", "cykhash", "pyrobuf"]
+requires = ["setuptools", "wheel", "Cython", "cykhash==2.0.0", "pyrobuf"]

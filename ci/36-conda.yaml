@@ -10,7 +10,7 @@ dependencies:
   - pygeos
   - cython
   - pyrobuf
-  - cykhash
+  - cykhash=2.0.0
   - python-rapidjson
   # optional
   - python-igraph
