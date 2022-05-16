@@ -62,10 +62,6 @@ jobs:
           activate-environment: test
           channel-priority: strict
 
-      - name: Make sure pytest{,-cov} are installed
-        shell: bash -l {0}
-        run: conda install pytest pytest-cov
-
       - name: Install pyrosm
         shell: bash -l {0}
         run: pip install .
