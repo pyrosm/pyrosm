@@ -13,3 +13,5 @@ clean:
 	rm -f *.pyd
 	rm -f *.c
 	rm -f *.so
+	rm -f pyrosm/*.so
+	rm -f pyrosm/*.c
