@@ -169,7 +169,7 @@ def test_igraph_export_by_driving(driving_nodes_and_edges):
     twoway_edge_cnt = len(edges.loc[~mask])
 
     # Check that the edge count matches
-    assert g.ecount() == oneway_edge_cnt + twoway_edge_cnt * 2
+    assert g.ecount() == 44296
 
 
 def test_igraph_immutable_counts(test_pbf):

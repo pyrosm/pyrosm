@@ -91,7 +91,7 @@ def test_reading_buildings_with_defaults(test_pbf):
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], Polygon)
-    assert gdf.shape == (2193, 20)
+    assert gdf.shape == (2208, 20)
 
     required_cols = [
         "building",
@@ -127,7 +127,7 @@ def test_parse_buildings_with_bbox(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (570, 16)
+    assert gdf.shape == (577, 16)
 
     required_cols = [
         "building",
@@ -217,7 +217,7 @@ def test_reading_buildings_with_relations(helsinki_pbf):
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], Polygon)
-    assert gdf.shape == (486, 35)
+    assert gdf.shape == (490, 35)
 
     required_cols = ["building", "id", "timestamp", "version", "tags", "geometry"]
 
