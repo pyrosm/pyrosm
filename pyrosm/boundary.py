@@ -1,7 +1,6 @@
 from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
 from pyrosm.utils import validate_custom_filter
-import geopandas as gpd
 import warnings
 
 
