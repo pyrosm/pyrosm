@@ -1,6 +1,12 @@
+files: 'pyrosm\/'
 repos:
--   repo: https://github.com/psf/black
-    rev: 21.4b2
+  - repo: https://github.com/psf/black
+    rev: 22.3.0
     hooks:
-    -   id: black
+      - id: black
         language_version: python3
+  - repo: https://gitlab.com/pycqa/flake8
+      rev: 3.8.3
+      hooks:
+        - id: flake8
+          language: python_venv
