@@ -6,18 +6,28 @@ channels:
 dependencies:
   - python=3.10
   # required
-  - geopandas
-  - pygeos
   - cython
   - cykhash=2.0.0
+  - geopandas
+  - pygeos
   - pyrobuf
   - python-rapidjson
   # optional
-  - python-igraph
   - networkx
   - pandana
+  - python-igraph
   # testing
+  - black
+  - codecov
   - pytest
   - pytest-cov
-  - codecov
   - requests
+  # docs
+  - jupyterlab
+  - myst-parser
+  - myst-nb
+  - nbsphinx
+  - numpydoc
+  - Sphinx
+  - sphinx-book-theme
+
