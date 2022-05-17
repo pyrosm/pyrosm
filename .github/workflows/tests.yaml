@@ -79,5 +79,6 @@ jobs:
       - name: Update codecov.io
         uses: codecov/codecov-action@v3.1.0
         with:
-          fail_ci_if_error: true
+          fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
+          version: "v0.1.15"
