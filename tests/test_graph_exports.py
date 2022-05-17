@@ -530,4 +530,4 @@ def test_nxgraph_export_from_osh(helsinki_history_pbf):
     # Windows gives a slightly different result
     # most likely due to float handling differences between Unix and Windows
     assert round(shortest_paths[0], 0) in [478, 470]
-    assert round(shortest_paths[-1], 0) == 797
+    assert round(shortest_paths[-1], 0) in [797, 793]
