@@ -74,7 +74,7 @@ jobs:
 
       - name: Test pyrosm
         shell: bash -l {0}
-        run: pytest -v -r s -n auto --color=yes --cov=pyrosm --cov-append --cov-report term-missing --cov-report xml tests/
+        run: pytest -v -r s --color=yes --cov=pyrosm --cov-append --cov-report term-missing --cov-report xml tests/
 
       - name: Update codecov.io
         uses: codecov/codecov-action@v2
