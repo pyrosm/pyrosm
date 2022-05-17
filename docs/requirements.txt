@@ -3,6 +3,7 @@ numpydoc
 sphinx-book-theme
 nbsphinx
 ipython
+Jinja2<3.1  # fix related to: https://github.com/sphinx-doc/sphinx/issues/10291
 jupyter-book
 myst-parser
 myst-nb
