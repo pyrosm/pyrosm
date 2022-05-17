@@ -84,7 +84,7 @@ def test_parsing_osm_with_custom_filter_by_excluding_tags(test_pbf):
         assert col in gdf.columns
 
     # Test shape
-    assert len(gdf) == 1049
+    assert len(gdf) == 1054
     assert gdf.crs == pyproj.CRS.from_epsg(4326)
 
 
@@ -375,7 +375,7 @@ def test_reading_with_custom_filters_selecting_specific_osm_element(helsinki_pbf
     # Now should only have 'relation' osm_type
     assert len(filtered["osm_type"].unique()) == 1
     assert filtered["osm_type"].unique()[0] == "relation"
-    assert len(filtered) == 66
+    assert len(filtered) == 67
 
     # Test getting only ways
     # ---------------------------
@@ -391,7 +391,7 @@ def test_reading_with_custom_filters_selecting_specific_osm_element(helsinki_pbf
     # Now should only have 'way' osm_type
     assert len(filtered["osm_type"].unique()) == 1
     assert filtered["osm_type"].unique()[0] == "way"
-    assert len(filtered) == 422
+    assert len(filtered) == 425
 
     # Test getting only nodes
     # ---------------------------
@@ -580,7 +580,7 @@ def test_exclude_filtering_nodes_and_relations(helsinki_pbf):
         custom_filter,
         filter_type="exclude",
     )
-    assert gdf.shape == (1081, 38)
+    assert gdf.shape == (1083, 38)
     assert "library" not in gdf["amenity"].unique().tolist()
 
     # There should be nodes, ways and relations

@@ -32,7 +32,7 @@ def test_parsing_landuse_with_defaults(test_pbf):
         assert col in gdf.columns
 
     # Test shape
-    assert len(gdf) == 50
+    assert len(gdf) == 51
     assert gdf.crs == pyproj.CRS.from_epsg(4326)
 
 

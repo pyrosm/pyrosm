@@ -64,7 +64,7 @@ jobs:
 
       - name: Install pyrosm
         shell: bash -l {0}
-        run: pip install .
+        run: pip install -e .
 
       - name: Check environment
         shell: bash -l {0}
@@ -74,10 +74,9 @@ jobs:
 
       - name: Test pyrosm
         shell: bash -l {0}
-        run: pytest --cov --cov-report xml
+        run: pytest -v -r s --color=yes --cov=pyrosm --cov-append --cov-report term-missing --cov-report xml tests/
 
       - name: Update codecov.io
-        uses: codecov/codecov-action@v3.1.0
+        uses: codecov/codecov-action@v2
         with:
           fail_ci_if_error: true
-          token: ${{ secrets.CODECOV_TOKEN }}
