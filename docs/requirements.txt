@@ -9,6 +9,7 @@ myst-nb
 myst-parser
 nbsphinx
 numpydoc
+pyrosm
 Sphinx
 sphinx-book-theme
 sphinx-togglebutton
