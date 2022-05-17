@@ -1,4 +1,3 @@
-# Cython building utility commands for Unix
 # Clean all C-files, pyd-files, pyrobuf-directory, build-directory, and egg-info
 .PHONY: clean
 clean:
