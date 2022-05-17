@@ -77,8 +77,6 @@ jobs:
         run: pytest --cov --cov-report xml
 
       - name: Update codecov.io
-        uses: codecov/codecov-action@v3.1.0
+        uses: codecov/codecov-action@v2
         with:
           fail_ci_if_error: false
-          token: ${{ secrets.CODECOV_TOKEN }}
-          version: "v0.1.15"
