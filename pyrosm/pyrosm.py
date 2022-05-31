@@ -516,7 +516,7 @@ class OSM:
 
         Take a look at OSM documentation for further details about the data:
 
-        `https://wiki.openstreetmap.org/wiki/Key:boundary <https://wiki.openstreetmap.org/wiki/Key:bondary>`__
+        `https://wiki.openstreetmap.org/wiki/Key:boundary <https://wiki.openstreetmap.org/wiki/Key:boundary>`__
 
         """
 
