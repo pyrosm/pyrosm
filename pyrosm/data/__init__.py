@@ -30,7 +30,7 @@ __all__ = ["available", "get_data", "get_path", "suggest"]
 _module_path = os.path.dirname(__file__)
 _package_files = {"test_pbf": "test.osm.pbf", "helsinki_pbf": "Helsinki.osm.pbf"}
 
-# Suggest data based on bounding box
+# given a bounding box, suggest pbf files
 suggest = Suggest()
 
 # Static test data

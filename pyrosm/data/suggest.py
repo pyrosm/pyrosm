@@ -8,7 +8,7 @@ import re
 from concurrent.futures import Future
 from functools import cached_property
 from pathlib import Path
-from typing import Iterator, Iterable, Callable, Union
+from typing import Iterator, Iterable, Union
 
 import numpy as np
 import pandas as pd
