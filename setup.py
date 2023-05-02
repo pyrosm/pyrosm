@@ -30,7 +30,7 @@ requirements = [
     "python-rapidjson",
     "setuptools>=18.0",
     "geopandas>=0.8.0",
-    "pygeos",
+    "shapely>=2.0.1",
     "cykhash",
     "pyrobuf",
 ]

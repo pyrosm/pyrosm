@@ -1,6 +1,6 @@
 from enum import Enum
 import numpy as np
-from pygeos.coordinates import get_coordinates
+from shapely.coordinates import get_coordinates
 
 
 class Unit(Enum):

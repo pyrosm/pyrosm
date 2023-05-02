@@ -1,12 +1,11 @@
 import numpy as np
-from pygeos import linestrings, polygons, points, linearrings, \
+from shapely import linestrings, polygons, points, linearrings, \
     multilinestrings, multipolygons, get_geometry
-from pygeos import Geometry
-from pygeos import GEOSException
-from pygeos.linear import line_merge
-from pygeos.coordinates import get_coordinates
-from pygeos.predicates import is_geometry
-import shapely
+from shapely import Geometry
+from shapely import GEOSException
+from shapely.linear import line_merge
+from shapely.coordinates import get_coordinates
+from shapely.predicates import is_geometry
 from shapely.geometry import MultiPolygon
 from shapely.ops import polygonize
 from pyrosm.distance import Unit, haversine
@@ -58,19 +57,6 @@ cpdef fix_geometry(geometry, diff_threshold=20):
             raise e
     # Otherwise return original geometry
     return geometry
-
-
-cdef pygeos_to_shapely(geom):
-    if geom is None:
-        return None
-    geom = shapely.geos.lgeos.GEOSGeom_clone(geom._ptr)
-    return shapely.geometry.base.geom_factory(geom)
-
-
-cdef to_shapely(pygeos_array):
-    out = np.empty(len(pygeos_array), dtype=object)
-    out[:] = [pygeos_to_shapely(geom) for geom in pygeos_array]
-    return out
 
 
 cdef get_way_coordinates_for_polygon(node_coordinate_lookup, way_elements):
@@ -141,11 +127,10 @@ cdef _create_point_geometries(xarray, yarray):
         coords = (xarray[i], yarray[i])
         geometries.append(coords)
 
-    return to_shapely(np.array(
-        [points(geom)
-         if geom is not None else None
-         for geom in geometries],
-        dtype=object))
+    return [
+        points(geom) if geom is not None 
+        else None for geom in geometries
+    ]
 
 cdef create_relation_geometry(node_coordinates, ways,
                               member_roles, force_linestring,

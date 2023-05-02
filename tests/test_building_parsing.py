@@ -58,7 +58,7 @@ def test_creating_building_geometries(test_pbf):
     from pyrosm.data_manager import get_osm_data
     from pyrosm.geometry import create_way_geometries
     from numpy import ndarray
-    from pygeos import Geometry
+    from shapely import Geometry
 
     osm = OSM(filepath=test_pbf)
     osm._read_pbf()

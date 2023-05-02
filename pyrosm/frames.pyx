@@ -7,7 +7,7 @@ from pyrosm.geometry cimport create_way_geometries
 from pyrosm.relations import prepare_relations
 from shapely.geometry import box
 from pyrosm.data_filter import get_mask_by_osmid, _filter_array_dict_by_indices_or_mask
-from pygeos import multilinestrings
+from shapely import multilinestrings
 from pyrosm.distance import calculate_geom_length, calculate_geom_array_length
 
 cpdef create_nodes_gdf(nodes, osmids_to_keep=None):

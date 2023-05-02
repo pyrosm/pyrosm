@@ -1,8 +1,8 @@
 from pyrosm.data_filter cimport filter_array_dict_by_indices_or_mask
-from pyrosm.geometry cimport pygeos_to_shapely, create_relation_geometry, fix_geometry
+from pyrosm.geometry cimport create_relation_geometry, fix_geometry
 from pyrosm._arrays cimport convert_to_arrays_and_drop_empty, convert_way_records_to_lists
-from pygeos import multipolygons, multilinestrings
-from pygeos.predicates import is_valid
+from shapely import multipolygons, multilinestrings
+from shapely.predicates import is_valid
 import numpy as np
 import geopandas as gpd
 
@@ -132,9 +132,6 @@ cdef get_relations(relations, relation_ways, node_coordinates):
 
         # Check if geometry is valid
         is_valid_geom = is_valid(geometry)
-
-        # Convert to shapely
-        geometry = pygeos_to_shapely(geometry)
 
         # If geometry was invalid polygon try to fix
         if not force_linestring:

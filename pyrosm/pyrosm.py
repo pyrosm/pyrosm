@@ -49,8 +49,6 @@ class OSM:
         as a Shapely Polygon/MultiPolygon or closed LineString/LinearRing.
     """
 
-    from pyrosm.utils._compat import PYGEOS_SHAPELY_COMPAT
-
     allowed_bbox_types = [
         Polygon,
         MultiPolygon,
