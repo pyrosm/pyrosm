@@ -6,7 +6,7 @@ from geopandas import GeoSeries
 
 cdef get_dtype(key):
     dtypes = {"id": np.int64,
-              "version": np.int8,
+              "version": np.int32,
               "changeset": np.int32,
               "timestamp": np.uint32,
               "lon": np.float32,
