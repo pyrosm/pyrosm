@@ -116,7 +116,7 @@ cdef parse_dense(
     changesets = delta_decode_changeset(data)
 
     # Visible flags (if visible is False, the element has been deleted)
-    visible = np.array(list(data.denseinfo.visible), dtype=bool)
+    visible = np.array(list(data.denseinfo.visible)).astype(bool)
 
     # Tags
     tags = np.empty(len(data.id), dtype=object)
@@ -135,7 +135,7 @@ cdef parse_dense(
     if timestamps.shape[0] == 0:
         timestamps = np.zeros(len(data.id), dtype=np.int8)
     if visible.shape[0] == 0:
-        visible = np.zeros(len(data.id), dtype=np.int8)
+        visible = np.full(len(data.id), False, dtype=bool)
 
     if bounding_box is not None:
         # Filter
