@@ -13,7 +13,7 @@ jobs:
   lint:
     name: Linting code
     runs-on: ubuntu-latest
-    container: python:3
+    container: ubuntu:22.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
