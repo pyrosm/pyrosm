@@ -14,7 +14,6 @@ def get_boundary_data(
     name,
     bounding_box,
 ):
-
     if boundary_type == "all":
         boundary_type = True
     else:

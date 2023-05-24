@@ -60,7 +60,6 @@ class OSM:
     ]
 
     def __init__(self, filepath, bounding_box=None):
-
         # Check input file
         self.filepath = validate_input_file(filepath)
 
