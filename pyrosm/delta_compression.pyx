@@ -25,7 +25,7 @@ cdef delta_decode_id(data):
 
 
 cdef delta_decode_timestamp(data, timestamp_granularity):
-    timestamp_deltas = np.zeros(len(data.denseinfo.timestamp) + 1, dtype=np.uint32)
+    timestamp_deltas = np.zeros(len(data.denseinfo.timestamp) + 1, dtype=np.int64)
     timestamp_deltas[1:] = list(data.denseinfo.timestamp)
     timestamps = (np.cumsum(timestamp_deltas)[1:]
                   * timestamp_granularity / 1000).astype(int)
@@ -33,7 +33,7 @@ cdef delta_decode_timestamp(data, timestamp_granularity):
 
 
 cdef delta_decode_changeset(data):
-    changeset_deltas = np.zeros(len(data.denseinfo.changeset) + 1, dtype=np.int32)
+    changeset_deltas = np.zeros(len(data.denseinfo.changeset) + 1, dtype=np.int64)
     changeset_deltas[1:] = list(data.denseinfo.changeset)
     changesets = np.cumsum(changeset_deltas)[1:]
     return changesets.astype(np.int32)
