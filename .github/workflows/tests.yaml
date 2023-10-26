@@ -43,10 +43,10 @@ jobs:
           - windows-latest
           - macos-latest
         env:
-          - ci/37-conda.yaml
-          - ci/38-conda.yaml
           - ci/39-conda.yaml
           - ci/310-conda.yaml
+          - ci/311-conda.yaml
+          - ci/312-conda.yaml
 
     steps:
       - name: Checkout repository
