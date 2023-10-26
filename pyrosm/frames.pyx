@@ -98,7 +98,7 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
             way_gdf["v"] = v
 
             # Calculate the length of the geometries
-            way_gdf["length"] = calculate_geom_array_length(way_gdf.geometry.values.data)
+            way_gdf["length"] = calculate_geom_array_length(way_gdf.geometry.values.to_numpy())
 
         # For cases not related to networks
         else:
@@ -126,7 +126,7 @@ cpdef prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_c
                                       node_coordinates,
                                       tags_as_columns)
 
-        relation_gdf = gpd.GeoDataFrame(relations)
+        relation_gdf = gpd.GeoDataFrame(relations, crs="epsg:4326")
         relation_gdf['osm_type'] = "relation"
 
     else:
@@ -154,7 +154,7 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
         # Prepare nodes
         node_gdf = prepare_node_gdf(nodes)
     else:
-        node_gdf = pd.DataFrame()
+        node_gdf = gpd.GeoDataFrame()
 
     # Merge all
     gdf = pd.concat([node_gdf, way_gdf, relation_gdf])
