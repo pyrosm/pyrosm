@@ -1,6 +1,13 @@
 Changelog
 =========
 
+v0.6.2
+------
+
+- Fix installation issues and support only Python >= 3.9 (#221)
+- Fix GA actions and use micromamba to install environments (#221)
+- Use Shapely 2.0 instead of pygeos (#214)
+
 v0.6.1
 ------
 
