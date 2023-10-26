@@ -4,20 +4,20 @@ channels:
   - conda-forge
 
 dependencies:
-  - python=3.8
+  - python=3.12
   # required
-  - geopandas
-  - pygeos
   - cython
-  - cykhash=2.0.0
+  - cykhash=>2
+  - geopandas
   - pyrobuf
   - python-rapidjson
   # optional
-  - python-igraph
   - networkx
   - pandana
+  - python-igraph
   # testing
+  - black
+  - codecov
   - pytest
   - pytest-cov
-  - codecov
   - requests

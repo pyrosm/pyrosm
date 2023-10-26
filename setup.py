@@ -58,10 +58,10 @@ setup(
         "Operating System :: Microsoft :: Windows",
         "Programming Language :: Python",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.6",
-        "Programming Language :: Python :: 3.7",
-        "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
         "Topic :: Utilities",
     ],
     project_urls={
@@ -76,7 +76,7 @@ setup(
         "protobuf",
         "PBF",
     ],
-    python_requires=">=3.6",
+    python_requires=">=3.9",
     install_requires=requirements,
     pyrobuf_modules="proto",
     ext_modules=cythonize(

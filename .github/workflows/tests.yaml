@@ -13,12 +13,12 @@ jobs:
   lint:
     name: Linting code
     runs-on: ubuntu-latest
-    container: python:3
+    container: ubuntu:22.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
       - name: Install Python
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v4
         with:
           python-version: "3.10"
       - name: Install black and flake8
@@ -43,21 +43,19 @@ jobs:
           - windows-latest
           - macos-latest
         env:
-          - ci/37-conda.yaml
-          - ci/38-conda.yaml
           - ci/39-conda.yaml
           - ci/310-conda.yaml
+          - ci/311-conda.yaml
+          - ci/312-conda.yaml
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Setup Conda
-        uses: conda-incubator/setup-miniconda@v2.1.1
+      - name: Install Conda environment with Micromamba
+        uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: ${{ matrix.env }}
-          miniforge-version: latest
-          miniforge-variant: Mambaforge
           auto-activate-base: false
           activate-environment: test
           channel-priority: strict
@@ -69,14 +67,14 @@ jobs:
       - name: Check environment
         shell: bash -l {0}
         run: |
-          conda info
-          conda list
+          micromamba info
+          micromamba list
 
       - name: Test pyrosm
         shell: bash -l {0}
         run: pytest -v -r s --color=yes --cov=pyrosm --cov-append --cov-report term-missing --cov-report xml tests/
 
       - name: Update codecov.io
-        uses: codecov/codecov-action@v2
+        uses: codecov/codecov-action@v3.1.1
         with:
           fail_ci_if_error: true

@@ -7,9 +7,8 @@ dependencies:
   - python=3.10
   # required
   - cython
-  - cykhash=2.0.0
+  - cykhash>=2
   - geopandas
-  - pygeos
   - pyrobuf
   - python-rapidjson
   # optional
@@ -22,12 +21,4 @@ dependencies:
   - pytest
   - pytest-cov
   - requests
-  # docs
-  - jupyterlab
-  - myst-parser
-  - myst-nb
-  - nbsphinx
-  - numpydoc
-  - Sphinx
-  - sphinx-book-theme
 
