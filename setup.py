@@ -29,7 +29,7 @@ def read_long_description():
 requirements = [
     "python-rapidjson",
     "setuptools>=18.0",
-    "geopandas>=0.8.0",
+    "geopandas>=0.12.0",
     "shapely>=2.0.1",
     "cykhash",
     "pyrobuf",
