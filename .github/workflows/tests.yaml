@@ -53,7 +53,7 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Setup Conda
-        uses: conda-incubator/setup-miniconda@v2
+        uses: conda-incubator/setup-miniconda@v2.2.0
         with:
           environment-file: ${{ matrix.env }}
           miniforge-version: latest
@@ -61,6 +61,7 @@ jobs:
           auto-activate-base: false
           activate-environment: test
           channel-priority: strict
+          use-mamba: true
 
       - name: Install pyrosm
         shell: bash -l {0}
@@ -77,6 +78,6 @@ jobs:
         run: pytest -v -r s --color=yes --cov=pyrosm --cov-append --cov-report term-missing --cov-report xml tests/
 
       - name: Update codecov.io
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v3.1.1
         with:
           fail_ci_if_error: true
