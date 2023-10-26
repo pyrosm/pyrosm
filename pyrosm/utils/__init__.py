@@ -187,7 +187,6 @@ def valid_header_block(header_block):
 
 def get_bounding_box(filepath):
     with open(filepath, "rb") as f:
-
         # Check that the data stream is valid OSM
         # =======================================
 
@@ -205,7 +204,6 @@ def get_bounding_box(filepath):
 
         # Validate header
         if valid_header_block(header_block):
-
             # Parse bounding box
             try:
                 bb = header_block.bbox.SerializeToDict()
@@ -226,7 +224,7 @@ def datetime_to_unix_time(dt):
 
 
 def unix_time_to_datetime(unix_time):
-    return pd.Timestamp.tz_localize(pd.Timestamp.utcfromtimestamp(unix_time), tz="UTC")
+    return pd.Timestamp.utcfromtimestamp(unix_time)
 
 
 def get_unix_time(timestamp, osh_file):
