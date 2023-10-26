@@ -187,7 +187,6 @@ def valid_header_block(header_block):
 
 def get_bounding_box(filepath):
     with open(filepath, "rb") as f:
-
         # Check that the data stream is valid OSM
         # =======================================
 
@@ -205,7 +204,6 @@ def get_bounding_box(filepath):
 
         # Validate header
         if valid_header_block(header_block):
-
             # Parse bounding box
             try:
                 bb = header_block.bbox.SerializeToDict()

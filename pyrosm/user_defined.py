@@ -17,7 +17,6 @@ def get_user_defined_data(
     keep_relations,
     bounding_box,
 ):
-
     if not keep_nodes:
         nodes = None
 

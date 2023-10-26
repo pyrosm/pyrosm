@@ -51,7 +51,6 @@ def download(url, filename, update, target_dir):
 
     # Download data to temp if it does not exist or if update is requested
     if update or file_exists is False:
-
         try:
             filepath, msg = urllib.request.urlretrieve(url, filepath)
         except HTTPError:
