@@ -334,7 +334,7 @@ def test_igraph_connectivity(immutable_nodes_and_edges):
 
     # Test that finding shortest paths works for all nodes
     N = g.vcount()
-    shortest_paths = g.shortest_paths(
+    shortest_paths = g.distances(
         source=5, target=[i for i in range(N)], weights="length"
     )
 
