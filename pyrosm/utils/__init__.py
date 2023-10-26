@@ -226,7 +226,7 @@ def datetime_to_unix_time(dt):
 
 
 def unix_time_to_datetime(unix_time):
-    return pd.Timestamp.tz_localize(pd.Timestamp.utcfromtimestamp(unix_time), tz="UTC")
+    return pd.Timestamp.utcfromtimestamp(unix_time)
 
 
 def get_unix_time(timestamp, osh_file):
