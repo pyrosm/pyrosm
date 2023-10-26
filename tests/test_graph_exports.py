@@ -168,7 +168,7 @@ def test_igraph_export_by_driving(driving_nodes_and_edges):
 
     # Check that the edge count matches
     # TODO: The following fails, check why later
-    #assert g.ecount() == 44296
+    # assert g.ecount() == 44296
 
 
 def test_igraph_immutable_counts(test_pbf):
