@@ -7,7 +7,7 @@ dependencies:
   - python=3.11
   # required
   - cython
-  - cykhash=2.0.0
+  - cykhash=>2
   - geopandas
   - pyrobuf
   - python-rapidjson
