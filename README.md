@@ -12,8 +12,7 @@
 **Pyrosm** is a Python library for reading OpenStreetMap data from Protocolbuffer Binary Format -files (`*.osm.pbf`) into Geopandas GeoDataFrames. 
 Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks, buildings, 
 Points of Interest (POI), landuse and natural elements. Also fully customized queries are supported which makes it possible 
-to parse the data from OSM with more specific filters. 
-
+to parse the data from OSM with more specific filters.
  
 **Pyrosm** is easy to use and it provides a somewhat similar user interface as [OSMnx](https://github.com/gboeing/osmnx).
 The main difference between pyrosm and OSMnx is that OSMnx reads the data over internet using OverPass API, whereas pyrosm reads the data from local OSM data dumps
@@ -22,7 +21,7 @@ allowing e.g. parsing street networks for the whole country fairly efficiently (
 
 
 The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) 
-which makes it probably faster than any other Python alternatives for parsing OpenStreetMap data.
+which makes it fast to parse OpenStreetMap data from PBF files.
 Pyrosm is built on top of another Cython library called [Pyrobuf](https://github.com/appnexus/pyrobuf) which is a faster Cython alternative 
 to Google's Protobuf library: It provides 2-4x boost in performance for deserializing the protocol buffer messages compared to 
 Google's version with C++ backend. Google's Protocol Buffers is a commonly used and efficient method to serialize and compress structured data 
@@ -43,13 +42,6 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
  - filter data based on bounding box
  - export networks as a directed graph to `igraph`, `networkx` and `pandana`
  
-## Roadmap
-
- - add possibility to optimize memory usage (see #87)
- - add possibility to simplify graph (see #89)
- - add possibility to crop PBF and save a subset into new PBF.
- - add Cython specific tests
-
 ## Install
 
 Pyrosm is distributed via PyPi and conda-forge. 
@@ -85,23 +77,6 @@ That being said, it is also possible to extract neighborhood level information w
 Using `pyrosm` is straightforward. See [docs](https://pyrosm.readthedocs.io/en/latest/basics.html) 
 for instructions how to use the library.
 
-## Performance
-
-See [docs](https://pyrosm.readthedocs.io/en/latest/benchmarking.html) for more comprehensive benchmarking tests. Reading all drivable roads in Helsinki Region (approx. 85,000 roads) 
-takes approximately **12 seconds** (laptop with 16GB memory, SSD drive, and Intel Core i5-8250U CPU 1.6 GHZ). And the result looks something like:
-
-![Helsinki_driving_net](resources/img/Helsinki_driving_net.PNG)
-
-Parsing all buildings from the same area (approx. 180,000) takes approximately **17 seconds**. And the result looks something like:
-
-![Helsinki_building_footprints](resources/img/Helsinki_building_footprints.png)
-
-Parsing all Points of Interest (POIs) with defaults elements (amenities, shops and tourism) 
-takes approximately **14 seconds** (approx. 32,000 features). 
-And the result looks something like:
-
-![Helsinki_POIs](resources/img/Helsinki_POIs_amenity_shop_tourism.png)
-
 ## Get in touch + contributions
 
 If you find a bug from the tool, have question, or would like to suggest a new feature to it, you can [make a new issue here](https://github.com/HTenkanen/pyrosm/issues).
@@ -113,10 +88,9 @@ please check the [contribution guidelines](https://pyrosm.readthedocs.io/en/late
 
 You can install a local development version of the tool by 1) installing necessary packages with conda and 2) building pyrosm from source:
 
- 1. install conda-environment for Python 3.7 or 3.8 by:
+ 1. install conda-environment for Python 3.12 by:
  
-    - Python 3.7 (you might want to modify the env-name which is `test` by default): `$ conda env create -f ci/37-conda.yaml`
-    - Python 3.8: `$ conda env create -f ci/38-conda.yaml`
+    - Python 3.12 (you might want to modify the env-name which is `test` by default): `$ conda env create -f ci/312-conda.yaml`
     
  2. build pyrosm development version from master (activate the environment first):
  
@@ -124,7 +98,7 @@ You can install a local development version of the tool by 1) installing necessa
 
 You can run tests with `pytest` by executing:
  
-  `$ pytest -v` 
+  `$ pytest . -v` 
   
 
 ## License and copyright

@@ -29,7 +29,7 @@ def read_long_description():
 requirements = [
     "python-rapidjson",
     "setuptools>=18.0",
-    "geopandas>=0.8.0",
+    "geopandas>=0.12.0",
     "shapely>=2.0.1",
     "cykhash",
     "pyrobuf",
@@ -37,7 +37,7 @@ requirements = [
 
 setup(
     name="pyrosm",
-    version="0.6.1",
+    version="0.6.2",
     license="MIT",
     description="A Python tool to parse OSM data from Protobuf format into GeoDataFrame.",
     long_description=read_long_description(),

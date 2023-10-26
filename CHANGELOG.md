@@ -8,6 +8,12 @@ v0.6.2
 - Fix GA actions and use micromamba to install environments (#221)
 - Use Shapely 2.0 instead of pygeos (#214)
 
+Thanks for the following contributors:
+
+- knthis (#214)
+- hbruch (#215)
+
+
 v0.6.1
 ------
 
