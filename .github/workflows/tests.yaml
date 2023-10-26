@@ -52,16 +52,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Setup Conda
-        uses: conda-incubator/setup-miniconda@v2.2.0
+      - name: Install Conda environment with Micromamba
+        uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: ${{ matrix.env }}
-          miniforge-version: latest
-          miniforge-variant: Mambaforge
           auto-activate-base: false
           activate-environment: test
           channel-priority: strict
-          use-mamba: true
 
       - name: Install pyrosm
         shell: bash -l {0}
