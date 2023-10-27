@@ -65,7 +65,7 @@ setup(
         "Topic :: Utilities",
     ],
     project_urls={
-        "Documentation": "https://pyrosm.github.io/",
+        "Documentation": "https://pyrosm.readthedocs.org/",
         "Issue Tracker": "https://github.com/htenkanen/pyrosm/issues",
     },
     keywords=[
