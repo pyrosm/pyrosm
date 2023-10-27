@@ -13,10 +13,6 @@ The main difference between pyrosm and OSMnx is that OSMnx reads the data using 
 the data from local OSM data dumps that are downloaded from the PBF data providers (Geofabrik, BBBike).
 This makes it possible to parse OSM data faster and make it more feasible to extract data covering large regions.
 
-For instance, parsing all roads from the state of New York (USA) with a "basic" work laptop (16GB memory, SSD, and Intel Core i5 CPU),
-takes less than **3 minutes** and parsing the buildings from the same region takes less than
-**4 minutes** (see `benchmarks <https://pyrosm.readthedocs.io/en/latest/benchmarking.html>`__ for details):
-
 .. figure:: img/NY_roads_and_buildings.PNG
 
 
@@ -64,8 +60,8 @@ Getting started
     basics.ipynb
     custom_filter.ipynb
     graphs.ipynb
-    benchmarking.ipynb
     contributions
+    .. benchmarking.ipynb
 
 .. toctree::
     :caption: Reference Guide
