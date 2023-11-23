@@ -23,7 +23,7 @@ netherlands_url = "europe/netherlands/"
 nordrhein_wesfalen_url = "europe/germany/nordrhein-westfalen/"
 poland_url = "europe/poland/"
 russia_url = "russia/"
-spain_url = "europe/spain"
+spain_url = "europe/spain/"
 usa_url = "north-america/us/"
 
 
