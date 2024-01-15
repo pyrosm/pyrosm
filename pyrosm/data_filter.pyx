@@ -15,14 +15,12 @@ class Solver:
             raise ValueError("filter type should be 'keep' or 'exclude'")
 
     def isin_check(self, value, container):
-        if value in container:
+        if True in container or value in container:
             return True
         return False
 
     def notin_check(self, value, container):
-        if value not in container:
-            return True
-        return False
+        return not self.isin_check(value, container)
 
     def check(self, value, container):
         return self.solver(value, container)
@@ -104,27 +102,19 @@ cdef filter_osm_records(data_records,
         # filters are present simultaneously.
         overlapping_filter = False
 
-        filter_values = []
-        way_filter = {}
-        for key, vals in data_filter.items():
-
-            # Check for {osm-key: True} cases
-            if vals is True or vals == [True]:
-                continue
-
-            filter_values += vals
-            way_filter[key] = vals
-
-        # Update data filter
-        if len(way_filter) == 0:
-            data_filter = None
-        else:
-            data_filter = {k: v for k, v in way_filter.items()}
-            filter_keys = list(data_filter.keys())
-
         # Check for overlapping filter
-        if len(filter_values) > len(list(set(filter_values))):
-            overlapping_filter = True
+        filter_values = []
+        filter_keys = data_filter.keys()
+        for values in data_filter.values():
+            # Check for {osm-key: True} cases, for which should always check all tag key/values
+            if True in values:
+                overlapping_filter = True
+                break
+            
+            filter_values += values
+
+        if not overlapping_filter and len(filter_values) > len(list(set(filter_values))):
+                overlapping_filter = True
 
     relation_check = False
     if relation_way_ids is not None:
