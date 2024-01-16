@@ -425,6 +425,12 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
     assert isinstance(filtered, GeoDataFrame)
     assert len(filtered) == 5542
 
+    # Test combination of True and specific value
+    gdf = osm.get_data_by_custom_criteria(
+        custom_filter={"building": True, "railway": ["station"]}
+    )
+    assert gdf.shape == (176742, 49)
+
     # Test a more complicated query
     # -----------------------------
 
