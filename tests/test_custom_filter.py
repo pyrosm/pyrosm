@@ -427,7 +427,8 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
 
     # Test combination of True and specific value
     gdf = osm.get_data_by_custom_criteria(
-        custom_filter={"building": True, "railway": ["station"]}
+        custom_filter={"building": True, "railway": ["station"]},
+        filter_type="keep",
     )
     assert gdf.shape == (176742, 49)
 
