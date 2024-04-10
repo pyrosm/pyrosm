@@ -38,7 +38,10 @@ cdef explode_way_tags(ways):
     for i in range(0, n):
         way = ways[i]
         for k, v in way['tags'].items():
-            way[k] = v
+            if k == "id":
+                way["tagged_id"] = v
+            else:
+                way[k] = v
             try:
                 dummy = way_keys[k]
             except:
