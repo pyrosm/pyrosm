@@ -68,8 +68,8 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
             way_gdf = way_gdf.dropna(subset=['geometry']).reset_index(drop=True)
 
             # Create MultiLineStrings and calculate the length
-            way_gdf["geometry"] = [multilinestrings(geom) for geom in way_gdf["geometry"]]
-            way_gdf["length"] = [calculate_geom_length(geom) for geom in way_gdf["geometry"]]
+            way_gdf.loc[:, "geometry"] = [multilinestrings(geom) for geom in way_gdf["geometry"]]
+            way_gdf.loc[:, "length"] = [calculate_geom_length(geom) for geom in way_gdf["geometry"]]
             way_gdf = gpd.GeoDataFrame(way_gdf, geometry="geometry", crs="epsg:4326")
 
             # If only edges are requested, clean node_attributes
@@ -94,8 +94,8 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
             way_gdf = gpd.GeoDataFrame(way_gdf, geometry="geometry", crs="epsg:4326")
 
             # Update from/to-ids
-            way_gdf["u"] = u
-            way_gdf["v"] = v
+            way_gdf.loc[:, "u"] = u
+            way_gdf.loc[:, "v"] = v
 
             # Calculate the length of the geometries
             way_gdf["length"] = calculate_geom_array_length(way_gdf.geometry.values.to_numpy())
