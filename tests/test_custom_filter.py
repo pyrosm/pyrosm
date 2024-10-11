@@ -1,5 +1,14 @@
 import pytest
+
 from pyrosm import get_data
+from pyrosm.utils.download import download
+
+
+@pytest.fixture
+def california_highway_motorway_pbf():
+    filename = "california_highway_motorway.osm.pbf"
+    url = f"https://github.com/eracle/pyrosm-test-data/raw/refs/heads/main/{filename}"
+    return download(url=url, filename=filename, update=None, target_dir=None)
 
 
 @pytest.fixture
@@ -37,6 +46,15 @@ def test_output_dir():
     import os, tempfile
 
     return os.path.join(tempfile.gettempdir(), "pyrosm_test_results")
+
+
+def test_get_data_by_custom_criteria_custom_filter(california_highway_motorway_pbf):
+    from geopandas import GeoDataFrame
+    from pyrosm import OSM
+    osm = OSM(filepath=california_highway_motorway_pbf)
+    gdf = osm.get_data_by_custom_criteria(custom_filter={"highway": ["motorway"]})
+
+    assert isinstance(gdf, GeoDataFrame)
 
 
 def test_parsing_osm_with_custom_filter_by_excluding_tags(test_pbf):
@@ -494,7 +512,6 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
 
 def test_reading_custom_from_area_having_none(helsinki_pbf):
     from pyrosm import OSM
-    from geopandas import GeoDataFrame
 
     # Bounding box for area that does not have any data
     bbox = [24.940514, 60.173849, 24.942, 60.175892]
