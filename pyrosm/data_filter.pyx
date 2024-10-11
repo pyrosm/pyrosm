@@ -265,7 +265,7 @@ cdef record_should_be_kept(tag, osm_keys, data_filter, filter_type):
 
 
 cdef filter_relation_indices(relations, osm_keys, data_filter, filter_type):
-    cdef int i, n = len(relations["tags"])
+    cdef int i, n = len(relations.get("tags", []))
     indices = []
 
     # Ensure keys
