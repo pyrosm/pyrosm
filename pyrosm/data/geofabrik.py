@@ -23,6 +23,7 @@ netherlands_url = "europe/netherlands/"
 nordrhein_wesfalen_url = "europe/germany/nordrhein-westfalen/"
 poland_url = "europe/poland/"
 russia_url = "russia/"
+spain_url = "europe/spain/"
 usa_url = "north-america/us/"
 
 
@@ -1147,6 +1148,7 @@ class SubRegions:
             "netherlands",
             "poland",
             "russia",
+            "spain"
             "usa",
         ]
         available = self.regions
@@ -1162,9 +1164,57 @@ class SubRegions:
         self.netherlands = Netherlands()
         self.poland = Poland()
         self.russia = Russia()
+        self.spain = Spain()
         self.usa = USA()
 
         self.available = {name: self.__dict__[name].available for name in self.regions}
+
+    def __getattr__(self, name):
+        return self.__dict__[name]
+
+    def __call__(self):
+        return self.available
+
+class Spain:
+    regions = [
+        "Andalucía",
+        "Aragón",
+        "Asturias",
+        "Cantabria",
+        "Castilla-La Mancha",
+        "Castilla y León",
+        "Cataluña",
+        "Ceuta",
+        "Extremadura",
+        "Galicia",
+        "Islas Baleares",
+        "La Rioja",
+        "Madrid",
+        "Melilla",
+        "Murcia",
+        "Navarra",
+        "País Vasco",
+        "Valencia",
+    ]
+
+    available = regions
+    available.sort()
+
+    country = {
+        "name": "spain" + suffix,
+        "url": URL + europe_url + "spain" + suffix,
+    }
+
+    # Create data sources
+    _sources = {
+        region: {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + spain_url + region.replace("_", "-") + suffix,
+        }
+        for region in regions
+    }
+
+    __dict__ = _sources
 
     def __getattr__(self, name):
         return self.__dict__[name]
