@@ -71,8 +71,8 @@ def get_directed_edges(
 
     # Generate directed edges
     # Check if user wants to force bidirectional graph
-    # or if the graph is walking, cycling or all
-    if force_bidirectional or net_type in ["walking", "cycling", "all"]:
+    # or if the graph is walking or all
+    if force_bidirectional or net_type in ["walking", "all"]:
         edges = generate_directed_edges(
             edges, direction, from_id_col, to_id_col, force_bidirectional=True
         )
@@ -133,7 +133,7 @@ def to_networkx(
 
     network_type : str
         Network type for the given data. Determines how the graph will be constructed.
-        By default, bidirectional graph is created for walking, cycling and all,
+        By default, bidirectional graph is created for walking and all,
         and directed graph for driving (i.e. oneway streets are taken into account).
         Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'.
 
@@ -234,7 +234,7 @@ def to_igraph(
 
     network_type : str
         Network type for the given data. Determines how the graph will be constructed.
-        By default, bidirectional graph is created for walking, cycling and all,
+        By default, bidirectional graph is created for walking and all,
         and directed graph for driving (i.e. oneway streets are taken into account).
         Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'.
 
