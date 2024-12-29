@@ -71,14 +71,20 @@ def get_directed_edges(
 
     # Generate directed edges
     # Check if user wants to force bidirectional graph
-    # or if the graph is walking, cycling or all
-    if force_bidirectional or net_type in ["walking", "cycling", "all"]:
+    # or if the graph is walking or all
+
+    direction_split = direction.split(":", 1)
+    direction = direction_split[0]
+    if len(direction_split) == 2:
+        direction_suffix = direction_split[1]
+
+    if force_bidirectional or net_type in ["walking", "all"]:
         edges = generate_directed_edges(
-            edges, direction, from_id_col, to_id_col, force_bidirectional=True
+            edges, direction, direction_suffix, from_id_col, to_id_col, force_bidirectional=True
         )
     else:
         edges = generate_directed_edges(
-            edges, direction, from_id_col, to_id_col, force_bidirectional=False
+            edges, direction, direction_suffix, from_id_col, to_id_col, force_bidirectional=False
         )
 
     return nodes, edges

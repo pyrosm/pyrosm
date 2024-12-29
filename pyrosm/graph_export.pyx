@@ -188,6 +188,7 @@ cpdef _create_pdgraph(nodes,
 
 cpdef generate_directed_edges(edges,
                               direction,
+                              direction_suffix,
                               from_id_col,
                               to_id_col,
                               force_bidirectional):
@@ -214,11 +215,19 @@ cpdef generate_directed_edges(edges,
     else:
         roundabouts = False
 
+    if direction_suffix:
+        direction_suffix = edges[direction + ":" + direction_suffix]
+    else:
+        direction_suffix = pd.DataFrame()
+    direction = edges[direction]
+
+    oneway_mask = direction_suffix.isin(oneway_values)
+    if not direction_suffix.empty:
+        oneway_mask |= (direction.isin(oneway_values) & direction_suffix.isna())
+
     if roundabouts:
         # Edge is oneway if it is tagged as such OR if it tagged as roundabout
-        oneway_mask = (edges[direction].isin(oneway_values)) | (edges["junction"] == "roundabout")
-    else:
-        oneway_mask = edges[direction].isin(oneway_values)
+        oneway_mask |= (edges["junction"] == "roundabout")
 
     edge_cnt = len(edges)
     oneway_edges = edges.loc[oneway_mask].copy()
@@ -227,7 +236,7 @@ cpdef generate_directed_edges(edges,
     twoway_edges_dir2.index = np.arange(edge_cnt, edge_cnt + len(twoway_edges))
 
     # Select edges that are allowed only to opposite direction
-    against_mask = oneway_edges[direction].isin(["-1", "T"])
+    against_mask = direction.isin(["-1", "T"])
     against_edges = oneway_edges.loc[against_mask].copy()
     along_edges = oneway_edges.loc[~against_mask].copy()  # Nothing needs to be done for these
 
