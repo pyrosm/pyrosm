@@ -22,20 +22,24 @@ from pyrosm.data.geofabrik import (
     USA,
     SubRegions,
 )
+from pyrosm.data.osmitaly import (
+    ItalianRegions
+)
+
 from pyrosm.data.bbbike import Cities
 import warnings
 
 __all__ = ["available", "get_data", "get_path"]
 _module_path = os.path.dirname(__file__)
-_package_files = {"test_pbf": "test.osm.pbf", "helsinki_pbf": "Helsinki.osm.pbf"}
+_package_files = {"test_pbf": "test", "helsinki_pbf": "Helsinki"}
 
 # Static test data
 _helsinki_region_pbf = {
-    "name": "Helsinki_region.osm.pbf",
+    "name": "Helsinki_region",
     "url": "https://gist.github.com/HTenkanen/"
     "02dcfce32d447e65024d93d39ddb1812/"
     "raw/5fe7ffb625f091591d8c29128a9e3b37870a5012/"
-    "Helsinki_region.osm.pbf",
+    "Helsinki_region",
 }
 
 _helsinki_history_pbf = {
@@ -68,6 +72,7 @@ class DataSources:
 
         self.cities = Cities()
         self.subregions = SubRegions()
+        self.italian_regions = ItalianRegions()
 
         self.available = {
             "africa": self.africa.available,
@@ -80,6 +85,7 @@ class DataSources:
             "south_america": self.south_america.available,
             "cities": self.cities.available,
             "subregions": self.subregions.available,
+            "italian_regions": self.italian_regions.available,
         }
 
         # Gather all data sources
