@@ -131,6 +131,6 @@ def cycling_filter():
             "motorway",
             "motorway_link",
         ],
-        bicycle=["no"],
+        bicycle=["no", "use_sidepath"],
         service=["private"],
     )
