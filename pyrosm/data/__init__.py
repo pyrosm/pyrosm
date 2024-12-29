@@ -23,11 +23,15 @@ from pyrosm.data.geofabrik import (
     SubRegions,
 )
 from pyrosm.data.bbbike import Cities
+from pyrosm.data.suggest import  Suggest
 import warnings
 
-__all__ = ["available", "get_data", "get_path"]
+__all__ = ["available", "get_data", "get_path", "suggest"]
 _module_path = os.path.dirname(__file__)
 _package_files = {"test_pbf": "test.osm.pbf", "helsinki_pbf": "Helsinki.osm.pbf"}
+
+# given a bounding box, suggest pbf files
+suggest = Suggest()
 
 # Static test data
 _helsinki_region_pbf = {
