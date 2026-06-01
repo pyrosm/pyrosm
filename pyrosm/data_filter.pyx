@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from cykhash.khashsets cimport any_int64_from_iter, isin_int64, Int64Set_from_buffer
 from cpython cimport array
 
@@ -304,9 +305,28 @@ cpdef get_latest_version(df):
     return df.groupby("id").last().reset_index()
 
 
+cdef inline bint _is_empty_tag_value(object v):
+    # A tag cell is "empty" only if it is a missing-value sentinel:
+    # None (pre-pandas-3.0), NaN, or pandas-3.0 string/object pd.NA.
+    # Array/list/tuple cells (e.g. the "nodes" key) are always real data here,
+    # never a missing sentinel, and pd.isna() on them returns an array (calling
+    # bool() on which raises) -- so keep them unconditionally. Real scalar
+    # values, including 0, 0.0 and "", are kept.
+    if isinstance(v, (np.ndarray, list, tuple)):
+        return False
+    if v is None:
+        return True
+    try:
+        return bool(pd.isna(v))
+    except (TypeError, ValueError):
+        return False
+
+
 cdef clean_empty_values_from_ways(ways):
     cdef int i, n = len(ways)
     cleaned = []
     for i in range(0, n):
-        cleaned.append({x: y for x, y in ways[i].items() if y != None})
+        cleaned.append(
+            {x: y for x, y in ways[i].items() if not _is_empty_tag_value(y)}
+        )
     return cleaned

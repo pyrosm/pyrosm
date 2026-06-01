@@ -224,7 +224,10 @@ def datetime_to_unix_time(dt):
 
 
 def unix_time_to_datetime(unix_time):
-    return pd.Timestamp.utcfromtimestamp(unix_time)
+    # Timestamp.utcfromtimestamp is deprecated; fromtimestamp(..., tz="UTC")
+    # returns the same tz-aware UTC timestamp that downstream
+    # datetime_to_unix_time (which subtracts a tz-aware epoch) expects.
+    return pd.Timestamp.fromtimestamp(unix_time, tz="UTC")
 
 
 def get_unix_time(timestamp, osh_file):
