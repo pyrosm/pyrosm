@@ -306,12 +306,15 @@ cpdef get_latest_version(df):
 
 
 cdef inline bint _is_empty_tag_value(object v):
-    # A tag cell is "empty" only if it is a missing-value sentinel:
-    # None (pre-pandas-3.0), NaN, or pandas-3.0 string/object pd.NA.
-    # Array/list/tuple cells (e.g. the "nodes" key) are always real data here,
-    # never a missing sentinel, and pd.isna() on them returns an array (calling
-    # bool() on which raises) -- so keep them unconditionally. Real scalar
-    # values, including 0, 0.0 and "", are kept.
+    """Return True if ``v`` is a missing-tag sentinel that should be dropped.
+
+    A tag cell is "empty" only if it is ``None`` (pre-pandas-3.0), ``NaN``, or
+    pandas-3.0 string/object ``pd.NA``. Array/list/tuple cells (e.g. the
+    "nodes" key) are always real data here, never a missing sentinel -- and
+    ``pd.isna()`` on them returns an array (calling ``bool()`` on which raises)
+    -- so they are kept unconditionally. Real scalar values, including ``0``,
+    ``0.0`` and ``""``, are kept.
+    """
     if isinstance(v, (np.ndarray, list, tuple)):
         return False
     if v is None:

@@ -568,19 +568,20 @@ def test_reading_network_from_osh(helsinki_history_pbf):
 
 
 def test_osh_network_does_not_leak_empty_tag_columns(helsinki_history_pbf):
-    # Regression test for the pandas 3.0 string-dtype / Copy-on-Write change:
-    # missing tag values became `pd.NA` instead of `None`, so the OSH way-record
-    # cleaner stopped stripping empty tags. Every way record then carried the
-    # union of all tag keys (NA-valued), inflating the network output from
-    # (210, 25) to (383, 27) and admitting extra ways through the highway filter.
-    # See docs/maintenance/pandas3-osh-fix-plan.md.
+    """Regression test for the pandas 3.0 string-dtype / Copy-on-Write change.
+
+    Missing tag values became ``pd.NA`` instead of ``None``, so the OSH
+    way-record cleaner stopped stripping empty tags. Every way record then
+    carried the union of all tag keys (NA-valued), inflating the network
+    output from (210, 25) to (383, 27) and admitting extra ways through the
+    highway filter.
+    """
     from pyrosm import OSM
 
     osm = OSM(filepath=helsinki_history_pbf)
     gdf = osm.get_network(timestamp="2010-01-01")
 
-    # No tag column should be entirely empty: an all-NA column is a "phantom"
-    # tag that the cleaner failed to strip.
+    # An all-NA column is a "phantom" tag that the cleaner failed to strip.
     phantom = [c for c in gdf.columns if c != "geometry" and gdf[c].isna().all()]
     assert phantom == [], f"empty tag columns leaked into OSH output: {phantom}"
 

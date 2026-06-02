@@ -224,9 +224,12 @@ def datetime_to_unix_time(dt):
 
 
 def unix_time_to_datetime(unix_time):
-    # Timestamp.utcfromtimestamp is deprecated; fromtimestamp(..., tz="UTC")
-    # returns the same tz-aware UTC timestamp that downstream
-    # datetime_to_unix_time (which subtracts a tz-aware epoch) expects.
+    """Convert a UNIX timestamp to a tz-aware UTC ``pd.Timestamp``.
+
+    ``Timestamp.utcfromtimestamp`` is deprecated; ``fromtimestamp`` with
+    ``tz="UTC"`` returns the same tz-aware UTC timestamp that downstream
+    ``datetime_to_unix_time`` (which subtracts a tz-aware epoch) expects.
+    """
     return pd.Timestamp.fromtimestamp(unix_time, tz="UTC")
 
 
