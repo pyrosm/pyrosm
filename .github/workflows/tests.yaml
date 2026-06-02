@@ -78,11 +78,12 @@ jobs:
         run: pytest -v -r s --color=yes --cov=pyrosm --cov-append --cov-report term-missing --cov-report xml tests/
 
       - name: Update codecov.io
-        uses: codecov/codecov-action@v3.1.1
+        uses: codecov/codecov-action@v5
         with:
-          # Use the repo upload token when configured (avoids tokenless rate
-          # limits); falls back to a tokenless upload when the secret is unset.
+          # Use the repo upload token from secrets. The legacy v3.1.1 uploader
+          # used the rate-limited tokenless endpoint; v5 uses the Codecov CLI.
           token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
           # Coverage upload is informational; a transient Codecov problem
           # (e.g. a 429 rate limit) must not fail the test job.
           fail_ci_if_error: false
