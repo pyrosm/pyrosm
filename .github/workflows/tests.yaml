@@ -13,12 +13,11 @@ jobs:
   lint:
     name: Linting code
     runs-on: ubuntu-latest
-    container: ubuntu:22.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
       - name: Install black and flake8
@@ -43,14 +42,15 @@ jobs:
           - windows-latest
           - macos-latest
         env:
-          - ci/39-conda.yaml
           - ci/310-conda.yaml
           - ci/311-conda.yaml
           - ci/312-conda.yaml
+          - ci/313-conda.yaml
+          - ci/314-conda.yaml
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install Conda environment with Micromamba
         uses: mamba-org/setup-micromamba@v1
@@ -62,7 +62,10 @@ jobs:
 
       - name: Install pyrosm
         shell: bash -l {0}
-        run: pip install -e .
+        # Build against the conda-provided build deps (Cython, cykhash, pyrobuf).
+        # Build isolation would refetch pyrobuf from PyPI and build it against
+        # modern setuptools, which fails ('PyrobufDistribution' has no 'dry_run').
+        run: pip install -e . --no-build-isolation
 
       - name: Check environment
         shell: bash -l {0}
@@ -75,6 +78,12 @@ jobs:
         run: pytest -v -r s --color=yes --cov=pyrosm --cov-append --cov-report term-missing --cov-report xml tests/
 
       - name: Update codecov.io
-        uses: codecov/codecov-action@v3.1.1
+        uses: codecov/codecov-action@v5
         with:
-          fail_ci_if_error: true
+          # Use the repo upload token from secrets. The legacy v3.1.1 uploader
+          # used the rate-limited tokenless endpoint; v5 uses the Codecov CLI.
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
+          # Coverage upload is informational; a transient Codecov problem
+          # (e.g. a 429 rate limit) must not fail the test job.
+          fail_ci_if_error: false

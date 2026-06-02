@@ -4,7 +4,7 @@ channels:
   - conda-forge
 
 dependencies:
-  - python=3.12
+  - python=3.13
   # required
   - cython
   - cykhash>=2
@@ -13,7 +13,8 @@ dependencies:
   - python-rapidjson
   # optional
   - networkx
-  - pandana
+  # NOTE: pandana has no Python 3.13 build on conda-forge yet; the pandana
+  # graph-export tests are skipped on 3.13 (see tests/test_graph_exports.py).
   - python-igraph
   # testing
   - black

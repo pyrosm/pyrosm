@@ -3,9 +3,15 @@ pyrobuf
 *.pyd
 *.c
 *.html
+*.so
 build
 dist
 temp
 pyrosm.egg-info
 .coverage
 .pytest_cache
+__pycache__
+CLAUDE.md
+plans
+cache
+docs/maintenance
