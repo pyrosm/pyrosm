@@ -92,7 +92,8 @@ You can install a local development version of the tool by 1) installing necessa
     
  2. build pyrosm development version from master (activate the environment first):
  
-    - `pip install -e .`
+    - `pip install -e . --no-build-isolation`
+    - (`--no-build-isolation` builds against the conda-provided build dependencies, including `pyrobuf`; plain `pip install -e .` would refetch and rebuild `pyrobuf` from PyPI, which fails with modern setuptools)
 
 You can run tests with `pytest` by executing:
  

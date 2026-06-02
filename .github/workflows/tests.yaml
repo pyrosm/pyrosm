@@ -62,7 +62,10 @@ jobs:
 
       - name: Install pyrosm
         shell: bash -l {0}
-        run: pip install -e .
+        # Build against the conda-provided build deps (Cython, cykhash, pyrobuf).
+        # Build isolation would refetch pyrobuf from PyPI and build it against
+        # modern setuptools, which fails ('PyrobufDistribution' has no 'dry_run').
+        run: pip install -e . --no-build-isolation
 
       - name: Check environment
         shell: bash -l {0}
