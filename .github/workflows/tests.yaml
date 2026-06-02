@@ -46,6 +46,7 @@ jobs:
           - ci/310-conda.yaml
           - ci/311-conda.yaml
           - ci/312-conda.yaml
+          - ci/313-conda.yaml
 
     steps:
       - name: Checkout repository

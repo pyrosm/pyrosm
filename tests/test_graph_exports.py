@@ -386,6 +386,12 @@ def test_nxgraph_connectivity(immutable_nodes_and_edges):
 
 
 def test_pdgraph_connectivity():
+    """Pandana graph export.
+
+    Skipped when ``pandana`` is not installed (it has no Python 3.13 build on
+    conda-forge yet), so the suite stays green on Python 3.13.
+    """
+    pytest.importorskip("pandana")
     from pyrosm.graphs import to_pandana
     import pandas as pd
     from pyrosm import OSM
@@ -444,6 +450,12 @@ def test_pdgraph_connectivity():
 
 
 def test_to_graph_api(test_pbf):
+    """Smoke-test the to_graph() API for igraph, networkx and pandana.
+
+    Skipped when ``pandana`` is not installed (no Python 3.13 build on
+    conda-forge yet); igraph and networkx exports are covered by other tests.
+    """
+    pytest.importorskip("pandana")
     from pyrosm import OSM
     import networkx as nx
     import igraph
