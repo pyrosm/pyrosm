@@ -80,4 +80,9 @@ jobs:
       - name: Update codecov.io
         uses: codecov/codecov-action@v3.1.1
         with:
-          fail_ci_if_error: true
+          # Use the repo upload token when configured (avoids tokenless rate
+          # limits); falls back to a tokenless upload when the secret is unset.
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # Coverage upload is informational; a transient Codecov problem
+          # (e.g. a 429 rate limit) must not fail the test job.
+          fail_ci_if_error: false
