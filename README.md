@@ -85,9 +85,9 @@ please check the [contribution guidelines](https://pyrosm.readthedocs.io/en/late
 
 You can install a local development version of the tool by 1) installing necessary packages with conda and 2) building pyrosm from source:
 
- 1. install a conda-environment for one of the supported Python versions (3.9–3.13) by:
+ 1. install a conda-environment for one of the supported Python versions (3.9–3.14) by:
  
-    - e.g. Python 3.13 (you might want to modify the env-name which is `test` by default): `$ conda env create -f ci/313-conda.yaml`
+    - e.g. Python 3.14 (you might want to modify the env-name which is `test` by default): `$ conda env create -f ci/314-conda.yaml`
     - environment files for other versions are available under `ci/` (e.g. `ci/312-conda.yaml`)
     
  2. build pyrosm development version from master (activate the environment first):
