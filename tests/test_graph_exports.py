@@ -1,6 +1,17 @@
+import sys
 import pytest
 from pyrosm import get_data
 from pyrosm.config import Conf
+
+# pandana's compiled cyaccess uses C `long` buffers. On Windows C `long` is
+# 32-bit, but NumPy 2 makes the default integer int64 ("long long"), so pandana
+# rejects the arrays it builds internally ("expected 'long' but got 'long
+# long'"). pandana is unmaintained, so skip its export tests on Windows; they
+# run normally on Linux/macOS where C `long` is 64-bit.
+_pandana_unsupported_on_win = pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="pandana is incompatible with NumPy 2 on Windows (C long is 32-bit)",
+)
 
 # The values used to determine oneway road in OSM
 oneway_values = Conf.oneway_values
@@ -385,6 +396,7 @@ def test_nxgraph_connectivity(immutable_nodes_and_edges):
     assert arr.mean().round(0) == 1372
 
 
+@_pandana_unsupported_on_win
 def test_pdgraph_connectivity():
     """Pandana graph export.
 
@@ -449,6 +461,7 @@ def test_pdgraph_connectivity():
     assert round(shortest_distances.mean(), 0) == 869
 
 
+@_pandana_unsupported_on_win
 def test_to_graph_api(test_pbf):
     """Smoke-test the to_graph() API for igraph, networkx and pandana.
 
