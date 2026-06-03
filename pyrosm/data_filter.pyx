@@ -98,6 +98,14 @@ cdef filter_osm_records(data_records,
             data_filter = None
 
     if data_filter is not None:
+        # A bare True value ({osm_key: True}) means "match any value for this
+        # key". Normalize it to [True] so the membership checks below and the
+        # Solver can treat every filter value as an iterable, rather than
+        # choking on a non-iterable bool (TypeError on `True in True`).
+        data_filter = {
+            k: [True] if v is True else v for k, v in data_filter.items()
+        }
+
         # Check if there are duplicate filter values
         # e.g. a situation where {"route": "tram"} and {"railway": "tram"}
         # filters are present simultaneously.

@@ -443,12 +443,18 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
     assert isinstance(filtered, GeoDataFrame)
     assert len(filtered) == 5542
 
-    # Test combination of True and specific value
+    # Combining a True ("any value") filter with an explicit-value filter
+    # should keep all buildings AND railway=station features (issue #224).
     gdf = osm.get_data_by_custom_criteria(
         custom_filter={"building": True, "railway": ["station"]},
         filter_type="keep",
     )
-    assert gdf.shape == (176742, 49)
+    # Assert on row/content counts (stable), not the column count: the latter
+    # can be polluted by extra_attributes leaking into the shared config when
+    # other tests run first.
+    assert len(gdf) == 176742
+    assert gdf["building"].notna().sum() == 176675
+    assert (gdf["railway"] == "station").sum() == 67
 
     # Test a more complicated query
     # -----------------------------
