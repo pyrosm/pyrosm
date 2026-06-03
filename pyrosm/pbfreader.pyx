@@ -319,12 +319,8 @@ cdef parse_relations(data, string_table, unix_time_filter):
     # Version
     versions = np.array([rel.info.version for rel in data], dtype=np.int64)
 
-    # Ids (delta coded)
-    id_deltas = np.zeros(N+1, dtype=np.int64)
-    id_deltas[1:] = [rel.id for rel in data]
-    ids = np.cumsum(id_deltas)[1:]
+    ids = np.array([rel.id for rel in data])
 
-    # Timestamp
     timestamps = np.array([rel.info.timestamp for rel in data], dtype=np.int64)
 
     # Changeset
