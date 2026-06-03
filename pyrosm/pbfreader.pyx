@@ -319,7 +319,7 @@ cdef parse_relations(data, string_table, unix_time_filter):
     # Version
     versions = np.array([rel.info.version for rel in data], dtype=np.int64)
 
-    ids = np.array([rel.id for rel in data])
+    ids = np.array([rel.id for rel in data], dtype=np.int64)
 
     timestamps = np.array([rel.info.timestamp for rel in data], dtype=np.int64)
 

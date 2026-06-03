@@ -137,3 +137,63 @@ def test_getting_nodes(test_pbf):
 
     # Check shape
     assert nodes.shape == (14222, 9)
+
+
+def test_relation_ids_are_not_delta_decoded(test_pbf):
+    """Regression test for #170.
+
+    Relation object ids in the PBF format are plain int64 values (only
+    DenseNodes ids and relation member references are delta-encoded). They must
+    therefore be read as-is, not cumulatively summed. The cumsum bug produced
+    inflated, monotonically increasing ids; here we assert the real OSM ids.
+    """
+    import numpy as np
+    from pyrosm import OSM
+
+    osm = OSM(filepath=test_pbf)
+    osm._read_pbf()
+    ids = osm._relations["id"]
+
+    # Ids must stay int64 (consistent with the rest of the id handling)
+    assert ids.dtype == np.int64
+
+    # Real OSM relation ids in test.osm.pbf. The old cumsum bug would instead
+    # have produced cumulative sums [32694, 352283, 2617378, 5307012, 8486578].
+    assert ids.tolist() == [32694, 319589, 2265095, 2689634, 3179566]
+
+
+def test_id_tag_does_not_overwrite_osm_id():
+    """Regression test for #233.
+
+    An OSM tag literally keyed ``id`` would otherwise overwrite the element's
+    OSM id when way tags are flattened. It must instead be surfaced under the
+    ``id_tag`` column, leaving the element ``id`` intact.
+    """
+    from pyrosm.tagparser import explode_way_tags
+
+    ways = [
+        {
+            "id": 12345,
+            "version": 1,
+            "nodes": [1, 2, 3],
+            "tags": {"building": "yes", "id": "stray-tag-value"},
+        },
+        {
+            "id": 67890,
+            "version": 1,
+            "nodes": [4, 5],
+            "tags": {"highway": "residential"},
+        },
+    ]
+
+    exploded = explode_way_tags(ways)
+
+    # The colliding 'id' tag is surfaced as 'id_tag', element id is preserved
+    assert exploded[0]["id"] == 12345
+    assert exploded[0]["id_tag"] == "stray-tag-value"
+    assert exploded[0]["building"] == "yes"
+    assert "tags" not in exploded[0]
+
+    # A way without an 'id' tag is unaffected (no spurious id_tag key)
+    assert exploded[1]["id"] == 67890
+    assert "id_tag" not in exploded[1]
