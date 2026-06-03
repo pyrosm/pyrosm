@@ -54,6 +54,18 @@ _helsinki_test_history_pbf = {
     "helsinki-test.osh.pbf",
 }
 
+# A pinned, uncropped snapshot of BBBike's UlanBator extract, hosted on a gist
+# (like the Helsinki test data above). Used by the graph-export tests so they
+# don't hit BBBike from every CI runner; the live BBBike file is still fetched
+# on a single runner as an availability check. See tests/test_graph_exports.py.
+_ulanbator_test_pbf = {
+    "name": "UlanBator-test.osm.pbf",
+    "url": "https://gist.github.com/HTenkanen/"
+    "cebaf5abdc2356b14d3538fe021609ec/"
+    "raw/5cf6f19d924108b6ea55b7e51016b56fb0618669/"
+    "UlanBator.osm.pbf",
+}
+
 
 class DataSources:
     def __init__(self):
@@ -105,6 +117,7 @@ class DataSources:
             "helsinki_region_pbf",
             "helsinki_history_pbf",
             "helsinki_test_history_pbf",
+            "ulanbator_test_pbf",
         ]
         self._all_sources = list(set(self._all_sources))
 
@@ -114,7 +127,12 @@ sources = DataSources()
 
 available = {
     "test_data": list(_package_files.keys())
-    + ["helsinki_region_pbf", "helsinki_history_pbf", "helsinki_test_history_pbf"],
+    + [
+        "helsinki_region_pbf",
+        "helsinki_history_pbf",
+        "helsinki_test_history_pbf",
+        "ulanbator_test_pbf",
+    ],
     "regions": {
         k: v for k, v in sources.available.items() if k not in ["cities", "subregions"]
     },
@@ -179,6 +197,9 @@ def get_data(dataset, update=False, directory=None):
 
     elif dataset == "helsinki_test_history_pbf":
         return retrieve(_helsinki_test_history_pbf, update, directory)
+
+    elif dataset == "ulanbator_test_pbf":
+        return retrieve(_ulanbator_test_pbf, update, directory)
 
     elif dataset in sources._all_sources:
         return retrieve(search_source(dataset), update, directory)
