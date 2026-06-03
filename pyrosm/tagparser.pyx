@@ -31,7 +31,7 @@ cdef parse_dense_tags(keys_vals, string_table):
         tag_idx += 1
     return tag_list
 
-cdef explode_way_tags(ways):
+cpdef explode_way_tags(ways):
     exploded = []
     cdef int i, n=len(ways)
     way_keys = {}
@@ -39,7 +39,9 @@ cdef explode_way_tags(ways):
         way = ways[i]
         for k, v in way['tags'].items():
             if k == "id":
-                way["tagged_id"] = v
+                # An OSM tag literally keyed "id" would otherwise overwrite the
+                # element's OSM id; surface it as "id_tag" to keep both.
+                way["id_tag"] = v
             else:
                 way[k] = v
             try:
