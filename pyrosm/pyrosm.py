@@ -809,10 +809,12 @@ class OSM:
           - "networkx",
           - "pandana"
 
-        For walking and cycling, the output graph will be bidirectional by default
-        (i.e. travel along the street is allowed to both directions). For driving,
-        one-way streets are taken into account by default and the travel is restricted
-        based on the rules in OSM data (based on "oneway" attribute).
+        For walking, the output graph will be bidirectional by default
+        (i.e. travel along the street is allowed to both directions). For driving
+        and cycling, one-way streets are taken into account by default and the
+        travel is restricted based on the rules in OSM data (the "oneway"
+        attribute; cycling additionally honours "oneway:bicycle" so that
+        contraflow cycling on one-way streets is modelled correctly).
 
         Parameters
         ----------
@@ -852,8 +854,9 @@ class OSM:
             Network type for the given data. Determines how the graph will be constructed.
             The network type is typically extracted automatically from the metadata of
             the edges/nodes GeoDataFrames. This parameter can be used if this metadata is not
-            available for a reason or another. By default, bidirectional graph is created for walking, cycling and all,
-            and directed graph for driving (i.e. oneway streets are taken into account).
+            available for a reason or another. By default, a bidirectional graph is created for walking and all,
+            and a directed graph for driving and cycling (oneway streets are taken into account;
+            cycling additionally honours oneway:bicycle for contraflow).
             Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'.
 
         retain_all : bool

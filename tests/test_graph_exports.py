@@ -137,10 +137,11 @@ def test_igraph_export_by_cycling(bike_nodes_and_edges):
 
     assert isinstance(g, igraph.Graph)
 
-    # In case of walking/cycling there should be 2x the num of edges
-    # as in the orig gdf (one edge for each direction)
-    # --> assuming the data has not been cropped (which might drop nodes/edges)
-    assert g.ecount() == 2 * n_edges
+    # Cycling is now directed (it honours oneway / oneway:bicycle). Two-way edges
+    # are still duplicated (one per direction) but one-way cycleways/streets are
+    # not, so the directed edge count is strictly between n_edges and 2*n_edges
+    # (assuming the data is uncropped and contains a mix of one-way and two-way).
+    assert n_edges < g.ecount() < 2 * n_edges
 
     # The number of nodes should be the same
     assert g.vcount() == n_nodes
@@ -303,6 +304,7 @@ def test_directed_edge_generator(test_pbf):
     bidir_edges = generate_directed_edges(
         edges,
         direction="oneway",
+        direction_suffix=None,
         from_id_col="u",
         to_id_col="v",
         force_bidirectional=True,
@@ -314,6 +316,7 @@ def test_directed_edge_generator(test_pbf):
     dir_edges = generate_directed_edges(
         edges,
         direction="oneway",
+        direction_suffix=None,
         from_id_col="u",
         to_id_col="v",
         force_bidirectional=False,
@@ -333,6 +336,7 @@ def test_connected_component(immutable_nodes_and_edges):
     bidir_edges = generate_directed_edges(
         edges,
         direction="oneway",
+        direction_suffix=None,
         from_id_col="u",
         to_id_col="v",
         force_bidirectional=True,
@@ -575,3 +579,109 @@ def test_nxgraph_export_from_osh(helsinki_history_pbf):
     # most likely due to float handling differences between Unix and Windows
     assert round(shortest_paths[0], 0) in [478, 470]
     assert round(shortest_paths[-1], 0) in [797, 793]
+
+
+def _edge_pairs(directed_edges, from_id_col="u", to_id_col="v"):
+    return set(zip(directed_edges[from_id_col], directed_edges[to_id_col]))
+
+
+def test_generate_directed_edges_honours_oneway_bicycle():
+    """generate_directed_edges: oneway:bicycle overrides oneway per edge.
+
+    Covers a two-way street, a one-way street, a contraflow street
+    (oneway=yes + oneway:bicycle=no -> two-way for bikes), a bike-only one-way
+    (oneway:bicycle=yes), and a reverse one-way (oneway=-1).
+    """
+    import pandas as pd
+    from pyrosm.graph_export import generate_directed_edges
+
+    edges = pd.DataFrame(
+        {
+            "u": [1, 3, 5, 7, 9],
+            "v": [2, 4, 6, 8, 10],
+            "oneway": [None, "yes", "yes", None, "-1"],
+            "oneway:bicycle": [None, None, "no", "yes", None],
+        }
+    )
+    out = generate_directed_edges(edges, "oneway", "bicycle", "u", "v", False)
+    pairs = _edge_pairs(out)
+
+    # 2 (two-way) + 1 + 2 (contraflow) + 1 + 1 = 7 directed edges
+    assert len(out) == 7
+    # two-way street -> both directions
+    assert (1, 2) in pairs and (2, 1) in pairs
+    # one-way street -> single direction
+    assert (3, 4) in pairs and (4, 3) not in pairs
+    # contraflow (oneway=yes, oneway:bicycle=no) -> both directions for bikes
+    assert (5, 6) in pairs and (6, 5) in pairs
+    # bike-only one-way (oneway:bicycle=yes) -> single direction
+    assert (7, 8) in pairs and (8, 7) not in pairs
+    # reverse one-way (oneway=-1) -> flipped
+    assert (10, 9) in pairs and (9, 10) not in pairs
+
+
+def test_generate_directed_edges_without_suffix_is_oneway_only():
+    """Without a direction_suffix the base 'oneway' column drives everything
+    (the driving path is unaffected by the oneway:bicycle change)."""
+    import pandas as pd
+    from pyrosm.graph_export import generate_directed_edges
+
+    edges = pd.DataFrame(
+        {
+            "u": [1, 3],
+            "v": [2, 4],
+            "oneway": [None, "yes"],
+            # present but must be ignored when no suffix is requested
+            "oneway:bicycle": ["no", "no"],
+        }
+    )
+    out = generate_directed_edges(edges, "oneway", None, "u", "v", False)
+    pairs = _edge_pairs(out)
+    assert len(out) == 3  # two-way + one-way
+    assert (1, 2) in pairs and (2, 1) in pairs
+    assert (3, 4) in pairs and (4, 3) not in pairs
+
+
+def _toy_network():
+    import geopandas as gpd
+    from shapely.geometry import Point, LineString
+
+    nodes = gpd.GeoDataFrame(
+        {"id": [1, 2, 3, 4]},
+        geometry=[Point(0, 0), Point(1, 0), Point(2, 0), Point(3, 0)],
+        crs="epsg:4326",
+    )
+    edges = gpd.GeoDataFrame(
+        {
+            "u": [1, 2, 3],
+            "v": [2, 3, 4],
+            "oneway": [None, "yes", "yes"],
+            "oneway:bicycle": [None, None, "no"],
+        },
+        geometry=[
+            LineString([(0, 0), (1, 0)]),
+            LineString([(1, 0), (2, 0)]),
+            LineString([(2, 0), (3, 0)]),
+        ],
+        crs="epsg:4326",
+    )
+    return nodes, edges
+
+
+def test_get_directed_edges_cycling_is_directed_with_contraflow():
+    """Cycling is directed by default and honours oneway:bicycle; walking stays
+    bidirectional."""
+    from pyrosm.graphs import get_directed_edges
+
+    # twoway + oneway + contraflow
+    nodes, edges = _toy_network()
+    _, cyc = get_directed_edges(nodes, edges, network_type="cycling")
+    pairs = _edge_pairs(cyc)
+    assert len(cyc) == 5  # 2 + 1 + 2
+    assert (2, 3) in pairs and (3, 2) not in pairs  # one-way respected
+    assert (3, 4) in pairs and (4, 3) in pairs  # contraflow both ways
+
+    # Walking ignores oneway entirely (bidirectional)
+    nodes, edges = _toy_network()
+    _, walk = get_directed_edges(nodes, edges, network_type="walking")
+    assert len(walk) == 6  # every edge both ways
