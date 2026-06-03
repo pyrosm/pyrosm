@@ -685,3 +685,21 @@ def test_get_directed_edges_cycling_is_directed_with_contraflow():
     nodes, edges = _toy_network()
     _, walk = get_directed_edges(nodes, edges, network_type="walking")
     assert len(walk) == 6  # every edge both ways
+
+
+def test_get_directed_edges_explicit_oneway_bicycle_direction():
+    """An explicit direction='oneway:bicycle' is split into base + override.
+
+    This exercises the "<base>:<suffix>" parsing path independently of the
+    cycling auto-default (here the network type is driving).
+    """
+    from pyrosm.graphs import get_directed_edges
+
+    nodes, edges = _toy_network()
+    _, out = get_directed_edges(
+        nodes, edges, direction="oneway:bicycle", network_type="driving"
+    )
+    pairs = _edge_pairs(out)
+    assert len(out) == 5  # twoway(2) + oneway(1) + contraflow(2)
+    assert (2, 3) in pairs and (3, 2) not in pairs  # base oneway respected
+    assert (3, 4) in pairs and (4, 3) in pairs  # oneway:bicycle=no -> both ways
