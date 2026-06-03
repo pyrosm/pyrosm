@@ -33,6 +33,13 @@ def get_directed_edges(
                 "Required column '{col}' does not exist in edges.".format(col=col)
             )
 
+    # A direction may be given as "<base>:<suffix>" (e.g. "oneway:bicycle"); the
+    # suffix column overrides the base direction per edge. Split it off here so
+    # the base column is what gets validated below.
+    direction_suffix = None
+    if ":" in direction:
+        direction, direction_suffix = direction.split(":", 1)
+
     if direction not in edges.columns:
         warnings.warn(
             f"Column '{direction}' missing in the edges GeoDataFrame. "
@@ -66,19 +73,35 @@ def get_directed_edges(
                 "Possible network types are: " + txt
             )
 
+    # Cycling honours bicycle-specific direction tags (oneway:bicycle) so that
+    # contraflow cycling on one-way streets is modelled correctly.
+    if direction_suffix is None and net_type == "cycling":
+        direction_suffix = "bicycle"
+
     edges = edges.copy()
     nodes = nodes.copy()
 
-    # Generate directed edges
-    # Check if user wants to force bidirectional graph
-    # or if the graph is walking, cycling or all
-    if force_bidirectional or net_type in ["walking", "cycling", "all"]:
+    # Generate directed edges.
+    # Walking and "all" are bidirectional by default; driving and cycling are
+    # directed (they honour oneway, and cycling additionally honours
+    # oneway:bicycle). force_bidirectional overrides this for any type.
+    if force_bidirectional or net_type in ["walking", "all"]:
         edges = generate_directed_edges(
-            edges, direction, from_id_col, to_id_col, force_bidirectional=True
+            edges,
+            direction,
+            direction_suffix,
+            from_id_col,
+            to_id_col,
+            force_bidirectional=True,
         )
     else:
         edges = generate_directed_edges(
-            edges, direction, from_id_col, to_id_col, force_bidirectional=False
+            edges,
+            direction,
+            direction_suffix,
+            from_id_col,
+            to_id_col,
+            force_bidirectional=False,
         )
 
     return nodes, edges
@@ -133,8 +156,9 @@ def to_networkx(
 
     network_type : str
         Network type for the given data. Determines how the graph will be constructed.
-        By default, bidirectional graph is created for walking, cycling and all,
-        and directed graph for driving (i.e. oneway streets are taken into account).
+        By default, a bidirectional graph is created for walking and all, and a
+        directed graph for driving and cycling (oneway streets are taken into
+        account; cycling additionally honours oneway:bicycle for contraflow).
         Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'.
 
     retain_all : bool
@@ -234,8 +258,9 @@ def to_igraph(
 
     network_type : str
         Network type for the given data. Determines how the graph will be constructed.
-        By default, bidirectional graph is created for walking, cycling and all,
-        and directed graph for driving (i.e. oneway streets are taken into account).
+        By default, a bidirectional graph is created for walking and all, and a
+        directed graph for driving and cycling (oneway streets are taken into
+        account; cycling additionally honours oneway:bicycle for contraflow).
         Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'.
 
     retain_all : bool

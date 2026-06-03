@@ -65,6 +65,7 @@ highway_columns = [
     "motor_vehicle",
     "name",
     "oneway",
+    "oneway:bicycle",
     "overtaking",
     "path",
     "passing_places",

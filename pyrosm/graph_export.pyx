@@ -188,13 +188,19 @@ cpdef _create_pdgraph(nodes,
 
 cpdef generate_directed_edges(edges,
                               direction,
+                              direction_suffix,
                               from_id_col,
                               to_id_col,
                               force_bidirectional):
     """
-    Generates directed set of edges from network 
+    Generates directed set of edges from network
     following rules specified in 'direction' column.
-    
+
+    If 'direction_suffix' is given, the "<direction>:<direction_suffix>" column
+    (e.g. "oneway:bicycle") overrides the base direction per edge wherever it is
+    set. This allows mode-specific exceptions such as contraflow cycling
+    (oneway=yes + oneway:bicycle=no -> two-way for bikes).
+
     If 'force_bidirectional=True' travel to both direction is allowed for all edges.
     """
     if force_bidirectional:
@@ -209,16 +215,21 @@ cpdef generate_directed_edges(edges,
     # Directed edges according 'oneway' rules
     # ========================================
 
-    if "junction" in edges.columns:
-        roundabouts = True
-    else:
-        roundabouts = False
+    # Effective per-edge direction: a "<direction>:<direction_suffix>" override
+    # column (e.g. "oneway:bicycle") takes precedence where it is set, otherwise
+    # the base direction is used.
+    effective_direction = edges[direction]
+    if direction_suffix:
+        override_col = direction + ":" + direction_suffix
+        if override_col in edges.columns:
+            override = edges[override_col]
+            effective_direction = override.where(override.notna(), effective_direction)
 
-    if roundabouts:
+    if "junction" in edges.columns:
         # Edge is oneway if it is tagged as such OR if it tagged as roundabout
-        oneway_mask = (edges[direction].isin(oneway_values)) | (edges["junction"] == "roundabout")
+        oneway_mask = (effective_direction.isin(oneway_values)) | (edges["junction"] == "roundabout")
     else:
-        oneway_mask = edges[direction].isin(oneway_values)
+        oneway_mask = effective_direction.isin(oneway_values)
 
     edge_cnt = len(edges)
     oneway_edges = edges.loc[oneway_mask].copy()
@@ -226,8 +237,8 @@ cpdef generate_directed_edges(edges,
     twoway_edges_dir2 = twoway_edges.copy(deep=True).rename(columns={to_id_col: from_id_col, from_id_col: to_id_col})
     twoway_edges_dir2.index = np.arange(edge_cnt, edge_cnt + len(twoway_edges))
 
-    # Select edges that are allowed only to opposite direction
-    against_mask = oneway_edges[direction].isin(["-1", "T"])
+    # Select edges that are allowed only to opposite direction (per effective direction)
+    against_mask = effective_direction.loc[oneway_edges.index].isin(["-1", "T"])
     against_edges = oneway_edges.loc[against_mask].copy()
     along_edges = oneway_edges.loc[~against_mask].copy()  # Nothing needs to be done for these
 
