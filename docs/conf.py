@@ -10,8 +10,13 @@
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
 
-# sys.path.insert(0, os.path.abspath(".."))
-# sys.path.append(os.path.join(os.path.dirname(__name__), ".."))
+import os
+import sys
+
+# Make the pyrosm source importable for autodoc without installing/compiling
+# the package. The compiled Cython modules are mocked below, so autodoc reads
+# docstrings straight from the pure-Python wrappers in the repo.
+sys.path.insert(0, os.path.abspath(".."))
 
 # -- Project information -----------------------------------------------------
 
@@ -20,7 +25,7 @@ copyright = "2020, Henrikki Tenkanen + pyrosm contributors"
 author = "Henrikki Tenkanen + pyrosm contributors"
 
 # The full version, including alpha/beta/rc tags
-version = release = "0.6.0"
+version = release = "0.6.2"
 
 # -- General configuration ---------------------------------------------------
 
@@ -36,6 +41,24 @@ extensions = [
     "IPython.sphinxext.ipython_console_highlighting",
     "IPython.sphinxext.ipython_directive",
     "myst_nb",
+]
+
+# pyrosm is not installed for the docs build; mock its compiled Cython
+# extensions (and binary deps) so autodoc can import the pure-Python wrappers
+# and read their docstrings without compiling anything.
+autodoc_mock_imports = [
+    "pyrosm._arrays",
+    "pyrosm.data_filter",
+    "pyrosm.data_manager",
+    "pyrosm.delta_compression",
+    "pyrosm.frames",
+    "pyrosm.geometry",
+    "pyrosm.graph_export",
+    "pyrosm.pbfreader",
+    "pyrosm.relations",
+    "pyrosm.tagparser",
+    "pyrosm_proto",
+    "cykhash",
 ]
 
 
@@ -97,11 +120,6 @@ master_doc = "index"
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = "sphinx"
 
-# Allow errors
-execution_allow_errors = True
-
-# Do not execute cells
-jupyter_execute_notebooks = "off"
-
-# Allow myst admonition style
-myst_admonition_enable = True
+# Render notebooks from their stored outputs; never execute them at build time.
+nb_execution_mode = "off"
+nb_execution_allow_errors = True

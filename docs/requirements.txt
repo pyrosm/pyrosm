@@ -1,23 +1,23 @@
-ipycache
-ipykernel
-ipyleaflet
-ipython
-ipython-genutils
-ipywidgets
-jupyter-book>=0.7.0b
-myst-nb
-myst-parser
-nbsphinx
-numpydoc
-pyrosm
-Sphinx
-sphinx-book-theme
-sphinx-togglebutton
-sphinx_copybutton
-sphinxcontrib-applehelp
-sphinxcontrib-devhelp
-sphinxcontrib-htmlhelp
-sphinxcontrib-jsmath
-sphinxcontrib-qthelp
-sphinxcontrib-serializinghtml
-sphinxcontrib.bibtex
+# Documentation toolchain for Read the Docs (Sphinx + MyST-NB).
+#
+# Notebooks are rendered from their stored outputs (execution is disabled in
+# conf.py), so the doc build does NOT run pyrosm and does NOT need the compiled
+# package. The only consumer of pyrosm is the autodoc API reference, whose
+# compiled Cython modules are mocked via autodoc_mock_imports in conf.py.
+# Hence pyrosm itself is intentionally NOT installed here (no from-source
+# compilation, no pyrobuf, no build toolchain required).
+
+# Sphinx + MyST-NB Markdown/notebook rendering
+myst-nb>=1.0,<2.0
+sphinx>=7.0,<9.0
+sphinx-book-theme>=1.1,<2.0
+
+# Provides the ipython_console_highlighting and ipython_directive Sphinx
+# extensions referenced in conf.py.
+ipython>=8.0
+
+# Pure-Python runtime imports pulled in when autodoc imports the pyrosm
+# wrappers (the compiled modules are mocked, these are not).
+pandas
+geopandas
+shapely>=2.0
