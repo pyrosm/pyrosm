@@ -1,7 +1,25 @@
+import os
 import sys
 import pytest
 from pyrosm import get_data
 from pyrosm.config import Conf
+
+
+def _ulanbator_pbf():
+    """Path to the UlanBator test network.
+
+    On the single CI canary runner (``RUN_DOWNLOAD_TESTS=true``) the live
+    BBBike extract is fetched, so we notice if BBBike breaks. Everywhere else
+    (and locally) a pinned, uncropped snapshot hosted on a gist is used --
+    reliable, fast, and friendly to BBBike's small server. The data must stay
+    uncropped: the export tests assert ``ecount == 2 * n_edges`` and
+    ``vcount == n_nodes``, which only hold when no boundary nodes/edges are
+    dropped.
+    """
+    if os.environ.get("RUN_DOWNLOAD_TESTS") == "true":
+        return get_data("ulanbator")
+    return get_data("ulanbator_test_pbf")
+
 
 # pandana's compiled cyaccess uses C `long` buffers. On Windows C `long` is
 # 32-bit, but NumPy 2 makes the default integer int64 ("long long"), so pandana
@@ -36,7 +54,7 @@ def walk_nodes_and_edges():
 
     # UlanBator is good small dataset for testing
     # (unmodified, i.e. not cropped)
-    pbf_path = get_data("ulanbator")
+    pbf_path = _ulanbator_pbf()
     osm = OSM(pbf_path)
     return osm.get_network(nodes=True)
 
@@ -47,7 +65,7 @@ def bike_nodes_and_edges():
 
     # UlanBator is good small dataset for testing
     # (unmodified, i.e. not cropped)
-    pbf_path = get_data("ulanbator")
+    pbf_path = _ulanbator_pbf()
     osm = OSM(pbf_path)
     return osm.get_network(nodes=True, network_type="cycling")
 
@@ -56,7 +74,7 @@ def bike_nodes_and_edges():
 def driving_nodes_and_edges():
     from pyrosm import OSM
 
-    pbf_path = get_data("ulanbator")
+    pbf_path = _ulanbator_pbf()
     osm = OSM(pbf_path)
     return osm.get_network(network_type="driving", nodes=True)
 

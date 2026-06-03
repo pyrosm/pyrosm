@@ -1,6 +1,19 @@
 import pytest
 from pyrosm import get_data
 import sys
+import os
+
+# The download tests fetch real extracts from external services (BBBike and
+# Geofabrik). To avoid overloading those services from every OS/Python
+# combination in the CI matrix (and to stop a transient outage from reddening
+# unrelated jobs), download availability is exercised on a single runner only:
+# the workflow sets RUN_DOWNLOAD_TESTS=true for the windows-latest + Python 3.14
+# job. Elsewhere these tests skip. Set RUN_DOWNLOAD_TESTS=true to run locally.
+run_downloads_only_once = pytest.mark.skipif(
+    os.environ.get("RUN_DOWNLOAD_TESTS") != "true",
+    reason="Live download tests run on a single CI runner "
+    "(windows-latest + Python 3.14); set RUN_DOWNLOAD_TESTS=true to run locally.",
+)
 
 
 def get_source_url(name):
@@ -94,6 +107,7 @@ def test_test_data():
     assert os.path.exists(fp5)
 
 
+@run_downloads_only_once
 def test_geofabrik_download_to_temp():
     from pyrosm import get_data
     import os
@@ -102,6 +116,7 @@ def test_geofabrik_download_to_temp():
     assert os.path.exists(fp)
 
 
+@run_downloads_only_once
 def test_bbbike_download_to_temp():
     from pyrosm import get_data
     import os
@@ -110,6 +125,7 @@ def test_bbbike_download_to_temp():
     assert os.path.exists(fp)
 
 
+@run_downloads_only_once
 def test_geofabrik_download_to_directory():
     from pyrosm import get_data
     import os
@@ -118,6 +134,7 @@ def test_geofabrik_download_to_directory():
     assert os.path.exists(fp)
 
 
+@run_downloads_only_once
 def test_geofabrik_download_to_directory(directory):
     from pyrosm import get_data
     import os
@@ -126,6 +143,7 @@ def test_geofabrik_download_to_directory(directory):
     assert os.path.exists(fp)
 
 
+@run_downloads_only_once
 def test_bbbike_download_to_directory(directory):
     from pyrosm import get_data
     import os
