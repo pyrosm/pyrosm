@@ -120,8 +120,11 @@ def test_reading_all_boundaries(helsinki_region_pbf):
     osm = OSM(helsinki_region_pbf)
     gdf = osm.get_boundaries(boundary_type="all")
 
-    # Test shape
-    assert gdf.shape == (733, 21)
+    # Test shape. This previously asserted 21 columns, but that count was
+    # inflated by a bug: test_adding_extra_attribute (above) leaked its extra
+    # column into the shared Conf.tags.boundary list, and it bled into this
+    # test. With the config-mutation fix the correct, isolated count is 20.
+    assert gdf.shape == (733, 20)
 
     required_columns = [
         "name",

@@ -236,7 +236,7 @@ class OSM:
         """
         # Get filter
         network_filter = self._get_network_filter(network_type)
-        tags_as_columns = self.conf.tags.highway
+        tags_as_columns = list(self.conf.tags.highway)
 
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
@@ -308,7 +308,7 @@ class OSM:
 
         """
         # Default tags to keep as columns
-        tags_as_columns = self.conf.tags.building
+        tags_as_columns = list(self.conf.tags.building)
 
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
@@ -373,7 +373,7 @@ class OSM:
         self._read_pbf(timestamp)
 
         # Default tags to keep as columns
-        tags_as_columns = self.conf.tags.landuse
+        tags_as_columns = list(self.conf.tags.landuse)
 
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
@@ -437,7 +437,7 @@ class OSM:
         self._read_pbf(timestamp)
 
         # Default tags to keep as columns
-        tags_as_columns = self.conf.tags.natural
+        tags_as_columns = list(self.conf.tags.natural)
 
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
@@ -520,7 +520,7 @@ class OSM:
         self._read_pbf(timestamp)
 
         # Default tags to keep as columns
-        tags_as_columns = self.conf.tags.boundary
+        tags_as_columns = list(self.conf.tags.boundary)
 
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
