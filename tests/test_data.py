@@ -126,15 +126,6 @@ def test_bbbike_download_to_temp():
 
 
 @run_downloads_only_once
-def test_geofabrik_download_to_directory():
-    from pyrosm import get_data
-    import os
-
-    fp = get_data("monaco", update=True)
-    assert os.path.exists(fp)
-
-
-@run_downloads_only_once
 def test_geofabrik_download_to_directory(directory):
     from pyrosm import get_data
     import os
