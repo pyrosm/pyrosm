@@ -13,9 +13,9 @@ baden_wuerttemberg_url = "europe/germany/baden-wuerttemberg/"
 bayern_url = "europe/germany/bayern/"
 brazil_url = "south-america/brazil/"
 canada_url = "north-america/canada/"
-england_url = "europe/great-britain/england/"
+england_url = "europe/united-kingdom/england/"
 france_url = "europe/france/"
-gb_url = "europe/great-britain/"
+uk_url = "europe/united-kingdom/"
 germany_url = "europe/germany/"
 italy_url = "europe/italy/"
 japan_url = "asia/japan/"
@@ -240,7 +240,46 @@ class England:
         return self.available
 
 
+class UnitedKingdom:
+    regions = ["england", "scotland", "wales"]
+    england = England()
+
+    available = regions + england.available
+    available.sort()
+
+    country = {
+        "name": "united-kingdom" + suffix,
+        "url": URL + europe_url + "united-kingdom" + suffix,
+    }
+
+    # Create data sources
+    _sources = {
+        region: {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + uk_url + region.replace("_", "-") + suffix,
+        }
+        for region in regions
+    }
+
+    for region in england.available:
+        _sources[region] = {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + england_url + region.replace("_", "-") + suffix,
+        }
+
+    __dict__ = _sources
+
+    def __getattr__(self, name):
+        return self.__dict__[name]
+
+    def __call__(self):
+        return self.available
+
+
 class GreatBritain:
+    # Great Britain (England, Scotland, Wales; no Northern Ireland). Geofabrik
+    # serves these sub-regions under the "united-kingdom" path, so only the
+    # whole-region country file differs from UnitedKingdom.
     regions = ["england", "scotland", "wales"]
     england = England()
 
@@ -256,7 +295,7 @@ class GreatBritain:
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + gb_url + region.replace("_", "-") + suffix,
+            "url": URL + uk_url + region.replace("_", "-") + suffix,
         }
         for region in regions
     }
@@ -878,6 +917,7 @@ class Europe:
     # Country specific subregions
     france = France()
     great_britain = GreatBritain()
+    united_kingdom = UnitedKingdom()
     italy = Italy()
     russia = Russia()
     poland = Poland()
@@ -934,6 +974,7 @@ class Europe:
         "switzerland",
         "turkey",
         "ukraine",
+        "united_kingdom",
     ]
 
     available = regions
@@ -1147,6 +1188,7 @@ class SubRegions:
             "netherlands",
             "poland",
             "russia",
+            "united_kingdom",
             "usa",
         ]
         available = self.regions
@@ -1157,6 +1199,7 @@ class SubRegions:
         self.france = France()
         self.germany = Germany()
         self.great_britain = GreatBritain()
+        self.united_kingdom = UnitedKingdom()
         self.italy = Italy()
         self.japan = Japan()
         self.netherlands = Netherlands()

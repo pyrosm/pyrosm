@@ -19,6 +19,7 @@ from pyrosm.data.geofabrik import (
     Netherlands,
     Poland,
     Russia,
+    UnitedKingdom,
     USA,
     SubRegions,
 )
