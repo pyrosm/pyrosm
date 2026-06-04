@@ -24,30 +24,23 @@ cpdef create_nodes_gdf(nodes, osmids_to_keep=None):
         else:
             raise ValueError("'indices_to_keep' should be a numpy array.")
 
-    df = pd.DataFrame()
-    for k, v in nodes.items():
-        df[k] = v
-    df['geometry'] = _create_point_geometries(nodes['lon'], nodes['lat'])
-    return gpd.GeoDataFrame(df, crs='epsg:4326')
+    geometry = _create_point_geometries(nodes['lon'], nodes['lat'])
+    return gpd.GeoDataFrame(dict(nodes), geometry=geometry, crs='epsg:4326')
 
 cpdef create_gdf(data_arrays, geometry_array):
-    df = create_df(data_arrays)
-    df['geometry'] = geometry_array
-    return gpd.GeoDataFrame(df, crs='epsg:4326')
+    return gpd.GeoDataFrame(
+        create_df(data_arrays), geometry=geometry_array, crs='epsg:4326'
+    )
 
 cpdef create_df(data_arrays):
     cdef str key
-    df = pd.DataFrame()
+    # Build in one constructor call; per-column df[k]=... triggers a spurious
+    # pandas chained-assignment warning under Cython.
+    columns = {}
     for key, data in data_arrays.items():
-        # When inserting nodes,
-        # those should be converted
-        # to lists to avoid block error
-        if key == "nodes":
-            df[key] = data.tolist()
-        else:
-            df[key] = data
-
-    return df
+        # 'nodes' must be a list of arrays to avoid a block-consolidation error
+        columns[key] = data.tolist() if key == "nodes" else data
+    return pd.DataFrame(columns)
 
 cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengths):
     if ways is not None:
@@ -57,10 +50,8 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
             parse_network
         )
 
-        # Convert to DataFrame
-        way_gdf = create_df(ways)
-        way_gdf['osm_type'] = "way"
-        way_gdf["geometry"] = geometries
+        # .assign (not df[col]=...) avoids the spurious Cython CoW warning
+        way_gdf = create_df(ways).assign(osm_type="way", geometry=geometries)
 
         # In case network is parsed, include way-level length info
         if parse_network and not calculate_seg_lengths:
@@ -68,8 +59,11 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
             way_gdf = way_gdf.dropna(subset=['geometry']).reset_index(drop=True)
 
             # Create MultiLineStrings and calculate the length
-            way_gdf["geometry"] = [multilinestrings(geom) for geom in way_gdf["geometry"]]
-            way_gdf["length"] = [calculate_geom_length(geom) for geom in way_gdf["geometry"]]
+            geoms = [multilinestrings(geom) for geom in way_gdf["geometry"]]
+            way_gdf = way_gdf.assign(
+                geometry=geoms,
+                length=[calculate_geom_length(geom) for geom in geoms],
+            )
             way_gdf = gpd.GeoDataFrame(way_gdf, geometry="geometry", crs="epsg:4326")
 
             # If only edges are requested, clean node_attributes
@@ -79,8 +73,7 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
         # include segment-level length info
         elif parse_network and calculate_seg_lengths:
             # Insert way-level from/to ids
-            way_gdf["u"] = from_ids
-            way_gdf["v"] = to_ids
+            way_gdf = way_gdf.assign(u=from_ids, v=to_ids)
 
             # Drop rows without geometry
             way_gdf = way_gdf.dropna(subset=['geometry']).reset_index(drop=True)
@@ -93,12 +86,12 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
             way_gdf = way_gdf.explode("geometry").reset_index(drop=True)
             way_gdf = gpd.GeoDataFrame(way_gdf, geometry="geometry", crs="epsg:4326")
 
-            # Update from/to-ids
-            way_gdf["u"] = u
-            way_gdf["v"] = v
-
-            # Calculate the length of the geometries
-            way_gdf["length"] = calculate_geom_array_length(way_gdf.geometry.values.to_numpy())
+            # Update from/to-ids and calculate the length of the geometries
+            way_gdf = way_gdf.assign(
+                u=u,
+                v=v,
+                length=calculate_geom_array_length(way_gdf.geometry.values.to_numpy()),
+            )
 
         # For cases not related to networks
         else:
@@ -114,8 +107,7 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
 cpdef prepare_node_gdf(nodes):
     if nodes is not None:
         # Create GeoDataFrame from nodes
-        node_gdf = create_nodes_gdf(nodes)
-        node_gdf['osm_type'] = "node"
+        node_gdf = create_nodes_gdf(nodes).assign(osm_type="node")
     else:
         node_gdf = gpd.GeoDataFrame()
     return node_gdf
@@ -126,8 +118,9 @@ cpdef prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_c
                                       node_coordinates,
                                       tags_as_columns)
 
-        relation_gdf = gpd.GeoDataFrame(relations, crs="epsg:4326")
-        relation_gdf['osm_type'] = "relation"
+        relation_gdf = gpd.GeoDataFrame(relations, crs="epsg:4326").assign(
+            osm_type="relation"
+        )
 
     else:
         relation_gdf = gpd.GeoDataFrame()
