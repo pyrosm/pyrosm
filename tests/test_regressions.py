@@ -69,3 +69,11 @@ def test_uk_subregions_use_united_kingdom_path():
     assert search_source("great_britain")["url"].endswith(
         "europe/great-britain-latest.osm.pbf"
     )
+
+    # Sub-region navigation via the great_britain group still works and resolves
+    # to the united-kingdom path.
+    from pyrosm.data import sources
+
+    gb = sources.subregions.great_britain
+    assert "europe/united-kingdom/" in gb.scotland["url"]
+    assert gb() == gb.available
