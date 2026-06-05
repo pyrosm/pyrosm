@@ -106,24 +106,8 @@ cdef filter_osm_records(data_records,
             k: [True] if v is True else v for k, v in data_filter.items()
         }
 
-        # Check if there are duplicate filter values
-        # e.g. a situation where {"route": "tram"} and {"railway": "tram"}
-        # filters are present simultaneously.
-        overlapping_filter = False
-
-        # Check for overlapping filter
-        filter_values = []
+        # Filter keys to test each record against.
         filter_keys = data_filter.keys()
-        for values in data_filter.values():
-            # Check for {osm-key: True} cases, for which should always check all tag key/values
-            if True in values:
-                overlapping_filter = True
-                break
-            
-            filter_values += values
-
-        if not overlapping_filter and len(filter_values) > len(list(set(filter_values))):
-                overlapping_filter = True
 
     relation_check = False
     if relation_way_ids is not None:
@@ -143,32 +127,30 @@ cdef filter_osm_records(data_records,
         if not has_osm_data_type(osm_data_type, record_keys):
             continue
 
-        # Check if should be filtered based on given data_filter
+        # Check if should be filtered based on given data_filter.
+        # Evaluate ALL filter keys present in the record (OR semantics): a record
+        # matches the filter if any present filter key's value is in that key's
+        # list. The old code broke on the first filter key in the record, so
+        # exclusions/keeps on secondary keys were skipped and depended on tag
+        # order (issues #108, #112). This mirrors the relations/nodes path
+        # (record_should_be_kept).
         if data_filter is not None:
-            filter_out = False
-            filter_was_in_record = False
-
-            for k, v in record.items():
-                if k in filter_keys:
-                    filter_was_in_record = True
-                    if solver.check(v, data_filter[k]):
-                        filter_out = True
-                        # If there are identical filter criteria used in multiple OSM-keys
-                        # Check that none of them matches, hence do not break the loop
-                        # after the first match is found.
-                        if not overlapping_filter:
-                            break
-                    else:
-                        filter_out = False
+            matched = False
+            for k in filter_keys:
+                if k in record:
+                    if solver.isin_check(record[k], data_filter[k]):
+                        matched = True
                         break
 
-            # If none of the filter keys are present in the element,
-            # it should not be kept
-            if not filter_was_in_record:
-                continue
-
-            if not filter_out:
-                filtered_data.append(record)
+            # keep: retain the record only if a filter key matched.
+            # exclude: retain it only if no filter key matched (a record with
+            # none of the filter keys is kept under exclude).
+            if filter_type == "keep":
+                if matched:
+                    filtered_data.append(record)
+            else:
+                if not matched:
+                    filtered_data.append(record)
 
         # If data_filter has not been specified,
         # all data for specified osm-keys should be kept.

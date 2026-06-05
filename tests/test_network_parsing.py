@@ -39,7 +39,7 @@ def test_filter_network_by_walking(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (265, 21)
+    assert gdf.shape == (238, 19)
 
     required_cols = [
         "access",
@@ -79,7 +79,7 @@ def test_filter_network_by_driving(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (207, 19)
+    assert gdf.shape == (200, 19)
 
     required_cols = [
         "access",
@@ -120,7 +120,7 @@ def test_filter_network_by_driving_with_service_roads(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (207, 19)
+    assert gdf.shape == (200, 19)
 
     required_cols = [
         "access",
@@ -281,7 +281,7 @@ def test_parse_network_with_bbox(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (74, 21)
+    assert gdf.shape == (65, 19)
 
     required_cols = [
         "access",
@@ -329,7 +329,7 @@ def test_parse_network_with_shapely_bbox(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (74, 21)
+    assert gdf.shape == (65, 19)
 
     required_cols = [
         "access",
@@ -458,8 +458,8 @@ def test_getting_nodes_and_edges(test_pbf):
     assert isinstance(nodes.loc[0, "geometry"], Point)
 
     # Test shape
-    assert edges.shape == (1215, 23)
-    assert nodes.shape == (1147, 9)
+    assert edges.shape == (1038, 21)
+    assert nodes.shape == (989, 9)
 
     # Edges should have "u" and "v" columns
     required = ["u", "v", "length"]
@@ -493,8 +493,8 @@ def test_getting_nodes_and_edges_with_bbox(test_pbf):
     assert isinstance(nodes.loc[0, "geometry"], Point)
 
     # Test shape
-    assert edges.shape == (321, 23)
-    assert nodes.shape == (317, 9)
+    assert edges.shape == (259, 21)
+    assert nodes.shape == (261, 9)
 
     # Edges should have "u" and "v" columns
     required = ["u", "v", "length"]
@@ -525,7 +525,7 @@ def test_reading_network_from_osh(helsinki_history_pbf):
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], MultiLineString)
-    assert gdf.shape == (210, 25)
+    assert gdf.shape == (206, 24)
 
     required_cols = ["highway", "id", "timestamp", "version", "geometry"]
 
@@ -585,5 +585,6 @@ def test_osh_network_does_not_leak_empty_tag_columns(helsinki_history_pbf):
     phantom = [c for c in gdf.columns if c != "geometry" and gdf[c].isna().all()]
     assert phantom == [], f"empty tag columns leaked into OSH output: {phantom}"
 
-    # The column set must stay lean (25 with the fix; 27 with the bug).
-    assert gdf.shape == (210, 25)
+    # The column set must stay lean (24 after the network-filter fix; was 25
+    # before it, and 27 with the #248 NA-leak bug).
+    assert gdf.shape == (206, 24)
