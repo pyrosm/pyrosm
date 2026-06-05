@@ -116,11 +116,13 @@ cpdef _create_nxgraph(nodes,
     edge_attributes = edges.to_dict(orient="index")
 
     # Prepare node dictionary for fast lookups
-    node_dict = {k: None for k in nodes[node_id_col].to_list()}
+    node_ids = nodes[node_id_col].to_list()
+    node_dict = {k: None for k in node_ids}
 
-    # Node attributes
-    node_attributes = nodes.to_dict(orient="index")
-    node_attributes = [(k, v) for k, v in node_attributes.items()]
+    # Node attributes keyed by the node id (node_id_col), not the DataFrame
+    # index, so the nodes match the edge endpoints regardless of the index of
+    # the input frame (avoids duplicate "phantom" index-keyed nodes).
+    node_attributes = list(zip(node_ids, nodes.to_dict(orient="records")))
 
     # Generate edge dictionary
     for i in range(0, n_edges):

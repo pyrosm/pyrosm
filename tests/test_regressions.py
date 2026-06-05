@@ -77,3 +77,43 @@ def test_uk_subregions_use_united_kingdom_path():
     gb = sources.subregions.great_britain
     assert "europe/united-kingdom/" in gb.scotland["url"]
     assert gb() == gb.available
+
+
+def test_nxgraph_keys_nodes_by_id_not_dataframe_index():
+    """#247 — _create_nxgraph must key nodes by node_id_col, not the DataFrame
+    index, so it does not create duplicate 'phantom' nodes when the input nodes
+    have a non-id index (e.g. a default RangeIndex)."""
+    import pytest
+
+    pytest.importorskip("networkx")
+    import geopandas as gpd
+    from shapely.geometry import Point, LineString
+    from pyrosm.graph_export import _create_nxgraph
+
+    # Nodes with non-sequential ids and a default RangeIndex (0, 1, 2).
+    nodes = gpd.GeoDataFrame(
+        {
+            "id": [1000, 2000, 3000],
+            "geometry": [Point(0, 0), Point(1, 1), Point(2, 2)],
+        },
+        crs="EPSG:4326",
+    )
+    edges = gpd.GeoDataFrame(
+        {
+            "u": [1000, 2000],
+            "v": [2000, 3000],
+            "geometry": [
+                LineString([(0, 0), (1, 1)]),
+                LineString([(1, 1), (2, 2)]),
+            ],
+        },
+        crs="EPSG:4326",
+    )
+
+    graph = _create_nxgraph(nodes, edges, "u", "v", "id")
+
+    # Exactly the three real node ids, no index-keyed phantoms (0, 1, 2).
+    assert graph.number_of_nodes() == 3
+    assert sorted(graph.nodes()) == [1000, 2000, 3000]
+    # Every node carries its attributes.
+    assert all("geometry" in data for _, data in graph.nodes(data=True))
