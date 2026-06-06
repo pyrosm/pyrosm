@@ -10,6 +10,7 @@ def get_network_data(
     network_filter,
     bounding_box,
     slice_to_segments,
+    filter_type="exclude",
 ):
     # Tags to keep as separate columns
     tags_as_columns += ["id", "nodes", "timestamp", "changeset", "version"]
@@ -21,7 +22,7 @@ def get_network_data(
         relations=None,
         tags_as_columns=tags_as_columns,
         data_filter=network_filter,
-        filter_type="exclude",
+        filter_type=filter_type,
         # Keep only records having 'highway' tag
         osm_keys="highway",
     )

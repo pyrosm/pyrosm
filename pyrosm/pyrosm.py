@@ -183,6 +183,8 @@ class OSM:
         extra_attributes=None,
         nodes=False,
         timestamp=None,
+        custom_filter=None,
+        filter_type="exclude",
     ):
         """
         Parses street networks from OSM
@@ -200,13 +202,34 @@ class OSM:
               - `'driving+service'`
               - `'all'`.
 
+            When `custom_filter` is given, `network_type` no longer selects the
+            ways to keep; it only determines the graph semantics used by
+            `OSM.to_graph` (directionality / connectivity), e.g. pass
+            `network_type='driving'` for a directed custom network or keep the
+            default `'walking'` for a bidirectional one.
+
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
 
         nodes : bool (default: False)
             If True, 1) the nodes associated with the network will be returned in addition to edges,
             and 2) every segment of a road constituting a way is parsed as a separate row
-            (to enable full connectivity in the graph).
+            (to enable full connectivity in the graph). Works together with
+            `custom_filter` so that custom-filtered networks can also be exported
+            to a graph.
+
+        custom_filter : dict (optional)
+            A custom filter for selecting which highway ways to keep, e.g.
+            `{'highway': ['footway', 'residential'], 'bicycle': ['yes']}`. When
+            given, it replaces the predefined `network_type` filter (the two are
+            not combined). Only ways having a `highway` tag are considered; the
+            filter then keeps or excludes among those according to `filter_type`.
+            The filter keys are also added as columns to the result.
+
+        filter_type : str (default: 'exclude')
+            Whether `custom_filter` should `'keep'` or `'exclude'` the matching
+            ways. Only consulted when `custom_filter` is given; the predefined
+            `network_type` filters are always applied as `'exclude'`.
 
         timestamp: str | datetime | int
             If provided, the data from given moment of time will be returned. The time should be provided in UTC.
@@ -234,9 +257,33 @@ class OSM:
         Take a look at the OSM documentation for further details about the data:
         `https://wiki.openstreetmap.org/wiki/Key:highway <https://wiki.openstreetmap.org/wiki/Key:highway>`__
         """
-        # Get filter
+        # Get filter (also validates network_type, which still drives the graph
+        # semantics even when a custom_filter is provided)
         network_filter = self._get_network_filter(network_type)
         tags_as_columns = list(self.conf.tags.highway)
+
+        # A custom_filter replaces the predefined network filter and may use any
+        # 'keep'/'exclude' semantics; the predefined filters are always 'exclude'.
+        if custom_filter is not None:
+            custom_filter = validate_custom_filter(custom_filter)
+
+            if not isinstance(filter_type, str) or filter_type.lower() not in [
+                "keep",
+                "exclude",
+            ]:
+                raise ValueError(
+                    "'filter_type' -parameter should be either 'keep' or 'exclude'. "
+                )
+            filter_type = filter_type.lower()
+
+            network_filter = custom_filter
+            # Expose the filter keys as columns too (e.g. 'bicycle', 'service').
+            for key in custom_filter.keys():
+                if key not in tags_as_columns:
+                    tags_as_columns.append(key)
+        else:
+            # Predefined networks are always exclude filters.
+            filter_type = "exclude"
 
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
@@ -253,6 +300,7 @@ class OSM:
             network_filter,
             self.bounding_box,
             slice_to_segments=nodes,
+            filter_type=filter_type,
         )
 
         if edges is not None:

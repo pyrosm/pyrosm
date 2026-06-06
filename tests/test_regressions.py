@@ -216,6 +216,141 @@ def test_keep_filter_matches_any_key_or_semantics():
     assert "driveway" in set(gdf["service"].dropna().unique())
 
 
+def test_get_network_custom_filter_returns_nodes():
+    """#118/#181 — get_network must accept a custom_filter and, with nodes=True,
+    return graph-ready (nodes, edges) so a custom-filtered network can be turned
+    into a routable graph."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    result = osm.get_network(
+        custom_filter={"highway": ["footway", "residential"]},
+        filter_type="keep",
+        nodes=True,
+    )
+
+    assert isinstance(result, tuple) and len(result) == 2
+    nodes, edges = result
+
+    assert edges is not None and len(edges) > 0
+    for col in ["u", "v", "length"]:
+        assert col in edges.columns
+    assert set(edges["highway"].dropna().unique()) <= {"footway", "residential"}
+
+    assert nodes is not None and len(nodes) > 0
+    assert "id" in nodes.columns
+    assert not nodes.geometry.is_empty.any()
+    assert set(nodes.geometry.geom_type.unique()) == {"Point"}
+
+
+def test_get_network_custom_filter_graph_export():
+    """#181 — the (nodes, edges) from a custom_filter network must export to a
+    graph. With retain_all=True no nodes are dropped (the default retain_all=False
+    prunes weakly-connected components, so the strict count needs retain_all)."""
+    import pytest
+
+    pytest.importorskip("networkx")
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    nodes, edges = osm.get_network(
+        custom_filter={"highway": ["footway", "residential"]},
+        filter_type="keep",
+        nodes=True,
+    )
+
+    graph = OSM.to_graph(nodes, edges, graph_type="networkx", retain_all=True)
+    assert graph.number_of_nodes() > 0
+    assert graph.number_of_nodes() == len(nodes)
+
+    # Default connectivity pruning keeps a subset of the returned node ids.
+    pruned = OSM.to_graph(nodes, edges, graph_type="networkx")
+    assert set(pruned.nodes()).issubset(set(nodes["id"]))
+
+
+def test_get_network_custom_filter_exclude():
+    """#118/#181 — a 'exclude' custom_filter drops the matching ways, and is the
+    complement of the matching 'keep' filter."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    excluded = osm.get_network(
+        custom_filter={"highway": ["footway"]}, filter_type="exclude", nodes=False
+    )
+    kept = osm.get_network(
+        custom_filter={"highway": ["footway"]}, filter_type="keep", nodes=False
+    )
+
+    assert "footway" not in set(excluded["highway"].dropna().unique())
+    assert len(excluded) > len(kept)
+
+
+def test_get_network_custom_filter_validation_and_extra_keys():
+    """#118/#181 — get_network rejects an invalid filter_type, and a custom_filter
+    key outside the default 'highway' tag set is accepted (and added as a column
+    when present in the data)."""
+    import pytest
+    from pyrosm import OSM, get_data
+    from pyrosm.config import Conf
+
+    osm = OSM(get_data("test_pbf"))
+
+    with pytest.raises(ValueError):
+        osm.get_network(
+            custom_filter={"highway": ["footway"]}, filter_type="not-a-filter"
+        )
+
+    # 'moped' is not one of the default highway tag columns; the filter key must
+    # still be accepted and routed through (it becomes a column only if present).
+    assert "moped" not in list(Conf.tags.highway)
+    edges = osm.get_network(
+        custom_filter={"highway": ["footway", "residential"], "moped": ["yes"]},
+        filter_type="keep",
+    )
+    assert edges is not None and len(edges) > 0
+    assert set(edges["highway"].dropna().unique()) <= {"footway", "residential"}
+
+
+def test_get_network_without_custom_filter_unchanged():
+    """Parity guard: the default (no custom_filter) get_network path is unchanged.
+    Pins row count, column set, network_type metadata, and a platform-stable hash
+    of the per-row id/highway values for the bundled extract."""
+    import hashlib
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    edges = osm.get_network(network_type="driving")
+
+    assert len(edges) == 200
+    assert edges["id"].nunique() == 200
+    assert sorted(edges.columns) == [
+        "access",
+        "bridge",
+        "geometry",
+        "highway",
+        "id",
+        "int_ref",
+        "lanes",
+        "length",
+        "lit",
+        "maxspeed",
+        "name",
+        "oneway",
+        "osm_type",
+        "ref",
+        "service",
+        "surface",
+        "tags",
+        "timestamp",
+        "version",
+    ]
+    assert edges._metadata[-1] == "driving"
+
+    rows = sorted(f"{i}:{h}" for i, h in zip(edges["id"], edges["highway"].fillna("")))
+    digest = hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
+    assert digest == "8ce8c63b51ee14f8008a6af4d642cb3adf95e83a6f926fa6c9e4381bb3f3b072"
+
+
 def test_single_key_keep_filter_unchanged():
     """Parity guard: single-key keep filters and {key: True} are unaffected by the
     OR rewrite (only multi-key keep filters were buggy). Row counts are pinned to
