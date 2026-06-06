@@ -285,6 +285,32 @@ def test_get_network_custom_filter_exclude():
     assert len(excluded) > len(kept)
 
 
+def test_get_network_custom_filter_validation_and_extra_keys():
+    """#118/#181 — get_network rejects an invalid filter_type, and a custom_filter
+    key outside the default 'highway' tag set is accepted (and added as a column
+    when present in the data)."""
+    import pytest
+    from pyrosm import OSM, get_data
+    from pyrosm.config import Conf
+
+    osm = OSM(get_data("test_pbf"))
+
+    with pytest.raises(ValueError):
+        osm.get_network(
+            custom_filter={"highway": ["footway"]}, filter_type="not-a-filter"
+        )
+
+    # 'moped' is not one of the default highway tag columns; the filter key must
+    # still be accepted and routed through (it becomes a column only if present).
+    assert "moped" not in list(Conf.tags.highway)
+    edges = osm.get_network(
+        custom_filter={"highway": ["footway", "residential"], "moped": ["yes"]},
+        filter_type="keep",
+    )
+    assert edges is not None and len(edges) > 0
+    assert set(edges["highway"].dropna().unique()) <= {"footway", "residential"}
+
+
 def test_get_network_without_custom_filter_unchanged():
     """Parity guard: the default (no custom_filter) get_network path is unchanged.
     Pins row count, column set, network_type metadata, and a platform-stable hash
