@@ -356,6 +356,16 @@ cdef create_polygon_geometry(nodes, node_coordinates):
         return None
 
 
+cdef _closed_way_is_polygon(area_value, has_linear_tag):
+    # OSM area semantics for a closed way: an explicit 'area' tag wins
+    # ('area=yes' -> Polygon, 'area=no' -> LineString); otherwise the way is an
+    # area (Polygon) unless it carries a linear-feature tag (highway/barrier/route).
+    if area_value == "yes":
+        return True
+    if area_value == "no":
+        return False
+    return not has_linear_tag
+
 cdef _create_way_geometries(node_coordinates,
                             way_elements,
                             parse_network):
@@ -377,6 +387,15 @@ cdef _create_way_geometries(node_coordinates,
     node_attributes = []
     parsed_way_indices = []
 
+    # Bind the tag arrays used to type closed ways (Polygon vs LineString) once,
+    # so the per-way decision is plain array reads rather than per-iteration dict
+    # work. A way is typed from its own tag values, not from which columns happen
+    # to exist in the batch.
+    highway_arr = way_elements["highway"] if "highway" in way_elements else None
+    barrier_arr = way_elements["barrier"] if "barrier" in way_elements else None
+    route_arr = way_elements["route"] if "route" in way_elements else None
+    area_arr = way_elements["area"] if "area" in way_elements else None
+
     for i in range(0, n):
         nodes = way_elements['nodes'][i]
         # In some cases (e.g. when using clipped pbf file) the nodes list can be empty
@@ -387,12 +406,25 @@ cdef _create_way_geometries(node_coordinates,
 
         # If first and last node are the same, it's a closed way
         if  u == v:
-            tag_keys = way_elements.keys()
-            # Create Polygon by default unless way is of type 'highway', 'barrier' or 'route'
-            if "highway" in tag_keys or "barrier" in tag_keys or "route" in tag_keys:
+            if parse_network:
+                # Networks are linear: a closed way (e.g. a roundabout) is a
+                # LineString. Plazas/areas are excluded from the predefined
+                # network filters, and a Polygon is not routable anyway; keeping
+                # this branch linear also avoids leaving from/to ids unset.
                 geom, from_id, to_id, node_data = create_linestring_geometry(nodes, node_coordinates)
             else:
-                geom = create_polygon_geometry(nodes, node_coordinates)
+                # Decide from THIS way's own tags (not which columns exist in the
+                # batch), honouring the OSM 'area' tag.
+                area_value = area_arr[i] if area_arr is not None else None
+                has_linear_tag = (
+                    (highway_arr is not None and highway_arr[i] is not None)
+                    or (barrier_arr is not None and barrier_arr[i] is not None)
+                    or (route_arr is not None and route_arr[i] is not None)
+                )
+                if _closed_way_is_polygon(area_value, has_linear_tag):
+                    geom = create_polygon_geometry(nodes, node_coordinates)
+                else:
+                    geom, from_id, to_id, node_data = create_linestring_geometry(nodes, node_coordinates)
 
         # Otherwise create LineString
         else:
