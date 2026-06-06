@@ -1,5 +1,7 @@
 """Regression tests guarding against specific bugs reappearing."""
 
+import sys
+
 import pytest
 
 
@@ -683,7 +685,23 @@ def test_bbox_network_nodes_cover_all_edge_endpoints():
     assert missing == set(), f"edge endpoints missing from nodes: {missing}"
 
 
-@pytest.mark.parametrize("graph_type", ["networkx", "igraph", "pandana"])
+@pytest.mark.parametrize(
+    "graph_type",
+    [
+        "networkx",
+        "igraph",
+        # pandana's compiled cyaccess uses C `long` buffers (32-bit on Windows),
+        # but NumPy 2 makes the default integer int64, so its export is broken on
+        # Windows regardless of this fix; skip there as the graph-export tests do.
+        pytest.param(
+            "pandana",
+            marks=pytest.mark.skipif(
+                sys.platform.startswith("win"),
+                reason="pandana is incompatible with NumPy 2 on Windows (C long is 32-bit)",
+            ),
+        ),
+    ],
+)
 def test_bbox_network_to_graph(graph_type):
     """#199 — to_graph must build from the get_network(nodes=True) output of a
     bbox reader without manual cleanup. Pre-fix the pandana export raised
