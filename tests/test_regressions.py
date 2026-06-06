@@ -372,3 +372,111 @@ def test_single_key_keep_filter_unchanged():
     # A single-key POI keep is unchanged (exercises the keep path for POIs).
     pois = osm.get_pois(custom_filter={"amenity": True})
     assert len(pois) == 20
+
+
+def test_networkx_export_sets_street_count():
+    """#117 — the exported NetworkX graph must carry a per-node 'street_count'
+    attribute (number of streets incident to each intersection) so OSMnx's
+    basic_stats works."""
+    import pytest
+
+    pytest.importorskip("networkx")
+    import networkx as nx
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    nodes, edges = osm.get_network(nodes=True)
+    graph = osm.to_graph(nodes, edges, graph_type="networkx")
+
+    street_count = nx.get_node_attributes(graph, "street_count")
+    # Present on every node and a positive integer.
+    assert len(street_count) == graph.number_of_nodes()
+    assert all(isinstance(c, int) and c >= 1 for c in street_count.values())
+
+
+def test_street_count_matches_osmnx():
+    """#117 — pyrosm's 'street_count' must equal osmnx.stats.count_streets_per_node
+    across the export modes (osmnx_compatible x retain_all) the graph supports."""
+    import pytest
+
+    pytest.importorskip("networkx")
+    osmnx = pytest.importorskip("osmnx")
+    import networkx as nx
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    nodes, edges = osm.get_network(nodes=True)
+
+    for osmnx_compatible in [True, False]:
+        for retain_all in [True, False]:
+            graph = osm.to_graph(
+                nodes,
+                edges,
+                graph_type="networkx",
+                osmnx_compatible=osmnx_compatible,
+                retain_all=retain_all,
+            )
+            pyrosm_counts = nx.get_node_attributes(graph, "street_count")
+            assert pyrosm_counts == osmnx.stats.count_streets_per_node(graph), (
+                f"mismatch for osmnx_compatible={osmnx_compatible}, "
+                f"retain_all={retain_all}"
+            )
+
+
+def test_networkx_export_works_with_osmnx_basic_stats():
+    """#117 — the original symptom: osmnx.basic_stats(G) must run on the exported
+    graph without raising (it failed because 'street_count' was missing)."""
+    import pytest
+
+    pytest.importorskip("networkx")
+    osmnx = pytest.importorskip("osmnx")
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    nodes, edges = osm.get_network(nodes=True)
+    graph = osm.to_graph(nodes, edges, graph_type="networkx")
+
+    stats = osmnx.basic_stats(graph)
+    assert stats["n"] == graph.number_of_nodes()
+
+
+def test_count_streets_per_node_known_topology():
+    """#117 — pins the street_count semantics on a known layout: a path 1-2-3 with
+    a branch 2-4 (bidirectional). Node 2 touches three streets; the leaves one."""
+    import pytest
+
+    pytest.importorskip("networkx")
+    import geopandas as gpd
+    import networkx as nx
+    from shapely.geometry import Point, LineString
+    from pyrosm import OSM
+
+    nodes = gpd.GeoDataFrame(
+        {
+            "id": [1, 2, 3, 4],
+            "lon": [0.0, 1.0, 2.0, 1.0],
+            "lat": [0.0, 0.0, 0.0, 1.0],
+            "geometry": [Point(0, 0), Point(1, 0), Point(2, 0), Point(1, 1)],
+        },
+        crs="EPSG:4326",
+    )
+    edges = gpd.GeoDataFrame(
+        {
+            "id": [10, 20, 30],
+            "u": [1, 2, 2],
+            "v": [2, 3, 4],
+            "length": [1.0, 1.0, 1.0],
+            "oneway": [None, None, None],
+            "geometry": [
+                LineString([(0, 0), (1, 0)]),
+                LineString([(1, 0), (2, 0)]),
+                LineString([(1, 0), (1, 1)]),
+            ],
+        },
+        crs="EPSG:4326",
+    )
+
+    graph = OSM.to_graph(
+        nodes, edges, graph_type="networkx", network_type="walking", retain_all=True
+    )
+    assert nx.get_node_attributes(graph, "street_count") == {1: 1, 2: 3, 3: 1, 4: 1}

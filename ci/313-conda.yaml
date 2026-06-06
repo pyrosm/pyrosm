@@ -17,6 +17,7 @@ dependencies:
   # graph-export tests are skipped on 3.13 (see tests/test_graph_exports.py).
   - python-igraph
   # testing
+  - osmnx
   - black
   - codecov
   - pytest

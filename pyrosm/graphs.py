@@ -7,7 +7,26 @@ from pyrosm.graph_export import (
 from pyrosm.graph_connectivity import get_connected_edges
 from pyrosm.utils import validate_edge_gdf, validate_node_gdf
 from pyrosm.config import Conf
+from collections import Counter
+from itertools import chain
 import warnings
+
+
+def _count_streets_per_node(graph):
+    """Count physical street segments incident to each node.
+
+    Produces the OSMnx-compatible 'street_count' (number of undirected street
+    segments touching each intersection), matching
+    osmnx.stats.count_streets_per_node so that osmnx.basic_stats works on the
+    exported graph.
+    """
+    import networkx as nx
+
+    undirected = graph.to_undirected(reciprocal=False, as_view=True)
+    self_loops = set(nx.selfloop_edges(undirected, keys=False))
+    non_self_loops = [e for e in undirected.edges(keys=False) if e not in self_loops]
+    counts = Counter(chain.from_iterable(non_self_loops + list(self_loops)))
+    return {node: counts[node] for node in graph.nodes()}
 
 
 def get_directed_edges(
@@ -205,7 +224,16 @@ def to_networkx(
 
     # Create NetworkX graph (nodes are keyed by node_id_col internally, so the
     # input frame's index does not need to be set to the node id).
-    return _create_nxgraph(nodes, edges, from_id_col, to_id_col, node_id_col)
+    graph = _create_nxgraph(nodes, edges, from_id_col, to_id_col, node_id_col)
+
+    # Add the OSMnx-compatible per-node 'street_count' attribute so that
+    # osmnx.basic_stats (and other functions reading it) work on the graph (#117).
+    import networkx as nx
+
+    nx.set_node_attributes(
+        graph, values=_count_streets_per_node(graph), name="street_count"
+    )
+    return graph
 
 
 def to_igraph(
