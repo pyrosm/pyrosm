@@ -181,9 +181,16 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
         gdf = gdf[orig_cols].reset_index(drop=True)
 
         if node_attr is not None:
-            orig_node_cols = list(node_attr.columns)
-            node_attr = gpd.sjoin(node_attr, filter_gdf, how="inner")
-            node_attr = node_attr[orig_node_cols]
+            # Keep every node referenced by the kept (whole) edges, including
+            # endpoints just outside the box. Spatially clipping the nodes to the
+            # box instead would drop boundary endpoints of edges that straddle the
+            # edge, leaving dangling u/v that break graph export (#199).
+            referenced = pd.unique(
+                np.concatenate([gdf["u"].to_numpy(), gdf["v"].to_numpy()])
+            )
+            node_attr = node_attr[node_attr["id"].isin(referenced)].reset_index(
+                drop=True
+            )
 
     if len(gdf) == 0:
         if parse_network:

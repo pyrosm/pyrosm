@@ -495,9 +495,12 @@ def test_getting_nodes_and_edges_with_bbox(test_pbf):
     assert isinstance(nodes.loc[0, "geometry"], Point)
 
     # Test shape (#236: edges crossing the bbox edge are now returned complete
-    # rather than cut, so boundary-crossing edges and their nodes are included)
+    # rather than cut, so boundary-crossing edges and their nodes are included.
+    # #199: the nodes frame now retains every endpoint referenced by the kept
+    # edges, including boundary endpoints just outside the box, so the
+    # nodes/edges pair stays consistent for graph export.)
     assert edges.shape == (291, 21)
-    assert nodes.shape == (262, 9)
+    assert nodes.shape == (293, 9)
 
     # Edges should have "u" and "v" columns
     required = ["u", "v", "length"]
