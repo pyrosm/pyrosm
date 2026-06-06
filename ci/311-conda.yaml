@@ -16,6 +16,7 @@ dependencies:
   - pandana
   - python-igraph
   # testing
+  - osmnx
   - black
   - codecov
   - pytest
