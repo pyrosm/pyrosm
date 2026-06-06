@@ -14,6 +14,7 @@ dependencies:
   # optional
   - networkx
   - pandana
+  - pandarm
   - python-igraph
   # testing
   - osmnx

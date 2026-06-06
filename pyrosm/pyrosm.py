@@ -1,3 +1,5 @@
+import warnings
+
 import pandas as pd
 from pyrosm.config import Conf
 from pyrosm.pbfreader import parse_osm_data
@@ -30,7 +32,7 @@ from pyrosm.natural import get_natural_data
 from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
-from pyrosm.graphs import to_networkx, to_igraph, to_pandana
+from pyrosm.graphs import to_networkx, to_igraph, to_pandana, to_pandarm
 
 
 class OSM:
@@ -864,7 +866,8 @@ class OSM:
         Export OSM network to routable graph. Supported output graph types are:
           - "igraph" (default),
           - "networkx",
-          - "pandana"
+          - "pandarm",
+          - "pandana" (deprecated; use "pandarm")
 
         For walking, the output graph will be bidirectional by default
         (i.e. travel along the street is allowed to both directions). For driving
@@ -887,7 +890,11 @@ class OSM:
             Type of the output graph. Available graphs are:
               - "igraph" --> returns an igraph.Graph -object.
               - "networkx" --> returns a networkx.MultiDiGraph -object.
-              - "pandana" --> returns an pandana.Network -object.
+              - "pandarm" --> returns a pandarm.Network -object.
+              - "pandana" --> returns a pandana.Network -object.
+                (deprecated: pandana is unmaintained and incompatible with
+                NumPy 2 on Windows; use "pandarm" instead. Will be removed in
+                a future release.)
 
         direction : str
             Name for the column containing information about the allowed driving directions
@@ -956,7 +963,28 @@ class OSM:
                 retain_all,
                 osmnx_compatible,
             )
+        elif graph_type == "pandarm":
+            return to_pandarm(
+                nodes,
+                edges,
+                direction,
+                from_id_col,
+                to_id_col,
+                node_id_col,
+                force_bidirectional,
+                network_type,
+                retain_all,
+                pandana_weights,
+            )
         elif graph_type == "pandana":
+            warnings.warn(
+                "graph_type='pandana' is deprecated because pandana is "
+                "unmaintained and incompatible with NumPy 2 on Windows; use "
+                "graph_type='pandarm' instead. The 'pandana' backend will be "
+                "removed in a future pyrosm release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
             return to_pandana(
                 nodes,
                 edges,

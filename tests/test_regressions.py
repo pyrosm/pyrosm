@@ -690,6 +690,7 @@ def test_bbox_network_nodes_cover_all_edge_endpoints():
     [
         "networkx",
         "igraph",
+        "pandarm",
         # pandana's compiled cyaccess uses C `long` buffers (32-bit on Windows),
         # but NumPy 2 makes the default integer int64, so its export is broken on
         # Windows regardless of this fix; skip there as the graph-export tests do.
@@ -717,4 +718,22 @@ def test_bbox_network_to_graph(graph_type):
     nodes, edges = osm.get_network(nodes=True)
 
     g = osm.to_graph(nodes, edges, graph_type=graph_type)
+    assert g is not None
+
+
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="pandana is incompatible with NumPy 2 on Windows (C long is 32-bit)",
+)
+def test_to_graph_pandana_emits_deprecation_warning():
+    """#270 — graph_type='pandana' still works but warns that it is deprecated in
+    favour of 'pandarm'."""
+    pytest.importorskip("pandana")
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    nodes, edges = osm.get_network(nodes=True)
+
+    with pytest.warns(DeprecationWarning, match="pandarm"):
+        g = osm.to_graph(nodes, edges, graph_type="pandana")
     assert g is not None

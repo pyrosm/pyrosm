@@ -703,3 +703,70 @@ def test_get_directed_edges_explicit_oneway_bicycle_direction():
     assert len(out) == 5  # twoway(2) + oneway(1) + contraflow(2)
     assert (2, 3) in pairs and (3, 2) not in pairs  # base oneway respected
     assert (3, 4) in pairs and (4, 3) in pairs  # oneway:bicycle=no -> both ways
+
+
+def test_pandarm_connectivity():
+    """pandarm graph export (#270).
+
+    pandarm is the maintained, NumPy 2-compatible fork of pandana, so unlike the
+    pandana tests this is NOT skipped on Windows. Skipped only when pandarm is
+    not installed.
+    """
+    pytest.importorskip("pandarm")
+    from pyrosm.graphs import to_pandarm
+    import pandas as pd
+    from pyrosm import OSM
+
+    osm = OSM(get_data("helsinki_pbf"))
+    nodes, edges = osm.get_network(nodes=True)
+
+    restaurants = osm.get_pois(custom_filter={"amenity": ["restaurant"]})
+    restaurants = restaurants.loc[restaurants["osm_type"] == "node"]
+    restaurants["employee_cnt"] = 1
+    x = restaurants["lon"]
+    y = restaurants["lat"]
+
+    g = to_pandarm(nodes, edges, retain_all=False)
+
+    assert isinstance(g.nodes_df, pd.DataFrame)
+    assert isinstance(g.edges_df, pd.DataFrame)
+
+    g.precompute(1000)
+    g.set_pois("restaurants", 1000, 5, x, y)
+
+    nearest_restaurants = g.nearest_pois(1000, "restaurants", num_pois=5)
+    assert isinstance(nearest_restaurants, pd.DataFrame)
+    assert nearest_restaurants.shape == (5297, 5)
+
+    node_ids = g.get_node_ids(x, y)
+    assert isinstance(node_ids, pd.Series)
+    assert node_ids.min() > 0
+    restaurants["node_id"] = node_ids
+
+    g.set(node_ids, variable=restaurants.employee_cnt, name="employee_cnt")
+
+    access = g.aggregate(500, type="sum", decay="linear", name="employee_cnt")
+    assert isinstance(access, pd.Series)
+    assert len(access) == 5297
+
+    shortest_distances = g.shortest_path_lengths(
+        node_ids[0:100], node_ids[100:200], imp_name="length"
+    )
+    assert isinstance(shortest_distances, list)
+    assert len(shortest_distances) == 100
+    shortest_distances = pd.Series(shortest_distances)
+    assert round(shortest_distances.min(), 0) == 22
+    assert round(shortest_distances.max(), 0) == 2457
+    assert round(shortest_distances.mean(), 0) == 879
+
+
+def test_to_graph_api_pandarm(test_pbf):
+    """Smoke-test to_graph(graph_type="pandarm") (#270). Not skipped on Windows."""
+    pytest.importorskip("pandarm")
+    from pyrosm import OSM
+    import pandarm
+
+    osm = OSM(test_pbf)
+    nodes, edges = osm.get_network(nodes=True)
+    pdg = osm.to_graph(nodes, edges, graph_type="pandarm")
+    assert isinstance(pdg, pandarm.Network)
