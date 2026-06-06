@@ -1,5 +1,7 @@
 """Regression tests guarding against specific bugs reappearing."""
 
+import pytest
+
 
 def test_get_methods_do_not_mutate_shared_tag_config():
     """#252 — get_* must not mutate the shared Conf default-tag lists."""
@@ -664,3 +666,37 @@ def test_bbox_does_not_introduce_invalid_building_ways():
         if full.loc[i].geometry.is_valid and not sub.loc[i].geometry.is_valid
     ]
     assert introduced == [], f"bbox introduced invalid geometries: {introduced}"
+
+
+def test_bbox_network_nodes_cover_all_edge_endpoints():
+    """#199 — with a bounding box, get_network(nodes=True) must return a nodes
+    frame containing every endpoint referenced by the edges. Boundary endpoints
+    of edges that straddle the box used to be clipped away, leaving dangling
+    u/v."""
+    from pyrosm import OSM, get_data
+
+    fp = get_data("test_pbf")
+    bounds = [26.94, 60.525, 26.96, 60.535]
+    nodes, edges = OSM(filepath=fp, bounding_box=bounds).get_network(nodes=True)
+
+    missing = (set(edges["u"]) | set(edges["v"])) - set(nodes["id"])
+    assert missing == set(), f"edge endpoints missing from nodes: {missing}"
+
+
+@pytest.mark.parametrize("graph_type", ["networkx", "igraph", "pandana"])
+def test_bbox_network_to_graph(graph_type):
+    """#199 — to_graph must build from the get_network(nodes=True) output of a
+    bbox reader without manual cleanup. Pre-fix the pandana export raised
+    'Buffer dtype mismatch, expected long but got double'. Parametrized so each
+    backend is exercised (or skipped) independently — a missing optional backend
+    must not mask the others."""
+    pytest.importorskip(graph_type)
+    from pyrosm import OSM, get_data
+
+    fp = get_data("test_pbf")
+    bounds = [26.94, 60.525, 26.96, 60.535]
+    osm = OSM(filepath=fp, bounding_box=bounds)
+    nodes, edges = osm.get_network(nodes=True)
+
+    g = osm.to_graph(nodes, edges, graph_type=graph_type)
+    assert g is not None
