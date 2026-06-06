@@ -613,3 +613,54 @@ def test_valid_bbox_unchanged_by_empty_guard():
     edges = osm.get_network(network_type="all")
     assert edges is not None
     assert len(edges) == 2577
+
+
+def test_bbox_straddling_building_ways_complete_not_cut():
+    """#236 — building ways crossing the bounding-box edge must come back with
+    their complete geometry, not cut. Pre-fix, a way straddling the edge lost its
+    outside-bbox vertices and its area collapsed (some even became invalid)."""
+    from pyrosm import OSM, get_data
+
+    fp = get_data("helsinki_pbf")
+    full = OSM(fp).get_buildings()
+    full = full[full["osm_type"] == "way"].set_index("id")
+
+    sub = OSM(fp, bounding_box=[24.93, 60.16, 24.945, 60.18]).get_buildings()
+    sub = sub[sub["osm_type"] == "way"].set_index("id")
+
+    # The fix completes geometries; it does not change which ways are kept.
+    assert len(sub) == 181
+    common = full.index.intersection(sub.index)
+    assert len(common) == len(sub)  # every bbox building way exists in the full set
+
+    # No building way comes back with a smaller (cut) area than in the full dataset.
+    cut = [
+        i
+        for i in common
+        if full.loc[i].geometry.area > 0
+        and sub.loc[i].geometry.area < full.loc[i].geometry.area * 0.999
+    ]
+    assert cut == [], f"cut/incomplete building ways: {cut}"
+
+
+def test_bbox_does_not_introduce_invalid_building_ways():
+    """#236 — the bounding-box parse must not turn a building way that is valid in
+    the full dataset into an invalid one (the cut geometries were sometimes
+    invalid). Source buildings that are already invalid without a bbox are
+    tolerated."""
+    from pyrosm import OSM, get_data
+
+    fp = get_data("helsinki_pbf")
+    full = OSM(fp).get_buildings()
+    full = full[full["osm_type"] == "way"].set_index("id")
+
+    sub = OSM(fp, bounding_box=[24.93, 60.16, 24.945, 60.18]).get_buildings()
+    sub = sub[sub["osm_type"] == "way"].set_index("id")
+
+    common = full.index.intersection(sub.index)
+    introduced = [
+        i
+        for i in common
+        if full.loc[i].geometry.is_valid and not sub.loc[i].geometry.is_valid
+    ]
+    assert introduced == [], f"bbox introduced invalid geometries: {introduced}"
