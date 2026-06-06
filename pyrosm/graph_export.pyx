@@ -1,11 +1,30 @@
 from pyrosm.utils._compat import HAS_IGRAPH, HAS_NETWORKX, HAS_PANDANA
 from pyrosm.config import Conf
+from collections import Counter
+from itertools import chain
 import geopandas as gpd
 import pandas as pd
 import numpy as np
 
 # The values used to determine oneway road in OSM
 oneway_values = Conf.oneway_values
+
+cpdef _count_streets_per_node(graph):
+    """
+    Counts the number of physical street segments incident to each node.
+
+    Returns a dictionary mapping node id -> street count. The result is the
+    OSMnx-compatible 'street_count' (number of undirected street segments
+    touching each intersection) and matches osmnx.stats.count_streets_per_node,
+    so that osmnx.basic_stats works on the exported graph.
+    """
+    import networkx as nx
+
+    undirected = graph.to_undirected(reciprocal=False, as_view=True)
+    self_loops = set(nx.selfloop_edges(undirected, keys=False))
+    non_self_loops = [e for e in undirected.edges(keys=False) if e not in self_loops]
+    counts = Counter(chain.from_iterable(non_self_loops + list(self_loops)))
+    return {node: counts[node] for node in graph.nodes()}
 
 cpdef _create_igraph(nodes,
                      edges,
@@ -164,6 +183,13 @@ cpdef _create_nxgraph(nodes,
     graph.add_edges_from(edge_list)
     graph.graph["crs"] = crs
     graph.graph["name"] = "Made with Pyrosm library."
+
+    # Add the OSMnx-compatible per-node 'street_count' attribute (number of
+    # physical street segments incident to each node) so that osmnx.basic_stats
+    # (and other functions reading it) work on the graph (#117).
+    nx.set_node_attributes(
+        graph, _count_streets_per_node(graph), name="street_count"
+    )
 
     return graph
 
