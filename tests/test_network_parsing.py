@@ -280,8 +280,9 @@ def test_parse_network_with_bbox(test_pbf):
     assert isinstance(gdf.loc[0, "geometry"], MultiLineString)
     assert isinstance(gdf, GeoDataFrame)
 
-    # Test shape
-    assert gdf.shape == (65, 19)
+    # Test shape (#236: edges crossing the bbox edge are now returned complete
+    # rather than cut, so boundary-crossing edges are included)
+    assert gdf.shape == (72, 19)
 
     required_cols = [
         "access",
@@ -308,11 +309,12 @@ def test_parse_network_with_bbox(test_pbf):
     # Should not include 'motorway' ways by default
     assert "motorway" not in gdf["highway"].unique()
 
-    # The total bounds of the result should not be larger than the filter
-    # (allow some rounding error)
-    result_bounds = gdf.total_bounds
-    for coord1, coord2 in zip(bounds, result_bounds):
-        assert round(coord2, 3) >= round(coord1, 3)
+    # Every returned edge intersects the bounding box. Edges that straddle the edge
+    # are returned complete (#236), so the result may extend slightly beyond the
+    # filter; clip with GeoPandas afterwards if exact bounds are required.
+    from shapely.geometry import box
+
+    assert gdf.intersects(box(*bounds)).all()
 
 
 def test_parse_network_with_shapely_bbox(test_pbf):
@@ -328,8 +330,9 @@ def test_parse_network_with_shapely_bbox(test_pbf):
     assert isinstance(gdf.loc[0, "geometry"], MultiLineString)
     assert isinstance(gdf, GeoDataFrame)
 
-    # Test shape
-    assert gdf.shape == (65, 19)
+    # Test shape (#236: edges crossing the bbox edge are now returned complete
+    # rather than cut, so boundary-crossing edges are included)
+    assert gdf.shape == (72, 19)
 
     required_cols = [
         "access",
@@ -356,11 +359,10 @@ def test_parse_network_with_shapely_bbox(test_pbf):
     # Should not include 'motorway' ways by default
     assert "motorway" not in gdf["highway"].unique()
 
-    # The total bounds of the result should not be larger than the filter
-    # (allow some rounding error)
-    result_bounds = gdf.total_bounds
-    for coord1, coord2 in zip(bounds.bounds, result_bounds):
-        assert round(coord2, 3) >= round(coord1, 3)
+    # Every returned edge intersects the bounding box. Edges that straddle the edge
+    # are returned complete (#236), so the result may extend slightly beyond the
+    # filter; clip with GeoPandas afterwards if exact bounds are required.
+    assert gdf.intersects(bounds).all()
 
 
 def test_passing_incorrect_bounding_box(test_pbf):
@@ -492,9 +494,10 @@ def test_getting_nodes_and_edges_with_bbox(test_pbf):
     assert isinstance(nodes, GeoDataFrame)
     assert isinstance(nodes.loc[0, "geometry"], Point)
 
-    # Test shape
-    assert edges.shape == (259, 21)
-    assert nodes.shape == (261, 9)
+    # Test shape (#236: edges crossing the bbox edge are now returned complete
+    # rather than cut, so boundary-crossing edges and their nodes are included)
+    assert edges.shape == (291, 21)
+    assert nodes.shape == (262, 9)
 
     # Edges should have "u" and "v" columns
     required = ["u", "v", "length"]

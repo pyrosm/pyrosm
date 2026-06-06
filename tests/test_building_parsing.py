@@ -126,8 +126,9 @@ def test_parse_buildings_with_bbox(test_pbf):
     assert isinstance(gdf.loc[0, "geometry"], Polygon)
     assert isinstance(gdf, GeoDataFrame)
 
-    # Test shape
-    assert gdf.shape == (577, 16)
+    # Test shape (#236: buildings straddling the bbox edge are now returned complete
+    # rather than cut, so the boundary-crossing buildings are included)
+    assert gdf.shape == (584, 16)
 
     required_cols = [
         "building",
@@ -145,11 +146,12 @@ def test_parse_buildings_with_bbox(test_pbf):
     for col in required_cols:
         assert col in gdf.columns
 
-    # The total bounds of the result should not be larger than the filter
-    # (allow some rounding error)
-    result_bounds = gdf.total_bounds
-    for coord1, coord2 in zip(bounds, result_bounds):
-        assert round(coord2, 3) >= round(coord1, 3)
+    # Every returned feature intersects the bounding box. Features that straddle the
+    # edge are returned complete (#236), so the result may extend slightly beyond the
+    # filter; clip with GeoPandas afterwards if exact bounds are required.
+    from shapely.geometry import box
+
+    assert gdf.intersects(box(*bounds)).all()
 
 
 def test_saving_buildings_to_geopackage(test_pbf, test_output_dir):

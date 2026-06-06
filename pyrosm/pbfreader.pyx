@@ -91,6 +91,7 @@ cdef parse_dense(
         string_table,
         bounding_box,
         unix_time_filter,
+        node_id_filter=None,
 ):
     cdef:
         int node_granularity = pblock.granularity
@@ -138,7 +139,19 @@ cdef parse_dense(
     if visible.shape[0] == 0:
         visible = np.full(len(data.id), False, dtype=bool)
 
-    if bounding_box is not None:
+    # 'node_id_filter' (a second, completeness pass) keeps nodes by id rather than
+    # by the bounding box, to fetch a kept way's vertices that lie just outside the box.
+    if node_id_filter is not None:
+        mask = np.isin(ids, node_id_filter)
+        ids = ids[mask]
+        versions = versions[mask]
+        changesets = changesets[mask]
+        timestamps = timestamps[mask]
+        lons = lons[mask]
+        lats = lats[mask]
+        tags = tags[mask]
+        visible = visible[mask]
+    elif bounding_box is not None:
         # Filter
         xmin, ymin, xmax, ymax = bounding_box
         mask = (xmin <= lons) & (lons <= xmax) & (ymin <= lats) & (lats <= ymax)
@@ -174,7 +187,7 @@ cdef parse_dense(
                  )]
 
 
-cdef parse_nodes(pblock, data, bounding_box):
+cdef parse_nodes(pblock, data, bounding_box, node_id_filter=None):
     ids = []
     versions = []
     changesets = []
@@ -205,7 +218,16 @@ cdef parse_nodes(pblock, data, bounding_box):
     lon = (np.array(lons, dtype=np.int64) * granularity + lon_offset) / div
     lat = (np.array(lats, dtype=np.int64) * granularity + lat_offset) / div
 
-    if bounding_box is not None:
+    if node_id_filter is not None:
+        # Completeness pass: keep nodes by id rather than by the bounding box.
+        mask = np.isin(id_, node_id_filter)
+        id_ = id_[mask]
+        version = version[mask]
+        changeset = changeset[mask]
+        timestamp = timestamp[mask]
+        lon = lon[mask]
+        lat = lat[mask]
+    elif bounding_box is not None:
         # Filter
         xmin, ymin, xmax, ymax = bounding_box
         mask = (xmin <= lon) & (lon <= xmax) & (ymin <= lat) & (lat <= ymax)
@@ -448,7 +470,51 @@ cdef _parse_osm_data(
     all_nodes = {col: nodes_df[col].values for col in nodes_df.columns}
     all_relations = {col: relations_df[col].values for col in relations_df.columns}
 
+    # Complete the geometries of ways that straddle the bounding box (#236). A way is
+    # kept when >=1 of its nodes is inside the box, but the box-filtered node parse
+    # dropped the vertices that lie just outside it, so its polygon/line would otherwise
+    # be cut. Fetch ONLY those missing node coordinates with a second pass over the
+    # already-in-memory blocks (no extra I/O / decompression) and add them to the
+    # coordinate lookup used for geometry building. They are deliberately NOT added to
+    # `all_nodes` (the standalone node features), so out-of-box nodes never leak into
+    # node-feature results (e.g. POIs). bbox-only.
+    coords_df = nodes_df
+    if bounding_box is not None and len(all_ways) > 0:
+        present_ids = set(nodes_df["id"].tolist())
+        missing_ids = set()
+        for way in all_ways:
+            for node_id in way["nodes"]:
+                if node_id not in present_ids:
+                    missing_ids.add(node_id)
+        if len(missing_ids) > 0:
+            node_id_filter = np.array(sorted(missing_ids), dtype=np.int64)
+            boundary_nodes = []
+            for pblock, str_table in zip(primitive_blocks, string_tables):
+                for pgroup in pblock.primitivegroup:
+                    if len(pgroup.dense.id) > 0:
+                        boundary_nodes += parse_dense(pblock, pgroup.dense, str_table,
+                                                      None, unix_time_filter,
+                                                      node_id_filter=node_id_filter)
+                    elif len(pgroup.nodes) > 0:
+                        boundary_nodes += [parse_nodes(pblock, pgroup.nodes, None,
+                                                       node_id_filter=node_id_filter)]
+            if len(boundary_nodes) > 0:
+                boundary_df = create_df(concatenate_dicts_of_arrays(boundary_nodes))
+                if "id" in boundary_df.columns:
+                    # Apply the same OSH latest-version selection to the boundary
+                    # nodes as nodes_df received above, so timestamped geometries are
+                    # built from the latest non-deleted vertex rather than whichever
+                    # historical version drop_duplicates happens to keep first.
+                    if unix_time_filter is not None:
+                        boundary_df = boundary_df.loc[
+                            boundary_df["visible"] == True
+                        ].copy()
+                        boundary_df = get_latest_version(boundary_df)
+                    coords_df = pd.concat(
+                        [nodes_df, boundary_df], ignore_index=True
+                    ).drop_duplicates(subset="id")
+
     # Node coordinates lookup dictionary with all node attributes (all attributes required for graph building)
-    node_coordinates_lookup = nodes_df.set_index("id").to_dict(orient="index")
+    node_coordinates_lookup = coords_df.set_index("id").to_dict(orient="index")
 
     return all_nodes, all_ways, all_relations, node_coordinates_lookup
