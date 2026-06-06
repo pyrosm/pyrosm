@@ -558,3 +558,58 @@ def test_network_extraction_keeps_areas_as_lines():
         row = edges[edges["id"] == plaza_id]
         assert len(row) >= 1
         assert all("LineString" in t for t in row.geometry.geom_type.unique())
+
+
+def test_bbox_outside_extent_returns_empty_not_keyerror():
+    """#241 — a bounding box that selects no nodes must not crash with
+    KeyError "None of ['id'] are in the columns"; it should return empty data and
+    warn instead."""
+    import pytest
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), bounding_box=[0.0, 0.0, 0.001, 0.001])
+    with pytest.warns(UserWarning):
+        edges = osm.get_network(network_type="all")
+    assert edges is None
+
+
+def test_inverted_bbox_raises_valueerror_with_coord_order_hint():
+    """#241 — an inverted/degenerate bounding box (e.g. min_x > max_x, the
+    reproduction from the issue) is malformed input and must be rejected at OSM()
+    construction with a ValueError that hints at the coordinate order, rather than
+    crashing later with a cryptic KeyError."""
+    import pytest
+    from pyrosm import OSM, get_data
+
+    fp = get_data("helsinki_pbf")
+    # Inverted x (min_x > max_x), the openbrian shape.
+    with pytest.raises(ValueError, match="minx"):
+        OSM(fp, bounding_box=[24.96, 60.16, 24.93, 60.20])
+    # Degenerate (zero-width) bbox is also rejected.
+    with pytest.raises(ValueError, match="minx"):
+        OSM(fp, bounding_box=[24.93, 60.16, 24.93, 60.20])
+
+
+def test_empty_bbox_pois_and_buildings_do_not_crash():
+    """#241 — the node-using getters (get_pois, get_buildings) must also handle an
+    empty bounding box gracefully (the original report used get_pois)."""
+    import warnings
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), bounding_box=[0.0, 0.0, 0.001, 0.001])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pois = osm.get_pois(custom_filter={"amenity": True})
+        buildings = osm.get_buildings()
+    assert pois is None
+    assert buildings is None
+
+
+def test_valid_bbox_unchanged_by_empty_guard():
+    """#241 guard — a valid in-extent bounding box still parses normally."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), bounding_box=[24.93, 60.16, 24.96, 60.20])
+    edges = osm.get_network(network_type="all")
+    assert edges is not None
+    assert len(edges) == 2577

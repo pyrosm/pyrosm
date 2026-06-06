@@ -78,6 +78,15 @@ class OSM:
                     "When passing bounding box as a list it should contain 4 coordinates: "
                     "[minx, miny, maxx, maxy]."
                 )
+            minx, miny, maxx, maxy = bounding_box
+            if minx >= maxx or miny >= maxy:
+                raise ValueError(
+                    "Invalid bounding box {bbox}: expected [minx, miny, maxx, maxy] with "
+                    "minx < maxx and miny < maxy. Please double-check the order of the "
+                    "coordinates (they may be swapped/inverted).".format(
+                        bbox=bounding_box
+                    )
+                )
             self.bounding_box = bounding_box
         else:
             raise ValueError(
