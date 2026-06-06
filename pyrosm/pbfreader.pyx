@@ -1,5 +1,6 @@
 from pyrosm.exceptions import PBFNotImplemented
 from struct import unpack
+import warnings
 import zlib
 from pyrosm_proto import BlobHeader, Blob, HeaderBlock, PrimitiveBlock
 from pyrosm.tagparser cimport tounicode, parse_dense_tags, parse_tags, explode_way_tags
@@ -411,6 +412,20 @@ cdef _parse_osm_data(
     # Concatenate nodes and create a DataFrame
     nodes_df = create_df(concatenate_dicts_of_arrays(all_nodes))
     relations_df = create_df(concatenate_dicts_of_arrays(all_relations))
+
+    # If no nodes were parsed the nodes DataFrame is empty and has no 'id' column. Without
+    # any nodes the ways cannot be georeferenced anyway, so return an empty result instead
+    # of crashing later at nodes_df.set_index("id"). (A swapped/inverted bounding box is
+    # rejected earlier with a ValueError at OSM() construction; reaching here means the
+    # bounding box is well-formed but does not overlap this PBF's data extent.)
+    if "id" not in nodes_df.columns:
+        warnings.warn(
+            "The given bounding box did not contain any OSM nodes, so no data could be "
+            "parsed. It likely does not overlap the data extent of this PBF file.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return {}, [], {}, {}
 
     # Keep the closest record to the timestamp if filter is used
     if unix_time_filter is not None:

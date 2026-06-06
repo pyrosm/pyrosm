@@ -164,9 +164,13 @@ cdef _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_fi
         # Convert filter to appropriate form and parse keys
         data_filter, osm_keys = get_data_filter_and_osm_keys(data_filter)
 
-    if node_arrays is not None:
+    # A truthy node_arrays is a non-empty dict of node columns. An empty dict (e.g. when a
+    # bounding box selected no nodes) or None means there are no nodes to filter.
+    if node_arrays:
         # Get nodes
         node_arrays = get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter, filter_type)
+    else:
+        node_arrays = None
 
     # Parse ways and relations
     ways, relation_ways, filtered_relations = get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type)
