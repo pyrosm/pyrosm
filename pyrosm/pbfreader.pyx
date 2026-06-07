@@ -187,18 +187,13 @@ cdef parse_dense(
                  )]
 
 
-# Handles the non-dense PBF node encoding (exercised via an osmium-generated
-# non-dense fixture in the tests).
-cdef parse_nodes(pblock, data, string_table, bounding_box, unix_time_filter=None,
-                 node_id_filter=None):
+cdef parse_nodes(pblock, data, bounding_box, node_id_filter=None):
     ids = []
     versions = []
     changesets = []
     timestamps = []
     lons = []
     lats = []
-    visibles = []
-    tag_dicts = []
 
     granularity = pblock.granularity
     lon_offset = pblock.lon_offset
@@ -215,8 +210,6 @@ cdef parse_nodes(pblock, data, string_table, bounding_box, unix_time_filter=None
         timestamps.append(node.info.timestamp)
         lons.append(node.lon)
         lats.append(node.lat)
-        visibles.append(node.info.visible)
-        tag_dicts.append(parse_tags(node.keys, node.vals, string_table))
 
     id_ = np.array(ids, dtype=np.int64)
     version = np.array(versions, dtype=np.int64)
@@ -224,52 +217,33 @@ cdef parse_nodes(pblock, data, string_table, bounding_box, unix_time_filter=None
     timestamp = np.array(timestamps, dtype=np.int64)
     lon = (np.array(lons, dtype=np.int64) * granularity + lon_offset) / div
     lat = (np.array(lats, dtype=np.int64) * granularity + lat_offset) / div
-    visible = np.array(visibles, dtype=bool)
-    # Keep the same schema as parse_dense (incl. 'tags' and 'visible') so the
-    # node frame concatenates with dense nodes and the OSH 'visible' filter works.
-    tags = np.empty(len(ids), dtype=object)
-    tags[:] = tag_dicts
 
     if node_id_filter is not None:
         # Completeness pass: keep nodes by id rather than by the bounding box.
         mask = np.isin(id_, node_id_filter)
-    elif bounding_box is not None:
-        xmin, ymin, xmax, ymax = bounding_box
-        mask = (xmin <= lon) & (lon <= xmax) & (ymin <= lat) & (lat <= ymax)
-    else:
-        mask = None
-
-    if mask is not None:
         id_ = id_[mask]
         version = version[mask]
         changeset = changeset[mask]
         timestamp = timestamp[mask]
         lon = lon[mask]
         lat = lat[mask]
-        visible = visible[mask]
-        tags = tags[mask]
-
-    if unix_time_filter is not None:
-        # Drop node versions newer than the requested timestamp (OSH files), so
-        # get_latest_version later picks the latest version at/before it.
-        time_mask = timestamp <= unix_time_filter
-        id_ = id_[time_mask]
-        version = version[time_mask]
-        changeset = changeset[time_mask]
-        timestamp = timestamp[time_mask]
-        lon = lon[time_mask]
-        lat = lat[time_mask]
-        visible = visible[time_mask]
-        tags = tags[time_mask]
+    elif bounding_box is not None:
+        # Filter
+        xmin, ymin, xmax, ymax = bounding_box
+        mask = (xmin <= lon) & (lon <= xmax) & (ymin <= lat) & (lat <= ymax)
+        id_ = id_[mask]
+        version = version[mask]
+        changeset = changeset[mask]
+        timestamp = timestamp[mask]
+        lon = lon[mask]
+        lat = lat[mask]
 
     return dict(id=id_,
                 version=version,
                 changeset=changeset,
                 timestamp=timestamp,
                 lon=lon,
-                lat=lat,
-                tags=tags,
-                visible=visible,
+                lat=lat
                 )
 
 
@@ -440,8 +414,7 @@ cdef _parse_osm_data(
             if len(pgroup.dense.id) > 0:
                 all_nodes += parse_dense(pblock, pgroup.dense, str_table, bounding_box, unix_time_filter)
             elif len(pgroup.nodes) > 0:
-                all_nodes += [parse_nodes(pblock, pgroup.nodes, str_table,
-                                          bounding_box, unix_time_filter)]
+                all_nodes += parse_nodes(pblock, pgroup.nodes, bounding_box)
             elif len(pgroup.ways) > 0:
                 # Once all the nodes have been parsed comes Ways
                 if bounding_box is not None:
@@ -523,8 +496,7 @@ cdef _parse_osm_data(
                                                       None, unix_time_filter,
                                                       node_id_filter=node_id_filter)
                     elif len(pgroup.nodes) > 0:
-                        boundary_nodes += [parse_nodes(pblock, pgroup.nodes, str_table,
-                                                       None, unix_time_filter,
+                        boundary_nodes += [parse_nodes(pblock, pgroup.nodes, None,
                                                        node_id_filter=node_id_filter)]
             if len(boundary_nodes) > 0:
                 boundary_df = create_df(concatenate_dicts_of_arrays(boundary_nodes))
