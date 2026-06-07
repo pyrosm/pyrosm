@@ -1,4 +1,4 @@
-from pyrosm.utils._compat import HAS_IGRAPH, HAS_NETWORKX, HAS_PANDANA
+from pyrosm.utils._compat import HAS_IGRAPH, HAS_NETWORKX, HAS_PANDANA, HAS_PANDARM
 from pyrosm.config import Conf
 from collections import Counter
 from itertools import chain
@@ -193,6 +193,19 @@ cpdef _create_nxgraph(nodes,
 
     return graph
 
+cdef _build_routing_network(Network, nodes, edges, from_id_col, to_id_col, weight_cols):
+    """
+    Builds a pandana/pandarm Network from directed edges and nodes.
+    NOTE: Assumes that the input edges GeoDataFrame is directed.
+    """
+    return Network(node_x=nodes["x"],
+                   node_y=nodes["y"],
+                   edge_from=edges[from_id_col],
+                   edge_to=edges[to_id_col],
+                   edge_weights=edges[weight_cols],
+                   twoway=False)
+
+
 cpdef _create_pdgraph(nodes,
                       edges,
                       from_id_col,
@@ -200,18 +213,27 @@ cpdef _create_pdgraph(nodes,
                       weight_cols):
     """
     Creates a Pandana Network from directed edges and nodes.
-    NOTE: Assumes that the input edges GeoDataFrame is directed.
     """
     if not HAS_PANDANA:
         raise ImportError("'pandana' needs to be installed "
                           "in order to export the network for it.")
     from pandana import Network
-    return Network(node_x=nodes["x"],
-                   node_y=nodes["y"],
-                   edge_from=edges[from_id_col],
-                   edge_to=edges[to_id_col],
-                   edge_weights=edges[weight_cols],
-                   twoway=False)
+    return _build_routing_network(Network, nodes, edges, from_id_col, to_id_col, weight_cols)
+
+
+cpdef _create_pandarm_graph(nodes,
+                            edges,
+                            from_id_col,
+                            to_id_col,
+                            weight_cols):
+    """
+    Creates a pandarm Network from directed edges and nodes.
+    """
+    if not HAS_PANDARM:
+        raise ImportError("'pandarm' needs to be installed "
+                          "in order to export the network for it.")
+    from pandarm import Network
+    return _build_routing_network(Network, nodes, edges, from_id_col, to_id_col, weight_cols)
 
 
 cpdef generate_directed_edges(edges,

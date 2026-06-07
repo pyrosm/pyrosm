@@ -23,3 +23,11 @@ try:
     HAS_PANDANA = True
 except ImportError:
     HAS_PANDANA = False
+
+# pandarm is an optional dependency (the maintained, NumPy 2-compatible fork of pandana)
+try:
+    import pandarm
+
+    HAS_PANDARM = True
+except ImportError:
+    HAS_PANDARM = False

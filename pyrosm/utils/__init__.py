@@ -151,9 +151,9 @@ def validate_graph_type(graph_type):
     if not isinstance(graph_type, str):
         raise ValueError("'graph_type' should be a string.")
     graph_type = graph_type.lower()
-    if graph_type not in ["networkx", "igraph", "pandana"]:
+    if graph_type not in ["networkx", "igraph", "pandana", "pandarm"]:
         raise ValueError(
-            f"'graph_type' should be 'networkx', 'igraph', or 'panadana'. "
+            f"'graph_type' should be 'networkx', 'igraph', 'pandana', or 'pandarm'. "
             f"Got '{graph_type}'."
         )
     return graph_type
