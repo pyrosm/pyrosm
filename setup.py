@@ -32,7 +32,7 @@ requirements = [
     "geopandas>=0.12.0",
     "shapely>=2.0.1",
     "cykhash",
-    "pyrobuf",
+    "protobuf>=6.33.5",
 ]
 
 # Optional line-trace build for measuring Cython (.pyx) test coverage. Enabled
@@ -105,6 +105,5 @@ setup(
     ],
     python_requires=">=3.10",
     install_requires=requirements,
-    pyrobuf_modules="proto",
     ext_modules=_ext_modules,
 )

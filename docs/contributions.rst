@@ -105,7 +105,7 @@ to ensure compatibility of all dependencies::
 
     conda config --env --add channels conda-forge
     conda config --env --set channel_priority strict
-    conda install geopandas cython cykhash pyrobuf python-rapidjson requests networkx python-igraph pandana pytest pytest-cov codecov black
+    conda install geopandas cython cykhash protobuf python-rapidjson requests networkx python-igraph pandana pytest pytest-cov codecov black
 
 This should install all necessary dependencies including optional and packages for running tests.
 

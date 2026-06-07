@@ -2,7 +2,8 @@ from pyrosm.exceptions import PBFNotImplemented
 from struct import unpack
 import warnings
 import zlib
-from pyrosm_proto import BlobHeader, Blob, HeaderBlock, PrimitiveBlock
+from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
+from pyrosm.proto.osmformat_pb2 import HeaderBlock, PrimitiveBlock
 from pyrosm.tagparser cimport tounicode, parse_dense_tags, parse_tags, explode_way_tags
 from pyrosm._arrays cimport to_clong_array, concatenate_dicts_of_arrays
 from pyrosm.delta_compression cimport (
@@ -23,6 +24,25 @@ from pyrosm.frames import create_df
 import numpy as np
 import pandas as pd
 from libc.stdlib cimport malloc, free
+
+_warned_slow_backend = False
+
+
+cdef _warn_if_slow_protobuf_backend():
+    global _warned_slow_backend
+    if _warned_slow_backend:
+        return
+    _warned_slow_backend = True
+    from google.protobuf.internal import api_implementation
+    if api_implementation.Type() == "python":
+        warnings.warn(
+            "protobuf is using its pure-Python backend; PBF parsing will be "
+            "much slower. Install a protobuf build with the C/upb backend for "
+            "full speed.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
 
 cdef get_primitive_blocks_and_string_tables(filepath):
     cdef int msg_len
@@ -419,6 +439,7 @@ cpdef parse_osm_data(
         exclude_relations,
         unix_time_filter,
 ):
+    _warn_if_slow_protobuf_backend()
     return _parse_osm_data(filepath, bounding_box, exclude_relations, unix_time_filter)
 
 

@@ -1,4 +1,4 @@
-# Clean all C-files, pyd-files, pyrobuf-directory, build-directory, and egg-info
+# Clean all C-files, pyd-files, build-directory, and egg-info
 .PHONY: clean
 clean:
 	rm -f pyrosm/*.so
@@ -6,7 +6,6 @@ clean:
 	rm -f .coverage
 	rm -f coverage.xml
 	rm -rf pyrosm.egg-info
-	rm -rf pyrobuf
 	rm -rf build
 	rm -rf .pytest_cache
 	rm -rf dist
