@@ -63,7 +63,7 @@ if _linetrace:
 
 setup(
     name="pyrosm",
-    version="0.6.2",
+    version="0.7.0",
     license="MIT",
     description="A Python tool to parse OSM data from Protobuf format into GeoDataFrame.",
     long_description=read_long_description(),
@@ -93,7 +93,7 @@ setup(
     ],
     project_urls={
         "Documentation": "https://pyrosm.readthedocs.org/",
-        "Issue Tracker": "https://github.com/htenkanen/pyrosm/issues",
+        "Issue Tracker": "https://github.com/pyrosm/pyrosm/issues",
     },
     keywords=[
         "OpenStreetMap",

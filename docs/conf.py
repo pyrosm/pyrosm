@@ -19,13 +19,16 @@ import sys
 sys.path.insert(0, os.path.abspath(".."))
 
 # -- Project information -----------------------------------------------------
+from datetime import datetime
+
+current_year = datetime.now().year
 
 project = "pyrosm"
-copyright = "2020, Henrikki Tenkanen + pyrosm contributors"
+copyright = f"2020-{current_year}, Henrikki Tenkanen + pyrosm contributors"
 author = "Henrikki Tenkanen + pyrosm contributors"
 
 # The full version, including alpha/beta/rc tags
-version = release = "0.6.2"
+version = release = "0.7.0"
 
 # -- General configuration ---------------------------------------------------
 
