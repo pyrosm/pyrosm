@@ -816,3 +816,26 @@ def test_parse_nodes_non_dense_osh_history_with_timestamp(tmp_path):
     assert (dense_geom["id"].tolist()) == (nd_geom["id"].tolist())
     assert np.allclose(dense_geom.total_bounds, nd_geom.total_bounds, atol=1e-6)
     assert (dense_geom.geometry.area.round(10) == nd_geom.geometry.area.round(10)).all()
+
+
+def test_version_attribute_and_unknown_fallback(monkeypatch):
+    """#277 — pyrosm exposes __version__ from the installed distribution
+    metadata, falling back to 'unknown' when pyrosm is not installed as a
+    distribution (e.g. imported straight from a source tree)."""
+    import importlib
+    import importlib.metadata
+
+    import pyrosm
+
+    assert isinstance(pyrosm.__version__, str) and pyrosm.__version__
+
+    def _raise(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", _raise)
+    try:
+        importlib.reload(pyrosm)
+        assert pyrosm.__version__ == "unknown"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(pyrosm)

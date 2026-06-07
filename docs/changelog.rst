@@ -1,6 +1,55 @@
 Changelog
 =========
 
+v0.7.0 (Jun 7, 2026)
+--------------------
+
+- NEW: Add ``pandarm`` graph-export backend (the maintained, NumPy 2-compatible fork of pandana); deprecate ``graph_type="pandana"`` (#271)
+- NEW: Make cycling networks directed and honour ``oneway:bicycle`` (#255)
+- NEW: Add ``custom_filter`` to ``get_network`` so custom-filtered networks also return graph nodes (#264)
+- NEW: Add ``street_count`` node attribute to the NetworkX export (compatible with OSMnx ``basic_stats``) (#265)
+- NEW: Support combining ``custom_filter`` ``True`` with explicit tag values (#251)
+- Support Python 3.10–3.14 (drop 3.9) and fix OSH parsing under pandas 3.0 (#248)
+
+- Return complete (uncut) geometries for ways/edges that straddle a bounding-box edge (#268)
+- Keep bounding-box network ``nodes`` consistent with the kept ``edges`` so graph export works without manual cleanup (#269)
+- Fix non-dense PBF node parsing (``parse_nodes``) (#275)
+- Handle bounding boxes that select no nodes instead of raising ``KeyError`` (#267)
+- Fix ``custom_filter`` with ``highway`` turning closed-way polygons into lines (#266)
+- Fix network exclude/keep filters leaking on multi-key filters (#263)
+- Fix duplicate "phantom" nodes in the NetworkX export (#259)
+- Correct relation ids and surface a colliding ``id`` tag as ``id_tag`` (#234, #249)
+- Stop ``get_*`` methods from mutating the shared default-tag config (#252)
+- Fix spurious pandas chained-assignment warnings from the Cython frame builders (#256)
+- Fix Geofabrik UK sub-region downloads (moved under ``united-kingdom``) (#258)
+- Fix reading PBF produced by ``osmconvert`` (#238)
+- Fix documentation URL (#223)
+
+- Measure Cython (``.pyx``) coverage and raise overall test coverage (#273)
+- Document the ``pandarm`` graph backend and the ``pandana`` deprecation, and reading OSM history files (``.osh.pbf``) (#257)
+- Fix the Read the Docs build; run live download tests on a single CI runner; bump GitHub Actions to Node 24 (#250, #254, #260)
+
+Thanks for all the contributors who helped to improve the library either via PRs or reporting bugs:
+
+- AnBowell (#233, #234)
+- eracle (#238)
+- meeuw (#174, #178)
+- mattijsdp (#224, #226)
+- Jontata (#237)
+- anatrk (#112)
+- Eph97 (#117)
+- gregoriiv (#144)
+- chourmo (#170)
+- arredond (#176)
+- lenkahas (#181)
+- rohanaras (#199)
+- AdrianKriger (#236)
+- my4ng (#239)
+- skull3r7 (#241)
+- wood-chris (#243)
+- llebocq (#247)
+
+
 v0.6.2 (Oct 26, 2023)
 ---------------------
 
