@@ -737,3 +737,82 @@ def test_to_graph_pandana_emits_deprecation_warning():
     with pytest.warns(DeprecationWarning, match="pandarm"):
         g = osm.to_graph(nodes, edges, graph_type="pandana")
     assert g is not None
+
+
+def test_parse_nodes_non_dense_pbf_matches_dense(tmp_path):
+    """#272 — pyrosm parses non-dense PBF node groups (pbfreader.parse_nodes) and
+    produces the same network and buildings as the dense encoding. Guards the
+    regression where parse_nodes' dict result was spread into the all_nodes list
+    as bare keys, crashing non-dense reads with 'str object has no attribute
+    keys'. A non-dense copy of the bundled test PBF is generated with osmium."""
+    import numpy as np
+
+    osmium = pytest.importorskip("osmium")
+    from pyrosm import OSM, get_data
+
+    src = get_data("test_pbf")
+    nondense = str(tmp_path / "test_nondense.osm.pbf")
+    with osmium.SimpleWriter(
+        osmium.io.File(nondense, "pbf,pbf_dense_nodes=false")
+    ) as writer:
+        for obj in osmium.FileProcessor(src):
+            writer.add(obj)
+
+    dense_edges = OSM(src).get_network()
+    nondense_edges = OSM(nondense).get_network()
+    assert nondense_edges is not None
+    assert len(nondense_edges) == len(dense_edges)
+
+    dense_buildings = OSM(src).get_buildings()
+    nondense_buildings = OSM(nondense).get_buildings()
+    assert len(nondense_buildings) == len(dense_buildings)
+    # Same geometric extent -> node coordinates parsed identically.
+    assert np.allclose(
+        nondense_buildings.total_bounds, dense_buildings.total_bounds, atol=1e-6
+    )
+
+    # POIs come from standalone (tagged) nodes, so this checks parse_nodes emits
+    # the 'tags' column with the same schema as parse_dense.
+    dense_pois = OSM(src).get_pois()
+    nondense_pois = OSM(nondense).get_pois()
+    assert nondense_pois is not None
+    assert len(nondense_pois) == len(dense_pois)
+    assert set(nondense_pois.columns) == set(dense_pois.columns)
+
+    # A bounding box exercises parse_nodes' bbox filter and the #236
+    # boundary-completion (id-filter) pass on the non-dense node groups.
+    bounds = [26.94, 60.525, 26.96, 60.535]
+    dense_bbox = OSM(src, bounding_box=bounds).get_buildings()
+    nondense_bbox = OSM(nondense, bounding_box=bounds).get_buildings()
+    assert nondense_bbox is not None
+    assert len(nondense_bbox) == len(dense_bbox)
+
+
+def test_parse_nodes_non_dense_osh_history_with_timestamp(tmp_path):
+    """#272 — parse_nodes must emit the 'visible' column like parse_dense, so a
+    non-dense *history* PBF read with a timestamp filter (which selects on
+    'visible') works instead of crashing on a missing column."""
+    osmium = pytest.importorskip("osmium")
+    from pyrosm import OSM, get_data
+
+    history = get_data("helsinki_test_history_pbf")
+    nondense = str(tmp_path / "history_nondense.osh.pbf")
+    with osmium.SimpleWriter(
+        osmium.io.File(nondense, "osh.pbf,pbf_dense_nodes=false")
+    ) as writer:
+        for obj in osmium.FileProcessor(history):
+            writer.add(obj)
+
+    dense = OSM(history).get_buildings(timestamp="2010-01-01")
+    nondense_buildings = OSM(nondense).get_buildings(timestamp="2010-01-01")
+    assert nondense_buildings is not None
+    assert len(nondense_buildings) == len(dense)
+    # Same geometry at the timestamp -> node versions newer than the timestamp
+    # were dropped (parse_nodes honours unix_time_filter), not just the latest.
+    import numpy as np
+
+    dense_geom = dense.sort_values("id").reset_index(drop=True)
+    nd_geom = nondense_buildings.sort_values("id").reset_index(drop=True)
+    assert (dense_geom["id"].tolist()) == (nd_geom["id"].tolist())
+    assert np.allclose(dense_geom.total_bounds, nd_geom.total_bounds, atol=1e-6)
+    assert (dense_geom.geometry.area.round(10) == nd_geom.geometry.area.round(10)).all()

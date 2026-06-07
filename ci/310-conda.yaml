@@ -18,6 +18,7 @@ dependencies:
   - python-igraph
   # testing
   - osmnx
+  - pyosmium
   - black
   - codecov
   - pytest
