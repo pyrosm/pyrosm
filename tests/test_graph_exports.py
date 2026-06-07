@@ -770,3 +770,48 @@ def test_to_graph_api_pandarm(test_pbf):
     nodes, edges = osm.get_network(nodes=True)
     pdg = osm.to_graph(nodes, edges, graph_type="pandarm")
     assert isinstance(pdg, pandarm.Network)
+
+
+def test_validate_graph_type_rejects_unknown_type():
+    """#270 — validate_graph_type raises for unknown graph types and lists the
+    supported ones (incl. pandarm)."""
+    from pyrosm.utils import validate_graph_type
+
+    with pytest.raises(ValueError, match="pandarm"):
+        validate_graph_type("bogus")
+
+
+def test_to_graph_pandarm_retain_all(test_pbf):
+    """#270 — pandarm export with retain_all=True skips the connected-component
+    pruning and still builds a Network."""
+    pytest.importorskip("pandarm")
+    from pyrosm import OSM
+    import pandarm
+
+    osm = OSM(test_pbf)
+    nodes, edges = osm.get_network(nodes=True)
+    g = osm.to_graph(nodes, edges, graph_type="pandarm", retain_all=True)
+    assert isinstance(g, pandarm.Network)
+
+
+def test_has_pandarm_false_without_pandarm(monkeypatch):
+    """#270 — _compat.HAS_PANDARM falls back to False when pandarm is absent."""
+    import builtins
+    import importlib
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "pandarm":
+            raise ImportError("simulated missing pandarm")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    import pyrosm.utils._compat as compat
+
+    reloaded = importlib.reload(compat)
+    try:
+        assert reloaded.HAS_PANDARM is False
+    finally:
+        monkeypatch.undo()
+        importlib.reload(compat)
