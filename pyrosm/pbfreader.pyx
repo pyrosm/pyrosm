@@ -187,68 +187,66 @@ cdef parse_dense(
                  )]
 
 
-# parse_nodes handles the non-dense PBF node encoding. Every bundled test
-# file is dense-encoded and osmium/osmosis is unavailable here to build a
-# non-dense fixture, so this path is not exercised; excluded from coverage
-# until a non-dense fixture is added (#272).
-cdef parse_nodes(pblock, data, bounding_box, node_id_filter=None):  # pyrosm: non-dense-pbf-fixture-missing
-    ids = []  # pyrosm: non-dense-pbf-fixture-missing
-    versions = []  # pyrosm: non-dense-pbf-fixture-missing
-    changesets = []  # pyrosm: non-dense-pbf-fixture-missing
-    timestamps = []  # pyrosm: non-dense-pbf-fixture-missing
-    lons = []  # pyrosm: non-dense-pbf-fixture-missing
-    lats = []  # pyrosm: non-dense-pbf-fixture-missing
+# Handles the non-dense PBF node encoding. All bundled test fixtures are
+# dense-encoded, so this path is currently uncovered by tests.
+cdef parse_nodes(pblock, data, bounding_box, node_id_filter=None):
+    ids = []
+    versions = []
+    changesets = []
+    timestamps = []
+    lons = []
+    lats = []
 
-    granularity = pblock.granularity  # pyrosm: non-dense-pbf-fixture-missing
-    lon_offset = pblock.lon_offset  # pyrosm: non-dense-pbf-fixture-missing
-    lat_offset = pblock.lat_offset  # pyrosm: non-dense-pbf-fixture-missing
-    div = 1000000000  # pyrosm: non-dense-pbf-fixture-missing
+    granularity = pblock.granularity
+    lon_offset = pblock.lon_offset
+    lat_offset = pblock.lat_offset
+    div = 1000000000
 
-    for node in data:  # pyrosm: non-dense-pbf-fixture-missing
-        try:  # pyrosm: non-dense-pbf-fixture-missing
-            changesets.append(int(node.info.changeset))  # pyrosm: non-dense-pbf-fixture-missing
-        except:  # pyrosm: non-dense-pbf-fixture-missing
-            changesets.append(0)  # pyrosm: non-dense-pbf-fixture-missing
-        versions.append(node.info.version)  # pyrosm: non-dense-pbf-fixture-missing
-        ids.append(node.id)  # pyrosm: non-dense-pbf-fixture-missing
-        timestamps.append(node.info.timestamp)  # pyrosm: non-dense-pbf-fixture-missing
-        lons.append(node.lon)  # pyrosm: non-dense-pbf-fixture-missing
-        lats.append(node.lat)  # pyrosm: non-dense-pbf-fixture-missing
+    for node in data:
+        try:
+            changesets.append(int(node.info.changeset))
+        except:
+            changesets.append(0)
+        versions.append(node.info.version)
+        ids.append(node.id)
+        timestamps.append(node.info.timestamp)
+        lons.append(node.lon)
+        lats.append(node.lat)
 
-    id_ = np.array(ids, dtype=np.int64)  # pyrosm: non-dense-pbf-fixture-missing
-    version = np.array(versions, dtype=np.int64)  # pyrosm: non-dense-pbf-fixture-missing
-    changeset = np.array(changesets, dtype=np.int64)  # pyrosm: non-dense-pbf-fixture-missing
-    timestamp = np.array(timestamps, dtype=np.int64)  # pyrosm: non-dense-pbf-fixture-missing
-    lon = (np.array(lons, dtype=np.int64) * granularity + lon_offset) / div  # pyrosm: non-dense-pbf-fixture-missing
-    lat = (np.array(lats, dtype=np.int64) * granularity + lat_offset) / div  # pyrosm: non-dense-pbf-fixture-missing
+    id_ = np.array(ids, dtype=np.int64)
+    version = np.array(versions, dtype=np.int64)
+    changeset = np.array(changesets, dtype=np.int64)
+    timestamp = np.array(timestamps, dtype=np.int64)
+    lon = (np.array(lons, dtype=np.int64) * granularity + lon_offset) / div
+    lat = (np.array(lats, dtype=np.int64) * granularity + lat_offset) / div
 
-    if node_id_filter is not None:  # pyrosm: non-dense-pbf-fixture-missing
+    if node_id_filter is not None:
         # Completeness pass: keep nodes by id rather than by the bounding box.
-        mask = np.isin(id_, node_id_filter)  # pyrosm: non-dense-pbf-fixture-missing
-        id_ = id_[mask]  # pyrosm: non-dense-pbf-fixture-missing
-        version = version[mask]  # pyrosm: non-dense-pbf-fixture-missing
-        changeset = changeset[mask]  # pyrosm: non-dense-pbf-fixture-missing
-        timestamp = timestamp[mask]  # pyrosm: non-dense-pbf-fixture-missing
-        lon = lon[mask]  # pyrosm: non-dense-pbf-fixture-missing
-        lat = lat[mask]  # pyrosm: non-dense-pbf-fixture-missing
-    elif bounding_box is not None:  # pyrosm: non-dense-pbf-fixture-missing
+        mask = np.isin(id_, node_id_filter)
+        id_ = id_[mask]
+        version = version[mask]
+        changeset = changeset[mask]
+        timestamp = timestamp[mask]
+        lon = lon[mask]
+        lat = lat[mask]
+    elif bounding_box is not None:
         # Filter
-        xmin, ymin, xmax, ymax = bounding_box  # pyrosm: non-dense-pbf-fixture-missing
-        mask = (xmin <= lon) & (lon <= xmax) & (ymin <= lat) & (lat <= ymax)  # pyrosm: non-dense-pbf-fixture-missing
-        id_ = id_[mask]  # pyrosm: non-dense-pbf-fixture-missing
-        version = version[mask]  # pyrosm: non-dense-pbf-fixture-missing
-        changeset = changeset[mask]  # pyrosm: non-dense-pbf-fixture-missing
-        timestamp = timestamp[mask]  # pyrosm: non-dense-pbf-fixture-missing
-        lon = lon[mask]  # pyrosm: non-dense-pbf-fixture-missing
-        lat = lat[mask]  # pyrosm: non-dense-pbf-fixture-missing
+        xmin, ymin, xmax, ymax = bounding_box
+        mask = (xmin <= lon) & (lon <= xmax) & (ymin <= lat) & (lat <= ymax)
+        id_ = id_[mask]
+        version = version[mask]
+        changeset = changeset[mask]
+        timestamp = timestamp[mask]
+        lon = lon[mask]
+        lat = lat[mask]
 
-    return dict(id=id_,  # pyrosm: non-dense-pbf-fixture-missing
-                version=version,  # pyrosm: non-dense-pbf-fixture-missing
-                changeset=changeset,  # pyrosm: non-dense-pbf-fixture-missing
-                timestamp=timestamp,  # pyrosm: non-dense-pbf-fixture-missing
-                lon=lon,  # pyrosm: non-dense-pbf-fixture-missing
-                lat=lat  # pyrosm: non-dense-pbf-fixture-missing
-                )  # pyrosm: non-dense-pbf-fixture-missing
+    return dict(id=id_,
+                version=version,
+                changeset=changeset,
+                timestamp=timestamp,
+                lon=lon,
+                lat=lat
+                )
 
 
 cdef parse_nodeids_from_ref_deltas(refs):

@@ -15,14 +15,3 @@ plugins = Cython.Coverage
 show_missing = true
 precision = 2
 omit = *migrations*
-# Keep the default "# pragma: no cover" behaviour and also drop two narrowly
-# scoped, explicitly documented cases. Block exclusion is unreliable over Cython
-# cdef bodies, so each body line carries the marker explicitly.
-#   - "pyrosm: pbf-export-stub": the retained-but-unexercised write-side helpers
-#     (delta_encode_*), kept for the planned PBF-export feature.
-#   - "pyrosm: non-dense-pbf-fixture-missing": parse_nodes' non-dense PBF path,
-#     untestable here because osmium/osmosis is unavailable to build a fixture.
-exclude_lines =
-    pragma: no cover
-    pyrosm: pbf-export-stub
-    pyrosm: non-dense-pbf-fixture-missing

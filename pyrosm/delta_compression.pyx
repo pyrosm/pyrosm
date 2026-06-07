@@ -39,33 +39,32 @@ cdef delta_decode_changeset(data):
     return changesets.astype(np.int32)
 
 
-# The delta_encode_* helpers below are the write-side counterparts of the
-# delta_decode_* functions. pyrosm currently only reads PBF, so they have no
-# call sites yet; they are retained for the planned PBF-export feature and are
-# excluded from coverage until that feature exercises them (pyrosm: pbf-export-stub).
-cdef delta_encode_latitude(lat_array, node_granularity, lat_offset):  # pragma: no cover
+# The delta_encode_* helpers are the write-side counterparts of delta_decode_*,
+# retained for the planned PBF-export feature; they have no call sites yet and so
+# are currently uncovered by tests.
+cdef delta_encode_latitude(lat_array, node_granularity, lat_offset):
     # Note: There might be small difference in the coordinates (1 cm) after
     # encoding due to rounding errors
-    div = 1000000000  # pyrosm: pbf-export-stub
-    lat_deltas = np.zeros(len(lat_array) + 1, dtype=np.float64)  # pyrosm: pbf-export-stub
-    lat_deltas[1:] = list(lat_array)  # pyrosm: pbf-export-stub
-    lat_deltas = (np.diff(lat_deltas) / node_granularity - lat_offset) * div  # pyrosm: pbf-export-stub
-    lat_deltas = lat_deltas.astype(np.int64)  # pyrosm: pbf-export-stub
-    return lat_deltas  # pyrosm: pbf-export-stub
+    div = 1000000000
+    lat_deltas = np.zeros(len(lat_array) + 1, dtype=np.float64)
+    lat_deltas[1:] = list(lat_array)
+    lat_deltas = (np.diff(lat_deltas) / node_granularity - lat_offset) * div
+    lat_deltas = lat_deltas.astype(np.int64)
+    return lat_deltas
 
 
-cdef delta_encode_longitude(lon_array, node_granularity, lon_offset):  # pragma: no cover
+cdef delta_encode_longitude(lon_array, node_granularity, lon_offset):
     # Note: There might be small difference in the coordinates (1 cm) after
     # encoding due to rounding errors
-    div = 1000000000  # pyrosm: pbf-export-stub
-    lon_deltas = np.zeros(len(lon_array) + 1, dtype=np.float64)  # pyrosm: pbf-export-stub
-    lon_deltas[1:] = list(lon_array)  # pyrosm: pbf-export-stub
-    lon_deltas = (np.diff(lon_deltas) / node_granularity - lon_offset) * div  # pyrosm: pbf-export-stub
-    lon_deltas = lon_deltas.astype(np.int64)  # pyrosm: pbf-export-stub
-    return lon_deltas  # pyrosm: pbf-export-stub
+    div = 1000000000
+    lon_deltas = np.zeros(len(lon_array) + 1, dtype=np.float64)
+    lon_deltas[1:] = list(lon_array)
+    lon_deltas = (np.diff(lon_deltas) / node_granularity - lon_offset) * div
+    lon_deltas = lon_deltas.astype(np.int64)
+    return lon_deltas
 
-cdef delta_encode_id(id_array):  # pragma: no cover
-    id_deltas = np.zeros(len(id_array) + 1, dtype=np.int64)  # pyrosm: pbf-export-stub
-    id_deltas[1:] = list(id_array)  # pyrosm: pbf-export-stub
-    ids = np.diff(id_deltas)  # pyrosm: pbf-export-stub
-    return ids  # pyrosm: pbf-export-stub
+cdef delta_encode_id(id_array):
+    id_deltas = np.zeros(len(id_array) + 1, dtype=np.int64)
+    id_deltas[1:] = list(id_array)
+    ids = np.diff(id_deltas)
+    return ids
