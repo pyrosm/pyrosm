@@ -35,6 +35,32 @@ requirements = [
     "pyrobuf",
 ]
 
+# Optional line-trace build for measuring Cython (.pyx) test coverage. Enabled
+# only when PYROSM_LINETRACE=1 so normal/production builds keep full speed
+# (linetrace adds significant per-line overhead). Requires both the Cython
+# 'linetrace' directive AND the CYTHON_TRACE / CYTHON_TRACE_NOGIL C macros; the Cython.Coverage
+# plugin (see .coveragerc) then reports per-line .pyx coverage. force=_linetrace
+# forces regeneration of the C sources whenever tracing is toggled, so a stale
+# .c compiled without the macro can never silently leave the .pyx untraced.
+_linetrace = os.environ.get("PYROSM_LINETRACE") == "1"
+_directives = {"language_level": "3"}
+if _linetrace:
+    _directives["linetrace"] = True
+    _directives["profile"] = True
+_ext_modules = cythonize(
+    os.path.join("pyrosm", "*.pyx"),
+    annotate=False,
+    compiler_directives=_directives,
+    force=_linetrace,
+)
+if _linetrace:
+    for _ext in _ext_modules:
+        # CYTHON_TRACE enables per-line trace hooks; CYTHON_TRACE_NOGIL extends
+        # them into nogil sections. Set both explicitly (the latter implies the
+        # former in recent Cython, but being explicit is version-robust).
+        _ext.define_macros.append(("CYTHON_TRACE", "1"))
+        _ext.define_macros.append(("CYTHON_TRACE_NOGIL", "1"))
+
 setup(
     name="pyrosm",
     version="0.6.2",
@@ -80,12 +106,5 @@ setup(
     python_requires=">=3.10",
     install_requires=requirements,
     pyrobuf_modules="proto",
-    ext_modules=cythonize(
-        os.path.join("pyrosm", "*.pyx"),
-        annotate=False,
-        compiler_directives={
-            "language_level": "3",
-            # 'linetrace': True
-        },
-    ),
+    ext_modules=_ext_modules,
 )

@@ -39,6 +39,9 @@ cdef delta_decode_changeset(data):
     return changesets.astype(np.int32)
 
 
+# The delta_encode_* helpers are the write-side counterparts of delta_decode_*,
+# retained for the planned PBF-export feature; they have no call sites yet and so
+# are currently uncovered by tests.
 cdef delta_encode_latitude(lat_array, node_granularity, lat_offset):
     # Note: There might be small difference in the coordinates (1 cm) after
     # encoding due to rounding errors

@@ -51,6 +51,7 @@ def test_output_dir():
 def test_get_data_by_custom_criteria_custom_filter(california_highway_motorway_pbf):
     from geopandas import GeoDataFrame
     from pyrosm import OSM
+
     osm = OSM(filepath=california_highway_motorway_pbf)
     gdf = osm.get_data_by_custom_criteria(custom_filter={"highway": ["motorway"]})
 
@@ -626,3 +627,66 @@ def test_exclude_filtering_nodes_and_relations(helsinki_pbf):
 
     # There should be nodes and ways (no relations)
     assert gdf["osm_type"].unique().tolist() == ["node", "way"]
+
+
+def test_custom_criteria_keep_true_valued_key(helsinki_pbf):
+    """#272 — a True-valued custom_filter key keeps every feature carrying that
+    key, across nodes/ways/relations."""
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    osm = OSM(helsinki_pbf)
+    gdf = osm.get_data_by_custom_criteria({"amenity": True}, filter_type="keep")
+    assert isinstance(gdf, GeoDataFrame)
+    assert "amenity" in gdf.columns
+    # Every kept feature actually has an amenity tag value.
+    assert gdf["amenity"].notna().all()
+    assert set(gdf["osm_type"]) == {"node", "way", "relation"}
+    assert len(gdf) == 1090
+
+
+def test_custom_criteria_keep_specific_values(helsinki_pbf):
+    """#272 — keep filtering by explicit tag values returns only those values."""
+    from pyrosm import OSM
+
+    osm = OSM(helsinki_pbf)
+    gdf = osm.get_data_by_custom_criteria(
+        {"amenity": ["restaurant", "cafe"]}, filter_type="keep"
+    )
+    assert set(gdf["amenity"].dropna()) == {"restaurant", "cafe"}
+    assert len(gdf) == 303
+
+
+def test_custom_criteria_exclude_removes_matching_values(helsinki_pbf):
+    """#272 — exclude filtering drops features whose tag matches the listed
+    values while keeping the rest of that key."""
+    from pyrosm import OSM
+
+    osm = OSM(helsinki_pbf)
+    kept_all = osm.get_data_by_custom_criteria({"amenity": True}, filter_type="keep")
+    excluded = osm.get_data_by_custom_criteria(
+        {"amenity": ["restaurant", "cafe"]},
+        osm_keys_to_keep="amenity",
+        filter_type="exclude",
+    )
+    excluded_values = set(excluded["amenity"].dropna())
+    assert "restaurant" not in excluded_values
+    assert "cafe" not in excluded_values
+    # Exclude keeps strictly fewer amenity features than keep-all.
+    assert 0 < len(excluded) < len(kept_all)
+
+
+def test_custom_criteria_element_toggle_keeps_only_nodes(helsinki_pbf):
+    """#272 — keep_ways/keep_relations=False restrict the result to node
+    features (filter_node_indices path)."""
+    from pyrosm import OSM
+
+    osm = OSM(helsinki_pbf)
+    nodes_only = osm.get_data_by_custom_criteria(
+        {"amenity": True},
+        filter_type="keep",
+        keep_ways=False,
+        keep_relations=False,
+    )
+    assert set(nodes_only["osm_type"]) == {"node"}
+    assert len(nodes_only) == 1006

@@ -815,3 +815,90 @@ def test_has_pandarm_false_without_pandarm(monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(compat)
+
+
+@pytest.mark.parametrize(
+    "flag,graph_type,message",
+    [
+        ("HAS_IGRAPH", "igraph", "python-igraph"),
+        ("HAS_NETWORKX", "networkx", "networkx"),
+        ("HAS_PANDANA", "pandana", "pandana"),
+        ("HAS_PANDARM", "pandarm", "pandarm"),
+    ],
+)
+def test_to_graph_raises_when_backend_missing(
+    test_pbf, monkeypatch, flag, graph_type, message
+):
+    """#272 — each backend export raises an ImportError naming the missing
+    optional dependency."""
+    import warnings
+    from pyrosm import OSM
+    import pyrosm.graph_export as ge
+
+    osm = OSM(test_pbf)
+    nodes, edges = osm.get_network(nodes=True)
+
+    monkeypatch.setattr(ge, flag, False)
+    with pytest.raises(ImportError, match=message):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # pandana emits a DeprecationWarning
+            osm.to_graph(nodes, edges, graph_type=graph_type)
+
+
+def test_graph_export_skips_edges_with_missing_nodes(test_pbf):
+    """#272 — the igraph/networkx builders skip edges whose endpoint node is
+    absent from the nodes frame (KeyError -> continue) instead of failing. This
+    is the "data was cropped manually" branch; the builders are exercised
+    directly with a real network minus one referenced node, since the public
+    to_graph pipeline reconciles nodes/edges before they reach the builders."""
+    from pyrosm import OSM
+    from pyrosm.graph_export import _create_igraph, _create_nxgraph
+
+    osm = OSM(test_pbf)
+    nodes, edges = osm.get_network(nodes=True)
+
+    # Drop a node referenced by an edge -> dangling endpoint the builder skips.
+    referenced = set(edges["u"]) | set(edges["v"])
+    drop_id = next(i for i in nodes["id"].tolist() if i in referenced)
+    nodes_missing = nodes[nodes["id"] != drop_id].reset_index(drop=True)
+
+    pytest.importorskip("igraph")
+    ig = _create_igraph(nodes_missing, edges, "u", "v", "id")
+    assert ig is not None
+
+    pytest.importorskip("networkx")
+    nxg = _create_nxgraph(nodes_missing, edges, "u", "v", "id")
+    assert nxg is not None
+
+
+@pytest.mark.parametrize(
+    "modname,flag",
+    [
+        ("igraph", "HAS_IGRAPH"),
+        ("networkx", "HAS_NETWORKX"),
+        ("pandana", "HAS_PANDANA"),
+    ],
+)
+def test_compat_flag_false_without_dependency(monkeypatch, modname, flag):
+    """#272 — _compat.HAS_* falls back to False when the optional backend is
+    not importable (the pandarm case is covered by
+    test_has_pandarm_false_without_pandarm above in this file)."""
+    import builtins
+    import importlib
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == modname:
+            raise ImportError("simulated missing %s" % modname)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    import pyrosm.utils._compat as compat
+
+    reloaded = importlib.reload(compat)
+    try:
+        assert getattr(reloaded, flag) is False
+    finally:
+        monkeypatch.undo()
+        importlib.reload(compat)
