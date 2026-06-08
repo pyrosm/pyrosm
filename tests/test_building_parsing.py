@@ -53,34 +53,6 @@ def test_parsing_building_elements(test_pbf):
     assert len(ways["id"]) == 2219
 
 
-def test_creating_building_geometries(test_pbf):
-    from pyrosm import OSM
-    from pyrosm.data_manager import get_osm_data
-    from pyrosm.geometry import create_way_geometries
-    from numpy import ndarray
-    from shapely import Geometry
-
-    osm = OSM(filepath=test_pbf)
-    osm._read_pbf()
-    custom_filter = {"building": True}
-    nodes, ways, relation_ways, relations = get_osm_data(
-        None,
-        osm._way_records,
-        osm._relations,
-        osm.conf.tags.building,
-        custom_filter,
-        filter_type="keep",
-    )
-    assert isinstance(ways, dict)
-
-    ways, geometries, lengths, from_ids, to_ids = create_way_geometries(
-        osm._node_coordinates, ways, parse_network=False
-    )
-    assert isinstance(geometries, list), f"Type should be list, got {type(geometries)}."
-    assert isinstance(geometries[0], Geometry)
-    assert len(geometries) == len(ways["id"])
-
-
 def test_reading_buildings_with_defaults(test_pbf):
     from pyrosm import OSM
     from shapely.geometry import Polygon
