@@ -22,9 +22,10 @@ allowing e.g. parsing street networks for the whole country fairly efficiently (
 
 The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) 
 which makes it fast to parse OpenStreetMap data from PBF files.
-Pyrosm is built on top of another Cython library called [Pyrobuf](https://github.com/appnexus/pyrobuf) which is a faster Cython alternative 
-Google's version with C++ backend. Google's Protocol Buffers is a commonly used and efficient method to serialize and compress structured data 
+Pyrosm decodes the PBF data with [Google's Protocol Buffers](https://protobuf.dev/) library (using its fast `upb` C backend). Protocol Buffers is a commonly used and efficient method to serialize and compress structured data 
 which is also used by OpenStreetMap contributors to distribute the OSM data in PBF format (Protocolbuffer Binary Format). 
+
+> **Backend change.** Starting from the release after **v0.7.0**, Pyrosm parses the protocol-buffer messages with [Google's Protobuf](https://protobuf.dev/) (its fast C `upb` backend) instead of the previously used [Pyrobuf](https://github.com/appnexus/pyrobuf). The switch was made for maintainability and installation reliability: Pyrobuf is no longer maintained and its source build fails with modern `setuptools`, which broke `pip install pyrosm`, whereas Google's Protobuf is actively maintained and ships prebuilt wheels and conda-forge packages for Python 3.10–3.14. The change does **not** slow down parsing — see the [backend benchmark](benchmarks/README.md). **v0.7.0 was the last release that used Pyrobuf.**
 
 **Documentation** is available at [https://pyrosm.readthedocs.io](https://pyrosm.readthedocs.io/en/latest/).
 
@@ -95,7 +96,7 @@ You can install a local development version of the tool by 1) installing necessa
  2. build pyrosm development version from master (activate the environment first):
  
     - `pip install -e . --no-build-isolation`
-    - (`--no-build-isolation` builds against the conda-provided build dependencies, including `pyrobuf`; plain `pip install -e .` would refetch and rebuild `pyrobuf` from PyPI, which fails with modern setuptools)
+    - (`--no-build-isolation` builds the Cython extensions against the conda-provided build dependencies, i.e. Cython and `cykhash`, instead of refetching and recompiling them in an isolated build environment)
 
 You can run tests with `pytest` by executing:
  

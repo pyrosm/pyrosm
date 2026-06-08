@@ -5,7 +5,7 @@
 # package. The only consumer of pyrosm is the autodoc API reference, whose
 # compiled Cython modules are mocked via autodoc_mock_imports in conf.py.
 # Hence pyrosm itself is intentionally NOT installed here (no from-source
-# compilation, no pyrobuf, no build toolchain required).
+# compilation, no protobuf runtime, no build toolchain required).
 
 # Sphinx + MyST-NB Markdown/notebook rendering
 myst-nb>=1.0,<2.0

@@ -1,2 +1,5 @@
 [build-system]
-requires = ["setuptools", "wheel", "Cython", "cykhash==2.0.0", "pyrobuf"]
+requires = ["setuptools", "wheel", "Cython", "cykhash>=2"]
+
+[tool.black]
+force-exclude = '.*_pb2\.py$'

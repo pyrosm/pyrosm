@@ -10,8 +10,13 @@ source =
     tests
 parallel = true
 plugins = Cython.Coverage
+omit =
+    *migrations*
+    pyrosm/proto/*_pb2.py
 
 [report]
 show_missing = true
 precision = 2
-omit = *migrations*
+omit =
+    *migrations*
+    pyrosm/proto/*_pb2.py

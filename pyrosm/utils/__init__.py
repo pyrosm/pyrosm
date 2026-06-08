@@ -1,6 +1,7 @@
 from shapely import ops
 from shapely.geometry import MultiLineString, Polygon, MultiPolygon, box
-from pyrosm_proto import BlobHeader, Blob, HeaderBlock
+from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
+from pyrosm.proto.osmformat_pb2 import HeaderBlock
 from pyrosm.exceptions import PBFNotImplemented
 import zlib
 from struct import unpack

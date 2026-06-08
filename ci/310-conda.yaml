@@ -9,7 +9,7 @@ dependencies:
   - cython
   - cykhash>=2
   - geopandas
-  - pyrobuf
+  - protobuf>=6.33.5
   - python-rapidjson
   # optional
   - networkx

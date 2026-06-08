@@ -3,3 +3,4 @@ max-line-length = 88
 select = C,E,F,W,B,B950
 ignore = E203, E501, W503, F401
 exclude = docs/conf.py
+extend-exclude = pyrosm/proto/*_pb2.py

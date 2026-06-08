@@ -60,7 +60,7 @@ autodoc_mock_imports = [
     "pyrosm.pbfreader",
     "pyrosm.relations",
     "pyrosm.tagparser",
-    "pyrosm_proto",
+    "google.protobuf",
     "cykhash",
 ]
 

@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- CHANGED: Replace the [Pyrobuf](https://github.com/appnexus/pyrobuf) PBF backend with [Google's Protobuf](https://protobuf.dev/) (its fast C `upb` backend) for parsing the protocol-buffer messages. Pyrobuf is unmaintained and its source build fails with modern `setuptools` (breaking `pip install pyrosm`); Google's Protobuf is actively maintained and ships wheels and conda-forge packages for Python 3.10–3.14. Parsing speed is unchanged — see `benchmarks/README.md`. v0.7.0 was the last release using Pyrobuf. (#276)
+
 v0.7.0
 ------
 
