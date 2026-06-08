@@ -4,6 +4,8 @@ Changelog
 Unreleased
 ----------
 
+- NEW: Raise a clear ``InvalidOSMFileError`` when the input ``.pbf`` is not a valid OSM PBF file, instead of a cryptic zlib/protobuf error (#160)
+- FIXED: ``get_bounding_box`` now reads the header bounding box correctly; it returned ``None`` for every file after the protobuf backend migration (#160)
 - NEW: Accept ``pathlib.Path`` (and any ``os.PathLike``) filepaths in the ``OSM`` constructor, not just strings (#145)
 - CHANGED: Replace the `Pyrobuf <https://github.com/appnexus/pyrobuf>`_ PBF backend with `Google's Protobuf <https://protobuf.dev/>`_ (its fast C ``upb`` backend) for parsing the protocol-buffer messages. Pyrobuf is unmaintained and its source build fails with modern ``setuptools`` (breaking ``pip install pyrosm``); Google's Protobuf is actively maintained and ships wheels and conda-forge packages for Python 3.10–3.14. Parsing speed is unchanged — see the `backend benchmark <https://github.com/pyrosm/pyrosm/blob/master/benchmarks/README.md>`_. v0.7.0 was the last release using Pyrobuf. (#276)
 
