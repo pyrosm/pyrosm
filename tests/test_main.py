@@ -108,3 +108,39 @@ def test_passing_wrong_file_format():
         pass
     except Exception as e:
         raise e
+
+
+def test_invalid_osm_pbf_raises_meaningful_error(tmp_path):
+    """A '.pbf' that is not a valid OSM PBF should raise InvalidOSMFileError."""
+    import struct
+    from pyrosm import OSM
+    from pyrosm.exceptions import InvalidOSMFileError
+    from pyrosm.proto.fileformat_pb2 import BlobHeader
+
+    # 1) Too short to contain a header.
+    short = tmp_path / "short.pbf"
+    short.write_bytes(b"\x00\x00")
+    with pytest.raises(InvalidOSMFileError):
+        OSM(short)
+
+    # 2) Declared BlobHeader size beyond the 64 KiB maximum.
+    oversized = tmp_path / "oversized.pbf"
+    oversized.write_bytes(struct.pack("!L", 5_000_000) + b"garbage" * 100)
+    with pytest.raises(InvalidOSMFileError):
+        OSM(oversized)
+
+    # 3) A parseable BlobHeader whose first block is not an 'OSMHeader'
+    #    (e.g. a non-OSM PBF such as a vector-tile PBF).
+    header = BlobHeader(type="NotOSMHeader", datasize=5).SerializeToString()
+    wrong_type = tmp_path / "wrong_type.pbf"
+    wrong_type.write_bytes(struct.pack("!L", len(header)) + header + b"\x00" * 5)
+    with pytest.raises(InvalidOSMFileError):
+        OSM(wrong_type)
+
+    # 4) Correct 'OSMHeader' type but a payload that is not zlib-compressed
+    #    (reproduces the cryptic "Error -5 while decompressing data" from #156).
+    header = BlobHeader(type="OSMHeader", datasize=20).SerializeToString()
+    bad_zlib = tmp_path / "bad_zlib.pbf"
+    bad_zlib.write_bytes(struct.pack("!L", len(header)) + header + b"notzlibdata000000000")
+    with pytest.raises(InvalidOSMFileError):
+        OSM(bad_zlib)

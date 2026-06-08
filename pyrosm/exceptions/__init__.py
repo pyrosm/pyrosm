@@ -4,3 +4,7 @@ class PBFException(Exception):
 
 class PBFNotImplemented(PBFException):
     pass
+
+
+class InvalidOSMFileError(PBFException):
+    pass

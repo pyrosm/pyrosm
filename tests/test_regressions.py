@@ -839,3 +839,19 @@ def test_version_attribute_and_unknown_fallback(monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(pyrosm)
+
+
+def test_get_bounding_box_returns_polygon_for_valid_pbf():
+    """#160 — get_bounding_box must read the header bbox via protobuf field
+    access, not the pyrobuf-only SerializeToDict() that the backend migration
+    left behind (which silently returned None for every file)."""
+    from shapely.geometry import Polygon
+    from pyrosm import get_data
+    from pyrosm.utils import get_bounding_box
+
+    bbox = get_bounding_box(get_data("helsinki_pbf"))
+    assert isinstance(bbox, Polygon)
+    minx, miny, maxx, maxy = bbox.bounds
+    # Helsinki sits around lon ~25, lat ~60.
+    assert 24 < minx < maxx < 26
+    assert 60 < miny < maxy < 61
