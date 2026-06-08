@@ -6,7 +6,7 @@ cdef delta_decode_latitude(data, node_granularity, lat_offset):
     lats_deltas = np.zeros(len(data.lat) + 1, dtype=np.int64)
     lats_deltas[1:] = list(data.lat)
     lats = (np.cumsum(lats_deltas)[1:] * node_granularity + lat_offset) / div
-    return lats.astype(np.float32)
+    return lats.astype(np.float64)
 
 
 cdef delta_decode_longitude(data, node_granularity, lon_offset):
@@ -14,7 +14,7 @@ cdef delta_decode_longitude(data, node_granularity, lon_offset):
     lons_deltas = np.zeros(len(data.lon) + 1, dtype=np.int64)
     lons_deltas[1:] = list(data.lon)
     lons = (np.cumsum(lons_deltas)[1:] * node_granularity + lon_offset) / div
-    return lons.astype(np.float32)
+    return lons.astype(np.float64)
 
 
 cdef delta_decode_id(data):

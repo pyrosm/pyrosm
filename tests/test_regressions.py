@@ -796,3 +796,32 @@ def test_get_bounding_box_returns_none_without_header_bbox(tmp_path):
     pbf.write_bytes(struct.pack("!L", len(blob_header)) + blob_header + blob_bytes)
 
     assert get_bounding_box(pbf) is None
+
+
+def test_node_coordinates_decoded_at_full_precision(tmp_path):
+    """#245 — node coordinates must be decoded at full float64 precision (the
+    exact OSM 7-decimal values, matching GDAL/osmium), not truncated to float32.
+    Uses the exact coordinate of node 623850466 from the issue."""
+    import numpy as np
+
+    osmium = pytest.importorskip("osmium")
+    from osmium.osm.mutable import Node
+    from pyrosm import OSM
+
+    path = str(tmp_path / "coords.osm.pbf")
+    writer = osmium.SimpleWriter(path)
+    writer.add_node(
+        Node(id=1, location=(-80.4410082, 26.0914866), tags={"power": "tower"})
+    )
+    writer.close()
+
+    osm = OSM(path)
+    gdf = osm.get_data_by_custom_criteria(
+        {"power": ["tower"]}, filter_type="keep", keep_nodes=True
+    )
+    geom = gdf[gdf["id"] == 1].geometry.iloc[0]
+    assert (geom.x, geom.y) == (-80.4410082, 26.0914866)
+    # The lon/lat columns carry the same full precision (not float32).
+    assert gdf["lon"].dtype == np.float64
+    assert gdf["lat"].dtype == np.float64
+    assert gdf.loc[gdf["id"] == 1, "lon"].iloc[0] == -80.4410082
