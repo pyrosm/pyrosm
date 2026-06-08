@@ -1,8 +1,10 @@
 # Pyrosm 
-[![Conda version](https://anaconda.org/conda-forge/pyrosm/badges/version.svg)](https://anaconda.org/conda-forge/pyrosm/)
+[![Conda Version](https://img.shields.io/conda/vn/conda-forge/pyrosm.svg)](https://anaconda.org/conda-forge/pyrosm)
 [![PyPI version](https://badge.fury.io/py/pyrosm.svg)](https://badge.fury.io/py/pyrosm)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/pyrosm.svg?logo=python&logoColor=%23fff)](https://pypi.org/project/pyrosm)
 [![Documentation Status](https://readthedocs.org/projects/pyrosm/badge/?version=latest)](https://pyrosm.readthedocs.io/en/latest/?badge=latest)
 [![Coverage Status](https://codecov.io/gh/pyrosm/pyrosm/branch/master/graph/badge.svg)](https://codecov.io/gh/pyrosm/pyrosm) 
+[![CodeFactor](https://www.codefactor.io/repository/github/pyrosm/pyrosm/badge)](https://www.codefactor.io/repository/github/pyrosm/pyrosm)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/pyrosm?color=yellow&label=Downloads)](https://pypistats.org/packages/pyrosm)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.3755057.svg)](https://doi.org/10.5281/zenodo.3755057)
 [![License](https://anaconda.org/conda-forge/pyrosm/badges/license.svg)](https://anaconda.org/conda-forge/pyrosm/)
