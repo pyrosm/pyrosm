@@ -1,8 +1,8 @@
-"""Guard the protobuf backend pyrosm parses PBF data with.
+"""Checks on the protobuf backend pyrosm parses PBF data with.
 
 pyrosm relies on Google's protobuf. The pure-Python implementation is an order
-of magnitude slower, so a fallback to it is treated as an unsupported
-configuration and must fail loudly rather than degrade silently.
+of magnitude slower, so pyrosm warns when it is active. These tests verify that
+the fast (C/upb) backend is in use and that the warning is raised when it is not.
 """
 import pytest
 
