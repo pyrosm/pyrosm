@@ -136,8 +136,10 @@ def validate_bounding_box(geom):
 
 
 def validate_input_file(filepath):
+    if isinstance(filepath, os.PathLike):
+        filepath = os.fspath(filepath)
     if not isinstance(filepath, str):
-        raise ValueError("'filepath' should be a string.")
+        raise ValueError("'filepath' should be a string or os.PathLike object.")
     if not filepath.endswith(".pbf"):
         raise ValueError(
             f"Input data should be in Protobuf format (*.osm.pbf). "

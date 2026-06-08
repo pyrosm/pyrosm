@@ -77,6 +77,17 @@ def test_boundaries(helsinki_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
 
+def test_passing_pathlib_path(test_pbf):
+    from pathlib import Path
+    from pyrosm import OSM
+    from geopandas import GeoDataFrame
+
+    osm = OSM(Path(test_pbf))
+    assert isinstance(osm.filepath, str)
+    gdf = osm.get_network()
+    assert isinstance(gdf, GeoDataFrame)
+
+
 def test_passing_incorrect_filepath():
     from pyrosm import OSM
 
