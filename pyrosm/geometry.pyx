@@ -8,7 +8,18 @@ from shapely.coordinates import get_coordinates
 from shapely.predicates import is_geometry
 from shapely.geometry import MultiPolygon
 from shapely.ops import polygonize
+from shapely import orient_polygons as _orient_polygons
 from pyrosm.distance import Unit, haversine
+
+
+cpdef orient_polygons(geometries):
+    """Normalize Polygon/MultiPolygon ring orientation to the OGC/GeoJSON
+    right-hand rule (exterior counter-clockwise, holes clockwise), matching
+    osmium and QGIS (#230). Non-polygonal geometries pass through unchanged.
+
+    Delegates to shapely's vectorized ``orient_polygons`` (requires shapely
+    >= 2.1) rather than a per-geometry Python loop."""
+    return _orient_polygons(geometries, exterior_cw=False)
 
 
 cpdef fix_geometry(geometry, diff_threshold=20):

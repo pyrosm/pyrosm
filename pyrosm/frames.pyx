@@ -4,6 +4,7 @@ import numpy as np
 from pyrosm._arrays cimport concatenate_dicts_of_arrays
 from pyrosm.geometry cimport _create_point_geometries
 from pyrosm.geometry cimport create_way_geometries
+from pyrosm.geometry import orient_polygons
 from pyrosm.relations import prepare_relations
 from shapely.geometry import box
 from pyrosm.data_filter import get_mask_by_osmid, _filter_array_dict_by_indices_or_mask
@@ -158,6 +159,14 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
         return None
 
     gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
+
+    # Normalize polygon ring orientation to the OGC/GeoJSON right-hand rule
+    # (exterior CCW, holes CW); non-polygonal geometries are untouched (#230).
+    gdf["geometry"] = gpd.GeoSeries(
+        orient_polygons(gdf["geometry"].to_numpy()),
+        index=gdf.index,
+        crs=gdf.crs,
+    )
 
     # When parsing the network with nodes, prepare the nodes frame
     if node_attr is not None:
