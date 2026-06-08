@@ -144,3 +144,9 @@ def test_invalid_osm_pbf_raises_meaningful_error(tmp_path):
     bad_zlib.write_bytes(struct.pack("!L", len(header)) + header + b"notzlibdata000000000")
     with pytest.raises(InvalidOSMFileError):
         OSM(bad_zlib)
+
+    # 5) A BlobHeader whose bytes are not valid protobuf (truncated varint).
+    malformed = tmp_path / "malformed_header.pbf"
+    malformed.write_bytes(struct.pack("!L", 1) + b"\x08")
+    with pytest.raises(InvalidOSMFileError):
+        OSM(malformed)

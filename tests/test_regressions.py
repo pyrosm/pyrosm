@@ -855,3 +855,22 @@ def test_get_bounding_box_returns_polygon_for_valid_pbf():
     # Helsinki sits around lon ~25, lat ~60.
     assert 24 < minx < maxx < 26
     assert 60 < miny < maxy < 61
+
+
+def test_get_bounding_box_returns_none_without_header_bbox(tmp_path):
+    """#160 — a valid OSM PBF whose header carries no bbox yields None, not an
+    error and not a degenerate Polygon."""
+    import struct
+    import zlib
+    from pyrosm.utils import get_bounding_box
+    from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
+    from pyrosm.proto.osmformat_pb2 import HeaderBlock
+
+    header = HeaderBlock()
+    header.required_features.append("OsmSchema-V0.6")
+    blob_bytes = Blob(zlib_data=zlib.compress(header.SerializeToString())).SerializeToString()
+    blob_header = BlobHeader(type="OSMHeader", datasize=len(blob_bytes)).SerializeToString()
+    pbf = tmp_path / "no_bbox.pbf"
+    pbf.write_bytes(struct.pack("!L", len(blob_header)) + blob_header + blob_bytes)
+
+    assert get_bounding_box(pbf) is None
