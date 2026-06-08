@@ -6,6 +6,33 @@ from shapely.predicates import is_valid
 import numpy as np
 import geopandas as gpd
 
+
+cdef members_to_list(members):
+    """Convert a relation's members (a dict of arrays) into a list of
+    ``{member_id, member_type, member_role}`` dicts, decoding the bytes
+    member_type to str. Stored under the 'members' key of the relation's JSON
+    ``tags`` column rather than as a separate column (it only concerns
+    relations, so a full-length column would be mostly null)."""
+    member_ids = members["member_id"]
+    member_types = members["member_type"]
+    member_roles = members["member_role"]
+    parsed = []
+    for j in range(len(member_ids)):
+        mtype = member_types[j]
+        if isinstance(mtype, bytes):
+            mtype = mtype.decode("utf-8")
+        mrole = member_roles[j]
+        if isinstance(mrole, bytes):
+            mrole = mrole.decode("utf-8")
+        parsed.append(
+            {
+                "member_id": int(member_ids[j]),
+                "member_type": mtype,
+                "member_role": mrole,
+            }
+        )
+    return parsed
+
 cpdef _get_ways_for_relation(member_ids, member_roles, building_relation_ways):
     return get_ways_for_relation(member_ids, member_roles, building_relation_ways)
 
@@ -149,6 +176,11 @@ cdef get_relations(relations, relation_ways, node_coordinates):
         # Add tags
         for k, v in rel["tags"][0].items():
             relation[k] = v
+
+        # Add the relation members. Not listed in tags_to_keep, so it is folded
+        # into the JSON 'tags' column. Set after the tag loop so a stray tag
+        # named 'members' cannot shadow the structural member list.
+        relation["members"] = members_to_list(rel["members"][0])
 
         prepared_relations.append(relation)
 

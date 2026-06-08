@@ -4,6 +4,7 @@ Changelog
 Unreleased
 ----------
 
+- NEW: Expose relation members under the ``members`` key of the JSON ``tags`` column (each ``{member_id, member_type, member_role}``), so relations carry their members in the returned GeoDataFrame (#216)
 - NEW: Raise a clear ``InvalidOSMFileError`` when the input ``.pbf`` is not a valid OSM PBF file, instead of a cryptic zlib/protobuf error (#160)
 - FIXED: ``get_bounding_box`` now reads the header bounding box correctly; it returned ``None`` for every file after the protobuf backend migration (#160)
 - NEW: Accept ``pathlib.Path`` (and any ``os.PathLike``) filepaths in the ``OSM`` constructor, not just strings (#145)

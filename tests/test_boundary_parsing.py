@@ -152,3 +152,26 @@ def test_reading_all_boundaries(helsinki_region_pbf):
 
         gdf = osm.get_boundaries(boundary_type=boundary_type)
         assert len(gdf) >= cnt, f"Got incorrect number of rows with {boundary_type}"
+
+
+def test_relation_members_in_tags(helsinki_pbf):
+    """#216 — a relation's members are exposed under the 'members' key of the
+    JSON 'tags' column (not a separate full-length column)."""
+    import json
+    from pyrosm import OSM
+
+    osm = OSM(helsinki_pbf)
+    gdf = osm.get_boundaries()
+
+    # Folded into the tags JSON, not a standalone column.
+    assert "members" not in gdf.columns
+
+    tags = json.loads(gdf["tags"].iloc[0])
+    assert "members" in tags
+    members = tags["members"]
+    assert isinstance(members, list) and len(members) > 0
+    for member in members:
+        assert set(member) == {"member_id", "member_type", "member_role"}
+        assert isinstance(member["member_id"], int)
+        assert member["member_type"] in ("node", "way", "relation")
+        assert isinstance(member["member_role"], str)
