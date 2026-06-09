@@ -130,16 +130,17 @@ def _as_frames(data):
 
 
 def _reproject_to_wgs84(frames):
-    """Reproject CRS-tagged frames to EPSG:4326 (new geometries are lon/lat)."""
+    """Reproject CRS-tagged frames to EPSG:4326 (new geometries are lon/lat).
+
+    ``CRS.to_epsg()`` returns ``None`` (not 4326) for a CRS without an EPSG code,
+    so such a frame is reprojected too; reprojecting an already-WGS84 frame is a
+    harmless no-op.
+    """
     out = []
     for gdf in frames:
         crs = getattr(gdf, "crs", None)
-        if crs is not None:
-            try:
-                if crs.to_epsg() != 4326:
-                    gdf = gdf.to_crs(epsg=4326)
-            except Exception:
-                gdf = gdf.to_crs(epsg=4326)
+        if crs is not None and crs.to_epsg() != 4326:
+            gdf = gdf.to_crs(epsg=4326)
         out.append(gdf)
     return out
 

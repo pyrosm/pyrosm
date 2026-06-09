@@ -957,3 +957,12 @@ def test_pbf_writer_no_relations():
     builder = _RecordBuilder()
     _add_base_relations(builder, {}, {})  # relations cache without "id" -> no-op
     assert builder.rels == []
+
+
+def test_pbf_writer_node_tag_records_empty():
+    from pyrosm.pbf_writer import _node_tag_records
+
+    # A nodes cache without "id"/"tags" (or None) yields no POI tag index.
+    assert _node_tag_records(None) == {}
+    assert _node_tag_records({}) == {}
+    assert _node_tag_records({"id": [1], "lat": [0.0]}) == {}
