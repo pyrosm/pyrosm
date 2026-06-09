@@ -1,17 +1,20 @@
 Changelog
 =========
 
-Unreleased
-----------
+v0.8.0 (Jun 9, 2026)
+--------------------
 
-- NEW: Automate PyPI releases — a GitHub Actions ``release`` workflow builds binary wheels (cibuildwheel; Linux/macOS/Windows × CPython 3.10–3.14) and an sdist, then publishes them to PyPI via Trusted Publishing and creates a GitHub release when a ``vX.Y.Z`` tag is pushed (#287)
-- FIXED: Decode node coordinates at full float64 precision (exact OSM 7-decimal values, matching GDAL/osmium); they were truncated to float32, introducing a ~0.1 m error, false extra precision, and visible distortion of straight geometry edges (#245, #225)
-- FIXED: Normalize polygon/multipolygon ring orientation to the OGC/GeoJSON right-hand rule (exterior counter-clockwise, holes clockwise), matching osmium and QGIS; previously rings inherited the OSM way node order and were inconsistently wound (#230)
-- NEW: Expose relation members under the ``members`` key of the JSON ``tags`` column (each ``{member_id, member_type, member_role}``), so relations carry their members in the returned GeoDataFrame (#216)
-- NEW: Raise a clear ``InvalidOSMFileError`` when the input ``.pbf`` is not a valid OSM PBF file, instead of a cryptic zlib/protobuf error (#160)
-- FIXED: ``get_bounding_box`` now reads the header bounding box correctly; it returned ``None`` for every file after the protobuf backend migration (#160)
-- NEW: Accept ``pathlib.Path`` (and any ``os.PathLike``) filepaths in the ``OSM`` constructor, not just strings (#145)
-- CHANGED: Replace the `Pyrobuf <https://github.com/appnexus/pyrobuf>`_ PBF backend with `Google's Protobuf <https://protobuf.dev/>`_ (its fast C ``upb`` backend) for parsing the protocol-buffer messages. Pyrobuf is unmaintained and its source build fails with modern ``setuptools`` (breaking ``pip install pyrosm``); Google's Protobuf is actively maintained and ships wheels and conda-forge packages for Python 3.10–3.14. Parsing speed is unchanged — see the `backend benchmark <https://github.com/pyrosm/pyrosm/blob/master/benchmarks/README.md>`_. v0.7.0 was the last release using Pyrobuf. (#276)
+This is a major release that changes the PBF parsing backend.
+
+- CHANGED: Replace the `Pyrobuf <https://github.com/appnexus/pyrobuf>`_ PBF backend with `Google's Protobuf <https://protobuf.dev/>`_ (its fast C ``upb`` backend) for parsing the protocol-buffer messages. Pyrobuf is unmaintained and its source build fails with modern ``setuptools`` (breaking ``pip install pyrosm``); Google's Protobuf is actively maintained and ships wheels and conda-forge packages for Python 3.10–3.14. Parsing speed is unchanged — see the `backend benchmark <https://github.com/pyrosm/pyrosm/blob/master/benchmarks/README.md>`_. v0.8.0 is the first release built on Google's Protobuf; v0.7.0 was the last to use Pyrobuf. (#276)
+- NEW: Automate PyPI releases — a GitHub Actions ``release`` workflow builds binary wheels (cibuildwheel; Linux/macOS/Windows × CPython 3.10–3.14) and an sdist, then publishes them to PyPI via Trusted Publishing and creates a GitHub release when a ``vX.Y.Z`` tag is pushed (#288, #287)
+- NEW: Expose relation members under the ``members`` key of the JSON ``tags`` column (each ``{member_id, member_type, member_role}``), so relations carry their members in the returned GeoDataFrame (#281, #216)
+- NEW: Raise a clear ``InvalidOSMFileError`` when the input ``.pbf`` is not a valid OSM PBF file, instead of a cryptic zlib/protobuf error (#280, #160)
+- NEW: Accept ``pathlib.Path`` (and any ``os.PathLike``) filepaths in the ``OSM`` constructor, not just strings (#279, #145)
+- FIXED: Decode node coordinates at full float64 precision (exact OSM 7-decimal values, matching GDAL/osmium); they were truncated to float32, introducing a ~0.1 m error, false extra precision, and visible distortion of straight geometry edges (#283, #245, #225)
+- FIXED: Normalize polygon/multipolygon ring orientation to the OGC/GeoJSON right-hand rule (exterior counter-clockwise, holes clockwise), matching osmium and QGIS; previously rings inherited the OSM way node order and were inconsistently wound (#282, #230)
+- FIXED: ``get_bounding_box`` now reads the header bounding box correctly; it returned ``None`` for every file after the protobuf backend migration (#280, #160)
+- Refresh the README badges (#278)
 
 v0.7.0 (Jun 7, 2026)
 --------------------
