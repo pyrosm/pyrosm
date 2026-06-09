@@ -1,5 +1,8 @@
+import json
+import time
 import warnings
 
+import numpy as np
 import pandas as pd
 from pyrosm.config import Conf
 from pyrosm.pbfreader import parse_osm_data
@@ -897,6 +900,310 @@ class OSM:
             workers=workers,
         )
 
+    def write_pbf(self, data, output_path):
+        """
+        Write the OSM data this object holds back to a valid, re-readable
+        ``*.osm.pbf``, applying attribute/tag edits from a (modified)
+        GeoDataFrame.
+
+        The whole cached dataset (all nodes/ways/relations read from the source)
+        is written. Each row of ``data`` updates the tags of the matching element
+        (by ``osm_type`` + ``id``); rows whose ``id`` is not in the source are
+        added as new elements synthesized from their geometry (with negative ids).
+        Topology and coordinates come from the data pyrosm read, so the output is
+        faithful and re-readable (e.g. by pyrosm, osmium, GDAL and r5py/R5).
+
+        Typical use is to modify attributes in pandas and save them back::
+
+            osm = OSM("data.osm.pbf")
+            edges = osm.get_network("driving")
+            edges["maxspeed"] = edges["maxspeed"].fillna(50)
+            edges["travel_time"] = edges["length"] / (edges["maxspeed"] / 3.6)
+            osm.write_pbf(edges, "modified.osm.pbf")
+
+        Parameters
+        ----------
+
+        data : GeoDataFrame or list of GeoDataFrame
+            The (possibly modified) feature frame(s) whose tag columns are written
+            onto the matching elements. New rows (ids not in the source) are added
+            from their geometry: ``Point`` -> node, ``LineString`` -> way, hole-less
+            ``Polygon`` -> closed way. Polygons with holes, MultiPolygon and
+            MultiLineString geometries are not supported and raise ``ValueError``.
+
+        output_path : str
+            Where to write the PBF.
+
+        Returns
+        -------
+        str
+            The path of the written PBF file.
+
+        Notes
+        -----
+        v1 applies edits and additions, not deletions: dropping rows from ``data``
+        does not remove elements (the whole cached dataset is the base set).
+        """
+        from pyrosm.pbf_export import write_pbf_from_records
+        from geopandas import GeoDataFrame
+
+        if self._way_records is None or self._node_coordinates is None:
+            self._read_pbf()
+
+        if isinstance(data, GeoDataFrame):
+            frames = [data]
+        elif isinstance(data, (list, tuple)):
+            frames = list(data)
+        else:
+            raise ValueError(
+                "'data' should be a GeoDataFrame or a list of GeoDataFrames."
+            )
+
+        # New geometries are encoded as WGS84 lon/lat; reproject CRS-tagged frames
+        # so a projected GeoDataFrame is not written with out-of-range coordinates.
+        normalized = []
+        for gdf in frames:
+            crs = getattr(gdf, "crs", None)
+            if crs is not None:
+                try:
+                    if crs.to_epsg() != 4326:
+                        gdf = gdf.to_crs(epsg=4326)
+                except Exception:
+                    gdf = gdf.to_crs(epsg=4326)
+            normalized.append(gdf)
+        frames = normalized
+
+        nc = self._node_coordinates
+        way_by_id = {w["id"]: w for w in self._way_records}
+        relations = self._relations or {}
+        rel_ids = set(int(i) for i in relations["id"]) if "id" in relations else set()
+
+        # Collect tag edits (matched by osm_type+id) and brand-new rows (-> synth).
+        node_edits, way_edits, rel_edits = {}, {}, {}
+        new_rows = []
+        for gdf in frames:
+            geom_col = gdf.geometry.name
+            for _, row in gdf.iterrows():
+                otype, oid = row.get("osm_type"), row.get("id")
+                # Normalize osm_type (bytes/case) and the id (numpy scalar -> int)
+                # so rows match the Python-int / "node"/"way"/"relation" caches.
+                if isinstance(otype, bytes):
+                    otype = otype.decode("utf-8", "replace")
+                if isinstance(otype, str):
+                    otype = otype.lower()
+                try:
+                    oid = int(oid)
+                except (TypeError, ValueError):
+                    oid = None
+                tags = _row_tags(row, geom_col)
+                if oid is not None and otype == "way" and oid in way_by_id:
+                    way_edits[oid] = tags
+                elif oid is not None and otype == "node" and oid in nc:
+                    node_edits[oid] = tags
+                elif oid is not None and otype == "relation" and oid in rel_ids:
+                    rel_edits[oid] = tags
+                else:
+                    new_rows.append((oid, row[geom_col], tags))
+
+        # Index standalone/POI node tags from the node records (authoritative tag
+        # source) so untouched POIs keep their tags in the whole-dataset write.
+        node_tag_records = {}
+        nd = self._nodes or {}
+        if "id" in nd and "tags" in nd:
+            nd_ids, nd_tags = nd["id"], nd["tags"]
+            for i in range(len(nd_ids)):
+                t = nd_tags[i]
+                if isinstance(t, dict):
+                    node_tag_records[int(nd_ids[i])] = t
+
+        # Base nodes from the coordinate cache (+ pending B-synthesized nodes).
+        node_ids, lats, lons, vers, tss, css, ntags = [], [], [], [], [], [], []
+        for nid, rec in nc.items():
+            node_ids.append(nid)
+            lats.append(rec["lat"])
+            lons.append(rec["lon"])
+            vers.append(int(rec.get("version") or 1))
+            tss.append(int(rec.get("timestamp") or 0))
+            css.append(int(rec.get("changeset") or 0))
+            if nid in node_edits:
+                ntags.append(node_edits[nid])
+            else:
+                t = node_tag_records.get(nid)
+                if t is None:
+                    t = rec.get("tags")
+                ntags.append(t if isinstance(t, dict) else None)
+
+        # Base ways from the cached way records.
+        ways = []
+        for w in self._way_records:
+            wid = w["id"]
+            ways.append(
+                {
+                    "id": wid,
+                    "refs": list(w["nodes"]),
+                    "version": w.get("version") or 1,
+                    "timestamp": w.get("timestamp"),
+                    "tags": way_edits.get(wid, _record_tags(w)),
+                }
+            )
+
+        # Base relations from the cached relation arrays.
+        rels = []
+        if "id" in relations:
+            for i in range(len(relations["id"])):
+                rid = int(relations["id"][i])
+                mem = relations["members"][i]
+                members = [
+                    (
+                        mem["member_type"][j],
+                        int(mem["member_id"][j]),
+                        mem["member_role"][j],
+                    )
+                    for j in range(len(mem["member_id"]))
+                ]
+                rtags = relations["tags"][i]
+                rels.append(
+                    {
+                        "id": rid,
+                        "members": members,
+                        "version": (
+                            int(relations["version"][i])
+                            if "version" in relations
+                            else 1
+                        ),
+                        "timestamp": (
+                            int(relations["timestamp"][i])
+                            if "timestamp" in relations
+                            else None
+                        ),
+                        "changeset": (
+                            int(relations["changeset"][i])
+                            if "changeset" in relations
+                            else None
+                        ),
+                        "tags": rel_edits.get(
+                            rid, rtags if isinstance(rtags, dict) else {}
+                        ),
+                    }
+                )
+
+        # Approach B: synthesize OSM elements for rows with no cached match.
+        # Start the negative-id counters below any existing id in each namespace so
+        # re-writing a file that already holds synthesized (negative) ids does not
+        # collide.
+        now = int(time.time())
+        min_node = min(node_ids) if node_ids else 0
+        min_way = min((w["id"] for w in ways), default=0)
+        counters = {
+            "node": min(-1, min_node - 1),
+            "way": min(-1, min_way - 1),
+        }
+        coord_to_node = {}
+        coord_to_index = {}
+
+        def _check_lonlat(x, y, oid):
+            if not (-180.0 <= x <= 180.0 and -90.0 <= y <= 90.0):
+                raise ValueError(
+                    "write_pbf: row id %r has coordinates (%s, %s) outside valid "
+                    "lon/lat ranges; new geometries must be in EPSG:4326." % (oid, x, y)
+                )
+
+        def _node_for(x, y, oid, tags=None):
+            _check_lonlat(x, y, oid)
+            key = (round(y * 1e7), round(x * 1e7))
+            nid = coord_to_node.get(key)
+            if nid is None:
+                nid = counters["node"]
+                counters["node"] -= 1
+                coord_to_node[key] = nid
+                coord_to_index[key] = len(node_ids)
+                node_ids.append(nid)
+                lats.append(y)
+                lons.append(x)
+                vers.append(1)
+                tss.append(now)
+                css.append(0)
+                ntags.append(tags)
+            elif tags is not None:
+                # A tagged Point coincides with an already-synthesized node; attach
+                # its tags to that shared node (last-wins).
+                ntags[coord_to_index[key]] = tags
+            return nid
+
+        for oid, geom, tags in new_rows:
+            if geom is None or geom.is_empty:
+                raise ValueError(
+                    "write_pbf: row id %r has no (or empty) geometry to synthesize "
+                    "a new element from." % oid
+                )
+            gtype = geom.geom_type
+            if gtype == "Point":
+                _node_for(geom.x, geom.y, oid, tags)
+            elif gtype == "LineString":
+                coords = list(geom.coords)
+                if len(coords) < 2:
+                    raise ValueError(
+                        "write_pbf: row id %r LineString has fewer than 2 "
+                        "vertices." % oid
+                    )
+                refs = [_node_for(c[0], c[1], oid) for c in coords]
+                wid = counters["way"]
+                counters["way"] -= 1
+                ways.append(
+                    {
+                        "id": wid,
+                        "refs": refs,
+                        "version": 1,
+                        "timestamp": now,
+                        "tags": tags,
+                    }
+                )
+            elif gtype == "Polygon" and len(geom.interiors) == 0:
+                coords = list(geom.exterior.coords)
+                if len(coords) < 4:
+                    raise ValueError(
+                        "write_pbf: row id %r Polygon ring has fewer than 4 "
+                        "vertices." % oid
+                    )
+                refs = [_node_for(c[0], c[1], oid) for c in coords]
+                wid = counters["way"]
+                counters["way"] -= 1
+                ways.append(
+                    {
+                        "id": wid,
+                        "refs": refs,
+                        "version": 1,
+                        "timestamp": now,
+                        "tags": tags,
+                    }
+                )
+            else:
+                raise ValueError(
+                    "write_pbf cannot synthesize a new element from geometry type "
+                    "'%s' (row id %r). Only Point, LineString and hole-less Polygon "
+                    "are supported for new features in this version." % (gtype, oid)
+                )
+
+        node_ids = np.asarray(node_ids, dtype=np.int64)
+        lons_arr = np.asarray(lons, dtype=np.float64)
+        lats_arr = np.asarray(lats, dtype=np.float64)
+        nodes = {
+            "id": node_ids,
+            "lat": lats_arr,
+            "lon": lons_arr,
+            "version": np.asarray(vers, dtype=np.int64),
+            "timestamp": np.asarray(tss, dtype=np.int64),
+            "changeset": np.asarray(css, dtype=np.int64),
+            "tags": ntags,
+        }
+        bounds = (
+            float(lons_arr.min()),
+            float(lats_arr.min()),
+            float(lons_arr.max()),
+            float(lats_arr.max()),
+        )
+        return write_pbf_from_records(nodes, ways, rels, output_path, bounds)
+
     @staticmethod
     def to_graph(
         nodes,
@@ -1055,3 +1362,103 @@ class OSM:
         if name == "_nodes_gdf":
             return create_nodes_gdf(super(OSM, self).__getattribute__("_nodes"))
         return super(OSM, self).__getattribute__(name)
+
+
+# --- helpers for OSM.write_pbf (issue #285) ---
+
+# Columns that are structural attributes / pyrosm-computed, never OSM tags.
+_NON_TAG_COLS = {
+    "id",
+    "osm_type",
+    "version",
+    "timestamp",
+    "changeset",
+    "visible",
+    "length",
+    "tags",
+    "nodes",
+    "members",
+    "lon",
+    "lat",
+    "geometry",
+}
+
+
+def _is_missing(value):
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _tag_str(value):
+    """Render a tag value as the string OSM stores."""
+    if isinstance(value, (bool, np.bool_)):
+        return "yes" if value else "no"
+    if isinstance(value, (float, np.floating)):
+        f = float(value)
+        return str(int(f)) if f.is_integer() else str(f)
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    return str(value)
+
+
+def _tag_key(col):
+    """Coerce a column/tag name to an OSM tag key, or None to skip it.
+
+    OSM tag keys are non-empty strings; arbitrary GeoDataFrame columns can be
+    non-string or empty, which would corrupt the string-table / keys_vals output.
+    """
+    key = col if isinstance(col, str) else str(col)
+    return key if key != "" else None
+
+
+def _row_tags(row, geom_col):
+    """Tags for a GeoDataFrame row: non-structural columns + the JSON tags column."""
+    tags = {}
+    for col, val in row.items():
+        if col == geom_col or col in _NON_TAG_COLS:
+            continue
+        if _is_missing(val):
+            continue
+        key = _tag_key(col)
+        if key is None or key in _NON_TAG_COLS:
+            continue
+        tags[key] = _tag_str(val)
+    extra = row.get("tags")
+    if isinstance(extra, str):
+        try:
+            extra = json.loads(extra)
+        except (ValueError, TypeError):
+            extra = None
+    if isinstance(extra, dict):
+        for k, v in extra.items():
+            key = _tag_key(k)
+            if key is None or key in _NON_TAG_COLS or key in tags or _is_missing(v):
+                continue
+            tags[key] = _tag_str(v)
+    return tags
+
+
+def _record_tags(record):
+    """Tags for a cached way record: its tag columns + any leftover tags dict."""
+    tags = {}
+    for col, val in record.items():
+        if col in _NON_TAG_COLS:
+            continue
+        if _is_missing(val):
+            continue
+        key = _tag_key(col)
+        if key is None or key in _NON_TAG_COLS:
+            continue
+        tags[key] = _tag_str(val)
+    extra = record.get("tags")
+    if isinstance(extra, dict):
+        for k, v in extra.items():
+            key = _tag_key(k)
+            if key is None or key in _NON_TAG_COLS or key in tags or _is_missing(v):
+                continue
+            tags[key] = _tag_str(v)
+    return tags

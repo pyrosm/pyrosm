@@ -697,3 +697,184 @@ cdef _crop_pbf_parallel(source_path, output_path, bounds, keep_relations, worker
         pool.join()
         shutil.rmtree(tmpdir, ignore_errors=True)
     return output_path
+
+
+# ---------------------------------------------------------------------------
+# Build a PBF from records (issue #285): the write-side of OSM.write_pbf
+# ---------------------------------------------------------------------------
+# Unlike the crop path (which copies source elements verbatim), this constructs
+# fresh PBF blocks from node/way/relation records + their (possibly edited) tags.
+# Coordinates use granularity 100 / offset 0; ids/coords/timestamps are encoded in
+# raw integer (delta) space via `delta_encode`. The OSM `visible` flag is omitted
+# (current-data PBF: absent visible means "visible"); each block carries only the
+# strings it uses.
+
+_MAX_GROUP = 8000
+
+
+cdef _coord_to_raw(values):
+    # degrees -> raw integer grid: lat = p * granularity / 1e9 with granularity 100
+    # and offset 0, so p = round(deg * 1e7).
+    return np.rint(np.ascontiguousarray(values, dtype=np.float64) * 1e7).astype(np.int64)
+
+
+cdef class _StringTable:
+    """Per-block string interner; index 0 is the reserved blank entry."""
+    cdef dict index
+    cdef list strings
+
+    def __cinit__(self):
+        self.index = {"": 0}
+        self.strings = [b""]
+
+    cdef int intern(self, s):
+        cdef object i = self.index.get(s)
+        if i is None:
+            i = len(self.strings)
+            self.index[s] = i
+            self.strings.append(s.encode("utf-8") if isinstance(s, str) else s)
+        return i
+
+
+cdef _new_block():
+    block = PrimitiveBlock()
+    block.granularity = 100
+    block.lat_offset = 0
+    block.lon_offset = 0
+    block.date_granularity = 1000
+    return block
+
+
+cdef _emit_node_block(out, ids, lat_raw, lon_raw, versions, timestamps, changesets,
+                      tags_list):
+    block = _new_block()
+    st = _StringTable()
+
+    has_tags = False
+    keys_vals = []
+    for t in tags_list:
+        if t:
+            has_tags = True
+            for k, v in t.items():
+                keys_vals.append(st.intern(k))
+                keys_vals.append(st.intern(v))
+        keys_vals.append(0)
+
+    group = block.primitivegroup.add()
+    dense = group.dense
+    dense.id.extend(delta_encode(ids).tolist())
+    dense.lat.extend(delta_encode(lat_raw).tolist())
+    dense.lon.extend(delta_encode(lon_raw).tolist())
+    if has_tags:
+        dense.keys_vals.extend(keys_vals)
+
+    di = dense.denseinfo
+    di.version.extend([int(v) for v in versions])
+    di.timestamp.extend(delta_encode(timestamps).tolist())
+    di.changeset.extend(delta_encode(changesets).tolist())
+
+    for s in st.strings:
+        block.stringtable.s.append(s)
+    _write_blob(out, "OSMData", block)
+
+
+cdef _emit_way_block(out, way_batch):
+    block = _new_block()
+    st = _StringTable()
+    group = block.primitivegroup.add()
+    for w in way_batch:
+        way = group.ways.add()
+        way.id = w["id"]
+        tags = w["tags"]
+        if tags:
+            for k, v in tags.items():
+                way.keys.append(st.intern(k))
+                way.vals.append(st.intern(v))
+        way.info.version = int(w.get("version") or 1)
+        if w.get("timestamp") is not None:
+            way.info.timestamp = int(w["timestamp"])
+        refs = np.ascontiguousarray(w["refs"], dtype=np.int64)
+        way.refs.extend(delta_encode(refs).tolist())
+    for s in st.strings:
+        block.stringtable.s.append(s)
+    _write_blob(out, "OSMData", block)
+
+
+cdef _emit_relation_block(out, rel_batch):
+    type_map = {
+        b"node": 0, "node": 0, 0: 0,
+        b"way": 1, "way": 1, 1: 1,
+        b"relation": 2, "relation": 2, 2: 2,
+    }
+    block = _new_block()
+    st = _StringTable()
+    group = block.primitivegroup.add()
+    for r in rel_batch:
+        rel = group.relations.add()
+        rel.id = r["id"]
+        tags = r["tags"]
+        if tags:
+            for k, v in tags.items():
+                rel.keys.append(st.intern(k))
+                rel.vals.append(st.intern(v))
+        rel.info.version = int(r.get("version") or 1)
+        if r.get("timestamp") is not None:
+            rel.info.timestamp = int(r["timestamp"])
+        if r.get("changeset") is not None:
+            rel.info.changeset = int(r["changeset"])
+        memids = []
+        for (mtype, mref, mrole) in r["members"]:
+            if isinstance(mrole, bytes):
+                mrole = mrole.decode("utf-8")
+            rel.roles_sid.append(st.intern(mrole if mrole is not None else ""))
+            rel.types.append(type_map[mtype])
+            memids.append(mref)
+        rel.memids.extend(
+            delta_encode(np.ascontiguousarray(memids, dtype=np.int64)).tolist()
+        )
+    for s in st.strings:
+        block.stringtable.s.append(s)
+    _write_blob(out, "OSMData", block)
+
+
+cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds):
+    """Serialize node/way/relation records to a valid PBF at `output_path`.
+
+    `nodes` is a dict of aligned arrays (id/lat/lon/version/timestamp/changeset and
+    an object array `tags`); `ways`/`relations` are lists of record dicts. `bounds`
+    is (xmin, ymin, xmax, ymax) for the header bbox.
+    """
+    ids = np.ascontiguousarray(nodes["id"], dtype=np.int64)
+    order = np.argsort(ids, kind="stable")
+    ids = ids[order]
+    lat_raw = _coord_to_raw(nodes["lat"])[order]
+    lon_raw = _coord_to_raw(nodes["lon"])[order]
+    versions = np.ascontiguousarray(nodes["version"], dtype=np.int64)[order]
+    timestamps = np.ascontiguousarray(nodes["timestamp"], dtype=np.int64)[order]
+    changesets = np.ascontiguousarray(nodes["changeset"], dtype=np.int64)[order]
+    tags_arr = nodes["tags"]
+    tags_ordered = [tags_arr[i] for i in order]
+
+    cdef int n = len(ids)
+    cdef int i = 0
+    cdef int j
+    with open(output_path, "wb") as out:
+        _write_header(out, bounds)
+        while i < n:
+            j = min(i + _MAX_GROUP, n)
+            _emit_node_block(
+                out, ids[i:j], lat_raw[i:j], lon_raw[i:j], versions[i:j],
+                timestamps[i:j], changesets[i:j], tags_ordered[i:j],
+            )
+            i = j
+        i = 0
+        while i < len(ways):
+            j = min(i + _MAX_GROUP, len(ways))
+            _emit_way_block(out, ways[i:j])
+            i = j
+        i = 0
+        while i < len(relations):
+            j = min(i + _MAX_GROUP, len(relations))
+            _emit_relation_block(out, relations[i:j])
+            i = j
+    return output_path
