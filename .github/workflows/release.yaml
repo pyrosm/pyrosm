@@ -44,8 +44,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-13 builds x86_64, macos-14 builds arm64 (each native).
-        os: [ubuntu-latest, windows-latest, macos-13, macos-14]
+        # macos-14 (arm64) builds both arm64 and cross-compiled x86_64 wheels
+        # (see [tool.cibuildwheel.macos]); Intel macos-13 runners are retired.
+        os: [ubuntu-latest, windows-latest, macos-14]
     steps:
       - uses: actions/checkout@v5
       - uses: pypa/cibuildwheel@v4.0
