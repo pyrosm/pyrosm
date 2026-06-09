@@ -46,7 +46,7 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
 
 Pyrosm is distributed via PyPI and conda-forge.
 
-The recommended way to install pyrosm is from conda-forge with [mamba](https://mamba.readthedocs.io/) (or its standalone variant [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html)), a fast drop-in replacement for `conda`:
+The recommended way to install pyrosm is from conda-forge with [mamba](https://mamba.readthedocs.io/) (or its standalone variant [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html)), a fast drop-in replacement for `conda`. If you don't have it yet, download and install mamba via Miniforge from the [conda-forge download page](https://conda-forge.org/download/) — it ships mamba preconfigured with the conda-forge channel. Then install pyrosm with:
 
 `$ mamba install -c conda-forge pyrosm`
 
