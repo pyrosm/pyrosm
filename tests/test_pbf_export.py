@@ -179,6 +179,82 @@ def test_to_pbf_parallel_equals_sequential(helsinki_pbf):
         os.remove(out_par)
 
 
+def _write_multiblock_pbf(src_path, dst_path, replicas):
+    """Replicate ``src_path``'s blocks (with id offsets) into one multi-block PBF.
+
+    The bundled file has only a few OSMData blocks; replicating them gives enough
+    blocks that the parallel path genuinely spreads several across the workers.
+    """
+    import zlib
+    from struct import pack
+    from pyrosm.pbf_export import _iter_primitive_blocks
+    from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
+    from pyrosm.proto.osmformat_pb2 import HeaderBlock
+
+    def frame(out, btype, msg):
+        data = msg.SerializeToString()
+        blob = Blob()
+        blob.raw_size = len(data)
+        blob.zlib_data = zlib.compress(data)
+        blob_bytes = blob.SerializeToString()
+        bh = BlobHeader()
+        bh.type = btype
+        bh.datasize = len(blob_bytes)
+        hb = bh.SerializeToString()
+        out.write(pack(">L", len(hb)))
+        out.write(hb)
+        out.write(blob_bytes)
+
+    blocks = list(_iter_primitive_blocks(src_path))
+    with open(dst_path, "wb") as out:
+        header = HeaderBlock()
+        header.required_features.extend(["OsmSchema-V0.6", "DenseNodes"])
+        frame(out, "OSMHeader", header)
+        for r in range(replicas):
+            # Offset well above real OSM id ranges so replicas don't collide.
+            off = r * 200_000_000_000
+            for pb in blocks:
+                nb = type(pb)()
+                nb.CopyFrom(pb)
+                if off:
+                    for g in nb.primitivegroup:
+                        if len(g.dense.id) > 0:
+                            g.dense.id[0] += off
+                        for node in g.nodes:
+                            node.id += off
+                        for way in g.ways:
+                            way.id += off
+                            if len(way.refs) > 0:
+                                way.refs[0] += off
+                        for rel in g.relations:
+                            rel.id += off
+                            if len(rel.memids) > 0:
+                                rel.memids[0] += off
+                frame(out, "OSMData", nb)
+
+
+def test_to_pbf_parallel_multiblock(helsinki_pbf, tmp_path):
+    # 4 replicas of the bundled blocks -> enough OSMData blocks that workers=3
+    # genuinely runs several blocks per worker through the persistent pool.
+    big = str(tmp_path / "multiblock.osm.pbf")
+    _write_multiblock_pbf(helsinki_pbf, big, replicas=4)
+    osm = OSM(big, bounding_box=CROP_BBOX)
+    out_seq = osm.to_pbf(workers=1)
+    out_par = osm.to_pbf(workers=3)
+    try:
+        with open(out_seq, "rb") as f:
+            seq_bytes = f.read()
+        with open(out_par, "rb") as f:
+            par_bytes = f.read()
+        # Parallel output is byte-identical to sequential and re-reads in pyrosm.
+        assert seq_bytes == par_bytes
+        net = OSM(out_par).get_network()
+        assert net is not None and len(net) > 0
+    finally:
+        os.remove(out_seq)
+        os.remove(out_par)
+
+
 def test_to_pbf_osmium_cross_check(helsinki_pbf):
     osmium = pytest.importorskip("osmium")
     expected_ways, expected_nodes, _ = _expected_selection(helsinki_pbf, CROP_BBOX)

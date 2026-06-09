@@ -14,6 +14,7 @@ so coordinates round-trip exactly (no rounding loss).
 """
 
 import os
+import shutil
 import tempfile
 import zlib
 from struct import pack, unpack
@@ -413,12 +414,37 @@ cdef _write_pbf(filepath, output_path, kept_nodes_set, kept_ways_set, kept_rel_s
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+cdef _count_data_blocks(filepath):
+    """Count OSMData blocks by reading only blob headers (seeks past blob data)."""
+    cdef int n = 0
+    cdef int msg_len
+    with open(filepath, "rb") as f:
+        buf = f.read(4)
+        if len(buf) == 4:  # skip the leading OSMHeader blob
+            msg_len = unpack("!L", buf)[0]
+            blob_header = BlobHeader()
+            blob_header.ParseFromString(f.read(msg_len))
+            f.seek(blob_header.datasize, 1)
+        while True:
+            buf = f.read(4)
+            if len(buf) == 0:
+                break
+            msg_len = unpack("!L", buf)[0]
+            blob_header = BlobHeader()
+            blob_header.ParseFromString(f.read(msg_len))
+            if blob_header.type == "OSMData":
+                n += 1
+            f.seek(blob_header.datasize, 1)
+    return n
+
+
 cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
                workers=1):
     """Crop `source_path` by `bounding_box`, writing a valid PBF to `output_path`.
 
-    Returns the output path. `workers` is accepted for API symmetry; the parallel
-    path is selected when ``workers > 1``.
+    Returns the output path. When ``workers > 1`` and the file has enough blocks
+    to amortize pool startup (>= ``2 * workers`` OSMData blocks), the parallel
+    path is used; otherwise the (faster, for small files) sequential path runs.
     """
     bounds = _bounds_from_bbox(bounding_box)
 
@@ -430,9 +456,11 @@ cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
     _read_header(source_path)
 
     if workers is not None and workers > 1:
-        return _crop_pbf_parallel(
-            source_path, output_path, bounds, keep_relations, int(workers)
-        )
+        if _count_data_blocks(source_path) >= 2 * int(workers):
+            return _crop_pbf_parallel(
+                source_path, output_path, bounds, keep_relations, int(workers)
+            )
+        # Too few blocks for parallelism to pay off -> run sequentially.
 
     # Stage 1: nodes inside the bbox.
     nodes_in_bbox = _stage1_nodes_in_bbox(source_path, bounds)
@@ -463,18 +491,22 @@ cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
 # ---------------------------------------------------------------------------
 # The selection is staged (node -> way -> relation -> write); each stage is
 # internally parallel across blobs but the stages run in sequence because each
-# depends on the previous stage's *complete* result. The main process reads raw
-# (still-compressed) blob payloads sequentially (cheap I/O) and hands them to a
-# pool; workers do the heavy decompress + protobuf parse + (re-)encode. The
-# kept-id arrays a stage needs are distributed to workers via the pool
-# initializer. Output blobs come back in input order (Pool.imap preserves
-# order) so the written bytes are identical to the sequential path.
+# depends on the previous stage's *complete* result. A SINGLE pool is reused
+# across all four stages (re-spawning a pool per stage would re-pay the worker
+# startup cost four times). The main process reads raw (still-compressed) blob
+# payloads sequentially (cheap I/O) and hands them to the pool; workers do the
+# heavy decompress + protobuf parse + (re-)encode. The growing kept-id arrays a
+# stage needs are broadcast to the persistent workers via small `.npy` files in
+# a temp dir (written by the main process between stages, memory-mapped + cached
+# per worker on first use) rather than re-pickled per task. Output blobs come
+# back in input order (Pool.imap preserves order) so the written bytes are
+# identical to the sequential path.
 
-# Per-worker globals populated by `_winit`.
+# Per-worker globals populated by `_winit`; `_W_CACHE` memoizes the khash sets
+# built from the broadcast `.npy` files so each worker loads each set only once.
 _W_BOUNDS = None
-_W_NODES_SET = None
-_W_WAYS_SET = None
-_W_REL_SET = None
+_W_TMPDIR = None
+_W_CACHE = {}
 
 
 cdef _read_next_payload(f):
@@ -520,12 +552,21 @@ cdef _payload_to_block(payload):
     return pblock
 
 
-def _winit(bounds, nodes_arr, ways_arr, rel_arr):
-    global _W_BOUNDS, _W_NODES_SET, _W_WAYS_SET, _W_REL_SET
+def _winit(bounds, tmpdir):
+    global _W_BOUNDS, _W_TMPDIR, _W_CACHE
     _W_BOUNDS = bounds
-    _W_NODES_SET = None if nodes_arr is None else _to_set(nodes_arr)
-    _W_WAYS_SET = None if ways_arr is None else _to_set(ways_arr)
-    _W_REL_SET = None if rel_arr is None else _to_set(rel_arr)
+    _W_TMPDIR = tmpdir
+    _W_CACHE = {}
+
+
+def _w_get_set(name):
+    """Lazily load + cache the broadcast id set `name` from the temp dir."""
+    s = _W_CACHE.get(name)
+    if s is None:
+        arr = np.load(os.path.join(_W_TMPDIR, name + ".npy"))
+        s = _to_set(arr)
+        _W_CACHE[name] = s
+    return s
 
 
 def _w_stage1(payload):
@@ -556,6 +597,7 @@ def _w_stage1(payload):
 
 def _w_stage2(payload):
     pblock = _payload_to_block(payload)
+    nodes_set = _w_get_set("nodes_in_bbox")
     kept_way_ids = []
     extra_nodes = []
     for g in pblock.primitivegroup:
@@ -565,7 +607,7 @@ def _w_stage2(payload):
             refs = np.cumsum(np.fromiter(way.refs, dtype=np.int64, count=len(way.refs)))
             if len(refs) == 0:
                 continue
-            if _isin(refs, _W_NODES_SET).any():
+            if _isin(refs, nodes_set).any():
                 kept_way_ids.append(way.id)
                 extra_nodes.append(refs)
     return (np.array(kept_way_ids, dtype=np.int64), _unique_concat(extra_nodes))
@@ -573,6 +615,8 @@ def _w_stage2(payload):
 
 def _w_stage3(payload):
     pblock = _payload_to_block(payload)
+    nodes_set = _w_get_set("kept_nodes")
+    ways_set = _w_get_set("kept_ways")
     kept_rel_ids = []
     for g in pblock.primitivegroup:
         if len(g.relations) == 0:
@@ -587,10 +631,10 @@ def _w_stage3(payload):
             node_members = memids[types == _MEMBER_NODE]
             way_members = memids[types == _MEMBER_WAY]
             keep = False
-            if len(node_members) > 0 and _isin(node_members, _W_NODES_SET).any():
+            if len(node_members) > 0 and _isin(node_members, nodes_set).any():
                 keep = True
             if not keep and len(way_members) > 0 and \
-                    _isin(way_members, _W_WAYS_SET).any():
+                    _isin(way_members, ways_set).any():
                 keep = True
             if keep:
                 kept_rel_ids.append(rel.id)
@@ -600,45 +644,56 @@ def _w_stage3(payload):
 def _w_write(payload):
     pblock = _payload_to_block(payload)
     out_block = _build_output_block(
-        pblock, _W_NODES_SET, _W_WAYS_SET, _W_REL_SET
+        pblock,
+        _w_get_set("kept_nodes"),
+        _w_get_set("kept_ways"),
+        _w_get_set("kept_rel"),
     )
     if out_block is None:
         return None
     return _frame_blob("OSMData", out_block)
 
 
+cdef _broadcast(tmpdir, name, arr):
+    """Write a kept-id array to the temp dir for the persistent workers to load."""
+    np.save(os.path.join(tmpdir, name + ".npy"), np.ascontiguousarray(arr, dtype=np.int64))
+
+
 cdef _crop_pbf_parallel(source_path, output_path, bounds, keep_relations, workers):
     import multiprocessing as mp
 
-    # Stage 1: nodes inside the bbox.
-    with mp.Pool(workers, initializer=_winit,
-                 initargs=(bounds, None, None, None)) as pool:
+    tmpdir = tempfile.mkdtemp(prefix="pyrosm_crop_par_")
+    pool = mp.Pool(workers, initializer=_winit, initargs=(bounds, tmpdir))
+    try:
+        # Stage 1: nodes inside the bbox.
         results = pool.map(_w_stage1, _iter_payloads(source_path))
-    nodes_in_bbox = _unique_concat(results)
+        nodes_in_bbox = _unique_concat(results)
+        _broadcast(tmpdir, "nodes_in_bbox", nodes_in_bbox)
 
-    # Stage 2: complete ways.
-    with mp.Pool(workers, initializer=_winit,
-                 initargs=(bounds, nodes_in_bbox, None, None)) as pool:
+        # Stage 2: complete ways.
         results = pool.map(_w_stage2, _iter_payloads(source_path))
-    kept_ways = _unique_concat([w for w, _ in results])
-    extra_nodes = _unique_concat([e for _, e in results])
-    kept_nodes = _unique_concat([nodes_in_bbox, extra_nodes])
+        kept_ways = _unique_concat([w for w, _ in results])
+        extra_nodes = _unique_concat([e for _, e in results])
+        kept_nodes = _unique_concat([nodes_in_bbox, extra_nodes])
+        _broadcast(tmpdir, "kept_nodes", kept_nodes)
+        _broadcast(tmpdir, "kept_ways", kept_ways)
 
-    # Stage 3: relations.
-    if keep_relations:
-        with mp.Pool(workers, initializer=_winit,
-                     initargs=(bounds, kept_nodes, kept_ways, None)) as pool:
+        # Stage 3: relations.
+        if keep_relations:
             results = pool.map(_w_stage3, _iter_payloads(source_path))
-        kept_rel = _unique_concat(results)
-    else:
-        kept_rel = np.empty(0, dtype=np.int64)
+            kept_rel = _unique_concat(results)
+        else:
+            kept_rel = np.empty(0, dtype=np.int64)
+        _broadcast(tmpdir, "kept_rel", kept_rel)
 
-    # Write pass (imap preserves input order -> deterministic output bytes).
-    with open(output_path, "wb") as out:
-        _write_header(out, bounds)
-        with mp.Pool(workers, initializer=_winit,
-                     initargs=(bounds, kept_nodes, kept_ways, kept_rel)) as pool:
+        # Write pass (imap preserves input order -> deterministic output bytes).
+        with open(output_path, "wb") as out:
+            _write_header(out, bounds)
             for blob_bytes in pool.imap(_w_write, _iter_payloads(source_path)):
                 if blob_bytes is not None:
                     out.write(blob_bytes)
+    finally:
+        pool.close()
+        pool.join()
+        shutil.rmtree(tmpdir, ignore_errors=True)
     return output_path
