@@ -581,7 +581,7 @@ def test_write_pbf_r5py_routable(helsinki_pbf, tmp_path):
 
 
 def test_write_pbf_tag_str_normalization():
-    from pyrosm.pyrosm import _tag_str
+    from pyrosm.pbf_writer import _tag_str
 
     assert _tag_str(True) == "yes"
     assert _tag_str(False) == "no"
@@ -620,7 +620,7 @@ def test_write_pbf_metadata_preserved(helsinki_pbf, tmp_path):
 
 def test_write_pbf_row_tags_strips_members():
     import pandas as pd
-    from pyrosm.pyrosm import _row_tags
+    from pyrosm.pbf_writer import _row_tags
 
     row = pd.Series(
         {
@@ -716,3 +716,244 @@ def test_write_pbf_osmium_counts_additions(helsinki_pbf, tmp_path):
     # 1 new Point node + 2 new LineString vertices; 1 new way.
     assert counter.nodes == base_nodes + 3
     assert counter.ways == base_ways + 1
+
+
+# ---------------------------------------------------------------------------
+# pbf_writer unit coverage (issue #285 modularization)
+# ---------------------------------------------------------------------------
+def test_pbf_writer_tag_helpers():
+    import pandas as pd
+    from pyrosm.pbf_writer import _row_tags, _record_tags, _tag_key, _is_missing
+
+    # JSON-string tags: members + empty key stripped, real tags kept.
+    row = pd.Series(
+        {
+            "osm_type": "way",
+            "id": 1,
+            "highway": "residential",
+            "tags": '{"members":[1],"surface":"asphalt","":"x"}',
+            "geometry": None,
+        }
+    )
+    tags = _row_tags(row, "geometry")
+    assert tags["highway"] == "residential" and tags["surface"] == "asphalt"
+    assert "members" not in tags and "" not in tags
+
+    # Malformed JSON tags are ignored (no crash).
+    row2 = pd.Series(
+        {
+            "osm_type": "way",
+            "id": 1,
+            "highway": "path",
+            "tags": "nope",
+            "geometry": None,
+        }
+    )
+    assert _row_tags(row2, "geometry")["highway"] == "path"
+
+    assert _tag_key("") is None
+    assert _tag_key(5) == "5"
+
+    # _is_missing handles arrays/dicts without raising.
+    assert _is_missing(np.array([1, 2])) is False
+    assert _is_missing({"a": 1}) is False
+    assert _is_missing(float("nan")) is True
+    assert _is_missing(None) is True
+
+    # _record_tags: structural/members/visible/empty stripped, extra dict merged.
+    rec = {
+        "id": 1,
+        "version": 2,
+        "nodes": [1, 2],
+        "highway": "path",
+        "tags": {"surface": "gravel", "visible": False, "": "skip"},
+    }
+    assert _record_tags(rec) == {"highway": "path", "surface": "gravel"}
+
+
+def test_pbf_writer_frame_helpers():
+    from pyrosm.pbf_writer import _as_frames, _normalize_osm_type, _normalize_id
+
+    with pytest.raises(ValueError):
+        _as_frames("not a geodataframe")
+    assert _normalize_osm_type(b"Way") == "way"
+    assert _normalize_osm_type("NODE") == "node"
+    assert _normalize_id(np.int64(5)) == 5
+    assert _normalize_id("x") is None
+    assert _normalize_id(None) is None
+
+
+def test_pbf_writer_builder_geometry_errors():
+    from pyrosm.pbf_writer import _RecordBuilder
+
+    builder = _RecordBuilder()
+    builder.begin_synthesis()
+    with pytest.raises(ValueError):  # coordinate out of lon/lat range
+        builder.add_geometry(1, Point(500.0, 0.0), None)
+    with pytest.raises(ValueError):  # empty geometry
+        builder.add_geometry(2, LineString(), None)
+    with pytest.raises(ValueError):  # None geometry
+        builder.add_geometry(3, None, None)
+    with pytest.raises(ValueError):  # unsupported geometry type
+        builder.add_geometry(
+            4, MultiLineString([[(0, 0), (1, 1)], [(2, 2), (3, 3)]]), None
+        )
+
+
+def test_write_pbf_reprojects_crs(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    # New geometry supplied in a projected CRS (EPSG:3857) must be reprojected.
+    line = gpd.GeoDataFrame(
+        {"osm_type": ["way"], "id": [10**18], "highway": ["footway"], "tags": [None]},
+        geometry=[LineString([(24.94, 60.17), (24.95, 60.17)])],
+        crs="EPSG:4326",
+    ).to_crs(3857)
+    out = str(tmp_path / "crs.osm.pbf")
+    osm.write_pbf([osm.get_network(), line], out)
+
+    _, _, _, coords, way_refs = _read_elements(out)
+    raw = _way_tags(out)
+    synth = [w for w, t in raw.items() if w < 0 and t.get("highway") == "footway"][0]
+    for ref in way_refs[synth]:
+        x, y = coords[ref]
+        assert 24.9 < x < 25.0 and 60.1 < y < 60.2
+
+
+def test_write_pbf_matches_bytes_and_numpy_keys(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    e = osm.get_network("driving").iloc[[0]].copy()
+    wid = int(e.iloc[0]["id"])
+    e["osm_type"] = [b"WAY"]  # bytes + uppercase must still match the cached way
+    e["maxspeed"] = ["123"]
+    out = str(tmp_path / "match.osm.pbf")
+    osm.write_pbf(e, out)
+
+    raw = _way_tags(out)
+    assert raw[wid].get("maxspeed") == "123"  # edit applied to the existing way
+    assert all(w >= 0 for w in raw)  # no new (negative-id) way synthesized
+
+
+def test_write_pbf_point_shares_line_vertex(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    shared = (24.945, 60.172)
+    new = gpd.GeoDataFrame(
+        {
+            "osm_type": ["way", "node"],
+            "id": [10**18, 10**18 + 1],
+            "highway": ["footway", None],
+            "amenity": [None, "bench"],
+            "tags": [None, None],
+        },
+        geometry=[LineString([(24.94, 60.17), shared]), Point(shared)],
+        crs="EPSG:4326",
+    )
+    out = str(tmp_path / "share.osm.pbf")
+    osm.write_pbf([osm.get_network(), new], out)
+
+    _, _, _, coords, _ = _read_elements(out)
+    # The bench Point coincides with the line's endpoint -> one shared node, so
+    # only 2 new (negative-id) nodes exist, not 3.
+    neg_nodes = [n for n in coords if n < 0]
+    assert len(neg_nodes) == 2
+
+
+def test_pbf_writer_reproject_and_normalize_helpers():
+    from pyrosm.pbf_writer import _reproject_to_wgs84, _normalize_osm_type
+
+    g_none = gpd.GeoDataFrame({"a": [1]}, geometry=[Point(24.9, 60.1)], crs=None)
+    g_proj = gpd.GeoDataFrame(
+        {"a": [1]}, geometry=[Point(24.9, 60.1)], crs="EPSG:4326"
+    ).to_crs(3857)
+    out = _reproject_to_wgs84([g_none, g_proj])
+    assert out[0].crs is None  # CRS-less frame passes through untouched
+    assert out[1].crs.to_epsg() == 4326  # projected frame is reprojected
+    assert _normalize_osm_type(None) is None  # non-string types pass through
+    assert _normalize_osm_type(7) == 7
+
+
+def test_pbf_writer_tag_edge_cases():
+    import pandas as pd
+    from pyrosm.pbf_writer import _row_tags, _record_tags
+
+    # None-valued column and empty-name column are both skipped.
+    row = pd.Series(
+        {
+            "osm_type": "way",
+            "id": 1,
+            "highway": "path",
+            "ref": None,
+            "": "x",
+            "tags": None,
+            "geometry": None,
+        }
+    )
+    assert _row_tags(row, "geometry") == {"highway": "path"}
+
+    rec = {
+        "id": 1,
+        "version": 2,
+        "nodes": [1, 2],
+        "highway": "path",
+        "ref": None,
+        "": "skipcol",
+        "tags": {"surface": "gravel"},
+    }
+    assert _record_tags(rec) == {"highway": "path", "surface": "gravel"}
+
+
+def test_write_pbf_edit_node_and_relation(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    osm._read_pbf()
+    node_pois = osm.get_pois()
+    node_pois = node_pois[node_pois["osm_type"] == "node"]
+    nid = int(node_pois.iloc[0]["id"])
+    rid = int(osm._relations["id"][0])
+
+    edit = gpd.GeoDataFrame(
+        {
+            "osm_type": ["node", "relation"],
+            "id": [nid, rid],
+            "note": ["edited_node", "edited_rel"],
+            "tags": [None, None],
+        },
+        geometry=[Point(24.94, 60.17), Point(24.95, 60.17)],
+        crs="EPSG:4326",
+    )
+    out = str(tmp_path / "edit_nr.osm.pbf")
+    osm.write_pbf([osm.get_network(), edit], out)
+
+    from pyrosm.pbf_export import _iter_primitive_blocks
+
+    node_note = rel_note = None
+    for pblock in _iter_primitive_blocks(out):
+        st = [s.decode("utf-8", "replace") for s in pblock.stringtable.s]
+        for grp in pblock.primitivegroup:
+            for rel in grp.relations:
+                if rel.id == rid:
+                    rel_note = {st[k]: st[v] for k, v in zip(rel.keys, rel.vals)}.get(
+                        "note"
+                    )
+            if len(grp.dense.id) == 0:
+                continue
+            ids = np.cumsum(np.array(list(grp.dense.id), dtype=np.int64))
+            kv = list(grp.dense.keys_vals)
+            segments, cur, it = [], {}, iter(kv)
+            for k in it:
+                if k == 0:
+                    segments.append(cur)
+                    cur = {}
+                else:
+                    cur[st[k]] = st[next(it)]
+            for node_id, seg in zip(ids, segments):
+                if int(node_id) == nid:
+                    node_note = seg.get("note")
+    assert node_note == "edited_node"
+    assert rel_note == "edited_rel"
+
+
+def test_pbf_writer_no_relations():
+    from pyrosm.pbf_writer import _RecordBuilder, _add_base_relations
+
+    builder = _RecordBuilder()
+    _add_base_relations(builder, {}, {})  # relations cache without "id" -> no-op
+    assert builder.rels == []
