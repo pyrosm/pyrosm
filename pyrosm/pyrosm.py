@@ -845,6 +845,58 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
+    def to_pbf(self, output_path=None, keep_relations=True, workers=1):
+        """
+        Crop the source PBF by this object's ``bounding_box`` and write a valid,
+        re-readable ``*.osm.pbf`` to disk.
+
+        Cropping is "complete ways": a way is kept when at least one of its nodes
+        falls inside the bounding box, and the kept way retains its full node list
+        so geometries are not cut at the box edge. The crop streams the source
+        file blob-by-blob and never loads it fully into memory.
+
+        A ``Polygon``/``MultiPolygon`` ``bounding_box`` is cropped by its envelope
+        (bounding rectangle), matching how ``OSM()`` itself filters by a polygon
+        bounding box, so a cropped-and-reread file matches reading the source with
+        the same ``bounding_box``.
+
+        Parameters
+        ----------
+
+        output_path : str, optional
+            Where to write the cropped PBF. When ``None`` (default) a temporary
+            file is created in the system temp directory and its path returned.
+
+        keep_relations : bool
+            When ``True`` (default) relations referencing a kept node or way are
+            written; when ``False`` no relations are written.
+
+        workers : int
+            Number of worker processes for the CPU-heavy per-block work. ``1``
+            (default) runs sequentially; ``>1`` uses a multiprocessing pool and
+            produces a byte-identical output.
+
+        Returns
+        -------
+        str
+            The path of the written PBF file.
+        """
+        from pyrosm.pbf_export import crop_pbf
+
+        if self.bounding_box is None:
+            raise ValueError(
+                "Cropping a PBF requires a bounding box. Construct the OSM "
+                "object with `OSM(filepath, bounding_box=...)` before calling "
+                "`to_pbf()`."
+            )
+        return crop_pbf(
+            self.filepath,
+            output_path,
+            self.bounding_box,
+            keep_relations=keep_relations,
+            workers=workers,
+        )
+
     @staticmethod
     def to_graph(
         nodes,

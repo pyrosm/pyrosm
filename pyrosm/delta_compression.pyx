@@ -39,32 +39,15 @@ cdef delta_decode_changeset(data):
     return changesets.astype(np.int32)
 
 
-# The delta_encode_* helpers are the write-side counterparts of delta_decode_*,
-# retained for the planned PBF-export feature; they have no call sites yet and so
-# are currently uncovered by tests.
-cdef delta_encode_latitude(lat_array, node_granularity, lat_offset):
-    # Note: There might be small difference in the coordinates (1 cm) after
-    # encoding due to rounding errors
-    div = 1000000000
-    lat_deltas = np.zeros(len(lat_array) + 1, dtype=np.float64)
-    lat_deltas[1:] = list(lat_array)
-    lat_deltas = (np.diff(lat_deltas) / node_granularity - lat_offset) * div
-    lat_deltas = lat_deltas.astype(np.int64)
-    return lat_deltas
-
-
-cdef delta_encode_longitude(lon_array, node_granularity, lon_offset):
-    # Note: There might be small difference in the coordinates (1 cm) after
-    # encoding due to rounding errors
-    div = 1000000000
-    lon_deltas = np.zeros(len(lon_array) + 1, dtype=np.float64)
-    lon_deltas[1:] = list(lon_array)
-    lon_deltas = (np.diff(lon_deltas) / node_granularity - lon_offset) * div
-    lon_deltas = lon_deltas.astype(np.int64)
-    return lon_deltas
-
-cdef delta_encode_id(id_array):
-    id_deltas = np.zeros(len(id_array) + 1, dtype=np.int64)
-    id_deltas[1:] = list(id_array)
-    ids = np.diff(id_deltas)
-    return ids
+# Write-side counterpart of the delta_decode_* readers, used by the PBF-export
+# feature (pyrosm/pbf_export.pyx). The decoders cumulative-sum the stored deltas
+# back into absolute integers (raw id / coordinate-grid / timestamp / changeset
+# positions); this encoder is the exact inverse in that same integer space, so a
+# cropped subset of nodes round-trips its ids and coordinates with no loss.
+cdef delta_encode(values):
+    arr = np.ascontiguousarray(values, dtype=np.int64)
+    deltas = np.empty(len(arr), dtype=np.int64)
+    if len(arr) > 0:
+        deltas[0] = arr[0]
+        deltas[1:] = np.diff(arr)
+    return deltas

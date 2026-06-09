@@ -4,6 +4,7 @@ Changelog
 Unreleased
 ----------
 
+- NEW: Add `OSM.to_pbf(output_path=None, keep_relations=True, workers=1)` to crop the source `.osm.pbf` by the object's `bounding_box` and write a valid, re-readable PBF to disk (a temp file when no path is given). Cropping is memory-efficient (streams the file blob-by-blob, holds only id sets) and "complete-ways" (a way is kept when >=1 node is inside the box and keeps its full node list); coordinates round-trip exactly. `workers>1` parallelizes the per-block work and produces byte-identical output (#6)
 - FIXED: Decode node coordinates at full float64 precision (exact OSM 7-decimal values, matching GDAL/osmium); they were truncated to float32, introducing a ~0.1 m error, false extra precision, and visible distortion of straight geometry edges (#245, #225)
 - FIXED: Normalize polygon/multipolygon ring orientation to the OGC/GeoJSON right-hand rule (exterior counter-clockwise, holes clockwise), matching osmium and QGIS; previously rings inherited the OSM way node order and were inconsistently wound (#230)
 - NEW: Expose relation members under the `members` key of the JSON `tags` column (each `{member_id, member_type, member_role}`), so relations carry their members in the returned GeoDataFrame (#216)
