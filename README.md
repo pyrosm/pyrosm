@@ -44,13 +44,17 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
  
 ## Install
 
-Pyrosm is distributed via PyPi and conda-forge. 
+Pyrosm is distributed via PyPI and conda-forge.
 
-The recommended way to install pyrosm is using `conda` package manager:
+The recommended way to install pyrosm is from conda-forge with [mamba](https://mamba.readthedocs.io/) (or its standalone variant [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html)), a fast drop-in replacement for `conda`. If you don't have it yet, download and install mamba via Miniforge from the [conda-forge download page](https://conda-forge.org/download/) — it ships mamba preconfigured with the conda-forge channel. Then install pyrosm with:
 
-`$ conda install -c conda-forge pyrosm`
+`$ mamba install -c conda-forge pyrosm`
 
-You can also install the package with pip:
+or, with micromamba:
+
+`$ micromamba install -c conda-forge pyrosm`
+
+(the same command works with `conda` if you have it). You can also install the package with pip:
 
 `$ pip install pyrosm`
 
@@ -86,17 +90,17 @@ please check the [contribution guidelines](https://pyrosm.readthedocs.io/en/late
 
 ## Development
 
-You can install a local development version of the tool by 1) installing necessary packages with conda and 2) building pyrosm from source:
+You can install a local development version of the tool by 1) creating an environment with the necessary packages using mamba/micromamba and 2) building pyrosm from source:
 
- 1. install a conda-environment for one of the supported Python versions (3.10–3.14) by:
+ 1. create an environment for one of the supported Python versions (3.10–3.14) by:
  
-    - e.g. Python 3.14 (you might want to modify the env-name which is `test` by default): `$ conda env create -f ci/314-conda.yaml`
+    - e.g. Python 3.14 (you might want to modify the env-name which is `test` by default): `$ mamba env create -f ci/314-conda.yaml` (or `$ micromamba create -f ci/314-conda.yaml`)
     - environment files for other versions are available under `ci/` (e.g. `ci/312-conda.yaml`)
     
  2. build pyrosm development version from master (activate the environment first):
  
     - `pip install -e . --no-build-isolation`
-    - (`--no-build-isolation` builds the Cython extensions against the conda-provided build dependencies, i.e. Cython and `cykhash`, instead of refetching and recompiling them in an isolated build environment)
+    - (`--no-build-isolation` builds the Cython extensions against the build dependencies provided by the environment, i.e. Cython and `cykhash`, instead of refetching and recompiling them in an isolated build environment)
 
 You can run tests with `pytest` by executing:
  
