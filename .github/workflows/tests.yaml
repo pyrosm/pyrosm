@@ -94,3 +94,37 @@ jobs:
           # Coverage upload is informational; a transient Codecov problem
           # (e.g. a 429 rate limit) must not fail the test job.
           fail_ci_if_error: false
+
+  r5py:
+    # r5py is JVM-based and heavy, so it is not in the main test matrix; this
+    # dedicated Linux job installs it (+ a JDK) so the OSM.write_pbf -> R5 routing
+    # acceptance test (#285) actually runs instead of being skipped.
+    name: r5py routing acceptance (ubuntu, 3.12)
+    needs: lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Conda environment with Micromamba
+        uses: mamba-org/setup-micromamba@v1
+        with:
+          environment-file: ci/r5py-conda.yaml
+          auto-activate-base: false
+          activate-environment: test
+          channel-priority: strict
+
+      - name: Install pyrosm
+        shell: bash -l {0}
+        run: pip install -e . --no-build-isolation
+
+      - name: Verify r5py is importable (the acceptance test must not silently skip)
+        shell: bash -l {0}
+        run: python -c "import r5py; print('r5py', r5py.__version__)"
+
+      - name: Run the PBF export tests (incl. the r5py routing acceptance)
+        shell: bash -l {0}
+        run: pytest -v -r s --color=yes tests/test_pbf_export.py
