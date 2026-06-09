@@ -4,6 +4,7 @@ Changelog
 Unreleased
 ----------
 
+- NEW: Automate PyPI releases — a GitHub Actions ``release`` workflow builds binary wheels (cibuildwheel; Linux/macOS/Windows × CPython 3.10–3.14) and an sdist, then publishes them to PyPI via Trusted Publishing and creates a GitHub release when a ``vX.Y.Z`` tag is pushed (#287)
 - FIXED: Decode node coordinates at full float64 precision (exact OSM 7-decimal values, matching GDAL/osmium); they were truncated to float32, introducing a ~0.1 m error, false extra precision, and visible distortion of straight geometry edges (#245, #225)
 - FIXED: Normalize polygon/multipolygon ring orientation to the OGC/GeoJSON right-hand rule (exterior counter-clockwise, holes clockwise), matching osmium and QGIS; previously rings inherited the OSM way node order and were inconsistently wound (#230)
 - NEW: Expose relation members under the ``members`` key of the JSON ``tags`` column (each ``{member_id, member_type, member_role}``), so relations carry their members in the returned GeoDataFrame (#216)

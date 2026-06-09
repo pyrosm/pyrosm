@@ -3,3 +3,12 @@ requires = ["setuptools", "wheel", "Cython", "cykhash>=2"]
 
 [tool.black]
 force-exclude = '.*_pb2\.py$'
+
+[tool.cibuildwheel]
+# CPython 3.10–3.14, matching python_requires and the test matrix. PyPy is
+# excluded (the build targets CPython); musllinux, 32-bit and win32 are skipped.
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+skip = "*-musllinux_* *_i686 *-win32"
+build-frontend = "build"
+# Import the freshly built wheel and parse the bundled extract end to end.
+test-command = "python {project}/ci/smoke_test.py"
