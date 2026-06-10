@@ -33,6 +33,7 @@ requirements = [
     "shapely>=2.1",
     "cykhash",
     "protobuf>=6.33.5",
+    "certifi",
 ]
 
 # Optional line-trace build for measuring Cython (.pyx) test coverage. Enabled

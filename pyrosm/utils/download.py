@@ -1,8 +1,12 @@
-import urllib
+import urllib.request
 import tempfile
 import os
 import enum
+import shutil
+import ssl
 from urllib.error import HTTPError
+
+import certifi
 
 
 class UNIT(enum.Enum):
@@ -52,7 +56,16 @@ def download(url, filename, update, target_dir):
     # Download data to temp if it does not exist or if update is requested
     if update or file_exists is False:
         try:
-            filepath, msg = urllib.request.urlretrieve(url, filepath)
+            # Build the HTTPS context from certifi's CA bundle instead of the OS
+            # trust store. On Windows, loading the system certificate store can
+            # raise ssl.SSLError [ASN1: NOT_ENOUGH_DATA] (a CPython bug triggered
+            # by a malformed entry in the store); certifi avoids it and works the
+            # same across platforms.
+            context = ssl.create_default_context(cafile=certifi.where())
+            with urllib.request.urlopen(url, context=context) as response, open(
+                filepath, "wb"
+            ) as out_file:
+                shutil.copyfileobj(response, out_file)
         except HTTPError:
             raise ValueError(
                 f"PBF-file '{url}' is temporarily unavailable. " f"Try again later."

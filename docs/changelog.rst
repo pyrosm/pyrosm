@@ -14,6 +14,7 @@ This is a major release that changes the PBF parsing backend.
 - FIXED: Decode node coordinates at full float64 precision (exact OSM 7-decimal values, matching GDAL/osmium); they were truncated to float32, introducing a ~0.1 m error, false extra precision, and visible distortion of straight geometry edges (#283, #245, #225)
 - FIXED: Normalize polygon/multipolygon ring orientation to the OGC/GeoJSON right-hand rule (exterior counter-clockwise, holes clockwise), matching osmium and QGIS; previously rings inherited the OSM way node order and were inconsistently wound (#282, #230)
 - FIXED: ``get_bounding_box`` now reads the header bounding box correctly; it returned ``None`` for every file after the protobuf backend migration (#280, #160)
+- FIXED: Download data over HTTPS using certifi's CA bundle instead of the OS trust store, so fetching datasets no longer fails on Windows with ``ssl.SSLError [ASN1: NOT_ENOUGH_DATA]`` (a CPython bug triggered by a malformed entry in the Windows certificate store) (#294)
 - Refresh the README badges (#278)
 
 v0.7.0 (Jun 7, 2026)
