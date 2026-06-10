@@ -14,6 +14,18 @@ def helsinki_pbf():
     return pbf_path
 
 
+def test_lazy_public_api():
+    import pyrosm
+
+    # The public names are lazily resolved via module __getattr__.
+    assert pyrosm.OSM.__name__ == "OSM"
+    assert callable(pyrosm.get_data)
+    assert callable(pyrosm.get_path)
+    # Unknown attributes still raise AttributeError.
+    with pytest.raises(AttributeError):
+        pyrosm.does_not_exist
+
+
 def test_network(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame

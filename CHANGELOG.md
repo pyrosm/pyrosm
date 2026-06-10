@@ -1,6 +1,12 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- NEW: Add `OSM.to_pbf(output_path=None, keep_relations=True, workers=1)` to crop the source `.osm.pbf` by the object's `bounding_box` and write a valid, re-readable PBF to disk (a temp file when no path is given). Cropping is memory-efficient (streams the file blob-by-blob, holds only id sets) and "complete-ways" (a way is kept when >=1 node is inside the box and keeps its full node list); coordinates round-trip exactly. `workers>1` parallelizes the per-block work over a single process pool and produces byte-identical output (with a sequential fallback for files too small to amortize pool startup) (#284, #6)
+- CHANGED: Import `pyrosm` lazily so `import pyrosm` no longer eagerly loads geopandas/shapely (~2 s); `OSM`, `get_data` and `get_path` are still importable as before and load on first use (#284, #6)
+
 v0.8.0
 ------
 

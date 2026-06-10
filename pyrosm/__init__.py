@@ -1,9 +1,23 @@
 from importlib.metadata import version, PackageNotFoundError
 
-from pyrosm.data import get_data, get_path  # drop get_path in the future
-from pyrosm.pyrosm import OSM
-
 try:
     __version__ = version("pyrosm")
 except PackageNotFoundError:  # running from a source tree without an install
     __version__ = "unknown"
+
+# `OSM` pulls in geopandas/shapely (~2 s); import it lazily so that lightweight
+# entry points (e.g. the multiprocessing workers in pyrosm.pbf_export, which only
+# need protobuf + numpy) do not pay that cost when importing a pyrosm submodule.
+__all__ = ["OSM", "get_data", "get_path"]
+
+
+def __getattr__(name):
+    if name == "OSM":
+        from pyrosm.pyrosm import OSM
+
+        return OSM
+    if name in ("get_data", "get_path"):  # drop get_path in the future
+        from pyrosm.data import get_data, get_path
+
+        return get_data if name == "get_data" else get_path
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
