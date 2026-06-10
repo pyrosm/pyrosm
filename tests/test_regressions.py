@@ -825,3 +825,44 @@ def test_node_coordinates_decoded_at_full_precision(tmp_path):
     assert gdf["lon"].dtype == np.float64
     assert gdf["lat"].dtype == np.float64
     assert gdf.loc[gdf["id"] == 1, "lon"].iloc[0] == -80.4410082
+
+
+def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):
+    """Downloads must build the HTTPS context from certifi's CA bundle, not the
+    OS trust store: on Windows, loading the system certificate store can raise
+    ssl.SSLError [ASN1: NOT_ENOUGH_DATA] (a CPython bug on a malformed store
+    entry), which aborted every download-backed test on the windows runners."""
+    import io
+    import os
+    import ssl
+
+    import certifi
+
+    from pyrosm.utils import download as dl
+
+    captured = {}
+
+    def fake_create(*args, **kwargs):
+        captured["cafile"] = kwargs.get("cafile")
+        # Return a bare context; do NOT load the OS trust store (that is the very
+        # Windows ssl bug under test). fake_urlopen ignores the context anyway.
+        return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+    def fake_urlopen(url, context=None):
+        captured["context"] = context
+        return io.BytesIO(b"x" * 50000)
+
+    monkeypatch.setattr(dl.ssl, "create_default_context", fake_create)
+    monkeypatch.setattr(dl.urllib.request, "urlopen", fake_urlopen)
+
+    out = dl.download(
+        "https://example.invalid/data.osm.pbf",
+        "data.osm.pbf",
+        True,
+        str(tmp_path),
+    )
+
+    # The CA bundle came from certifi, and that context was handed to urlopen.
+    assert captured["cafile"] == certifi.where()
+    assert isinstance(captured["context"], ssl.SSLContext)
+    assert os.path.exists(out)
