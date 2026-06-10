@@ -897,6 +897,64 @@ class OSM:
             workers=workers,
         )
 
+    def write_pbf(self, data, output_path):
+        """
+        Write the OSM data this object holds back to a valid, re-readable
+        ``*.osm.pbf``, applying attribute/tag edits from a (modified)
+        GeoDataFrame.
+
+        The whole cached dataset (all nodes/ways/relations read from the source)
+        is written. Each row of ``data`` updates the tags of the matching element
+        (by ``osm_type`` + ``id``); rows whose ``id`` is not in the source are
+        added as new elements synthesized from their geometry (with negative ids).
+        Topology and coordinates come from the data pyrosm read, so the output is
+        faithful and re-readable (e.g. by pyrosm, osmium, GDAL and r5py/R5).
+
+        Typical use is to modify attributes in pandas and save them back::
+
+            osm = OSM("data.osm.pbf")
+            edges = osm.get_network("driving")
+            edges["maxspeed"] = edges["maxspeed"].fillna(50)
+            edges["travel_time"] = edges["length"] / (edges["maxspeed"] / 3.6)
+            osm.write_pbf(edges, "modified.osm.pbf")
+
+        Parameters
+        ----------
+
+        data : GeoDataFrame or list of GeoDataFrame
+            The (possibly modified) feature frame(s) whose tag columns are written
+            onto the matching elements. New rows (ids not in the source) are added
+            from their geometry: ``Point`` -> node, ``LineString`` -> way, hole-less
+            ``Polygon`` -> closed way. Polygons with holes, MultiPolygon and
+            MultiLineString geometries are not supported and raise ``ValueError``.
+
+        output_path : str
+            Where to write the PBF.
+
+        Returns
+        -------
+        str
+            The path of the written PBF file.
+
+        Notes
+        -----
+        v1 applies edits and additions, not deletions: dropping rows from ``data``
+        does not remove elements (the whole cached dataset is the base set).
+        """
+        from pyrosm.pbf_writer import write_geodataframe_to_pbf
+
+        if self._way_records is None or self._node_coordinates is None:
+            self._read_pbf()
+
+        return write_geodataframe_to_pbf(
+            data,
+            output_path,
+            node_coordinates=self._node_coordinates,
+            way_records=self._way_records,
+            relations=self._relations,
+            nodes=self._nodes,
+        )
+
     @staticmethod
     def to_graph(
         nodes,

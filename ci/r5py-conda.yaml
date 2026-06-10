@@ -1,0 +1,29 @@
+name: test
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.12
+  # required
+  - cython
+  - cykhash>=2
+  - geopandas
+  - protobuf>=6.33.5
+  - python-rapidjson
+  # optional
+  - networkx
+  - pandana
+  - pandarm
+  - python-igraph
+  # testing
+  - osmnx
+  - pyosmium
+  - black
+  - codecov
+  - pytest
+  - pytest-cov
+  - requests
+  # r5py routing acceptance (issue #285): R5 is JVM-based, so a JDK is required.
+  - r5py
+  - openjdk

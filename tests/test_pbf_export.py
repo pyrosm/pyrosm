@@ -282,3 +282,687 @@ def test_to_pbf_osmium_cross_check(helsinki_pbf):
         assert counter.ways == len(expected_ways)
     finally:
         os.remove(out)
+
+
+# ---------------------------------------------------------------------------
+# OSM.write_pbf (issue #285)
+# ---------------------------------------------------------------------------
+import geopandas as gpd  # noqa: E402
+from shapely.geometry import (  # noqa: E402
+    GeometryCollection,
+    LineString,
+    MultiLineString,
+    MultiPolygon,
+    Point,
+    Polygon,
+)
+
+
+def _way_tags(path):
+    """Map way id -> {tag key: value} read straight from a written PBF."""
+    from pyrosm.pbf_export import _iter_primitive_blocks
+
+    out = {}
+    for pblock in _iter_primitive_blocks(path):
+        st = [s.decode("utf-8", "replace") for s in pblock.stringtable.s]
+        for grp in pblock.primitivegroup:
+            for way in grp.ways:
+                out[way.id] = {st[k]: st[v] for k, v in zip(way.keys, way.vals)}
+    return out
+
+
+def test_write_pbf_roundtrip_edit(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    edges = osm.get_network("driving").copy()
+    edges["maxspeed"] = edges["maxspeed"].fillna("50")
+    edges["travel_time"] = (edges["length"] / 10.0).round(2)
+
+    out = str(tmp_path / "edited.osm.pbf")
+    osm.write_pbf(edges, out)
+
+    re = OSM(out).get_network("driving")
+    assert len(re) == len(edges)
+    # maxspeed is now fully populated (the edit took effect)...
+    assert re["maxspeed"].notna().all()
+    # ...and the brand-new travel_time tag is present on every edited way.
+    has_tt = re["tags"].dropna().astype(str).str.contains("travel_time")
+    assert has_tt.sum() == len(re)
+    # `visible` (a structural flag) must NOT be written as a tag.
+    raw = _way_tags(out)
+    assert all("visible" not in tags for tags in raw.values())
+
+
+def test_write_pbf_whole_dataset_preserved(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    out = str(tmp_path / "whole.osm.pbf")
+    # Pass only the network, but buildings (untouched) must survive the write.
+    osm.write_pbf(osm.get_network(), out)
+    buildings = OSM(out).get_buildings()
+    assert buildings is not None and len(buildings) > 0
+
+
+def test_write_pbf_untouched_poi_tags_survive(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    pois = osm.get_pois()
+    node_pois = pois[pois["osm_type"] == "node"]
+    # pick a POI node carrying a 'name' tag
+    named = node_pois[node_pois["name"].notna()]
+    poi_id = int(named.iloc[0]["id"])
+    poi_name = named.iloc[0]["name"]
+
+    out = str(tmp_path / "poi.osm.pbf")
+    # Write only the network; the untouched POI node must keep its tags.
+    osm.write_pbf(osm.get_network(), out)
+
+    from pyrosm.pbf_export import _iter_primitive_blocks
+
+    found = None
+    for pblock in _iter_primitive_blocks(out):
+        st = [s.decode("utf-8", "replace") for s in pblock.stringtable.s]
+        for grp in pblock.primitivegroup:
+            if len(grp.dense.id) == 0:
+                continue
+            ids = np.cumsum(np.array(list(grp.dense.id), dtype=np.int64))
+            # split keys_vals into per-node (key,val) segments
+            kv = list(grp.dense.keys_vals)
+            segments, cur = [], {}
+            it = iter(kv)
+            for k in it:
+                if k == 0:
+                    segments.append(cur)
+                    cur = {}
+                else:
+                    cur[st[k]] = st[next(it)]
+            for nid, seg in zip(ids, segments):
+                if int(nid) == poi_id:
+                    found = seg
+    assert found is not None
+    assert found.get("name") == poi_name
+
+
+def test_write_pbf_coordinate_fidelity(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    out = str(tmp_path / "coords.osm.pbf")
+    osm.write_pbf(osm.get_network(), out)
+
+    _, _, _, src_coords, _ = _read_elements(helsinki_pbf)
+    _, _, _, out_coords, _ = _read_elements(out)
+    common = set(src_coords) & set(out_coords)
+    assert len(common) > 0
+    max_err = max(
+        max(
+            abs(src_coords[n][0] - out_coords[n][0]),
+            abs(src_coords[n][1] - out_coords[n][1]),
+        )
+        for n in common
+    )
+    assert max_err < 1e-7
+
+
+def test_write_pbf_new_linestring(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    line = [(24.94, 60.17), (24.945, 60.172), (24.95, 60.17)]
+    new = gpd.GeoDataFrame(
+        {"osm_type": ["way"], "id": [10**18], "highway": ["footway"], "tags": [None]},
+        geometry=[LineString(line)],
+        crs="EPSG:4326",
+    )
+    out = str(tmp_path / "new_line.osm.pbf")
+    osm.write_pbf([osm.get_network(), new], out)
+
+    raw = _way_tags(out)
+    synth = [
+        wid for wid, tags in raw.items() if wid < 0 and tags.get("highway") == "footway"
+    ]
+    assert len(synth) == 1  # synthesized way carries a negative id
+    assert OSM(out).get_network() is not None
+
+    # The synthesized way's geometry matches the input LineString (exact grid).
+    _, _, _, coords, way_refs = _read_elements(out)
+    refs = way_refs[synth[0]]
+    assert len(refs) == len(line)
+    for (in_x, in_y), ref in zip(line, refs):
+        out_x, out_y = coords[ref]
+        assert abs(out_x - in_x) < 1e-7
+        assert abs(out_y - in_y) < 1e-7
+
+
+def test_write_pbf_new_point_and_polygon(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    pt = gpd.GeoDataFrame(
+        {"osm_type": ["node"], "id": [10**18], "amenity": ["bench"], "tags": [None]},
+        geometry=[Point(24.945, 60.171)],
+        crs="EPSG:4326",
+    )
+    poly = gpd.GeoDataFrame(
+        {"osm_type": ["way"], "id": [10**18 + 1], "building": ["yes"], "tags": [None]},
+        geometry=[
+            Polygon([(24.94, 60.17), (24.941, 60.17), (24.941, 60.171), (24.94, 60.17)])
+        ],
+        crs="EPSG:4326",
+    )
+    out = str(tmp_path / "new_pt_poly.osm.pbf")
+    osm.write_pbf([pt, poly], out)
+
+    # The synthesized polygon is a negative-id, closed way tagged building=yes.
+    raw = _way_tags(out)
+    _, _, _, _, way_refs = _read_elements(out)
+    synth_poly = [
+        wid for wid, tags in raw.items() if wid < 0 and tags.get("building") == "yes"
+    ]
+    assert len(synth_poly) == 1
+    refs = way_refs[synth_poly[0]]
+    assert refs[0] == refs[-1]  # closed ring
+
+    re = OSM(out)
+    pois = re.get_pois()
+    assert pois is not None and (pois["amenity"] == "bench").any()
+    buildings = re.get_buildings()
+    assert buildings is not None and len(buildings) > 0
+
+
+@pytest.mark.parametrize(
+    "geom",
+    [
+        MultiLineString(
+            [[(24.94, 60.17), (24.95, 60.17)], [(24.96, 60.17), (24.97, 60.17)]]
+        ),
+        Polygon(
+            [(24.94, 60.17), (24.95, 60.17), (24.95, 60.18), (24.94, 60.17)],
+            [[(24.943, 60.172), (24.946, 60.172), (24.946, 60.175), (24.943, 60.172)]],
+        ),
+        MultiPolygon(
+            [
+                Polygon(
+                    [(24.94, 60.17), (24.95, 60.17), (24.95, 60.18), (24.94, 60.17)]
+                ),
+                Polygon(
+                    [(24.96, 60.17), (24.97, 60.17), (24.97, 60.18), (24.96, 60.17)]
+                ),
+            ]
+        ),
+        GeometryCollection(
+            [Point(24.94, 60.17), LineString([(24.95, 60.17), (24.96, 60.17)])]
+        ),
+    ],
+)
+def test_write_pbf_unsupported_geometry_raises(helsinki_pbf, tmp_path, geom):
+    osm = OSM(helsinki_pbf)
+    bad = gpd.GeoDataFrame(
+        {"osm_type": ["way"], "id": [10**18], "highway": ["path"], "tags": [None]},
+        geometry=[geom],
+        crs="EPSG:4326",
+    )
+    with pytest.raises(ValueError):
+        osm.write_pbf(bad, str(tmp_path / "bad.osm.pbf"))
+
+
+def test_write_pbf_api(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    edges = osm.get_network()
+    single = str(tmp_path / "single.osm.pbf")
+    assert osm.write_pbf(edges, single) == single
+    assert os.path.exists(single)
+
+    as_list = str(tmp_path / "list.osm.pbf")
+    osm.write_pbf([edges], as_list)
+    assert OSM(as_list).get_network() is not None
+
+    with pytest.raises(ValueError):
+        osm.write_pbf("not a geodataframe", str(tmp_path / "z.osm.pbf"))
+
+
+def test_write_pbf_osmium_cross_check(helsinki_pbf, tmp_path):
+    osmium = pytest.importorskip("osmium")
+    osm = OSM(helsinki_pbf)
+    out = str(tmp_path / "osmium.osm.pbf")
+    osm.write_pbf(osm.get_network(), out)
+    expected_nodes = len(osm._node_coordinates)
+    expected_ways = len(osm._way_records)
+    expected_relations = len(osm._relations["id"]) if "id" in osm._relations else 0
+
+    class Counter(osmium.SimpleHandler):
+        def __init__(self):
+            super().__init__()
+            self.nodes = self.ways = self.relations = 0
+
+        def node(self, n):
+            self.nodes += 1
+
+        def way(self, w):
+            self.ways += 1
+
+        def relation(self, r):
+            self.relations += 1
+
+    counter = Counter()
+    counter.apply_file(out)
+    assert counter.nodes == expected_nodes
+    assert counter.ways == expected_ways
+    assert counter.relations == expected_relations
+
+
+def test_write_pbf_r5py_routable(helsinki_pbf, tmp_path):
+    r5py = pytest.importorskip("r5py")
+
+    modes = [("driving", r5py.TransportMode.CAR), ("walking", r5py.TransportMode.WALK)]
+    for mode_name, transport_mode in modes:
+        osm = OSM(helsinki_pbf)
+        edges = osm.get_network(mode_name).copy()
+        edges["maxspeed"] = edges["maxspeed"].fillna("30")
+        out = str(tmp_path / ("r5_%s.osm.pbf" % mode_name))
+        osm.write_pbf(edges, out)
+
+        # R5 builds a routable street network from the exported PBF (strict,
+        # independent OSM-PBF consumer); construction must not raise.
+        transport_network = r5py.TransportNetwork(out)
+
+        xmin, ymin, xmax, ymax = osm._data_bounding_box.bounds
+        points = gpd.GeoDataFrame(
+            {"id": [0, 1]},
+            geometry=[
+                Point(xmin + (xmax - xmin) * 0.4, ymin + (ymax - ymin) * 0.4),
+                Point(xmin + (xmax - xmin) * 0.6, ymin + (ymax - ymin) * 0.6),
+            ],
+            crs="EPSG:4326",
+        )
+        # TravelTimeMatrix computes on construction and is a GeoDataFrame.
+        travel_times = r5py.TravelTimeMatrix(
+            transport_network,
+            origins=points,
+            destinations=points,
+            snap_to_network=True,
+            transport_modes=[transport_mode],
+        )
+        # The exported network is routable between two DISTINCT locations
+        # (off-diagonal entry), not just trivially origin==destination.
+        off_diagonal = travel_times[travel_times["from_id"] != travel_times["to_id"]]
+        assert off_diagonal["travel_time"].notna().any()
+
+
+def test_write_pbf_tag_str_normalization():
+    from pyrosm.pbf_writer import _tag_str
+
+    assert _tag_str(True) == "yes"
+    assert _tag_str(False) == "no"
+    assert _tag_str(50.0) == "50"  # integer-valued float (pandas NaN-widened int)
+    assert _tag_str(150.4) == "150.4"
+    assert _tag_str(2) == "2"
+    assert _tag_str("30") == "30"
+
+
+def test_write_pbf_metadata_preserved(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    osm._read_pbf()
+    # a source node id and its cached changeset
+    nid, rec = next(iter(osm._node_coordinates.items()))
+    src_changeset = int(rec.get("changeset") or 0)
+
+    out = str(tmp_path / "meta.osm.pbf")
+    osm.write_pbf(osm.get_network(), out)
+
+    # changeset carried through; no 'visible' tag emitted on any way.
+    from pyrosm.pbf_export import _iter_primitive_blocks
+
+    found = None
+    for pblock in _iter_primitive_blocks(out):
+        for grp in pblock.primitivegroup:
+            if len(grp.dense.id) > 0:
+                ids = np.cumsum(np.array(list(grp.dense.id), dtype=np.int64))
+                changesets = np.cumsum(
+                    np.array(list(grp.dense.denseinfo.changeset), dtype=np.int64)
+                )
+                idx = np.where(ids == nid)[0]
+                if len(idx):
+                    found = int(changesets[idx[0]])
+    assert found == src_changeset
+
+
+def test_write_pbf_row_tags_strips_members():
+    import pandas as pd
+    from pyrosm.pbf_writer import _row_tags
+
+    row = pd.Series(
+        {
+            "osm_type": "relation",
+            "id": 1,
+            "route": "bicycle",
+            "tags": {"members": [{"member_id": 1}], "network": "ncn"},
+            "geometry": None,
+        }
+    )
+    tags = _row_tags(row, "geometry")
+    assert "members" not in tags  # relation-member metadata is not an OSM tag
+    assert tags.get("network") == "ncn"
+    assert tags.get("route") == "bicycle"
+
+
+def test_write_pbf_new_linestring_3d(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    # 3D coordinates (lon, lat, z) must be accepted; z is dropped.
+    new = gpd.GeoDataFrame(
+        {"osm_type": ["way"], "id": [10**18], "highway": ["footway"], "tags": [None]},
+        geometry=[LineString([(24.94, 60.17, 5.0), (24.95, 60.17, 6.0)])],
+        crs="EPSG:4326",
+    )
+    out = str(tmp_path / "line3d.osm.pbf")
+    osm.write_pbf([osm.get_network(), new], out)
+    raw = _way_tags(out)
+    assert any(
+        wid < 0 and tags.get("highway") == "footway" for wid, tags in raw.items()
+    )
+
+
+def test_write_pbf_relation_members_absolute(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    osm._read_pbf()
+    rels = osm._relations
+    rid0 = int(rels["id"][0])
+    src_members = sorted(int(m) for m in rels["members"][0]["member_id"])
+
+    out = str(tmp_path / "rel.osm.pbf")
+    osm.write_pbf(osm.get_network(), out)
+
+    from pyrosm.pbf_export import _iter_primitive_blocks
+
+    found = None
+    for pblock in _iter_primitive_blocks(out):
+        for grp in pblock.primitivegroup:
+            for rel in grp.relations:
+                if rel.id == rid0:
+                    memids = np.cumsum(np.array(list(rel.memids), dtype=np.int64))
+                    found = sorted(int(m) for m in memids)
+    # Written member ids match the source's absolute member ids exactly.
+    assert found == src_members
+
+
+def test_write_pbf_osmium_counts_additions(helsinki_pbf, tmp_path):
+    osmium = pytest.importorskip("osmium")
+    osm = OSM(helsinki_pbf)
+    osm._read_pbf()
+    base_nodes = len(osm._node_coordinates)
+    base_ways = len(osm._way_records)
+
+    new = gpd.GeoDataFrame(
+        {
+            "osm_type": ["node", "way"],
+            "id": [10**18, 10**18 + 1],
+            "amenity": ["bench", None],
+            "highway": [None, "footway"],
+            "tags": [None, None],
+        },
+        geometry=[
+            Point(24.945, 60.171),
+            LineString([(24.94, 60.17), (24.95, 60.17)]),
+        ],
+        crs="EPSG:4326",
+    )
+    out = str(tmp_path / "add.osm.pbf")
+    osm.write_pbf([osm.get_network(), new], out)
+
+    class Counter(osmium.SimpleHandler):
+        def __init__(self):
+            super().__init__()
+            self.nodes = self.ways = 0
+
+        def node(self, n):
+            self.nodes += 1
+
+        def way(self, w):
+            self.ways += 1
+
+    counter = Counter()
+    counter.apply_file(out)
+    # 1 new Point node + 2 new LineString vertices; 1 new way.
+    assert counter.nodes == base_nodes + 3
+    assert counter.ways == base_ways + 1
+
+
+# ---------------------------------------------------------------------------
+# pbf_writer unit coverage (issue #285 modularization)
+# ---------------------------------------------------------------------------
+def test_pbf_writer_tag_helpers():
+    import pandas as pd
+    from pyrosm.pbf_writer import _row_tags, _record_tags, _tag_key, _is_missing
+
+    # JSON-string tags: members + empty key stripped, real tags kept.
+    row = pd.Series(
+        {
+            "osm_type": "way",
+            "id": 1,
+            "highway": "residential",
+            "tags": '{"members":[1],"surface":"asphalt","":"x"}',
+            "geometry": None,
+        }
+    )
+    tags = _row_tags(row, "geometry")
+    assert tags["highway"] == "residential" and tags["surface"] == "asphalt"
+    assert "members" not in tags and "" not in tags
+
+    # Malformed JSON tags are ignored (no crash).
+    row2 = pd.Series(
+        {
+            "osm_type": "way",
+            "id": 1,
+            "highway": "path",
+            "tags": "nope",
+            "geometry": None,
+        }
+    )
+    assert _row_tags(row2, "geometry")["highway"] == "path"
+
+    assert _tag_key("") is None
+    assert _tag_key(5) == "5"
+
+    # _is_missing handles arrays/dicts without raising.
+    assert _is_missing(np.array([1, 2])) is False
+    assert _is_missing({"a": 1}) is False
+    assert _is_missing(float("nan")) is True
+    assert _is_missing(None) is True
+
+    # _record_tags: structural/members/visible/empty stripped, extra dict merged.
+    rec = {
+        "id": 1,
+        "version": 2,
+        "nodes": [1, 2],
+        "highway": "path",
+        "tags": {"surface": "gravel", "visible": False, "": "skip"},
+    }
+    assert _record_tags(rec) == {"highway": "path", "surface": "gravel"}
+
+
+def test_pbf_writer_frame_helpers():
+    from pyrosm.pbf_writer import _as_frames, _normalize_osm_type, _normalize_id
+
+    with pytest.raises(ValueError):
+        _as_frames("not a geodataframe")
+    assert _normalize_osm_type(b"Way") == "way"
+    assert _normalize_osm_type("NODE") == "node"
+    assert _normalize_id(np.int64(5)) == 5
+    assert _normalize_id("x") is None
+    assert _normalize_id(None) is None
+
+
+def test_pbf_writer_builder_geometry_errors():
+    from pyrosm.pbf_writer import _RecordBuilder
+
+    builder = _RecordBuilder()
+    builder.begin_synthesis()
+    with pytest.raises(ValueError):  # coordinate out of lon/lat range
+        builder.add_geometry(1, Point(500.0, 0.0), None)
+    with pytest.raises(ValueError):  # empty geometry
+        builder.add_geometry(2, LineString(), None)
+    with pytest.raises(ValueError):  # None geometry
+        builder.add_geometry(3, None, None)
+    with pytest.raises(ValueError):  # unsupported geometry type
+        builder.add_geometry(
+            4, MultiLineString([[(0, 0), (1, 1)], [(2, 2), (3, 3)]]), None
+        )
+
+
+def test_write_pbf_reprojects_crs(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    # New geometry supplied in a projected CRS (EPSG:3857) must be reprojected.
+    line = gpd.GeoDataFrame(
+        {"osm_type": ["way"], "id": [10**18], "highway": ["footway"], "tags": [None]},
+        geometry=[LineString([(24.94, 60.17), (24.95, 60.17)])],
+        crs="EPSG:4326",
+    ).to_crs(3857)
+    out = str(tmp_path / "crs.osm.pbf")
+    osm.write_pbf([osm.get_network(), line], out)
+
+    _, _, _, coords, way_refs = _read_elements(out)
+    raw = _way_tags(out)
+    synth = [w for w, t in raw.items() if w < 0 and t.get("highway") == "footway"][0]
+    for ref in way_refs[synth]:
+        x, y = coords[ref]
+        assert 24.9 < x < 25.0 and 60.1 < y < 60.2
+
+
+def test_write_pbf_matches_bytes_and_numpy_keys(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    e = osm.get_network("driving").iloc[[0]].copy()
+    wid = int(e.iloc[0]["id"])
+    e["osm_type"] = [b"WAY"]  # bytes + uppercase must still match the cached way
+    e["maxspeed"] = ["123"]
+    out = str(tmp_path / "match.osm.pbf")
+    osm.write_pbf(e, out)
+
+    raw = _way_tags(out)
+    assert raw[wid].get("maxspeed") == "123"  # edit applied to the existing way
+    assert all(w >= 0 for w in raw)  # no new (negative-id) way synthesized
+
+
+def test_write_pbf_point_shares_line_vertex(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    shared = (24.945, 60.172)
+    new = gpd.GeoDataFrame(
+        {
+            "osm_type": ["way", "node"],
+            "id": [10**18, 10**18 + 1],
+            "highway": ["footway", None],
+            "amenity": [None, "bench"],
+            "tags": [None, None],
+        },
+        geometry=[LineString([(24.94, 60.17), shared]), Point(shared)],
+        crs="EPSG:4326",
+    )
+    out = str(tmp_path / "share.osm.pbf")
+    osm.write_pbf([osm.get_network(), new], out)
+
+    _, _, _, coords, _ = _read_elements(out)
+    # The bench Point coincides with the line's endpoint -> one shared node, so
+    # only 2 new (negative-id) nodes exist, not 3.
+    neg_nodes = [n for n in coords if n < 0]
+    assert len(neg_nodes) == 2
+
+
+def test_pbf_writer_reproject_and_normalize_helpers():
+    from pyrosm.pbf_writer import _reproject_to_wgs84, _normalize_osm_type
+
+    g_none = gpd.GeoDataFrame({"a": [1]}, geometry=[Point(24.9, 60.1)], crs=None)
+    g_proj = gpd.GeoDataFrame(
+        {"a": [1]}, geometry=[Point(24.9, 60.1)], crs="EPSG:4326"
+    ).to_crs(3857)
+    out = _reproject_to_wgs84([g_none, g_proj])
+    assert out[0].crs is None  # CRS-less frame passes through untouched
+    assert out[1].crs.to_epsg() == 4326  # projected frame is reprojected
+    assert _normalize_osm_type(None) is None  # non-string types pass through
+    assert _normalize_osm_type(7) == 7
+
+
+def test_pbf_writer_tag_edge_cases():
+    import pandas as pd
+    from pyrosm.pbf_writer import _row_tags, _record_tags
+
+    # None-valued column and empty-name column are both skipped.
+    row = pd.Series(
+        {
+            "osm_type": "way",
+            "id": 1,
+            "highway": "path",
+            "ref": None,
+            "": "x",
+            "tags": None,
+            "geometry": None,
+        }
+    )
+    assert _row_tags(row, "geometry") == {"highway": "path"}
+
+    rec = {
+        "id": 1,
+        "version": 2,
+        "nodes": [1, 2],
+        "highway": "path",
+        "ref": None,
+        "": "skipcol",
+        "tags": {"surface": "gravel"},
+    }
+    assert _record_tags(rec) == {"highway": "path", "surface": "gravel"}
+
+
+def test_write_pbf_edit_node_and_relation(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    osm._read_pbf()
+    node_pois = osm.get_pois()
+    node_pois = node_pois[node_pois["osm_type"] == "node"]
+    nid = int(node_pois.iloc[0]["id"])
+    rid = int(osm._relations["id"][0])
+
+    edit = gpd.GeoDataFrame(
+        {
+            "osm_type": ["node", "relation"],
+            "id": [nid, rid],
+            "note": ["edited_node", "edited_rel"],
+            "tags": [None, None],
+        },
+        geometry=[Point(24.94, 60.17), Point(24.95, 60.17)],
+        crs="EPSG:4326",
+    )
+    out = str(tmp_path / "edit_nr.osm.pbf")
+    osm.write_pbf([osm.get_network(), edit], out)
+
+    from pyrosm.pbf_export import _iter_primitive_blocks
+
+    node_note = rel_note = None
+    for pblock in _iter_primitive_blocks(out):
+        st = [s.decode("utf-8", "replace") for s in pblock.stringtable.s]
+        for grp in pblock.primitivegroup:
+            for rel in grp.relations:
+                if rel.id == rid:
+                    rel_note = {st[k]: st[v] for k, v in zip(rel.keys, rel.vals)}.get(
+                        "note"
+                    )
+            if len(grp.dense.id) == 0:
+                continue
+            ids = np.cumsum(np.array(list(grp.dense.id), dtype=np.int64))
+            kv = list(grp.dense.keys_vals)
+            segments, cur, it = [], {}, iter(kv)
+            for k in it:
+                if k == 0:
+                    segments.append(cur)
+                    cur = {}
+                else:
+                    cur[st[k]] = st[next(it)]
+            for node_id, seg in zip(ids, segments):
+                if int(node_id) == nid:
+                    node_note = seg.get("note")
+    assert node_note == "edited_node"
+    assert rel_note == "edited_rel"
+
+
+def test_pbf_writer_no_relations():
+    from pyrosm.pbf_writer import _RecordBuilder, _add_base_relations
+
+    builder = _RecordBuilder()
+    _add_base_relations(builder, {}, {})  # relations cache without "id" -> no-op
+    assert builder.rels == []
+
+
+def test_pbf_writer_node_tag_records_empty():
+    from pyrosm.pbf_writer import _node_tag_records
+
+    # A nodes cache without "id"/"tags" (or None) yields no POI tag index.
+    assert _node_tag_records(None) == {}
+    assert _node_tag_records({}) == {}
+    assert _node_tag_records({"id": [1], "lat": [0.0]}) == {}
