@@ -841,11 +841,12 @@ def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):
     from pyrosm.utils import download as dl
 
     captured = {}
-    real_create = ssl.create_default_context
 
     def fake_create(*args, **kwargs):
         captured["cafile"] = kwargs.get("cafile")
-        return real_create()
+        # Return a bare context; do NOT load the OS trust store (that is the very
+        # Windows ssl bug under test). fake_urlopen ignores the context anyway.
+        return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
     def fake_urlopen(url, context=None):
         captured["context"] = context
