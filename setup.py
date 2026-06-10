@@ -33,6 +33,7 @@ requirements = [
     "shapely>=2.1",
     "cykhash",
     "protobuf>=6.33.5",
+    "certifi",
 ]
 
 # Optional line-trace build for measuring Cython (.pyx) test coverage. Enabled
@@ -63,7 +64,7 @@ if _linetrace:
 
 setup(
     name="pyrosm",
-    version="0.7.0",
+    version="0.8.0",
     license="MIT",
     description="A Python tool to parse OSM data from Protobuf format into GeoDataFrame.",
     long_description=read_long_description(),
