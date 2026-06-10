@@ -1,8 +1,8 @@
 Changelog
 =========
 
-v0.8.0 (Jun 9, 2026)
---------------------
+v0.8.0 (Jun 10, 2026)
+---------------------
 
 This is a major release that changes the PBF parsing backend.
 
