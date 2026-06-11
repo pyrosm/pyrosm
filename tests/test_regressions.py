@@ -1041,3 +1041,25 @@ def test_vectorized_network_geometry_graph_consistency():
     assert bnet is not None and len(bnet) > 0
     assert bnet.geometry.notna().all()
     assert bnet.geometry.is_valid.all()
+
+
+def test_streaming_block_reader_bbox_boundary_completeness():
+    """#53 — blocks are read by a streaming generator (parsed and discarded one at
+    a time, not all held in a list). A bounding box read smaller than the data
+    extent must still return ways straddling the box edge complete, which is
+    served by re-reading the file for the boundary node pass."""
+    from pyrosm import OSM, get_data
+
+    # Sub-box inside the data extent, so network ways cross the box edge.
+    bbox = [24.945, 60.170, 24.950, 60.174]
+    net = OSM(get_data("helsinki_pbf"), bounding_box=bbox).get_network()
+    assert net is not None and len(net) > 0
+    assert net.geometry.notna().all()
+    assert net.geometry.is_valid.all()
+
+    # Straddling ways are returned whole (#236), so the kept geometry extends
+    # beyond the box -- proof the second (re-read) node pass supplied the
+    # out-of-box boundary vertices.
+    minx, miny, maxx, maxy = bbox
+    b = net.total_bounds
+    assert b[0] < minx or b[1] < miny or b[2] > maxx or b[3] > maxy

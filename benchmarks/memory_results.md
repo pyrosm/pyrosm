@@ -109,3 +109,30 @@ from/to ids + node-attribute records that plain `get_network()` discards.
   the avoided per-feature object churn). Passes the gate (RSS flat, wall faster).
 - Output is unchanged: every getter (incl. walking/driving/cycling networks and
   the graph nodes/edges) matches `master` by the order-independent fingerprint.
+
+### Streaming block read (#53) — `master` vs branch, by bounding-box size, 1 run each
+
+The block reader becomes a generator: each PrimitiveBlock is parsed and discarded
+instead of holding the whole decompressed file in a list. Peak RSS + wall for
+`OSM(fp, bbox)._read_pbf()` + `get_network()`, one subprocess per box (boxes are
+centred sub-boxes of the data extent; output byte-identical, full suite passes).
+
+| config | rows kept | peak RSS master → branch | Δ memory | wall master → branch | Δ wall |
+| --- | --- | --- | --- | --- | --- |
+| full (no bbox) | 469,800 | 3887 → 3068 MB | −819 MB (−21%) | 19.9 → 20.6 s | ~neutral |
+| bbox 75% | 315,400 | 3560 → 2472 MB | −1088 MB (−31%) | 68.5 → 74.4 s | +8.6% |
+| bbox 50% | 153,800 | 3452 → 1709 MB | −1743 MB (−50%) | 35.0 → 38.3 s | +9.3% |
+| bbox 25% | 46,400 | 3140 → 1269 MB | −1871 MB (−60%) | 26.4 → 28.4 s | +7.5% |
+| bbox 10% | 10,600 | 2912 → 939 MB | −1973 MB (−68%) | 12.1 → 13.5 s | +11.8% |
+
+- **Memory is the win, and it grows as the box shrinks.** `master` loads the
+  entire decompressed file into a list regardless of the box, so a 10% box still
+  costs ~2.9 GB; streaming makes memory scale with what is kept (~0.9 GB) —
+  **−68%**. Whole-file is a more modest −21% (there the resident parse cache,
+  built either way, dominates the peak). The parse step alone was marginally
+  *faster* streaming (9.6 s vs 9.9 s).
+- **Speed: neutral for whole-file; a bounded +8–12% for bounding-box reads** —
+  the boundary-node pass re-reads/re-decompresses the file because the blocks are
+  no longer retained. (Bounding-box reads are already several times slower than
+  whole-file in pyrosm independent of this change — e.g. master 68 s for a 75%
+  box vs 20 s whole-file — so this adds ~10% on top of an existing cost.)
