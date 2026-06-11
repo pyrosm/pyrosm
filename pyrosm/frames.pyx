@@ -45,10 +45,13 @@ cpdef create_df(data_arrays):
 
 cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengths):
     if ways is not None:
+        # from/to ids and node-attribute records are only consumed when building
+        # segment-level graph edges; skip them otherwise (plain get_network).
         ways, geometries, from_ids, to_ids, node_attributes = create_way_geometries(
             node_coordinates,
             ways,
-            parse_network
+            parse_network,
+            calculate_seg_lengths
         )
 
         # .assign (not df[col]=...) avoids the spurious Cython CoW warning

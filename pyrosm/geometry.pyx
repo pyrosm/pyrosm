@@ -380,9 +380,120 @@ cdef _closed_way_is_polygon(area_value, has_linear_tag):
         return False
     return not has_linear_tag
 
+cdef _concatenated_ranges(starts, counts):
+    # Vectorised concatenation of ``[start, start + count)`` for each (start, count)
+    # pair: e.g. starts=[10, 20], counts=[2, 3] -> [10, 11, 20, 21, 22].
+    cdef long long total = int(counts.sum())
+    if total == 0:
+        return np.empty(0, dtype=np.int64)
+    out_off = np.zeros(len(counts) + 1, dtype=np.int64)
+    np.cumsum(counts, out=out_off[1:])
+    return (np.arange(total, dtype=np.int64)
+            - np.repeat(out_off[:-1], counts)
+            + np.repeat(starts, counts))
+
+
+cdef _create_network_geometries_vectorized(node_coordinates, way_elements,
+                                           bint build_node_data):
+    # Vectorised network path: build every way's per-segment LineStrings with a
+    # single batched ``shapely.linestrings`` call instead of one call per way.
+    # A way takes the batched path only when all of its nodes are present and
+    # have valid coordinates (the near-universal case); ways with dropped nodes
+    # fall back to the exact per-way builder, so the kept-node subsequence (and
+    # therefore the output) is identical to before. ``from``/``to`` ids and the
+    # node-attribute records are only built when requested (graph export); plain
+    # ``get_network`` discards them.
+    cdef NodeLocations nc = node_coordinates
+    cdef int n = len(way_elements['id'])
+    cdef int i, w, W, vci
+    cdef Py_ssize_t o0, o1, p
+    keys = list(way_elements.keys())
+    nodes_col = way_elements['nodes']
+
+    # Flat node ids + per-way offsets, dropping empty ways (as the loop did).
+    flat_list = []
+    offsets = [0]
+    nonempty_idx = []
+    for i in range(n):
+        wnodes = nodes_col[i]
+        if len(wnodes) == 0:
+            continue
+        flat_list.extend(wnodes)
+        offsets.append(len(flat_list))
+        nonempty_idx.append(i)
+
+    W = len(nonempty_idx)
+    geometries = []
+    from_ids = []
+    to_ids = []
+    node_attributes = []
+
+    if W > 0:
+        flat_nodes = np.asarray(flat_list, dtype=np.int64)
+        offsets = np.asarray(offsets, dtype=np.int64)          # length W + 1
+        way_lengths = offsets[1:] - offsets[:-1]               # length W
+
+        # Vectorised coordinate gather + validity (mirrors is_valid_coordinate_pair).
+        idx, lon, lat = nc.gather(flat_nodes)
+        valid = ((idx >= 0)
+                 & (lon <= 180.0) & (lon >= -180.0)
+                 & (lat <= 90.0) & (lat >= -90.0))
+
+        # Ways whose every node is present+valid (and >= 2 nodes) take the batched
+        # path; the rest fall back to the exact per-way builder.
+        valid_count = np.add.reduceat(valid.astype(np.int64), offsets[:-1])
+        vectorizable = (valid_count == way_lengths) & (way_lengths >= 2)
+
+        coords = np.column_stack([lon, lat])                   # (T, 2) float64
+        seg_counts = way_lengths[vectorizable] - 1             # segments per vec way
+        seg_start_pos = _concatenated_ranges(offsets[:-1][vectorizable], seg_counts)
+        seg_geoms_all = None
+        if len(seg_start_pos) > 0:
+            segments = np.stack(
+                [coords[seg_start_pos], coords[seg_start_pos + 1]], axis=1
+            )
+            seg_geoms_all = linestrings(segments)
+        seg_cum = np.zeros(len(seg_counts) + 1, dtype=np.int64)
+        np.cumsum(seg_counts, out=seg_cum[1:])
+
+        vci = 0
+        for w in range(W):
+            if vectorizable[w]:
+                geometries.append(seg_geoms_all[seg_cum[vci]:seg_cum[vci + 1]])
+                if build_node_data:
+                    o0 = offsets[w]
+                    o1 = offsets[w + 1]
+                    way_node_ids = flat_nodes[o0:o1]
+                    from_ids.append(way_node_ids[:-1].tolist())
+                    to_ids.append(way_node_ids[1:].tolist())
+                    for p in range(o0, o1):
+                        node_attributes.append(nc.record(idx[p], flat_nodes[p]))
+                vci += 1
+            else:
+                geom, from_id, to_id, node_data = create_linestring_geometry(
+                    nodes_col[nonempty_idx[w]], nc
+                )
+                geometries.append(geom)
+                if build_node_data:
+                    from_ids.append(from_id)
+                    to_ids.append(to_id)
+                    node_attributes += node_data
+
+    for key in keys:
+        way_elements[key] = way_elements[key][nonempty_idx]
+
+    return way_elements, geometries, from_ids, to_ids, node_attributes
+
+
 cdef _create_way_geometries(node_coordinates,
                             way_elements,
-                            parse_network):
+                            parse_network,
+                            bint build_node_data=True):
+    if parse_network:
+        return _create_network_geometries_vectorized(
+            node_coordinates, way_elements, build_node_data
+        )
+
     # Info for constructing geometries:
     # https://wiki.openstreetmap.org/wiki/Way
 
@@ -475,5 +586,7 @@ cdef _create_way_geometries(node_coordinates,
     return way_elements, geometries, from_ids, to_ids, node_attributes
 
 
-cpdef create_way_geometries(node_coordinates, way_elements, parse_network):
-    return _create_way_geometries(node_coordinates, way_elements, parse_network)
+cpdef create_way_geometries(node_coordinates, way_elements, parse_network,
+                            bint build_node_data=True):
+    return _create_way_geometries(node_coordinates, way_elements, parse_network,
+                                  build_node_data)

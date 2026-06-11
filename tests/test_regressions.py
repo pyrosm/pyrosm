@@ -1014,3 +1014,30 @@ def test_compact_node_store_preserves_graph_node_attributes():
     # Every graph node carries its id and a point geometry.
     assert "id" in nodes.columns
     assert nodes.geometry.notna().all()
+
+
+def test_vectorized_network_geometry_graph_consistency():
+    """#53 — the batched network-geometry path must keep graph export consistent:
+    every directed edge's u/v are real graph-node ids and the edges have valid
+    geometries, and a bounding-box network (which routes boundary ways through
+    the per-way fallback) still builds valid geometries."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    nodes, edges = osm.get_network(nodes=True)
+    assert len(edges) > 0 and len(nodes) > 0
+    assert "u" in edges.columns and "v" in edges.columns
+
+    node_ids = set(nodes["id"].tolist())
+    # Every edge endpoint is a known graph node (from/to ids stay consistent).
+    assert set(edges["u"].tolist()).issubset(node_ids)
+    assert set(edges["v"].tolist()).issubset(node_ids)
+    assert edges.geometry.notna().all()
+    assert edges.geometry.is_valid.all()
+
+    # A bounding-box network exercises the boundary-completeness path.
+    bbox = [24.93, 60.16, 24.96, 60.18]
+    bnet = OSM(get_data("helsinki_pbf"), bounding_box=bbox).get_network()
+    assert bnet is not None and len(bnet) > 0
+    assert bnet.geometry.notna().all()
+    assert bnet.geometry.is_valid.all()
