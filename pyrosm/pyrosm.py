@@ -53,8 +53,10 @@ class OSM:
     keep_metadata : bool (default: True)
         Whether to keep the OSM element metadata columns (`timestamp`,
         `version`, `changeset`) in the returned GeoDataFrames. Set to `False`
-        to drop them and reduce memory use when the metadata is not needed.
-        Does not affect node-level metadata.
+        to drop them and reduce memory use when the metadata is not needed;
+        the per-node metadata is then also skipped while parsing, which lowers
+        peak memory on node-heavy files. History (`.osh.pbf`) parsing keeps the
+        metadata it requires regardless of this flag.
     """
 
     allowed_bbox_types = [
@@ -132,6 +134,7 @@ class OSM:
             bounding_box,
             exclude_relations=False,
             unix_time_filter=self._current_timestamp,
+            keep_metadata=self.keep_metadata,
         )
 
         self._nodes = nodes
