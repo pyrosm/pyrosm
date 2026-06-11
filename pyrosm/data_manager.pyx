@@ -157,11 +157,11 @@ cdef get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter, filter_t
         return None
     # Otherwise, filter the data accordingly
     filtered_nodes = filter_array_dict_by_indices_or_mask(node_arrays, indices)
-    # Explode tags and update
+    # explode_tag_array returns only the non-empty tag columns, and overwrites the
+    # 'tags' column only when some element had leftover tags (otherwise it omits
+    # 'tags' and the original entry is left in place, as before). Merge them in.
     tags = explode_tag_array(filtered_nodes["tags"], tags_as_columns)
-    for k, v in tags.items():
-        if list(set(v)) != [None]:
-            filtered_nodes[k] = v
+    filtered_nodes.update(tags)
     return filtered_nodes
 
 cdef _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys, bint keep_metadata=True):

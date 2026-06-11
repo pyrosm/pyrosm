@@ -136,3 +136,25 @@ centred sub-boxes of the data extent; output byte-identical, full suite passes).
   no longer retained. (Bounding-box reads are already several times slower than
   whole-file in pyrosm independent of this change — e.g. master 68 s for a 75%
   box vs 20 s whole-file — so this adds ~10% on top of an existing cost.)
+
+### Build only non-empty node tag-columns (#53) — `master` vs branch, default config, 3 repeats
+
+Node tag-splitting built *every* candidate tag-column (mostly all-`None`) and then
+dropped the empty ones with a per-column `set()` check; now it builds only the
+columns that actually occur, in one pass.
+
+| build | peak RSS (MB) | wall (s) | ΔRSS | Δwall |
+| --- | --- | --- | --- | --- |
+| `master` (default) | 3745 [3680–3801] | 33.4 [33.0–33.8] | — | — |
+| branch (default) | 3807 [3772–4081] | 28.8 [28.7–29.1] | +62 MB (+1.7%) | −4.6 s (−13.7%) |
+
+- Multi-layer wall-clock drops **~14%** with no range overlap. Isolated,
+  `get_pois` assembly falls **9.31 s → 5.81 s (−37.6%)**; in a microbenchmark the
+  node tag-handling step alone is **6.2×** (4.13 s → 0.67 s) because the previous
+  build-all-then-`set`-drop did two O(elements × candidate-columns) passes over
+  ~250 columns to keep ~40. Peak RSS is flat within noise. Output byte-identical
+  (order-independent fingerprint across pois/buildings/landuse/natural/network on
+  two datasets).
+- The way path (`convert_way_records_to_lists` + `convert_to_arrays_and_drop_empty`)
+  has the same build-all-then-drop pattern and would benefit similarly; left as a
+  follow-up.

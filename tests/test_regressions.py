@@ -1063,3 +1063,34 @@ def test_streaming_block_reader_bbox_boundary_completeness():
     minx, miny, maxx, maxy = bbox
     b = net.total_bounds
     assert b[0] < minx or b[1] < miny or b[2] > maxx or b[3] > maxy
+
+
+def test_node_tag_columns_built_only_when_nonempty():
+    """#53 — node tag columns are materialized only for keys that actually occur in
+    the data (empty candidate columns are not built and then dropped). Output is
+    unchanged: a filter key lands in its own column, and no materialized tag column
+    is entirely empty."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    pois = osm.get_pois(custom_filter={"amenity": True, "shop": True})
+    assert pois is not None and len(pois) > 0
+    assert "amenity" in pois.columns and pois["amenity"].notna().any()
+
+    # Every column that is not a structural/metadata field is a materialized tag
+    # column and must carry at least one value (empties are never built).
+    structural = {
+        "geometry",
+        "osm_type",
+        "id",
+        "lon",
+        "lat",
+        "tags",
+        "version",
+        "changeset",
+        "timestamp",
+        "visible",
+    }
+    for c in pois.columns:
+        if c not in structural:
+            assert pois[c].notna().any(), f"tag column {c!r} is entirely empty"
