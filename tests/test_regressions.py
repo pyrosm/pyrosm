@@ -938,3 +938,33 @@ def test_tags_to_keep_validates_input():
 
     with pytest.raises(ValueError):
         OSM(get_data("helsinki_pbf")).get_buildings(tags_to_keep="building")
+
+
+def test_tags_to_keep_applies_to_all_feature_methods():
+    """#87 — tags_to_keep restricts the tag columns on every feature method, not
+    only get_buildings: the requested key is kept, the other default tag columns
+    are dropped, and rows/geometry are unchanged."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    cases = [
+        (osm.get_network, {}, "highway"),
+        (osm.get_landuse, {}, "landuse"),
+        (osm.get_natural, {}, "natural"),
+        (osm.get_boundaries, {}, "boundary"),
+        (osm.get_pois, {"custom_filter": {"amenity": True}}, "amenity"),
+    ]
+    for method, base_kwargs, kept in cases:
+        name = method.__name__
+        full = method(**base_kwargs)
+        lean = method(**base_kwargs, tags_to_keep=[kept])
+        full_cols, lean_cols = set(full.columns), set(lean.columns)
+        assert kept in lean_cols, f"{name}: '{kept}' column missing"
+        # Restricting only removes columns, and it removed at least one.
+        assert (
+            lean_cols <= full_cols
+        ), f"{name}: unexpected columns {lean_cols - full_cols}"
+        assert len(lean_cols) < len(full_cols), f"{name}: tag columns not restricted"
+        # Rows and geometry are unchanged by the column restriction.
+        assert len(full) == len(lean), f"{name}: row count changed"
+        assert full.geometry.equals(lean.geometry), f"{name}: geometry changed"
