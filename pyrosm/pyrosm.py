@@ -206,6 +206,7 @@ class OSM:
         timestamp=None,
         custom_filter=None,
         filter_type="exclude",
+        tags_to_keep=None,
     ):
         """
         Parses street networks from OSM
@@ -231,6 +232,11 @@ class OSM:
 
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+
+        tags_to_keep : list (optional)
+            When given, only these OSM tag keys are kept as columns, replacing the
+            default set of tag columns (reduces memory). Structural columns and
+            filtering are unaffected; `extra_attributes` still apply.
 
         nodes : bool (default: False)
             If True, 1) the nodes associated with the network will be returned in addition to edges,
@@ -282,6 +288,10 @@ class OSM:
         # semantics even when a custom_filter is provided)
         network_filter = self._get_network_filter(network_type)
         tags_as_columns = list(self.conf.tags.highway)
+
+        if tags_to_keep is not None:
+            validate_tags_as_columns(tags_to_keep)
+            tags_as_columns = list(tags_to_keep)
 
         # A custom_filter replaces the predefined network filter and may use any
         # 'keep'/'exclude' semantics; the predefined filters are always 'exclude'.
@@ -340,7 +350,13 @@ class OSM:
             return (node_gdf, edges)
         return edges
 
-    def get_buildings(self, custom_filter=None, extra_attributes=None, timestamp=None):
+    def get_buildings(
+        self,
+        custom_filter=None,
+        extra_attributes=None,
+        timestamp=None,
+        tags_to_keep=None,
+    ):
         """
         Parses buildings from OSM.
 
@@ -358,6 +374,11 @@ class OSM:
 
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+
+        tags_to_keep : list (optional)
+            When given, only these OSM tag keys are kept as columns, replacing the
+            default set of tag columns (reduces memory). Structural columns and
+            filtering are unaffected; `extra_attributes` still apply.
 
         timestamp: str | datetime | int
             If provided, the data from given moment of time will be returned. The time should be provided in UTC.
@@ -379,6 +400,10 @@ class OSM:
         """
         # Default tags to keep as columns
         tags_as_columns = list(self.conf.tags.building)
+
+        if tags_to_keep is not None:
+            validate_tags_as_columns(tags_to_keep)
+            tags_as_columns = list(tags_to_keep)
 
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
@@ -403,7 +428,13 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def get_landuse(self, custom_filter=None, extra_attributes=None, timestamp=None):
+    def get_landuse(
+        self,
+        custom_filter=None,
+        extra_attributes=None,
+        timestamp=None,
+        tags_to_keep=None,
+    ):
         """
         Parses landuse from OSM.
 
@@ -421,6 +452,11 @@ class OSM:
 
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+
+        tags_to_keep : list (optional)
+            When given, only these OSM tag keys are kept as columns, replacing the
+            default set of tag columns (reduces memory). Structural columns and
+            filtering are unaffected; `extra_attributes` still apply.
 
         timestamp: str | datetime | int
             If provided, the data from given moment of time will be returned. The time should be provided in UTC.
@@ -446,6 +482,10 @@ class OSM:
         # Default tags to keep as columns
         tags_as_columns = list(self.conf.tags.landuse)
 
+        if tags_to_keep is not None:
+            validate_tags_as_columns(tags_to_keep)
+            tags_as_columns = list(tags_to_keep)
+
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
             tags_as_columns += extra_attributes
@@ -468,7 +508,13 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def get_natural(self, custom_filter=None, extra_attributes=None, timestamp=None):
+    def get_natural(
+        self,
+        custom_filter=None,
+        extra_attributes=None,
+        timestamp=None,
+        tags_to_keep=None,
+    ):
         """
         Parses natural from OSM.
 
@@ -486,6 +532,11 @@ class OSM:
 
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+
+        tags_to_keep : list (optional)
+            When given, only these OSM tag keys are kept as columns, replacing the
+            default set of tag columns (reduces memory). Structural columns and
+            filtering are unaffected; `extra_attributes` still apply.
 
         timestamp: str | datetime | int
             If provided, the data from given moment of time will be returned. The time should be provided in UTC.
@@ -510,6 +561,10 @@ class OSM:
 
         # Default tags to keep as columns
         tags_as_columns = list(self.conf.tags.natural)
+
+        if tags_to_keep is not None:
+            validate_tags_as_columns(tags_to_keep)
+            tags_as_columns = list(tags_to_keep)
 
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
@@ -540,6 +595,7 @@ class OSM:
         custom_filter=None,
         extra_attributes=None,
         timestamp=None,
+        tags_to_keep=None,
     ):
         """
         Parses boundaries from OSM.
@@ -571,6 +627,11 @@ class OSM:
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
 
+        tags_to_keep : list (optional)
+            When given, only these OSM tag keys are kept as columns, replacing the
+            default set of tag columns (reduces memory). Structural columns and
+            filtering are unaffected; `extra_attributes` still apply.
+
         timestamp: str | datetime | int
             If provided, the data from given moment of time will be returned. The time should be provided in UTC.
             Note: This functionality only works with OSH.PBF files that can be downloaded manually e.g. from Geofabrik
@@ -594,6 +655,10 @@ class OSM:
 
         # Default tags to keep as columns
         tags_as_columns = list(self.conf.tags.boundary)
+
+        if tags_to_keep is not None:
+            validate_tags_as_columns(tags_to_keep)
+            tags_as_columns = list(tags_to_keep)
 
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
@@ -627,7 +692,13 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def get_pois(self, custom_filter=None, extra_attributes=None, timestamp=None):
+    def get_pois(
+        self,
+        custom_filter=None,
+        extra_attributes=None,
+        timestamp=None,
+        tags_to_keep=None,
+    ):
         """
         Parse Point of Interest (POI) from OSM.
 
@@ -640,6 +711,11 @@ class OSM:
 
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+
+        tags_to_keep : list (optional)
+            When given, only these OSM tag keys are kept as columns, replacing the
+            default set of tag columns (reduces memory). Structural columns and
+            filtering are unaffected; `extra_attributes` still apply.
 
         timestamp: str | datetime | int
             If provided, the data from given moment of time will be returned. The time should be provided in UTC.
@@ -714,6 +790,10 @@ class OSM:
                 tags_as_columns += self.conf.tags._basic_tags
             except Exception as e:
                 raise e
+
+        if tags_to_keep is not None:
+            validate_tags_as_columns(tags_to_keep)
+            tags_as_columns = list(tags_to_keep)
 
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
