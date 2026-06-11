@@ -869,6 +869,30 @@ def test_keep_metadata_must_be_bool():
         OSM(get_data("helsinki_pbf"), keep_metadata="yes")
 
 
+def test_keep_metadata_false_drops_node_metadata():
+    """#150 — `OSM(keep_metadata=False)` also skips the per-node element metadata
+    while parsing, so node features (POIs) drop the timestamp/version/changeset
+    columns while keeping their rows, geometries and every other column identical
+    to the default. Default `keep_metadata=True` is unchanged."""
+    from pyrosm import OSM, get_data
+
+    fp = get_data("helsinki_pbf")
+    full = OSM(fp).get_pois()
+    lean = OSM(fp, keep_metadata=False).get_pois()
+
+    # The POI set includes node elements, so node metadata is actually exercised.
+    assert (full["osm_type"] == "node").any()
+
+    # Default keeps node metadata; opt-in drops exactly those columns.
+    assert _METADATA_COLS & set(full.columns)
+    assert not (_METADATA_COLS & set(lean.columns))
+    assert set(full.columns) - set(lean.columns) == (_METADATA_COLS & set(full.columns))
+
+    # Everything else (rows, geometry) is identical.
+    assert len(full) == len(lean)
+    assert full.geometry.equals(lean.geometry)
+
+
 def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):
     """Downloads must build the HTTPS context from certifi's CA bundle, not the
     OS trust store: on Windows, loading the system certificate store can raise
