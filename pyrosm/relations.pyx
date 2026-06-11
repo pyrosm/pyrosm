@@ -59,7 +59,7 @@ cdef get_ways_for_relation(member_ids, member_roles, building_relation_ways):
     ways = filter_array_dict_by_indices_or_mask(building_relation_ways, mask)
     return member_ids, member_roles, ways
 
-cdef get_relations(relations, relation_ways, node_coordinates):
+cdef get_relations(relations, relation_ways, node_coordinates, bint keep_metadata=True):
     cdef int i, j, n2, m_cnt, n = len(relations["id"])
 
     prepared_relations = []
@@ -167,11 +167,14 @@ cdef get_relations(relations, relation_ways, node_coordinates):
 
         relation = dict(
             id=rel["id"][0],
-            version=rel["version"][0],
-            changeset=rel["changeset"][0],
-            timestamp=rel["timestamp"][0],
             geometry=geometry
         )
+        # Element metadata only when requested (otherwise these np.int32 values
+        # would be folded into the JSON 'tags' column and break serialization).
+        if keep_metadata:
+            relation["version"] = rel["version"][0]
+            relation["changeset"] = rel["changeset"][0]
+            relation["timestamp"] = rel["timestamp"][0]
 
         # Add tags
         for k, v in rel["tags"][0].items():
@@ -186,12 +189,15 @@ cdef get_relations(relations, relation_ways, node_coordinates):
 
     return prepared_relations
 
-cdef _prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep):
-    # Tags to keep as separate columns
-    tags_to_keep += ["id", "nodes", "timestamp", "changeset", "version", "geometry"]
+cdef _prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep, bint keep_metadata=True):
+    # Structural columns are always kept; element metadata only when requested.
+    tags_to_keep += ["id", "nodes"]
+    if keep_metadata:
+        tags_to_keep += ["timestamp", "changeset", "version"]
+    tags_to_keep += ["geometry"]
 
     # Also geometries are parsed in this step
-    relation_records = get_relations(relations, relation_ways, node_coordinates)
+    relation_records = get_relations(relations, relation_ways, node_coordinates, keep_metadata)
 
     # Return empty frame if no relation records were successfully parsed
     if len(relation_records) == 0:
@@ -201,5 +207,5 @@ cdef _prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep
     arrays = convert_to_arrays_and_drop_empty(data)
     return arrays
 
-cpdef prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep):
-    return _prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep)
+cpdef prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep, bint keep_metadata=True):
+    return _prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep, keep_metadata)

@@ -13,6 +13,7 @@ def get_boundary_data(
     boundary_type,
     name,
     bounding_box,
+    keep_metadata=True,
 ):
     if boundary_type == "all":
         boundary_type = True
@@ -38,6 +39,7 @@ def get_boundary_data(
         data_filter=custom_filter,
         filter_type="keep",
         osm_keys=None,
+        keep_metadata=keep_metadata,
     )
 
     # If there weren't any data, return empty GeoDataFrame
@@ -56,6 +58,7 @@ def get_boundary_data(
         relation_ways,
         tags_as_columns,
         bounding_box,
+        keep_metadata=keep_metadata,
     )
 
     if gdf is None:

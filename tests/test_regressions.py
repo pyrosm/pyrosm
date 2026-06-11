@@ -790,8 +790,12 @@ def test_get_bounding_box_returns_none_without_header_bbox(tmp_path):
 
     header = HeaderBlock()
     header.required_features.append("OsmSchema-V0.6")
-    blob_bytes = Blob(zlib_data=zlib.compress(header.SerializeToString())).SerializeToString()
-    blob_header = BlobHeader(type="OSMHeader", datasize=len(blob_bytes)).SerializeToString()
+    blob_bytes = Blob(
+        zlib_data=zlib.compress(header.SerializeToString())
+    ).SerializeToString()
+    blob_header = BlobHeader(
+        type="OSMHeader", datasize=len(blob_bytes)
+    ).SerializeToString()
     pbf = tmp_path / "no_bbox.pbf"
     pbf.write_bytes(struct.pack("!L", len(blob_header)) + blob_header + blob_bytes)
 
@@ -825,6 +829,44 @@ def test_node_coordinates_decoded_at_full_precision(tmp_path):
     assert gdf["lon"].dtype == np.float64
     assert gdf["lat"].dtype == np.float64
     assert gdf.loc[gdf["id"] == 1, "lon"].iloc[0] == -80.4410082
+
+
+_METADATA_COLS = {"timestamp", "version", "changeset"}
+
+
+def test_keep_metadata_false_drops_way_relation_metadata():
+    """#87 (Bucket A / A5) — `OSM(keep_metadata=False)` drops the way/relation
+    element metadata columns (timestamp, version, changeset) while keeping the
+    rows, geometries and every other column byte-for-byte identical to the
+    default. Default `keep_metadata=True` is unchanged."""
+    from pyrosm import OSM, get_data
+
+    fp = get_data("helsinki_pbf")
+    default = OSM(fp)
+    minimal = OSM(fp, keep_metadata=False)
+
+    # Buildings and the network are way/relation features -> metadata fully gated.
+    for getter in ("get_buildings", "get_network"):
+        full = getattr(default, getter)()
+        lean = getattr(minimal, getter)()
+
+        # Default keeps metadata; opt-in drops exactly those columns.
+        assert _METADATA_COLS & set(full.columns)
+        assert not (_METADATA_COLS & set(lean.columns))
+        assert set(full.columns) - set(lean.columns) == (
+            _METADATA_COLS & set(full.columns)
+        )
+        # Everything else is identical.
+        assert len(full) == len(lean)
+        assert full.geometry.equals(lean.geometry)
+
+
+def test_keep_metadata_must_be_bool():
+    """#87 (Bucket A / A5) — keep_metadata is validated as a boolean."""
+    from pyrosm import OSM, get_data
+
+    with pytest.raises(ValueError, match="keep_metadata"):
+        OSM(get_data("helsinki_pbf"), keep_metadata="yes")
 
 
 def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):

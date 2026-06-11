@@ -11,9 +11,12 @@ def get_network_data(
     bounding_box,
     slice_to_segments,
     filter_type="exclude",
+    keep_metadata=True,
 ):
-    # Tags to keep as separate columns
-    tags_as_columns += ["id", "nodes", "timestamp", "changeset", "version"]
+    # Structural columns are always kept; element metadata only when requested.
+    tags_as_columns += ["id", "nodes"]
+    if keep_metadata:
+        tags_as_columns += ["timestamp", "changeset", "version"]
 
     # Call signature for fetching network data
     nodes, ways, relation_ways, relations = get_osm_data(
@@ -25,6 +28,7 @@ def get_network_data(
         filter_type=filter_type,
         # Keep only records having 'highway' tag
         osm_keys="highway",
+        keep_metadata=keep_metadata,
     )
 
     # If there weren't any data, return None
@@ -45,6 +49,7 @@ def get_network_data(
         bounding_box,
         parse_network=True,
         calculate_seg_lengths=slice_to_segments,
+        keep_metadata=keep_metadata,
     )
 
     return edges, nodes

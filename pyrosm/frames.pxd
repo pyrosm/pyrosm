@@ -10,4 +10,5 @@ cpdef prepare_geodataframe(nodes,
                            tags_as_columns,
                            bounding_box,
                            parse_network=*,
-                           calculate_seg_lengths=*)
+                           calculate_seg_lengths=*,
+                           bint keep_metadata=*)
