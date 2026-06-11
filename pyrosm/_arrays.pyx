@@ -21,35 +21,46 @@ cdef get_dtype(key):
 
 cdef convert_way_records_to_lists(ways, tags_to_separate_as_arrays):
     """
-    Function to convert heterogeneous way dictionaries into harmonized dictionary 
-    of value-lists for all OSM keys. If a given OSM-key is not present for a given way 
-    record, will add None. This process makes it possible to create same-sized numpy arrays
-    for all OSM way tags.  
+    Function to convert heterogeneous way dictionaries into a harmonized dictionary
+    of value-lists. Only the OSM keys that actually occur in the data are materialized
+    as columns: a candidate key absent from every way is skipped here instead of being
+    built as an all-None column and dropped downstream. Where a key is absent from a
+    given way its value is None, so every column stays the same length. Keys not in
+    'tags_to_separate_as_arrays' are collected into the JSON 'tags' column.
     """
-    cdef int i
-    cdef int n = len(ways)
-
-    lookup = dict.fromkeys(tags_to_separate_as_arrays, None)
-    data = {k: [] for k in tags_to_separate_as_arrays}
-    data["tags"] = []
+    cdef int i, n = len(ways)
+    cdef bint any_other = False
+    column_keys = list(dict.fromkeys(tags_to_separate_as_arrays))
+    column_set = set(column_keys)
+    records = []
+    other_list = []
+    appearing = set()
 
     for i in range(0, n):
         way = ways[i]
-        way_records = dict.fromkeys(tags_to_separate_as_arrays, None)
+        record = {}
         other_tags = {}
         for k, v in way.items():
-            try:
-                # Check if tag should be kept as a column
-                lookup[k]
-                way_records[k] = v
-            except:
-                # If not add into tags
+            if k in column_set:
+                record[k] = v
+                appearing.add(k)
+            else:
                 other_tags[k] = v
-        [data[k].append(v) for k, v in way_records.items()]
+        records.append(record)
         if len(other_tags) > 0:
-            data["tags"].append(dumps(other_tags))
+            other_list.append(dumps(other_tags))
+            any_other = True
         else:
-            data["tags"].append(None)
+            other_list.append(None)
+
+    data = {}
+    for k in column_keys:
+        if k in appearing:
+            data[k] = [record.get(k) for record in records]
+    # The leftover-tags column is kept only when some way had leftover tags
+    # (otherwise it would be all-None and was dropped downstream before).
+    if any_other:
+        data["tags"] = other_list
 
     return data
 
