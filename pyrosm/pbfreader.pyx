@@ -45,11 +45,10 @@ cdef _warn_if_slow_protobuf_backend():
         )
 
 
-cdef get_primitive_blocks_and_string_tables(filepath):
-    cdef int msg_len
-    cdef bytes blob_data
-    cdef str feature
-
+def iter_primitive_blocks_and_string_tables(filepath):
+    # Generator: yield one (PrimitiveBlock, string_table) at a time so the parser
+    # can process and discard each block instead of holding the whole decompressed
+    # file in a list. A def function (not cdef) is required because it yields.
     with open(filepath, 'rb') as f:
 
         # Check that the data stream is valid OSM
@@ -69,10 +68,6 @@ cdef get_primitive_blocks_and_string_tables(filepath):
 
         if valid_header_block(header_block):
             pass
-
-        # Gather primitive blocks and string tables
-        primitive_blocks = []
-        string_tables = []
 
         while True:
             # Read header
@@ -100,10 +95,7 @@ cdef get_primitive_blocks_and_string_tables(filepath):
             # Get string table and decode
             str_table = [tounicode(s) for s in pblock.stringtable.s]
 
-            primitive_blocks.append(pblock)
-            string_tables.append(str_table)
-
-    return primitive_blocks, string_tables
+            yield pblock, str_table
 
 
 cdef parse_dense(
@@ -481,9 +473,7 @@ cdef _parse_osm_data(
     all_relations = []
     node_lookup_created = False
 
-    primitive_blocks, string_tables = get_primitive_blocks_and_string_tables(filepath)
-
-    for pblock, str_table in zip(primitive_blocks, string_tables):
+    for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath):
         for pgroup in pblock.primitivegroup:
             if len(pgroup.dense.id) > 0:
                 all_nodes += parse_dense(pblock, pgroup.dense, str_table, bounding_box,
@@ -550,11 +540,11 @@ cdef _parse_osm_data(
     # Complete the geometries of ways that straddle the bounding box (#236). A way is
     # kept when >=1 of its nodes is inside the box, but the box-filtered node parse
     # dropped the vertices that lie just outside it, so its polygon/line would otherwise
-    # be cut. Fetch ONLY those missing node coordinates with a second pass over the
-    # already-in-memory blocks (no extra I/O / decompression) and add them to the
-    # coordinate lookup used for geometry building. They are deliberately NOT added to
-    # `all_nodes` (the standalone node features), so out-of-box nodes never leak into
-    # node-feature results (e.g. POIs). bbox-only.
+    # be cut. Fetch ONLY those missing node coordinates with a second streaming pass
+    # over the blocks (the blocks are not retained, so this re-reads the file) and add
+    # them to the coordinate lookup used for geometry building. They are deliberately
+    # NOT added to `all_nodes` (the standalone node features), so out-of-box nodes never
+    # leak into node-feature results (e.g. POIs). bbox-only.
     coords_df = nodes_df
     if bounding_box is not None and len(all_ways) > 0:
         present_ids = set(nodes_df["id"].tolist())
@@ -566,7 +556,7 @@ cdef _parse_osm_data(
         if len(missing_ids) > 0:
             node_id_filter = np.array(sorted(missing_ids), dtype=np.int64)
             boundary_nodes = []
-            for pblock, str_table in zip(primitive_blocks, string_tables):
+            for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath):
                 for pgroup in pblock.primitivegroup:
                     if len(pgroup.dense.id) > 0:
                         boundary_nodes += parse_dense(pblock, pgroup.dense, str_table,
