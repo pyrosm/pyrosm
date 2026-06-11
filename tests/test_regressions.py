@@ -1094,3 +1094,39 @@ def test_node_tag_columns_built_only_when_nonempty():
     for c in pois.columns:
         if c not in structural:
             assert pois[c].notna().any(), f"tag column {c!r} is entirely empty"
+
+
+def test_way_tag_columns_built_only_when_nonempty():
+    """#53 — way/relation tag columns are materialized only for keys that actually
+    occur in the data (empty candidate columns are not built and then dropped). Output
+    is unchanged: the feature key lands in its own column, leftover tags go to the JSON
+    'tags' column, and no materialized tag column is entirely empty."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    structural = {
+        "geometry",
+        "osm_type",
+        "id",
+        "nodes",
+        "lon",
+        "lat",
+        "tags",
+        "version",
+        "changeset",
+        "timestamp",
+        "visible",
+    }
+    for feature, getter in (
+        ("building", lambda o: o.get_buildings()),
+        ("landuse", lambda o: o.get_landuse()),
+        ("natural", lambda o: o.get_natural()),
+    ):
+        gdf = getter(osm)
+        assert gdf is not None and len(gdf) > 0
+        assert feature in gdf.columns and gdf[feature].notna().any()
+        for c in gdf.columns:
+            if c not in structural:
+                assert (
+                    gdf[c].notna().any()
+                ), f"{feature}: tag column {c!r} is entirely empty"

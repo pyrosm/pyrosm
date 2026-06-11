@@ -158,3 +158,31 @@ columns that actually occur, in one pass.
 - The way path (`convert_way_records_to_lists` + `convert_to_arrays_and_drop_empty`)
   has the same build-all-then-drop pattern and would benefit similarly; left as a
   follow-up.
+
+### Build only non-empty way/relation tag-columns (#53) — `master` vs branch, 138 MB extract
+
+The way/relation follow-up to the node change: `convert_way_records_to_lists`
+built *every* candidate tag-column per way (a fresh `dict.fromkeys(candidates)`
+plus one append per candidate, n times) and `convert_to_arrays_and_drop_empty`
+then dropped the all-`None` ones; now it builds only the columns that occur, in
+one pass. `convert_to_arrays_and_drop_empty` is unchanged (its all-`None` drop
+stays as a safety net but now sees only kept columns).
+
+Way features have far fewer candidate tag-columns than the POI case (building 38,
+landuse 35, natural 41, vs ~250 for `amenity`+`shop`), so the win is smaller. The
+tag-assembly step (`get_osm_data`, geometry excluded) on the cached arrays:
+
+| feature | `master` (s) | branch (s) | Δ |
+| --- | --- | --- | --- |
+| `get_osm_data` building | 0.703 | 0.620 | −11.7% |
+| `get_osm_data` landuse | 0.436 | 0.368 | −15.6% |
+| `get_osm_data` natural | 0.222 | 0.190 | −14.3% |
+
+- The full feature call improves less (`get_buildings` ~−8%, `get_landuse` ~−9%,
+  `get_network` ~−2%) because polygon/line geometry construction dominates those
+  getters and is unchanged. Peak RSS flat within noise.
+- Output byte-identical: across `get_network`/`get_buildings`/`get_landuse`/
+  `get_natural`/POIs/custom-criteria on two datasets with `keep_metadata` True and
+  False, every column's dtype, values and geometry match `master` (order-independent
+  fingerprint; the only run-to-run variation is node-feature column *order*, which
+  already varies on `master` and is unaffected here).
