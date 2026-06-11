@@ -21,6 +21,7 @@ from pyrosm.data_filter cimport (
 )
 from pyrosm.utils import valid_header_block
 from pyrosm.frames import create_df
+from pyrosm.node_lookup import NodeLocations
 import numpy as np
 import pandas as pd
 from libc.stdlib cimport malloc, free
@@ -591,7 +592,8 @@ cdef _parse_osm_data(
                         [nodes_df, boundary_df], ignore_index=True
                     ).drop_duplicates(subset="id")
 
-    # Node coordinates lookup dictionary with all node attributes (all attributes required for graph building)
-    node_coordinates_lookup = coords_df.set_index("id").to_dict(orient="index")
+    # Compact node-coordinate store (cykhash id->index map + column arrays),
+    # replacing the per-node dict-of-dicts; geometry/graph code reads through it.
+    node_coordinates_lookup = NodeLocations(coords_df)
 
     return all_nodes, all_ways, all_relations, node_coordinates_lookup

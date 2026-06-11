@@ -992,3 +992,25 @@ def test_tags_to_keep_applies_to_all_feature_methods():
         # Rows and geometry are unchanged by the column restriction.
         assert len(full) == len(lean), f"{name}: row count changed"
         assert full.geometry.equals(lean.geometry), f"{name}: geometry changed"
+
+
+def test_compact_node_store_preserves_graph_node_attributes():
+    """#53 — the compact node-coordinate store (a cykhash id->index map plus
+    column arrays) that replaced the per-node dict-of-dicts must reproduce the
+    graph node attributes unchanged. In particular the rebuilt records yield
+    Python scalars, so the metadata columns keep their int64/float64 dtypes
+    rather than the narrower array dtype."""
+    import numpy as np
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    nodes, edges = osm.get_network(nodes=True)
+
+    assert nodes["version"].dtype == np.int64
+    assert nodes["changeset"].dtype == np.int64
+    assert nodes["timestamp"].dtype == np.int64
+    assert nodes["lon"].dtype == np.float64
+    assert nodes["lat"].dtype == np.float64
+    # Every graph node carries its id and a point geometry.
+    assert "id" in nodes.columns
+    assert nodes.geometry.notna().all()

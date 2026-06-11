@@ -10,6 +10,7 @@ from shapely.geometry import MultiPolygon
 from shapely.ops import polygonize
 from shapely import orient_polygons as _orient_polygons
 from pyrosm.distance import Unit, haversine
+from pyrosm.node_lookup cimport NodeLocations
 
 
 cpdef orient_polygons(geometries):
@@ -71,7 +72,10 @@ cpdef fix_geometry(geometry, diff_threshold=20):
 
 
 cdef get_way_coordinates_for_polygon(node_coordinate_lookup, way_elements):
+    cdef NodeLocations nc = node_coordinate_lookup
     cdef int i, ii, nn, n = len(way_elements["id"])
+    cdef long long node, idx
+    cdef double lon, lat
     features = []
     for i in range(0, n):
         way_nodes = way_elements["nodes"][i]
@@ -79,15 +83,12 @@ cdef get_way_coordinates_for_polygon(node_coordinate_lookup, way_elements):
         coords = []
         for ii in range(0, nn):
             node = way_nodes[ii]
-            try:
-                # Ensure lat/lon values are valid
-                lon = node_coordinate_lookup[node]["lon"]
-                lat = node_coordinate_lookup[node]["lat"]
-
+            if nc.contains(node):
+                idx = nc.index(node)
+                lon = nc.lon_at(idx)
+                lat = nc.lat_at(idx)
                 if is_valid_coordinate_pair(lat, lon):
                     coords.append((lon, lat))
-            except:
-                pass
         features.append(coords)
     return features
 
@@ -284,25 +285,25 @@ cdef is_valid_coordinate_pair(lat, lon):
 
 
 cdef create_linestring_geometry(nodes, node_coordinates):
+    cdef NodeLocations nc = node_coordinates
     coords = []
     kept_nodes = []
     node_data = []
     cdef int i, n = len(nodes)
+    cdef long long node, idx
+    cdef double lon, lat
     for i in range(0, n):
         node = nodes[i]
-        try:
-            data = node_coordinates[node]
+        if nc.contains(node):
+            idx = nc.index(node)
             # Ensure coordinates are valid
-            lon = data["lon"]
-            lat = data["lat"]
+            lon = nc.lon_at(idx)
+            lat = nc.lat_at(idx)
 
             if is_valid_coordinate_pair(lat, lon):
                 coords.append([(lon, lat)])
                 kept_nodes.append(node)
-                data["id"] = node
-                node_data.append(data)
-        except:
-            pass
+                node_data.append(nc.record(idx, node))
 
     if len(coords) > 1:
         try:
@@ -334,18 +335,20 @@ cdef create_linestring_geometry(nodes, node_coordinates):
 
 
 cdef create_polygon_geometry(nodes, node_coordinates):
+    cdef NodeLocations nc = node_coordinates
     cdef int i, n = len(nodes)
+    cdef long long node, idx
+    cdef double lon, lat
     coords = []
     for i in range(0, n):
         node = nodes[i]
-        try:
+        if nc.contains(node):
             # Ensure lat/lon values are valid
-            lon = node_coordinates[node]["lon"]
-            lat = node_coordinates[node]["lat"]
+            idx = nc.index(node)
+            lon = nc.lon_at(idx)
+            lat = nc.lat_at(idx)
             if is_valid_coordinate_pair(lat, lon):
                 coords.append((lon, lat))
-        except:
-            pass
 
     if len(coords) > 2:
         try:
