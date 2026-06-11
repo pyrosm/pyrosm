@@ -49,6 +49,12 @@ class OSM:
         Filtering OSM data spatially is allowed by passing a
         bounding box either as a list `[minx, miny, maxx, maxy]` or
         as a Shapely Polygon/MultiPolygon or closed LineString/LinearRing.
+
+    keep_metadata : bool (default: True)
+        Whether to keep the OSM element metadata columns (`timestamp`,
+        `version`, `changeset`) in the returned GeoDataFrames. Set to `False`
+        to drop them and reduce memory use when the metadata is not needed.
+        Does not affect node-level metadata.
     """
 
     allowed_bbox_types = [
@@ -59,9 +65,13 @@ class OSM:
         LinearRing,
     ]
 
-    def __init__(self, filepath, bounding_box=None):
+    def __init__(self, filepath, bounding_box=None, keep_metadata=True):
         # Check input file
         self.filepath = validate_input_file(filepath)
+
+        if not isinstance(keep_metadata, bool):
+            raise ValueError("'keep_metadata' should be a boolean.")
+        self.keep_metadata = keep_metadata
 
         # Check if file contains history
         self._osh_file = False
@@ -312,6 +322,7 @@ class OSM:
             self.bounding_box,
             slice_to_segments=nodes,
             filter_type=filter_type,
+            keep_metadata=self.keep_metadata,
         )
 
         if edges is not None:
@@ -382,6 +393,7 @@ class OSM:
             tags_as_columns,
             custom_filter,
             self.bounding_box,
+            keep_metadata=self.keep_metadata,
         )
 
         # Do not keep node information unless specifically asked for
@@ -446,6 +458,7 @@ class OSM:
             tags_as_columns,
             custom_filter,
             self.bounding_box,
+            keep_metadata=self.keep_metadata,
         )
 
         # Do not keep node information unless specifically asked for
@@ -510,6 +523,7 @@ class OSM:
             tags_as_columns,
             custom_filter,
             self.bounding_box,
+            keep_metadata=self.keep_metadata,
         )
 
         # Do not keep node information unless specifically asked for
@@ -603,6 +617,7 @@ class OSM:
             boundary_type,
             name,
             self.bounding_box,
+            keep_metadata=self.keep_metadata,
         )
 
         # Do not keep node information unless specifically asked for
@@ -712,6 +727,7 @@ class OSM:
             tags_as_columns,
             custom_filter,
             self.bounding_box,
+            keep_metadata=self.keep_metadata,
         )
 
         # Do not keep node information unless specifically asked for
@@ -836,6 +852,7 @@ class OSM:
             keep_ways,
             keep_relations,
             self.bounding_box,
+            keep_metadata=self.keep_metadata,
         )
 
         # Do not keep node information unless specifically asked for

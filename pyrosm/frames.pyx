@@ -113,11 +113,12 @@ cpdef prepare_node_gdf(nodes):
         node_gdf = gpd.GeoDataFrame()
     return node_gdf
 
-cpdef prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns):
+cpdef prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns, bint keep_metadata=True):
     if relations is not None:
         relations = prepare_relations(relations, relation_ways,
                                       node_coordinates,
-                                      tags_as_columns)
+                                      tags_as_columns,
+                                      keep_metadata)
 
         relation_gdf = gpd.GeoDataFrame(relations, crs="epsg:4326").assign(
             osm_type="relation"
@@ -131,7 +132,8 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
                            relations, relation_ways,
                            tags_as_columns, bounding_box,
                            parse_network=False,
-                           calculate_seg_lengths=False):
+                           calculate_seg_lengths=False,
+                           bint keep_metadata=True):
 
     # Prepare ways
     way_gdf, node_attr = prepare_way_gdf(node_coordinates,
@@ -140,7 +142,7 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
                                          calculate_seg_lengths)
 
     # Prepare relation data
-    relation_gdf = prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns)
+    relation_gdf = prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns, keep_metadata)
 
     # When not parsing the network,
     # nodes should be kept as part of the main output

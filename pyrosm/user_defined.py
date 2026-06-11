@@ -16,6 +16,7 @@ def get_user_defined_data(
     keep_ways,
     keep_relations,
     bounding_box,
+    keep_metadata=True,
 ):
     if not keep_nodes:
         nodes = None
@@ -41,6 +42,7 @@ def get_user_defined_data(
         data_filter=custom_filter,
         filter_type=filter_type,
         osm_keys=osm_keys,
+        keep_metadata=keep_metadata,
     )
 
     # If there weren't any data, return empty GeoDataFrame
@@ -63,6 +65,7 @@ def get_user_defined_data(
         relation_ways,
         tags_as_columns,
         bounding_box,
+        keep_metadata=keep_metadata,
     )
 
     return gdf
