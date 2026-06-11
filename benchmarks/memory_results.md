@@ -64,3 +64,27 @@ appended below, so the cumulative effect stays auditable.
 - **`tags_to_keep`** on top keeps its per-layer speedup; the two stack to −23% wall.
 - Peak-RSS run-to-run variance at this ~5 GB scale is ~±4% (≈±180 MB), so RSS
   deltas are read at the median and the wall-clock is the cleaner signal.
+
+### Compact node-coordinate store (#53) — `master` vs branch, default config, 3 repeats
+
+This measure changes the **default** path (it replaces the per-node
+dict-of-dicts coordinate lookup with a cykhash id→index map plus column arrays),
+so it is measured as `master` vs the branch on the **default** config, built
+back-to-back in one session.
+
+| build | peak RSS (MB) | wall (s) | ΔRSS | Δwall |
+| --- | --- | --- | --- | --- |
+| `master` (default) | 5084 [4693–5200] | 42.6 [42.1–44.8] | — | — |
+| branch (default) | 4493 [4353–4567] | 39.1 [38.6–44.3] | −591 MB (−11.6%) | −3.5 s (−8.2%) |
+
+- The default-path peak RSS drops **~590 MB (−11.6%)** with no range overlap
+  (branch 4353–4567 MB vs master 4693–5200 MB) — the dict-of-dicts (one Python
+  dict per node, each holding boxed scalars) was a major share of the parse-once
+  cache; the compact arrays remove that overhead. Wall-clock is ~8% faster
+  (C-level khash lookups replace per-node Python dict hashing). This is the
+  largest peak-RSS reduction in the sequence so far and it benefits every config
+  (all layers read coordinates through the same store).
+- Output is unchanged: every getter's column set, per-column dtype, per-column
+  values, row count and geometry match `master` (verified by an order-independent
+  fingerprint; the node-feature column *order* is nondeterministic on `master`
+  itself and is unaffected by this change).

@@ -99,7 +99,11 @@ def test_parsing_basic_elements_from_pbf(test_pbf):
 
     # NODE COORDINATES
     # ----------------
-    assert isinstance(node_coordinates, dict)
+    # Compact store (cykhash id->index map + column arrays) replacing the former
+    # dict-of-dicts; it still iterates as (id, record) pairs.
+    from pyrosm.node_lookup import NodeLocations
+
+    assert isinstance(node_coordinates, NodeLocations)
     # Keys should be integers representing the ids
     for key, value in node_coordinates.items():
         assert isinstance(key, int)
