@@ -12,5 +12,6 @@ cdef class NodeLocations:
     cdef long long index(self, long long node)
     cdef double lon_at(self, long long idx)
     cdef double lat_at(self, long long idx)
+    cpdef tuple gather(self, node_ids)
     cdef dict _base_record(self, long long idx)
     cdef dict record(self, long long idx, long long node)

@@ -1,7 +1,7 @@
 cpdef create_point_geometries(xarray, yarray)
 cdef _create_point_geometries(xarray, yarray)
-cdef _create_way_geometries(node_coordinates, way_elements, parse_network)
-cpdef create_way_geometries(node_coordinates, way_elements, parse_network)
+cdef _create_way_geometries(node_coordinates, way_elements, parse_network, bint build_node_data=*)
+cpdef create_way_geometries(node_coordinates, way_elements, parse_network, bint build_node_data=*)
 cdef create_relation_geometry(node_coordinates, ways,
                              member_roles, force_linestring,
                              make_multipolygon)

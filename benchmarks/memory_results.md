@@ -88,3 +88,24 @@ back-to-back in one session.
   values, row count and geometry match `master` (verified by an order-independent
   fingerprint; the node-feature column *order* is nondeterministic on `master`
   itself and is unaffected by this change).
+
+### Batched network geometry (#53) — `master` vs branch, default config, 3 repeats
+
+Builds each network way's per-segment LineStrings with one batched
+`shapely.linestrings` call across ways instead of one call per way, and skips the
+from/to ids + node-attribute records that plain `get_network()` discards.
+
+| build | peak RSS (MB) | wall (s) | ΔRSS | Δwall |
+| --- | --- | --- | --- | --- |
+| `master` (default) | 4300 [4232–4350] | 39.0 [38.9–40.3] | — | — |
+| branch (default) | 4369 [4270–4378] | 32.3 [32.2–32.4] | +69 MB (+1.6%) | −6.6 s (−17%) |
+
+- Multi-layer wall-clock drops **~17%** with no range overlap (32.2–32.4 s vs
+  38.9–40.3 s). Measured in isolation, the network geometry construction itself
+  falls **15.96 s → 10.00 s (−37%)** (same session, parse cached): the batched
+  Shapely call replaces per-way construction, and plain `get_network` no longer
+  builds the per-node records it would discard. Peak RSS is flat within the ±~4%
+  run-to-run noise (the transient batched coordinate/segment arrays roughly offset
+  the avoided per-feature object churn). Passes the gate (RSS flat, wall faster).
+- Output is unchanged: every getter (incl. walking/driving/cycling networks and
+  the graph nodes/edges) matches `master` by the order-independent fingerprint.
