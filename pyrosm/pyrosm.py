@@ -945,7 +945,7 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def to_pbf(self, output_path=None, keep_relations=True, workers=1):
+    def to_pbf(self, output_path=None, keep_relations=True, workers=1, compact=False):
         """
         Crop the source PBF by this object's ``bounding_box`` and write a valid,
         re-readable ``*.osm.pbf`` to disk.
@@ -976,6 +976,14 @@ class OSM:
             (default) runs sequentially; ``>1`` uses a multiprocessing pool and
             produces a byte-identical output.
 
+        compact : bool
+            When ``False`` (default) each output block keeps its source block's
+            full string table, which is the fastest crop but leaves strings used
+            only by dropped elements in the file. When ``True`` each output block's
+            string table is pruned to only the strings its kept elements reference,
+            producing a smaller file at the cost of some extra per-block work. The
+            written OSM data is identical either way.
+
         Returns
         -------
         str
@@ -995,6 +1003,7 @@ class OSM:
             self.bounding_box,
             keep_relations=keep_relations,
             workers=workers,
+            compact=compact,
         )
 
     def write_pbf(self, data, output_path):

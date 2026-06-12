@@ -186,3 +186,25 @@ tag-assembly step (`get_osm_data`, geometry excluded) on the cached arrays:
   False, every column's dtype, values and geometry match `master` (order-independent
   fingerprint; the only run-to-run variation is node-feature column *order*, which
   already varies on `master` and is unaffected here).
+
+### Optional string-table compaction for `to_pbf` (#6) — `compact=False` vs `compact=True`
+
+The crop writer copies each source block's string table verbatim, so a cropped block
+keeps strings used only by elements the crop dropped. `to_pbf(compact=True)` prunes each
+output block's table to just the strings its kept elements reference (remapping every
+string index, including the delta-encoded `user_sid`); the default `compact=False` keeps
+the verbatim copy. On a 138 MB extract cropped to a sub-bbox (median of 3, `workers=1`):
+
+| mode | time | output |
+| --- | --- | --- |
+| `compact=False` (default) | 15.1 s | 67.1 MB |
+| `compact=True` | 16.8 s | 55.3 MB (**−17.5%**) |
+
+- ~18% smaller output for ~12% more time. `compact=True` brings pyrosm's output size in
+  line with libosmium/Osmosis (~55/59 MB on the same crop) while still cropping faster.
+  The bundled Helsinki extract shrinks ~18% likewise; country→region crops more.
+- Output is **data-identical** to `compact=False` — same nodes/ways/relations, tags and
+  metadata (including editor `user`/`uid`, verified on 1,163 distinct user names in a
+  fixture that carries them), confirmed by reading both back and by an order-independent
+  GeoDataFrame comparison. `compact=False` stays **byte-identical** to the previous
+  behaviour (SHA-256 of the output unchanged, sequential and `workers=2`).

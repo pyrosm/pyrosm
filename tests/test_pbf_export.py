@@ -285,6 +285,185 @@ def test_to_pbf_osmium_cross_check(helsinki_pbf):
 
 
 # ---------------------------------------------------------------------------
+# OSM.to_pbf(compact=...) string-table compaction
+# ---------------------------------------------------------------------------
+def _block_string_tables(path):
+    """Per-block string tables (the list of byte entries) of a PBF."""
+    from pyrosm.pbf_export import _iter_primitive_blocks
+
+    return [list(pb.stringtable.s) for pb in _iter_primitive_blocks(path)]
+
+
+def test_to_pbf_compact_defaults_to_unchanged_output(helsinki_pbf):
+    # compact defaults to False; passing it explicitly must not change the bytes.
+    osm = OSM(helsinki_pbf, bounding_box=CROP_BBOX)
+    out_default = osm.to_pbf()
+    out_false = osm.to_pbf(compact=False)
+    try:
+        with open(out_default, "rb") as f:
+            default_bytes = f.read()
+        with open(out_false, "rb") as f:
+            false_bytes = f.read()
+        assert default_bytes == false_bytes
+    finally:
+        os.remove(out_default)
+        os.remove(out_false)
+
+
+def test_to_pbf_default_copies_source_string_tables(helsinki_pbf):
+    # The default path copies each source block's string table verbatim. Checking
+    # this on the decompressed blocks guards the default-path *encoding*, which the
+    # behavioral round-trip tests (comparing only parsed data) would not catch.
+    osm = OSM(helsinki_pbf, bounding_box=CROP_BBOX)
+    out = osm.to_pbf(compact=False)
+    try:
+        source_tables = {tuple(t) for t in _block_string_tables(helsinki_pbf)}
+        for table in _block_string_tables(out):
+            assert tuple(table) in source_tables
+    finally:
+        os.remove(out)
+
+
+def test_to_pbf_compact_data_is_identical(helsinki_pbf):
+    # compact=True changes only the encoding -> the parsed data is unchanged.
+    osm = OSM(helsinki_pbf, bounding_box=CROP_BBOX)
+    out_false = osm.to_pbf(compact=False)
+    out_true = osm.to_pbf(compact=True)
+    try:
+        for getter in ("get_network", "get_buildings"):
+            a = getattr(OSM(out_false), getter)()
+            b = getattr(OSM(out_true), getter)()
+            assert (a is None) == (b is None)
+            if a is None:
+                continue
+            a = a.sort_values("id").reset_index(drop=True)
+            b = b.sort_values("id").reset_index(drop=True)
+            assert list(a["id"]) == list(b["id"])
+            assert (a.geometry.to_wkb() == b.geometry.to_wkb()).all()
+            assert set(a.columns) == set(b.columns)
+            for col in a.columns:
+                if col == "geometry":
+                    continue
+                # astype(object) first so NaN -> None (NaN != NaN would break ==).
+                left = a[col].astype(object).where(a[col].notna(), None).tolist()
+                right = b[col].astype(object).where(b[col].notna(), None).tolist()
+                assert left == right, col
+    finally:
+        os.remove(out_false)
+        os.remove(out_true)
+
+
+def test_to_pbf_compact_shrinks_string_tables(helsinki_pbf):
+    # compact=True prunes each block's table to a subset-or-equal of the default's,
+    # and the total entry count (and file size) strictly shrinks on this fixture.
+    osm = OSM(helsinki_pbf, bounding_box=CROP_BBOX)
+    out_false = osm.to_pbf(compact=False)
+    out_true = osm.to_pbf(compact=True)
+    try:
+        tables_false = _block_string_tables(out_false)
+        tables_true = _block_string_tables(out_true)
+        assert len(tables_false) == len(tables_true)  # same blocks, pruned tables
+        total_false = total_true = 0
+        for default_table, compact_table in zip(tables_false, tables_true):
+            assert set(compact_table) <= set(default_table)
+            total_false += len(default_table)
+            total_true += len(compact_table)
+        assert total_true < total_false
+        assert os.path.getsize(out_true) < os.path.getsize(out_false)
+    finally:
+        os.remove(out_false)
+        os.remove(out_true)
+
+
+def test_to_pbf_compact_parallel_multiblock(helsinki_pbf, tmp_path):
+    # compact=True output is byte-identical between the sequential and the parallel
+    # (multi-block) write paths -> the pruned table order is deterministic.
+    big = str(tmp_path / "multiblock.osm.pbf")
+    _write_multiblock_pbf(helsinki_pbf, big, replicas=4)
+    osm = OSM(big, bounding_box=CROP_BBOX)
+    out_seq = osm.to_pbf(compact=True, workers=1)
+    out_par = osm.to_pbf(compact=True, workers=3)
+    try:
+        with open(out_seq, "rb") as f:
+            seq_bytes = f.read()
+        with open(out_par, "rb") as f:
+            par_bytes = f.read()
+        assert seq_bytes == par_bytes
+        assert OSM(out_par).get_network() is not None
+    finally:
+        os.remove(out_seq)
+        os.remove(out_par)
+
+
+def test_to_pbf_compact_preserves_user_metadata(tmp_path):
+    # Editor metadata stored as a string index (the user name) must survive the
+    # remap. The bundled fixtures are anonymized (no user names), so write a small
+    # fixture whose out-of-box elements carry unique strings: cropping drops them,
+    # so compaction actually prunes and the remap runs over the kept elements.
+    osmium = pytest.importorskip("osmium")
+    src = str(tmp_path / "users.osm.pbf")
+    writer = osmium.SimpleWriter(src)
+    inside = list(range(1, 11))
+    for i in inside:
+        writer.add_node(
+            osmium.osm.mutable.Node(
+                id=i,
+                location=(24.9445 + i * 0.0001, 60.1708 + i * 0.0001),
+                tags={"name": f"inside{i}", "addr:street": "Shared Street"},
+                user="inside_mapper",
+                uid=111,
+                version=2,
+                timestamp="2020-05-01T00:00:00Z",
+            )
+        )
+    for i in range(100, 130):  # far away, unique strings -> dropped then pruned
+        writer.add_node(
+            osmium.osm.mutable.Node(
+                id=i,
+                location=(25.8 + i * 0.001, 61.5 + i * 0.001),
+                tags={"name": f"outside_unique_{i}", f"junkkey_{i}": f"junkval_{i}"},
+                user=f"outside_mapper_{i}",
+                uid=2000 + i,
+                version=1,
+                timestamp="2019-01-01T00:00:00Z",
+            )
+        )
+    writer.add_way(
+        osmium.osm.mutable.Way(
+            id=1,
+            nodes=inside,
+            tags={"highway": "residential", "name": "Kept Way"},
+            user="way_mapper",
+            uid=42,
+            version=3,
+            timestamp="2021-06-01T00:00:00Z",
+        )
+    )
+    writer.close()
+
+    bbox = [24.94, 60.16, 24.96, 60.18]  # covers only the inside cluster
+    out_false = OSM(src, bounding_box=bbox).to_pbf(
+        str(tmp_path / "f.pbf"), compact=False
+    )
+    out_true = OSM(src, bounding_box=bbox).to_pbf(str(tmp_path / "t.pbf"), compact=True)
+
+    def meta(path):
+        result = {}
+        for entity, kind in ((osmium.osm.NODE, "n"), (osmium.osm.WAY, "w")):
+            for o in osmium.FileProcessor(path).with_filter(
+                osmium.filter.EntityFilter(entity)
+            ):
+                result[(kind, o.id)] = (o.user, o.uid, o.version)
+        return result
+
+    meta_false, meta_true = meta(out_false), meta(out_true)
+    assert os.path.getsize(out_true) < os.path.getsize(out_false)  # compaction ran
+    assert meta_false == meta_true  # user/uid/version identical, incl. user names
+    assert meta_true[("w", 1)][0] == "way_mapper"
+    assert meta_true[("n", 1)][0] == "inside_mapper"
+
+
+# ---------------------------------------------------------------------------
 # OSM.write_pbf (issue #285)
 # ---------------------------------------------------------------------------
 import geopandas as gpd  # noqa: E402
