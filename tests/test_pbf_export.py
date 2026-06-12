@@ -464,6 +464,337 @@ def test_to_pbf_compact_preserves_user_metadata(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# OSM.to_pbf(repack=...) canonical block re-packing
+# ---------------------------------------------------------------------------
+META_BBOX = [24.94, 60.16, 24.96, 60.18]
+
+
+def _block_fill(path):
+    """(number of OSMData blocks, total node count) of a PBF."""
+    from pyrosm.pbf_export import _iter_primitive_blocks
+
+    nblocks = nnodes = 0
+    for pb in _iter_primitive_blocks(path):
+        nblocks += 1
+        for g in pb.primitivegroup:
+            nnodes += len(g.dense.id) + len(g.nodes)
+    return nblocks, nnodes
+
+
+def _make_metadata_fixture(path, with_relation=False):
+    """Write a small PBF with real editor metadata via osmium. Out-of-box elements
+    carry unique strings, so a crop drops them and re-pack/pruning actually runs."""
+    import osmium
+
+    writer = osmium.SimpleWriter(path)
+    inside = list(range(1, 11))
+    for i in inside:
+        writer.add_node(
+            osmium.osm.mutable.Node(
+                id=i,
+                location=(24.9445 + i * 0.0001, 60.1708 + i * 0.0001),
+                tags={"name": f"inside{i}", "addr:street": "Shared Street"},
+                user="inside_mapper",
+                uid=111,
+                version=2,
+                changeset=555,
+                timestamp="2020-05-01T00:00:00Z",
+            )
+        )
+    for i in range(100, 130):  # far away, unique strings -> dropped then pruned
+        writer.add_node(
+            osmium.osm.mutable.Node(
+                id=i,
+                location=(25.8 + i * 0.001, 61.5 + i * 0.001),
+                tags={"name": f"outside_{i}", f"junkkey_{i}": f"junkval_{i}"},
+                user=f"outside_mapper_{i}",
+                uid=2000 + i,
+                version=1,
+                changeset=900 + i,
+                timestamp="2019-01-01T00:00:00Z",
+            )
+        )
+    writer.add_way(
+        osmium.osm.mutable.Way(
+            id=1,
+            nodes=inside,
+            tags={"highway": "residential", "name": "Kept Way"},
+            user="way_mapper",
+            uid=42,
+            version=3,
+            changeset=777,
+            timestamp="2021-06-01T00:00:00Z",
+        )
+    )
+    if with_relation:
+        writer.add_relation(
+            osmium.osm.mutable.Relation(
+                id=1,
+                members=[("w", 1, "outer"), ("n", 1, "label")],
+                tags={"type": "multipolygon", "name": "Kept Rel"},
+                user="rel_mapper",
+                uid=7,
+                version=4,
+                changeset=888,
+                timestamp="2022-02-02T00:00:00Z",
+            )
+        )
+    writer.close()
+
+
+def test_to_pbf_repack_defaults_to_unchanged_output(helsinki_pbf):
+    # repack defaults to False; passing it explicitly must not change the bytes.
+    osm = OSM(helsinki_pbf, bounding_box=CROP_BBOX)
+    out_default = osm.to_pbf()
+    out_false = osm.to_pbf(repack=False)
+    try:
+        with open(out_default, "rb") as f:
+            a = f.read()
+        with open(out_false, "rb") as f:
+            b = f.read()
+        assert a == b
+    finally:
+        os.remove(out_default)
+        os.remove(out_false)
+
+
+def test_to_pbf_repack_data_is_identical(helsinki_pbf):
+    # repack=True re-encodes into canonical blocks; the parsed data is unchanged.
+    osm = OSM(helsinki_pbf, bounding_box=CROP_BBOX)
+    out_off = osm.to_pbf(repack=False)
+    out_on = osm.to_pbf(repack=True)
+    try:
+        for getter in ("get_network", "get_buildings"):
+            a = getattr(OSM(out_off), getter)()
+            b = getattr(OSM(out_on), getter)()
+            assert (a is None) == (b is None)
+            if a is None:
+                continue
+            a = a.sort_values("id").reset_index(drop=True)
+            b = b.sort_values("id").reset_index(drop=True)
+            assert list(a["id"]) == list(b["id"])
+            assert (a.geometry.to_wkb() == b.geometry.to_wkb()).all()
+            assert set(a.columns) == set(b.columns)
+            for col in a.columns:
+                if col == "geometry":
+                    continue
+                left = a[col].astype(object).where(a[col].notna(), None).tolist()
+                right = b[col].astype(object).where(b[col].notna(), None).tolist()
+                assert left == right, col
+    finally:
+        os.remove(out_off)
+        os.remove(out_on)
+
+
+def test_to_pbf_repack_is_smaller_and_denser(helsinki_pbf):
+    osmium = pytest.importorskip("osmium")
+    osm = OSM(helsinki_pbf, bounding_box=CROP_BBOX)
+    out_off = osm.to_pbf(repack=False)
+    out_on = osm.to_pbf(repack=True)
+    try:
+        assert os.path.getsize(out_on) < os.path.getsize(out_off)
+        nb_off, nn_off = _block_fill(out_off)
+        nb_on, nn_on = _block_fill(out_on)
+        assert nn_off == nn_on  # same node count
+        assert nb_on <= nb_off  # re-pack uses no more blocks ...
+        assert (nn_on / nb_on) >= (nn_off / nb_off)  # ... at >= the average fill
+
+        counter = [0]
+
+        class _H(osmium.SimpleHandler):
+            def node(self, n):
+                counter[0] += 1
+
+        _H().apply_file(out_on)  # re-readable by osmium
+        assert counter[0] > 0
+    finally:
+        os.remove(out_off)
+        os.remove(out_on)
+
+
+def test_to_pbf_repack_coordinates_exact(helsinki_pbf):
+    _, _, _, src_coords, _ = _read_elements(helsinki_pbf)
+    osm = OSM(helsinki_pbf, bounding_box=CROP_BBOX)
+    out = osm.to_pbf(repack=True)
+    try:
+        _, _, _, crop_coords, _ = _read_elements(out)
+        max_err = 0.0
+        for nid, (x, y) in crop_coords.items():
+            ox, oy = src_coords[nid]
+            max_err = max(max_err, abs(ox - x), abs(oy - y))
+        assert max_err < 1e-7
+    finally:
+        os.remove(out)
+
+
+def test_to_pbf_repack_preserves_metadata(tmp_path):
+    osmium = pytest.importorskip("osmium")
+    src = str(tmp_path / "users.osm.pbf")
+    _make_metadata_fixture(src)
+    out_off = OSM(src, bounding_box=META_BBOX).to_pbf(
+        str(tmp_path / "off.pbf"), repack=False
+    )
+    out_on = OSM(src, bounding_box=META_BBOX).to_pbf(
+        str(tmp_path / "on.pbf"), repack=True
+    )
+
+    def meta(path):
+        result = {}
+        for entity, kind in ((osmium.osm.NODE, "n"), (osmium.osm.WAY, "w")):
+            for o in osmium.FileProcessor(path).with_filter(
+                osmium.filter.EntityFilter(entity)
+            ):
+                result[(kind, o.id)] = (
+                    o.user,
+                    o.uid,
+                    o.version,
+                    str(o.timestamp),
+                    o.changeset,
+                    o.visible,
+                )
+        return result
+
+    m_off, m_on = meta(out_off), meta(out_on)
+    assert os.path.getsize(out_on) < os.path.getsize(out_off)  # re-pack actually ran
+    assert m_off == m_on
+    assert m_on[("w", 1)][0] == "way_mapper"
+    assert m_on[("n", 1)][0] == "inside_mapper"
+
+
+def test_to_pbf_repack_preserves_relations(tmp_path):
+    osmium = pytest.importorskip("osmium")
+    src = str(tmp_path / "rel.osm.pbf")
+    _make_metadata_fixture(src, with_relation=True)
+    out_off = OSM(src, bounding_box=META_BBOX).to_pbf(
+        str(tmp_path / "off.pbf"), repack=False
+    )
+    out_on = OSM(src, bounding_box=META_BBOX).to_pbf(
+        str(tmp_path / "on.pbf"), repack=True
+    )
+
+    def rels(path):
+        result = {}
+        for r in osmium.FileProcessor(path).with_filter(
+            osmium.filter.EntityFilter(osmium.osm.RELATION)
+        ):
+            result[r.id] = (
+                [(m.type, m.ref, m.role) for m in r.members],
+                {t.k: t.v for t in r.tags},
+                (r.user, r.uid, r.version, str(r.timestamp), r.changeset, r.visible),
+            )
+        return result
+
+    assert 1 in rels(out_on)
+    assert rels(out_off) == rels(out_on)
+
+
+def test_to_pbf_repack_deterministic_and_overrides_compact(helsinki_pbf):
+    osm = OSM(helsinki_pbf, bounding_box=CROP_BBOX)
+    a = osm.to_pbf(repack=True)
+    b = osm.to_pbf(repack=True)
+    c = osm.to_pbf(repack=True, compact=True)
+    try:
+        with open(a, "rb") as f:
+            ab = f.read()
+        with open(b, "rb") as f:
+            bb = f.read()
+        with open(c, "rb") as f:
+            cb = f.read()
+        assert ab == bb  # deterministic across runs
+        assert ab == cb  # compact ignored when repack=True
+    finally:
+        os.remove(a)
+        os.remove(b)
+        os.remove(c)
+
+
+def _frame_pbf_blob(out, btype, msg):
+    import zlib as _zlib
+    from struct import pack as _pack
+    from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
+
+    data = msg.SerializeToString()
+    blob = Blob()
+    blob.raw_size = len(data)
+    blob.zlib_data = _zlib.compress(data)
+    bb = blob.SerializeToString()
+    bh = BlobHeader()
+    bh.type = btype
+    bh.datasize = len(bb)
+    hb = bh.SerializeToString()
+    out.write(_pack(">L", len(hb)))
+    out.write(hb)
+    out.write(bb)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("granularity", 1000),
+        ("lat_offset", 100),
+        ("lon_offset", 100),
+        ("date_granularity", 2000),  # guards timestamp fidelity
+    ],
+)
+def test_to_pbf_repack_rejects_nonstandard_grid(tmp_path, field, value):
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock, HeaderBlock
+
+    src = str(tmp_path / "nonstd.osm.pbf")
+    blk = PrimitiveBlock()
+    blk.granularity = 100
+    blk.lat_offset = 0
+    blk.lon_offset = 0
+    blk.date_granularity = 1000
+    setattr(blk, field, value)  # exactly one grid field non-standard
+    blk.stringtable.s.append(b"")
+    dense = blk.primitivegroup.add().dense
+    dense.id.extend([1, 1])
+    dense.lat.extend([600000, 0])
+    dense.lon.extend([250000, 0])
+    hdr = HeaderBlock()
+    hdr.required_features.extend(["OsmSchema-V0.6", "DenseNodes"])
+    with open(src, "wb") as out:
+        _frame_pbf_blob(out, "OSMHeader", hdr)
+        _frame_pbf_blob(out, "OSMData", blk)
+    with pytest.raises(ValueError):
+        OSM(src, bounding_box=[-1, -1, 2, 2]).to_pbf(
+            str(tmp_path / "out.pbf"), repack=True
+        )
+
+
+def test_to_pbf_repack_rejects_mixed_metadata(tmp_path):
+    # Two dense blocks, one carrying DenseInfo and one without: re-pack cannot merge
+    # them into a canonical block faithfully, so it must raise (not crash or drop).
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock, HeaderBlock
+
+    def dense_block(start_id, with_meta):
+        blk = PrimitiveBlock()
+        blk.granularity = 100
+        blk.date_granularity = 1000
+        blk.stringtable.s.append(b"")
+        d = blk.primitivegroup.add().dense
+        d.id.extend([start_id, 1])  # ids start_id, start_id+1 (delta encoded)
+        d.lat.extend([600000, 100])
+        d.lon.extend([250000, 100])
+        if with_meta:
+            d.denseinfo.version.extend([1, 1])
+            d.denseinfo.timestamp.extend([0, 0])
+        return blk
+
+    src = str(tmp_path / "mixed.osm.pbf")
+    hdr = HeaderBlock()
+    hdr.required_features.extend(["OsmSchema-V0.6", "DenseNodes"])
+    with open(src, "wb") as out:
+        _frame_pbf_blob(out, "OSMHeader", hdr)
+        _frame_pbf_blob(out, "OSMData", dense_block(1, with_meta=True))
+        _frame_pbf_blob(out, "OSMData", dense_block(100, with_meta=False))
+    with pytest.raises(ValueError):
+        OSM(src, bounding_box=[-1, -1, 2, 2]).to_pbf(
+            str(tmp_path / "out.pbf"), repack=True
+        )
+
+
+# ---------------------------------------------------------------------------
 # OSM.write_pbf (issue #285)
 # ---------------------------------------------------------------------------
 import geopandas as gpd  # noqa: E402

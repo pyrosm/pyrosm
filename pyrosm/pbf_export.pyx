@@ -548,7 +548,7 @@ cdef _count_data_blocks(filepath):
 
 
 cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
-               workers=1, compact=False):
+               workers=1, compact=False, repack=False):
     """Crop `source_path` by `bounding_box`, writing a valid PBF to `output_path`.
 
     Returns the output path. When ``workers > 1`` and the file has enough blocks
@@ -558,6 +558,11 @@ cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
     When ``compact`` is True each output block's string table is pruned to only the
     strings its kept elements reference (smaller output, slightly slower); when
     False (default) the source block's full string table is copied verbatim.
+
+    When ``repack`` is True the kept elements are re-chunked into canonical, densely
+    packed blocks (smallest output, slowest); the re-pack write is sequential, but
+    ``workers`` still parallelizes the selection. ``repack=True`` produces minimal
+    string tables, so ``compact`` is irrelevant and ignored.
     """
     bounds = _bounds_from_bbox(bounding_box)
 
@@ -572,7 +577,7 @@ cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
         if _count_data_blocks(source_path) >= 2 * int(workers):
             return _crop_pbf_parallel(
                 source_path, output_path, bounds, keep_relations, int(workers),
-                compact
+                compact, repack
             )
         # Too few blocks for parallelism to pay off -> run sequentially.
 
@@ -594,10 +599,16 @@ cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
     kept_rel_set = _to_set(kept_rel)
 
     # Write pass.
-    _write_pbf(
-        source_path, output_path, kept_nodes_set, kept_ways_set, kept_rel_set,
-        bounds, compact
-    )
+    if repack:
+        _repack_write(
+            source_path, output_path, kept_nodes_set, kept_ways_set, kept_rel_set,
+            bounds
+        )
+    else:
+        _write_pbf(
+            source_path, output_path, kept_nodes_set, kept_ways_set, kept_rel_set,
+            bounds, compact
+        )
     return output_path
 
 
@@ -778,7 +789,7 @@ cdef _broadcast(tmpdir, name, arr):
 
 
 cdef _crop_pbf_parallel(source_path, output_path, bounds, keep_relations, workers,
-                        compact=False):
+                        compact=False, repack=False):
     import multiprocessing as mp
 
     tmpdir = tempfile.mkdtemp(prefix="pyrosm_crop_par_")
@@ -805,12 +816,20 @@ cdef _crop_pbf_parallel(source_path, output_path, bounds, keep_relations, worker
             kept_rel = np.empty(0, dtype=np.int64)
         _broadcast(tmpdir, "kept_rel", kept_rel)
 
-        # Write pass (imap preserves input order -> deterministic output bytes).
-        with open(output_path, "wb") as out:
-            _write_header(out, bounds)
-            for blob_bytes in pool.imap(_w_write, _iter_payloads(source_path)):
-                if blob_bytes is not None:
-                    out.write(blob_bytes)
+        if repack:
+            # Re-pack needs a global re-chunk, so the write is sequential (selection
+            # above stays parallel). Build the kept-id sets in the main process.
+            _repack_write(
+                source_path, output_path, _to_set(kept_nodes), _to_set(kept_ways),
+                _to_set(kept_rel), bounds
+            )
+        else:
+            # Write pass (imap preserves input order -> deterministic output bytes).
+            with open(output_path, "wb") as out:
+                _write_header(out, bounds)
+                for blob_bytes in pool.imap(_w_write, _iter_payloads(source_path)):
+                    if blob_bytes is not None:
+                        out.write(blob_bytes)
     finally:
         pool.close()
         pool.join()
@@ -996,4 +1015,423 @@ cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds):
             j = min(i + _MAX_GROUP, len(relations))
             _emit_relation_block(out, relations[i:j])
             i = j
+    return output_path
+
+
+# ---------------------------------------------------------------------------
+# Re-pack write (issue #6): rewrite the crop as canonical, densely-packed blocks
+# ---------------------------------------------------------------------------
+# Unlike the default crop (which filters each source block in place, leaving
+# partially-full blocks), `repack` decodes the kept elements and re-chunks them into
+# full _MAX_GROUP blocks with fresh minimal string tables -- the canonical form
+# osmium/Osmosis produce, which is smaller. The source is already id-sorted and the
+# selection preserves that order, so this is a streaming re-chunk (bounded to ~one
+# output block per element type), not a global sort. Source raw integer coordinates,
+# timestamps and ids are passed straight through (exact on the granularity-100 grid;
+# see the guard in `_repack_write`). These emitters are separate from the from-records
+# `_emit_*` so the `write_pbf` path is untouched.
+
+cdef _emit_repack_node_block(out, ids, lat_raw, lon_raw, tags_list, meta):
+    block = _new_block()
+    st = _StringTable()
+    has_tags = False
+    keys_vals = []
+    for t in tags_list:
+        if t:
+            has_tags = True
+            for k, v in t.items():
+                keys_vals.append(st.intern(k))
+                keys_vals.append(st.intern(v))
+        keys_vals.append(0)
+
+    group = block.primitivegroup.add()
+    dense = group.dense
+    dense.id.extend(delta_encode(ids).tolist())
+    dense.lat.extend(delta_encode(lat_raw).tolist())
+    dense.lon.extend(delta_encode(lon_raw).tolist())
+    if has_tags:
+        dense.keys_vals.extend(keys_vals)
+    if meta is not None:
+        di = dense.denseinfo
+        if "version" in meta:
+            di.version.extend([int(v) for v in meta["version"]])
+        if "timestamp" in meta:
+            di.timestamp.extend(delta_encode(meta["timestamp"]).tolist())
+        if "changeset" in meta:
+            di.changeset.extend(delta_encode(meta["changeset"]).tolist())
+        if "uid" in meta:
+            di.uid.extend(delta_encode(meta["uid"]).tolist())
+        if "user" in meta:
+            sids = np.asarray([st.intern(u) for u in meta["user"]], dtype=np.int64)
+            di.user_sid.extend(delta_encode(sids).tolist())
+        if "visible" in meta:
+            di.visible.extend([bool(x) for x in meta["visible"]])
+
+    for s in st.strings:
+        block.stringtable.s.append(s)
+    _write_blob(out, "OSMData", block)
+
+
+cdef _emit_repack_info(info_msg, _StringTable st, info):
+    """Set an Info submessage from a decoded-source info dict (or omit if None)."""
+    if info is None:
+        return
+    if info.get("version") is not None:
+        info_msg.version = int(info["version"])
+    if info.get("timestamp") is not None:
+        info_msg.timestamp = int(info["timestamp"])
+    if info.get("changeset") is not None:
+        info_msg.changeset = int(info["changeset"])
+    if info.get("uid") is not None:
+        info_msg.uid = int(info["uid"])
+    if info.get("user") is not None:
+        info_msg.user_sid = st.intern(info["user"])
+    if info.get("visible") is not None:
+        info_msg.visible = bool(info["visible"])
+
+
+cdef _emit_repack_way_block(out, way_batch):
+    block = _new_block()
+    st = _StringTable()
+    group = block.primitivegroup.add()
+    for w in way_batch:
+        way = group.ways.add()
+        way.id = w["id"]
+        tags = w["tags"]
+        if tags:
+            for k, v in tags.items():
+                way.keys.append(st.intern(k))
+                way.vals.append(st.intern(v))
+        _emit_repack_info(way.info, st, w["info"])
+        way.refs.extend(delta_encode(w["refs"]).tolist())
+    for s in st.strings:
+        block.stringtable.s.append(s)
+    _write_blob(out, "OSMData", block)
+
+
+cdef _emit_repack_relation_block(out, rel_batch):
+    block = _new_block()
+    st = _StringTable()
+    group = block.primitivegroup.add()
+    for r in rel_batch:
+        rel = group.relations.add()
+        rel.id = r["id"]
+        tags = r["tags"]
+        if tags:
+            for k, v in tags.items():
+                rel.keys.append(st.intern(k))
+                rel.vals.append(st.intern(v))
+        _emit_repack_info(rel.info, st, r["info"])
+        memids = []
+        for (mtype, mref, mrole) in r["members"]:
+            rel.roles_sid.append(st.intern(mrole))
+            rel.types.append(int(mtype))
+            memids.append(mref)
+        rel.memids.extend(
+            delta_encode(np.ascontiguousarray(memids, dtype=np.int64)).tolist()
+        )
+    for s in st.strings:
+        block.stringtable.s.append(s)
+    _write_blob(out, "OSMData", block)
+
+
+# ---- decode the kept elements of a source block into re-pack records ----------
+
+cdef _decode_info(info_msg):
+    """Decode an Info submessage to a dict, or None when no metadata is present.
+
+    Each optional field is checked independently -- a legal PBF Info may carry any
+    subset (e.g. timestamp without version) and all present fields are preserved.
+    """
+    info = {}
+    if info_msg.HasField("version"):
+        info["version"] = info_msg.version
+    if info_msg.HasField("timestamp"):
+        info["timestamp"] = info_msg.timestamp
+    if info_msg.HasField("changeset"):
+        info["changeset"] = info_msg.changeset
+    if info_msg.HasField("uid"):
+        info["uid"] = info_msg.uid
+    if info_msg.HasField("user_sid"):
+        info["_user_sid"] = info_msg.user_sid  # resolved to a string by the caller
+    if info_msg.HasField("visible"):
+        info["visible"] = info_msg.visible
+    return info if info else None
+
+
+cdef _decode_kept_dense_nodes(dense, stringtable, kept_nodes_set):
+    cdef int n = len(dense.id)
+    ids = np.cumsum(np.fromiter(dense.id, dtype=np.int64, count=n))
+    mask = _isin(ids, kept_nodes_set)
+    if not mask.any():
+        return None
+    lat = np.cumsum(np.fromiter(dense.lat, dtype=np.int64, count=n))[mask]
+    lon = np.cumsum(np.fromiter(dense.lon, dtype=np.int64, count=n))[mask]
+    kept_ids = ids[mask]
+    keep_pos = np.flatnonzero(mask)
+
+    tags_list = []
+    if len(dense.keys_vals) > 0:
+        segments = _split_keys_vals(dense.keys_vals, n)
+        for i in keep_pos:
+            seg = segments[i]
+            if seg:
+                d = {}
+                for j in range(0, len(seg), 2):
+                    d[stringtable[seg[j]]] = stringtable[seg[j + 1]]
+                tags_list.append(d)
+            else:
+                tags_list.append(None)
+    else:
+        tags_list = [None] * len(kept_ids)
+
+    di = dense.denseinfo
+    meta = {}
+    if len(di.version) > 0:
+        meta["version"] = np.fromiter(di.version, dtype=np.int64, count=len(di.version))[mask]
+    if len(di.timestamp) > 0:
+        meta["timestamp"] = np.cumsum(
+            np.fromiter(di.timestamp, dtype=np.int64, count=len(di.timestamp)))[mask]
+    if len(di.changeset) > 0:
+        meta["changeset"] = np.cumsum(
+            np.fromiter(di.changeset, dtype=np.int64, count=len(di.changeset)))[mask]
+    if len(di.uid) > 0:
+        meta["uid"] = np.cumsum(
+            np.fromiter(di.uid, dtype=np.int64, count=len(di.uid)))[mask]
+    if len(di.user_sid) > 0:
+        sids = np.cumsum(
+            np.fromiter(di.user_sid, dtype=np.int64, count=len(di.user_sid)))[mask]
+        meta["user"] = [stringtable[s] for s in sids.tolist()]
+    if len(di.visible) > 0:
+        meta["visible"] = np.array(list(di.visible), dtype=bool)[mask]
+    if not meta:
+        meta = None
+    return kept_ids, lat, lon, tags_list, meta
+
+
+cdef _decode_kept_plain_nodes(nodes, stringtable, kept_nodes_set):
+    """Non-dense node group -> the same chunk shape (emitted as dense)."""
+    kept = [node for node in nodes if _isin(
+        np.asarray([node.id], dtype=np.int64), kept_nodes_set)[0]]
+    if not kept:
+        return None
+    ids = np.asarray([node.id for node in kept], dtype=np.int64)
+    lat = np.asarray([node.lat for node in kept], dtype=np.int64)
+    lon = np.asarray([node.lon for node in kept], dtype=np.int64)
+    tags_list = []
+    metas = []
+    for node in kept:
+        if len(node.keys) > 0:
+            tags_list.append({stringtable[k]: stringtable[v]
+                              for k, v in zip(node.keys, node.vals)})
+        else:
+            tags_list.append(None)
+        info = _decode_info(node.info)
+        if info is not None and "_user_sid" in info:
+            info["user"] = stringtable[info.pop("_user_sid")]
+        metas.append(info)
+    # A canonical dense block carries DenseInfo for every node or for none, so a
+    # non-dense group whose kept nodes have mixed metadata (some with, some without,
+    # or differing fields) cannot be re-packed faithfully -> reject rather than drop
+    # or synthesize metadata. Real (dense) PBF never hits this.
+    if len(set(_meta_schema(m) for m in metas)) > 1:
+        raise ValueError(
+            "to_pbf(repack=True) does not support a non-dense node group whose nodes "
+            "carry mixed element metadata; use repack=False for this file."
+        )
+    meta = None
+    if metas[0] is not None:
+        meta = {}
+        for key in metas[0].keys():
+            if key == "user":
+                meta["user"] = [m["user"] for m in metas]
+            elif key == "visible":
+                meta["visible"] = np.asarray([m["visible"] for m in metas], dtype=bool)
+            else:
+                meta[key] = np.asarray([m[key] for m in metas], dtype=np.int64)
+    return ids, lat, lon, tags_list, meta
+
+
+cdef _decode_kept_ways(ways, stringtable, kept_ways_set):
+    records = []
+    for way in ways:
+        if not _isin(np.asarray([way.id], dtype=np.int64), kept_ways_set)[0]:
+            continue
+        tags = {stringtable[k]: stringtable[v]
+                for k, v in zip(way.keys, way.vals)} if len(way.keys) > 0 else None
+        info = _decode_info(way.info)
+        if info is not None and "_user_sid" in info:
+            info["user"] = stringtable[info.pop("_user_sid")]
+        refs = np.cumsum(np.fromiter(way.refs, dtype=np.int64, count=len(way.refs)))
+        records.append({"id": way.id, "tags": tags, "info": info, "refs": refs})
+    return records
+
+
+cdef _decode_kept_relations(relations, stringtable, kept_rel_set):
+    records = []
+    for rel in relations:
+        if not _isin(np.asarray([rel.id], dtype=np.int64), kept_rel_set)[0]:
+            continue
+        tags = {stringtable[k]: stringtable[v]
+                for k, v in zip(rel.keys, rel.vals)} if len(rel.keys) > 0 else None
+        info = _decode_info(rel.info)
+        if info is not None and "_user_sid" in info:
+            info["user"] = stringtable[info.pop("_user_sid")]
+        memids = np.cumsum(np.fromiter(rel.memids, dtype=np.int64, count=len(rel.memids)))
+        members = [
+            (rel.types[j], int(memids[j]), stringtable[rel.roles_sid[j]])
+            for j in range(len(memids))
+        ]
+        records.append({"id": rel.id, "tags": tags, "info": info, "members": members})
+    return records
+
+
+# ---- re-chunk buffer (bounded: ~one output block per element type) ------------
+
+cdef _meta_schema(meta):
+    """The set of metadata fields present (or None) -- used to detect mixed schemas."""
+    return None if meta is None else frozenset(meta.keys())
+
+
+cdef _concat_meta(metas):
+    # All chunks merged into one output block must share a metadata schema: a dense
+    # block's DenseInfo is per-field all-or-nothing, so it cannot represent some nodes
+    # with metadata and others without. Real PBF is uniform; reject the mixed case
+    # rather than drop or misalign fields.
+    if len(set(_meta_schema(m) for m in metas)) > 1:
+        raise ValueError(
+            "to_pbf(repack=True) requires a uniform element-metadata schema across the "
+            "file; this file mixes blocks with and without (or with differing) "
+            "metadata. Use repack=False for this file."
+        )
+    if not metas or metas[0] is None:
+        return None
+    out = {}
+    for key in metas[0].keys():
+        if key == "user":
+            users = []
+            for m in metas:
+                users.extend(m["user"])
+            out["user"] = users
+        else:
+            out[key] = np.concatenate([m[key] for m in metas])
+    return out
+
+
+cdef _slice_meta(meta, a, b):
+    if meta is None:
+        return None
+    return {k: v[a:b] for k, v in meta.items()}
+
+
+cdef class _RepackWriter:
+    cdef object out
+    cdef list node_chunks
+    cdef long node_count
+    cdef list way_buf
+    cdef list rel_buf
+
+    def __cinit__(self, out):
+        self.out = out
+        self.node_chunks = []
+        self.node_count = 0
+        self.way_buf = []
+        self.rel_buf = []
+
+    cdef add_nodes(self, chunk):
+        self.node_chunks.append(chunk)
+        self.node_count += len(chunk[0])
+        while self.node_count >= _MAX_GROUP:
+            self._emit_full_node_block()
+
+    cdef _emit_full_node_block(self):
+        ids = np.concatenate([c[0] for c in self.node_chunks])
+        lat = np.concatenate([c[1] for c in self.node_chunks])
+        lon = np.concatenate([c[2] for c in self.node_chunks])
+        tags = []
+        for c in self.node_chunks:
+            tags.extend(c[3])
+        meta = _concat_meta([c[4] for c in self.node_chunks])
+        _emit_repack_node_block(
+            self.out, ids[:_MAX_GROUP], lat[:_MAX_GROUP], lon[:_MAX_GROUP],
+            tags[:_MAX_GROUP], _slice_meta(meta, 0, _MAX_GROUP))
+        rem = (ids[_MAX_GROUP:], lat[_MAX_GROUP:], lon[_MAX_GROUP:],
+               tags[_MAX_GROUP:], _slice_meta(meta, _MAX_GROUP, len(ids)))
+        self.node_chunks = [rem]
+        self.node_count = len(ids) - _MAX_GROUP
+
+    cdef _flush_nodes(self):
+        if self.node_count > 0:
+            ids = np.concatenate([c[0] for c in self.node_chunks])
+            lat = np.concatenate([c[1] for c in self.node_chunks])
+            lon = np.concatenate([c[2] for c in self.node_chunks])
+            tags = []
+            for c in self.node_chunks:
+                tags.extend(c[3])
+            meta = _concat_meta([c[4] for c in self.node_chunks])
+            _emit_repack_node_block(self.out, ids, lat, lon, tags, meta)
+        self.node_chunks = []
+        self.node_count = 0
+
+    cdef add_ways(self, records):
+        self._flush_nodes()
+        self.way_buf.extend(records)
+        while len(self.way_buf) >= _MAX_GROUP:
+            _emit_repack_way_block(self.out, self.way_buf[:_MAX_GROUP])
+            self.way_buf = self.way_buf[_MAX_GROUP:]
+
+    cdef _flush_ways(self):
+        if self.way_buf:
+            _emit_repack_way_block(self.out, self.way_buf)
+            self.way_buf = []
+
+    cdef add_relations(self, records):
+        self._flush_nodes()
+        self._flush_ways()
+        self.rel_buf.extend(records)
+        while len(self.rel_buf) >= _MAX_GROUP:
+            _emit_repack_relation_block(self.out, self.rel_buf[:_MAX_GROUP])
+            self.rel_buf = self.rel_buf[_MAX_GROUP:]
+
+    cdef close(self):
+        self._flush_nodes()
+        self._flush_ways()
+        if self.rel_buf:
+            _emit_repack_relation_block(self.out, self.rel_buf)
+            self.rel_buf = []
+
+
+cdef _repack_write(source_path, output_path, kept_nodes_set, kept_ways_set,
+                   kept_rel_set, bounds):
+    """Sequential re-pack write: re-chunk the kept crop into canonical full blocks."""
+    with open(output_path, "wb") as out:
+        _write_header(out, bounds)
+        writer = _RepackWriter(out)
+        for pblock in _iter_primitive_blocks(source_path):
+            if (pblock.granularity != 100 or pblock.lat_offset != 0
+                    or pblock.lon_offset != 0 or pblock.date_granularity != 1000):
+                raise ValueError(
+                    "to_pbf(repack=True) requires the standard PBF grid "
+                    "(granularity 100, zero lat/lon offsets, date_granularity 1000); "
+                    "this file uses a different grid. Use repack=False."
+                )
+            st = pblock.stringtable.s
+            for g in pblock.primitivegroup:
+                if len(g.dense.id) > 0:
+                    chunk = _decode_kept_dense_nodes(g.dense, st, kept_nodes_set)
+                    if chunk is not None:
+                        writer.add_nodes(chunk)
+                elif len(g.nodes) > 0:
+                    chunk = _decode_kept_plain_nodes(g.nodes, st, kept_nodes_set)
+                    if chunk is not None:
+                        writer.add_nodes(chunk)
+                elif len(g.ways) > 0:
+                    records = _decode_kept_ways(g.ways, st, kept_ways_set)
+                    if records:
+                        writer.add_ways(records)
+                elif len(g.relations) > 0:
+                    records = _decode_kept_relations(g.relations, st, kept_rel_set)
+                    if records:
+                        writer.add_relations(records)
+        writer.close()
     return output_path
