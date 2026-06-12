@@ -208,3 +208,28 @@ the verbatim copy. On a 138 MB extract cropped to a sub-bbox (median of 3, `work
   fixture that carries them), confirmed by reading both back and by an order-independent
   GeoDataFrame comparison. `compact=False` stays **byte-identical** to the previous
   behaviour (SHA-256 of the output unchanged, sequential and `workers=2`).
+
+### Optional block re-packing for `to_pbf` (#6) — `repack=True`
+
+`to_pbf(repack=True)` re-chunks the kept elements into canonical, densely-packed blocks
+(as osmium/Osmosis produce) instead of filtering source blocks in place; `compact=True`
+only prunes the per-block string tables. The full ladder on a 138 MB extract cropped to a
+sub-bbox (median of 3, `workers=1`):
+
+| mode | time | output |
+| --- | --- | --- |
+| default (`compact=False`) | 15.5 s | 67.1 MB |
+| `compact=True` | 17.2 s | 55.3 MB (−17.6%) |
+| `repack=True` | 26.0 s | 53.1 MB (−20.9%) |
+
+- `repack=True` is the smallest and slowest. On this density-inflated file (uniform blocks)
+  it is only ~4% below `compact=True`, because compaction is already near-canonical there;
+  on a real country→region crop — where the kept source blocks are sparse — re-packing
+  closes the remaining ~10% gap to osmium/Osmosis (a Finland→Helsinki crop sat at 65.5 MB
+  with `compact=True` vs the ~59 MB osmium/Osmosis produce). Re-pack uses fewer, fuller
+  blocks (e.g. a Helsinki-region crop went 4 blocks → 3, with higher average fill).
+- Output is **data-identical** to the default crop — same nodes/ways/relations, tags,
+  geometry (coordinates exact on the granularity-100 grid) and metadata, incl. editor user
+  names (verified on the 1,163-user fixture). `repack=True` `workers=1` == `workers=2`
+  (deterministic). The default and `compact` crop paths and the `write_pbf` from-records
+  output all stay **byte-identical** (SHA-256 unchanged).

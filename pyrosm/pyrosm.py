@@ -945,7 +945,14 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
-    def to_pbf(self, output_path=None, keep_relations=True, workers=1, compact=False):
+    def to_pbf(
+        self,
+        output_path=None,
+        keep_relations=True,
+        workers=1,
+        compact=False,
+        repack=False,
+    ):
         """
         Crop the source PBF by this object's ``bounding_box`` and write a valid,
         re-readable ``*.osm.pbf`` to disk.
@@ -984,6 +991,15 @@ class OSM:
             producing a smaller file at the cost of some extra per-block work. The
             written OSM data is identical either way.
 
+        repack : bool
+            When ``True`` the kept elements are re-chunked into canonical, densely
+            packed blocks (as ``osmium``/Osmosis produce), giving the smallest output
+            at the cost of speed; the re-pack write is sequential, though ``workers``
+            still parallelizes the selection. Re-packed blocks already have minimal
+            string tables, so ``compact`` is ignored when ``repack=True``. The written
+            OSM data is identical to ``repack=False``. Default ``False`` keeps the
+            current (faster, slightly larger) in-place crop.
+
         Returns
         -------
         str
@@ -1004,6 +1020,7 @@ class OSM:
             keep_relations=keep_relations,
             workers=workers,
             compact=compact,
+            repack=repack,
         )
 
     def write_pbf(self, data, output_path):
