@@ -333,8 +333,13 @@ cdef _build_dense_group(dense, kept_nodes_set):
     return new_dense
 
 
-cdef _build_output_block(pblock, kept_nodes_set, kept_ways_set, kept_rel_set):
-    """Build a cropped copy of `pblock`, or None if nothing is kept."""
+cdef _build_output_block(pblock, kept_nodes_set, kept_ways_set, kept_rel_set,
+                         compact=False):
+    """Build a cropped copy of `pblock`, or None if nothing is kept.
+
+    With `compact=True` the copied string table is pruned to only the strings the
+    kept elements reference (smaller output); otherwise it is copied verbatim.
+    """
     out_block = PrimitiveBlock()
     out_block.stringtable.CopyFrom(pblock.stringtable)
     out_block.granularity = pblock.granularity
@@ -366,7 +371,111 @@ cdef _build_output_block(pblock, kept_nodes_set, kept_ways_set, kept_rel_set):
                 has_data = True
     if not has_data:
         return None
+    if compact:
+        _compact_string_table(out_block)
     return out_block
+
+
+cdef _remap_repeated(field, new_index):
+    """Remap a repeated string-index field in place through `new_index`."""
+    cdef int n = len(field)
+    if n == 0:
+        return
+    arr = new_index[np.fromiter(field, dtype=np.int64, count=n)]
+    del field[:]
+    field.extend(arr.tolist())
+
+
+cdef _compact_string_table(out_block):
+    """Prune `out_block`'s string table to only the strings its kept elements use,
+    remapping every string-index field accordingly. The kept strings are emitted in
+    ascending original order (index 0, the blank entry, stays first), so the result
+    is deterministic and the parallel write stays byte-identical to the sequential
+    one. A no-op when every string is still referenced.
+    """
+    s = out_block.stringtable.s
+    cdef int n_old = len(s)
+
+    # Pass 1: mark referenced string indices (0 = blank/dense-delimiter, always kept).
+    used = np.zeros(n_old, dtype=bool)
+    used[0] = True
+    for g in out_block.primitivegroup:
+        if len(g.dense.id) > 0:
+            kv = g.dense.keys_vals
+            if len(kv) > 0:
+                used[np.fromiter(kv, dtype=np.int64, count=len(kv))] = True
+            di = g.dense.denseinfo
+            if len(di.user_sid) > 0:
+                used[np.cumsum(np.fromiter(di.user_sid, dtype=np.int64,
+                                           count=len(di.user_sid)))] = True
+        elif len(g.nodes) > 0:
+            for node in g.nodes:
+                if len(node.keys) > 0:
+                    used[np.fromiter(node.keys, dtype=np.int64, count=len(node.keys))] = True
+                if len(node.vals) > 0:
+                    used[np.fromiter(node.vals, dtype=np.int64, count=len(node.vals))] = True
+                if node.HasField("info"):
+                    used[node.info.user_sid] = True
+        elif len(g.ways) > 0:
+            for way in g.ways:
+                if len(way.keys) > 0:
+                    used[np.fromiter(way.keys, dtype=np.int64, count=len(way.keys))] = True
+                if len(way.vals) > 0:
+                    used[np.fromiter(way.vals, dtype=np.int64, count=len(way.vals))] = True
+                if way.HasField("info"):
+                    used[way.info.user_sid] = True
+        elif len(g.relations) > 0:
+            for rel in g.relations:
+                if len(rel.keys) > 0:
+                    used[np.fromiter(rel.keys, dtype=np.int64, count=len(rel.keys))] = True
+                if len(rel.vals) > 0:
+                    used[np.fromiter(rel.vals, dtype=np.int64, count=len(rel.vals))] = True
+                if len(rel.roles_sid) > 0:
+                    used[np.fromiter(rel.roles_sid, dtype=np.int64,
+                                     count=len(rel.roles_sid))] = True
+                if rel.HasField("info"):
+                    used[rel.info.user_sid] = True
+
+    kept = np.flatnonzero(used)
+    if len(kept) == n_old:
+        return  # every string still referenced -> nothing to prune
+
+    new_index = np.full(n_old, -1, dtype=np.int64)
+    new_index[kept] = np.arange(len(kept), dtype=np.int64)
+    new_strings = [s[i] for i in kept.tolist()]
+
+    # Pass 2: remap every string-index field through new_index.
+    for g in out_block.primitivegroup:
+        if len(g.dense.id) > 0:
+            _remap_repeated(g.dense.keys_vals, new_index)
+            di = g.dense.denseinfo
+            if len(di.user_sid) > 0:
+                abs_sid = np.cumsum(np.fromiter(di.user_sid, dtype=np.int64,
+                                                count=len(di.user_sid)))
+                del di.user_sid[:]
+                di.user_sid.extend(delta_encode(new_index[abs_sid]).tolist())
+        elif len(g.nodes) > 0:
+            for node in g.nodes:
+                _remap_repeated(node.keys, new_index)
+                _remap_repeated(node.vals, new_index)
+                if node.HasField("info"):
+                    node.info.user_sid = int(new_index[node.info.user_sid])
+        elif len(g.ways) > 0:
+            for way in g.ways:
+                _remap_repeated(way.keys, new_index)
+                _remap_repeated(way.vals, new_index)
+                if way.HasField("info"):
+                    way.info.user_sid = int(new_index[way.info.user_sid])
+        elif len(g.relations) > 0:
+            for rel in g.relations:
+                _remap_repeated(rel.keys, new_index)
+                _remap_repeated(rel.vals, new_index)
+                _remap_repeated(rel.roles_sid, new_index)
+                if rel.HasField("info"):
+                    rel.info.user_sid = int(new_index[rel.info.user_sid])
+
+    del out_block.stringtable.s[:]
+    out_block.stringtable.s.extend(new_strings)
 
 
 cdef _frame_blob(blob_type, message):
@@ -400,12 +509,12 @@ cdef _write_header(out, bounds):
 
 
 cdef _write_pbf(filepath, output_path, kept_nodes_set, kept_ways_set, kept_rel_set,
-                bounds):
+                bounds, compact=False):
     with open(output_path, "wb") as out:
         _write_header(out, bounds)
         for pblock in _iter_primitive_blocks(filepath):
             out_block = _build_output_block(
-                pblock, kept_nodes_set, kept_ways_set, kept_rel_set
+                pblock, kept_nodes_set, kept_ways_set, kept_rel_set, compact
             )
             if out_block is not None:
                 _write_blob(out, "OSMData", out_block)
@@ -439,12 +548,16 @@ cdef _count_data_blocks(filepath):
 
 
 cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
-               workers=1):
+               workers=1, compact=False):
     """Crop `source_path` by `bounding_box`, writing a valid PBF to `output_path`.
 
     Returns the output path. When ``workers > 1`` and the file has enough blocks
     to amortize pool startup (>= ``2 * workers`` OSMData blocks), the parallel
     path is used; otherwise the (faster, for small files) sequential path runs.
+
+    When ``compact`` is True each output block's string table is pruned to only the
+    strings its kept elements reference (smaller output, slightly slower); when
+    False (default) the source block's full string table is copied verbatim.
     """
     bounds = _bounds_from_bbox(bounding_box)
 
@@ -458,7 +571,8 @@ cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
     if workers is not None and workers > 1:
         if _count_data_blocks(source_path) >= 2 * int(workers):
             return _crop_pbf_parallel(
-                source_path, output_path, bounds, keep_relations, int(workers)
+                source_path, output_path, bounds, keep_relations, int(workers),
+                compact
             )
         # Too few blocks for parallelism to pay off -> run sequentially.
 
@@ -481,7 +595,8 @@ cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
 
     # Write pass.
     _write_pbf(
-        source_path, output_path, kept_nodes_set, kept_ways_set, kept_rel_set, bounds
+        source_path, output_path, kept_nodes_set, kept_ways_set, kept_rel_set,
+        bounds, compact
     )
     return output_path
 
@@ -507,6 +622,7 @@ cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
 _W_BOUNDS = None
 _W_TMPDIR = None
 _W_CACHE = {}
+_W_COMPACT = False
 
 
 cdef _read_next_payload(f):
@@ -552,11 +668,12 @@ cdef _payload_to_block(payload):
     return pblock
 
 
-def _winit(bounds, tmpdir):
-    global _W_BOUNDS, _W_TMPDIR, _W_CACHE
+def _winit(bounds, tmpdir, compact):
+    global _W_BOUNDS, _W_TMPDIR, _W_CACHE, _W_COMPACT
     _W_BOUNDS = bounds
     _W_TMPDIR = tmpdir
     _W_CACHE = {}
+    _W_COMPACT = compact
 
 
 def _w_get_set(name):
@@ -648,6 +765,7 @@ def _w_write(payload):
         _w_get_set("kept_nodes"),
         _w_get_set("kept_ways"),
         _w_get_set("kept_rel"),
+        _W_COMPACT,
     )
     if out_block is None:
         return None
@@ -659,11 +777,12 @@ cdef _broadcast(tmpdir, name, arr):
     np.save(os.path.join(tmpdir, name + ".npy"), np.ascontiguousarray(arr, dtype=np.int64))
 
 
-cdef _crop_pbf_parallel(source_path, output_path, bounds, keep_relations, workers):
+cdef _crop_pbf_parallel(source_path, output_path, bounds, keep_relations, workers,
+                        compact=False):
     import multiprocessing as mp
 
     tmpdir = tempfile.mkdtemp(prefix="pyrosm_crop_par_")
-    pool = mp.Pool(workers, initializer=_winit, initargs=(bounds, tmpdir))
+    pool = mp.Pool(workers, initializer=_winit, initargs=(bounds, tmpdir, compact))
     try:
         # Stage 1: nodes inside the bbox.
         results = pool.map(_w_stage1, _iter_payloads(source_path))
