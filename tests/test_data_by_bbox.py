@@ -1,8 +1,9 @@
+import json
 import os
 
 import geopandas as gpd
 import pytest
-from shapely.geometry import box
+from shapely.geometry import box, mapping
 
 from pyrosm import get_data_by_bbox
 
@@ -97,3 +98,71 @@ def test_vendored_snapshot_integrity():
 @run_downloads_only_once
 def test_update_fetches_live_index():
     assert get_data_by_bbox(HELSINKI, update=True, url=False) == "finland"
+
+
+def test_update_reads_live_index_schema(monkeypatch):
+    # Simulate Geofabrik's live index (download links nested under "urls", as the
+    # vendored snapshot is not) without hitting the network.
+    import pyrosm.data.geofabrik_index as gi
+
+    fc = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": mapping(box(20, 59, 31, 71)),  # covers Helsinki
+                "properties": {
+                    "id": "finland",
+                    "parent": "europe",
+                    "name": "Finland",
+                    "urls": {"pbf": FINLAND_URL},
+                },
+            }
+        ],
+    }
+
+    class _FakeResponse:
+        def __init__(self, data):
+            self._data = data
+
+        def read(self):
+            return self._data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        gi.urllib.request,
+        "urlopen",
+        lambda url, context=None: _FakeResponse(json.dumps(fc).encode()),
+    )
+    assert get_data_by_bbox(HELSINKI, update=True) == FINLAND_URL
+
+
+def test_rejects_unsupported_bbox_type():
+    with pytest.raises(ValueError, match="should be"):
+        get_data_by_bbox("not-a-bbox")
+
+
+def test_out_of_range_bbox_warns_and_has_no_coverage():
+    # Longitude 200 is off the map: it warns about the range and then finds no
+    # extract at all.
+    with pytest.warns(UserWarning, match="lon/lat range"):
+        with pytest.raises(ValueError, match="outside Geofabrik"):
+            get_data_by_bbox([200.0, 0.0, 210.0, 5.0])
+
+
+def test_spanning_bbox_reports_overlapping_extents():
+    # A box spanning North America and Europe is covered by no single extract.
+    with pytest.raises(ValueError, match="fully covers"):
+        get_data_by_bbox([-50.0, 45.0, 10.0, 55.0])
+
+
+def test_data_module_getattr_rejects_unknown():
+    import pyrosm.data
+
+    with pytest.raises(AttributeError):
+        pyrosm.data.this_attribute_does_not_exist
