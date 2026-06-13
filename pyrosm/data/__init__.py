@@ -26,7 +26,14 @@ from pyrosm.data.geofabrik import (
 from pyrosm.data.bbbike import Cities
 import warnings
 
-__all__ = ["available", "get_data", "get_data_by_bbox", "get_path"]
+__all__ = [
+    "available",
+    "geocode",
+    "get_data",
+    "get_data_by_bbox",
+    "get_data_by_geocoding",
+    "get_path",
+]
 _module_path = os.path.dirname(__file__)
 _package_files = {"test_pbf": "test.osm.pbf", "helsinki_pbf": "Helsinki.osm.pbf"}
 
@@ -240,4 +247,8 @@ def __getattr__(name):
         from pyrosm.data.geofabrik_index import get_data_by_bbox
 
         return get_data_by_bbox
+    if name in ("geocode", "get_data_by_geocoding"):
+        from pyrosm.data.geocoding import geocode, get_data_by_geocoding
+
+        return geocode if name == "geocode" else get_data_by_geocoding
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
