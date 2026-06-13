@@ -26,7 +26,7 @@ from pyrosm.data.geofabrik import (
 from pyrosm.data.bbbike import Cities
 import warnings
 
-__all__ = ["available", "get_data", "get_path"]
+__all__ = ["available", "get_data", "get_data_by_bbox", "get_path"]
 _module_path = os.path.dirname(__file__)
 _package_files = {"test_pbf": "test.osm.pbf", "helsinki_pbf": "Helsinki.osm.pbf"}
 
@@ -231,3 +231,13 @@ def get_path(dataset, update=False, directory=None):
         stacklevel=2,
     )
     return get_data(dataset, update, directory)
+
+
+def __getattr__(name):
+    # Loaded lazily so importing pyrosm.data (and the lightweight get_data
+    # download path) does not pull in geopandas/shapely.
+    if name == "get_data_by_bbox":
+        from pyrosm.data.geofabrik_index import get_data_by_bbox
+
+        return get_data_by_bbox
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
