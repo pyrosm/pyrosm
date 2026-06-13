@@ -47,8 +47,12 @@ extensions = [
 ]
 
 # pyrosm is not installed for the docs build; mock its compiled Cython
-# extensions (and binary deps) so autodoc can import the pure-Python wrappers
-# and read their docstrings without compiling anything.
+# extensions, binary deps, and the generated protobuf message modules so autodoc
+# can import the pure-Python wrappers and read their docstrings without compiling
+# anything. The pyrosm.proto.*_pb2 modules build real protobuf descriptors at
+# import time, which fails when google.protobuf is mocked, so they are mocked too
+# (otherwise importing pyrosm.utils -> pyrosm.data/pyrosm.pyrosm fails and the
+# whole API reference renders empty).
 autodoc_mock_imports = [
     "pyrosm._arrays",
     "pyrosm.data_filter",
@@ -60,6 +64,8 @@ autodoc_mock_imports = [
     "pyrosm.pbfreader",
     "pyrosm.relations",
     "pyrosm.tagparser",
+    "pyrosm.proto.fileformat_pb2",
+    "pyrosm.proto.osmformat_pb2",
     "google.protobuf",
     "cykhash",
 ]
