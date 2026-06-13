@@ -1,0 +1,8 @@
+/* Make the sidebar logo a bit smaller.
+   The theme's general `img { height:100%; width:auto }` rule otherwise keeps it
+   from shrinking, so force an explicit width (override with !important). */
+img.logo__image {
+    width: 140px !important;
+    max-width: 140px !important;
+    height: auto !important;
+}

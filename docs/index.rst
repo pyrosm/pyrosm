@@ -1,5 +1,5 @@
-Pyrosm
-======
+Pyrosm -- Python's Rapid OSM Parser
+===================================
 
 Pyrosm is a Python library for reading OpenStreetMap from `Protocolbuffer Binary Format <https://wiki.openstreetmap.org/wiki/PBF_Format>`__ -files (*.osm.pbf)
 into `Geopandas <https://geopandas.org/>`__ GeoDataFrames.
@@ -20,6 +20,7 @@ Current features
 ----------------
 
 - download PBF data easily from hundreds of locations across the world
+- find and download the right extract for a bounding box or a place name
 - read street networks (separately for driving, cycling, walking and all-combined)
 - read buildings from PBF
 - read Points of Interest (POI) from PBF
@@ -28,7 +29,9 @@ Current features
 - read boundaries from PBF (such as administrative borders)
 - read any other data from PBF by using a custom user-defined filter
 - filter data based on bounding box
-- export networks as a directed graph to `igraph`, `networkx` and `pandana`
+- control which OSM tags are parsed into columns and reduce memory use
+- crop a PBF to a smaller area and write modified OSM data back to PBF
+- export networks as a directed graph to `igraph`, `networkx` and `pandarm`
 
 When should I use Pyrosm?
 -------------------------
@@ -39,7 +42,7 @@ However, `pyrosm` is better suited for situations where you want to fetch data f
 If you are interested to fetch OSM data for smaller areas such as neighborhoods, or search data around a specific location/address,
 we recommend using `OSMnx <https://github.com/gboeing/osmnx>`__ which is more flexible in terms of specifying the area of interest.
 That being said, it is also possible to extract neighborhood level information with pyrosm and filter data based on a bounding box
-(see `docs <https://pyrosm.readthedocs.io/en/latest/basics.html#filtering-data-based-on-bounding-box>`__).
+(see `docs <https://pyrosm.readthedocs.io/en/latest/reading_osm_data.html#filtering-data-based-on-bounding-box>`__).
 
 License
 -------
@@ -57,11 +60,14 @@ Getting started
     :caption: Contents
 
     installation.ipynb
-    basics.ipynb
+    quickstart.ipynb
+    downloading_data.ipynb
+    reading_osm_data.ipynb
     custom_filter.ipynb
+    tags_and_columns.ipynb
+    saving_and_cropping.ipynb
     graphs.ipynb
     contributions
-    .. benchmarking.ipynb
 
 .. toctree::
     :caption: Reference Guide
