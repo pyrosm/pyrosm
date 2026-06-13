@@ -1,12 +1,16 @@
 Pyrosm -- Python's Rapid OSM Parser
 ===================================
 
-Pyrosm is a Python library for reading OpenStreetMap from `Protocolbuffer Binary Format <https://wiki.openstreetmap.org/wiki/PBF_Format>`__ -files (*.osm.pbf)
+Pyrosm is a Python library for reading OpenStreetMap from `Protocolbuffer Binary Format <https://wiki.openstreetmap.org/wiki/PBF_Format>`__ -files (``*.osm.pbf``)
 into `Geopandas <https://geopandas.org/>`__ GeoDataFrames.
 Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks, buildings,
 Points of Interest (POI), landuse, natural elements, administrative boundaries and much more.
 Fully customized queries are supported which makes it possible to parse any kind of data from OSM,
 even with more specific filters.
+
+Getting the data is just as easy: pyrosm can download a PBF for any location in the world and pick the right
+extract for you, whether by region name, by a bounding box, or directly from a place name via geocoding.
+It can also crop a PBF to a smaller area before reading, which is currently the fastest PBF cropping available.
 
 Pyrosm is easy to use and it provides a somewhat similar user interface as `OSMnx <https://github.com/gboeing/osmnx>`__.
 The main difference between pyrosm and OSMnx is that OSMnx reads the data using an OverPass API, whereas pyrosm reads
@@ -19,7 +23,7 @@ This makes it possible to parse OSM data faster and make it more feasible to ext
 Current features
 ----------------
 
-- download PBF data easily from hundreds of locations across the world
+- download PBF data easily from any location in the world
 - find and download the right extract for a bounding box or a place name
 - read street networks (separately for driving, cycling, walking and all-combined)
 - read buildings from PBF
@@ -30,7 +34,7 @@ Current features
 - read any other data from PBF by using a custom user-defined filter
 - filter data based on bounding box
 - control which OSM tags are parsed into columns and reduce memory use
-- crop a PBF to a smaller area and write modified OSM data back to PBF
+- crop a PBF to a smaller area (currently the fastest PBF cropping available) and write modified OSM data back to PBF
 - export networks as a directed graph to `igraph`, `networkx` and `pandarm`
 
 When should I use Pyrosm?
