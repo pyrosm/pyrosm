@@ -6,11 +6,8 @@ into `Geopandas <https://geopandas.org/>`__ GeoDataFrames.
 Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks, buildings,
 Points of Interest (POI), landuse, natural elements, administrative boundaries and much more.
 Fully customized queries are supported which makes it possible to parse any kind of data from OSM,
-even with more specific filters.
-
-Getting the data is just as easy: pyrosm can download a PBF for any location in the world and pick the right
-extract for you, whether by region name, by a bounding box, or directly from a place name via geocoding.
-It can also crop a PBF to a smaller area before reading, which is currently the fastest PBF cropping available.
+even with more specific filters. Getting the data is just as easy: pyrosm allows you to search and download a PBF for any location in the world based on the place name (via geocoding) or by a bounding box.
+It can also crop a PBF to a smaller area before reading. Currently, pyrosm is the fastest PBF extraction and cropping tool available for Python (see benchmarks).
 
 Pyrosm is easy to use and it provides a somewhat similar user interface as `OSMnx <https://github.com/gboeing/osmnx>`__.
 The main difference between pyrosm and OSMnx is that OSMnx reads the data using an OverPass API, whereas pyrosm reads
@@ -18,7 +15,6 @@ the data from local OSM data dumps that are downloaded from the PBF data provide
 This makes it possible to parse OSM data faster and make it more feasible to extract data covering large regions.
 
 .. figure:: img/NY_roads_and_buildings.PNG
-
 
 Current features
 ----------------
@@ -33,8 +29,8 @@ Current features
 - read boundaries from PBF (such as administrative borders)
 - read any other data from PBF by using a custom user-defined filter
 - filter data based on bounding box
-- control which OSM tags are parsed into columns and reduce memory use
-- crop a PBF to a smaller area (currently the fastest PBF cropping available) and write modified OSM data back to PBF
+- control which OSM tags are parsed into columns
+- crop a PBF to a smaller area and write modified OSM data back to PBF
 - export networks as a directed graph to `igraph`, `networkx` and `pandarm`
 
 When should I use Pyrosm?
@@ -44,7 +40,7 @@ Pyrosm can of course be used whenever you need to parse data from OSM into geopa
 However, `pyrosm` is better suited for situations where you want to fetch data for whole city or larger regions (even whole country).
 
 If you are interested to fetch OSM data for smaller areas such as neighborhoods, or search data around a specific location/address,
-we recommend using `OSMnx <https://github.com/gboeing/osmnx>`__ which is more flexible in terms of specifying the area of interest.
+we recommend using `OSMnx <https://github.com/gboeing/osmnx>`__ which is more flexible in terms of specifying the area of interest and fetching only the data requested via API.
 That being said, it is also possible to extract neighborhood level information with pyrosm and filter data based on a bounding box
 (see `docs <https://pyrosm.readthedocs.io/en/latest/reading_osm_data.html#filtering-data-based-on-bounding-box>`__).
 
