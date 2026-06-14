@@ -4,9 +4,8 @@ Public entry points:
 
 - :func:`geocode` -- a place name -> a Shapely polygon for the place, via
   OpenStreetMap's Nominatim service.
-- :func:`get_data_by_geocoding` -- geocode a place, find the Geofabrik extract
-  that covers it (:func:`pyrosm.get_data_by_bbox`), download it, and optionally
-  crop it to the place.
+- :func:`get_data_by_geocoding` -- geocode a place, then download (and by default
+  crop) the Geofabrik extract that covers it.
 
 No extra dependencies: geocoding uses the stdlib ``urllib`` + ``json`` with the
 bundled ``certifi``, and ``shapely`` (already required) turns the response into a
@@ -18,6 +17,7 @@ point at one.
 
 import json
 import os
+import re
 import ssl
 import urllib.parse
 import urllib.request
@@ -101,20 +101,26 @@ def geocode(query, polygon=True, base_url=_NOMINATIM_URL, user_agent=None):
     return box(west, south, east, north)
 
 
+def _slug_filename(text):
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return "%s.osm.pbf" % (slug or "place")
+
+
 def get_data_by_geocoding(
     query,
-    crop=False,
-    output_path=None,
+    crop=True,
+    download=True,
     update=False,
     directory=None,
+    output_path=None,
     base_url=_NOMINATIM_URL,
     user_agent=None,
 ):
-    """Download the Geofabrik extract that covers a geocoded place name.
+    """Download (and by default crop) the OSM data for a geocoded place name.
 
     Geocodes ``query`` (:func:`geocode`), finds the smallest Geofabrik extract
-    that covers it (:func:`pyrosm.get_data_by_bbox`), downloads that extract, and
-    returns the local file path.
+    that covers it, downloads it, and -- by default -- crops it to the place
+    before returning the cropped file path.
 
     Parameters
     ----------
@@ -122,20 +128,24 @@ def get_data_by_geocoding(
         The place name to look up, e.g. ``"Brighton and Hove, UK"``.
 
     crop : bool
-        When ``True``, crop the downloaded extract to the geocoded place (a
-        smaller PBF) before returning, and return the cropped file instead of the
-        full extract. Defaults to ``False``.
+        When ``True`` (default), crop the downloaded extract to the place and
+        return the cropped file, named after the query (e.g.
+        ``brighton-and-hove-uk.osm.pbf``). When ``False``, return the full extract.
 
-    output_path : str, optional
-        Where to write the cropped PBF when ``crop=True``. ``None`` (default)
-        writes to a temporary file. Ignored when ``crop=False``.
+    download : bool
+        When ``True`` (default), download the covering extract. When ``False``,
+        skip the download and return the covering extract's PBF URL instead.
 
     update : bool
         When ``True``, re-download the extract even if it already exists locally.
 
     directory : str, optional
-        Directory to download the extract into. ``None`` (default) uses a pyrosm
-        temp directory.
+        Directory to download into / write the cropped file to. ``None`` (default)
+        uses a pyrosm temp directory.
+
+    output_path : str, optional
+        Path for the cropped file when ``crop=True`` (overrides the automatic
+        name). Ignored when ``crop=False`` or ``download=False``.
 
     base_url : str
         The Nominatim base URL (see :func:`geocode`).
@@ -146,17 +156,13 @@ def get_data_by_geocoding(
     Returns
     -------
     str
-        Path to the downloaded extract, or to the cropped PBF when ``crop=True``.
+        The cropped file path (default), the full extract path (``crop=False``), or
+        the covering extract's PBF URL (``download=False``).
     """
-    from pyrosm.data.geofabrik_index import get_data_by_bbox
-    from pyrosm.utils.download import download
+    from pyrosm.data.geofabrik_index import _download_optionally_crop
 
     geom = geocode(query, base_url=base_url, user_agent=user_agent)
-    url = get_data_by_bbox(geom, url=True)
-    path = download(url, os.path.basename(url), update, directory)
-    if not crop:
-        return path
-
-    from pyrosm import OSM
-
-    return OSM(path, bounding_box=geom).to_pbf(output_path=output_path)
+    cropped_name = _slug_filename(query)
+    return _download_optionally_crop(
+        geom, crop, download, cropped_name, output_path, update, directory
+    )

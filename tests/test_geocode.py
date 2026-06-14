@@ -129,7 +129,13 @@ def test_geocode_service_error_raises(monkeypatch):
         pyrosm.geocode("Brighton and Hove, UK")
 
 
-def test_get_data_by_geocoding_downloads_covering_extract(monkeypatch):
+def test_get_data_by_geocoding_download_false_returns_url(monkeypatch):
+    monkeypatch.setattr("urllib.request.urlopen", _mock_urlopen(BRIGHTON))
+    out = pyrosm.get_data_by_geocoding("Brighton and Hove, UK", download=False)
+    assert "england-latest.osm.pbf" in out
+
+
+def test_get_data_by_geocoding_crop_false_returns_full_extract(monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", _mock_urlopen(BRIGHTON))
     captured = {}
 
@@ -138,12 +144,14 @@ def test_get_data_by_geocoding_downloads_covering_extract(monkeypatch):
         return "/tmp/fake-england-latest.osm.pbf"
 
     monkeypatch.setattr("pyrosm.utils.download.download", fake_download)
-    out = pyrosm.get_data_by_geocoding("Brighton and Hove, UK")
+    out = pyrosm.get_data_by_geocoding("Brighton and Hove, UK", crop=False)
     assert out == "/tmp/fake-england-latest.osm.pbf"
     assert "england-latest.osm.pbf" in captured["url"]
 
 
-def test_get_data_by_geocoding_crop(monkeypatch):
+def test_get_data_by_geocoding_crop_default_names_by_place(monkeypatch):
+    # crop=True is the default; the cropped file is named after the query. Mock
+    # geocode to a Helsinki sub-box and download to the bundled Helsinki extract.
     helsinki = pyrosm.get_data("helsinki_pbf")
     monkeypatch.setattr(
         gc, "geocode", lambda q, **kwargs: box(24.93, 60.16, 24.96, 60.18)
@@ -152,13 +160,20 @@ def test_get_data_by_geocoding_crop(monkeypatch):
         "pyrosm.utils.download.download",
         lambda url, filename, update, directory: helsinki,
     )
-    out = pyrosm.get_data_by_geocoding("Helsinki", crop=True)
+    out = pyrosm.get_data_by_geocoding("Brighton and Hove, UK")
+    assert os.path.basename(out) == "brighton-and-hove-uk.osm.pbf"
     assert os.path.getsize(out) < os.path.getsize(helsinki)
     assert pyrosm.OSM(out).get_buildings() is not None
+
+
+def test_slug_filename():
+    assert gc._slug_filename("Brighton and Hove, UK") == "brighton-and-hove-uk.osm.pbf"
+    assert gc._slug_filename("  Some, Place!!  ") == "some-place.osm.pbf"
+    assert gc._slug_filename("???") == "place.osm.pbf"
 
 
 @run_downloads_only_once
 def test_geocode_live():
     geom = pyrosm.geocode("Brighton and Hove, UK")
     assert geom.geom_type in ("Polygon", "MultiPolygon")
-    assert pyrosm.get_data_by_bbox(geom, url=False) == "england"
+    assert "england-latest.osm.pbf" in pyrosm.get_data_by_bbox(geom, download=False)

@@ -1,15 +1,16 @@
-"""Suggest a Geofabrik PBF extract for a bounding box.
+"""Download (and optionally crop) the Geofabrik extract covering a bounding box.
 
-Public entry point: :func:`get_data_by_bbox`. It is backed by a vendored
-snapshot of Geofabrik's ``index-v1.json`` (``geofabrik_index.geojson.gz``), a
-GeoJSON ``FeatureCollection`` of every extract's extent polygon and PBF URL.
-Refresh the snapshot with ``scripts/update_geofabrik_index.py``.
+Public entry point: :func:`get_data_by_bbox`. It is backed by a vendored snapshot
+of Geofabrik's ``index-v1.json`` (``geofabrik_index.geojson.gz``), a GeoJSON
+``FeatureCollection`` of every extract's extent polygon and PBF URL. Refresh the
+snapshot with ``scripts/update_geofabrik_index.py``.
 """
 
 import gzip
 import json
 import os
 import ssl
+import tempfile
 import urllib.request
 import warnings
 
@@ -92,58 +93,25 @@ def _bbox_to_polygon(bbox):
     return box(minx, miny, maxx, maxy)
 
 
-def get_data_by_bbox(bbox, url=True, update=False):
-    """Suggest the Geofabrik extract to download for a bounding box.
-
-    Returns the smallest Geofabrik extract whose extent fully covers ``bbox``
-    (i.e. the most specific, smallest download). The matched extract's
-    human-readable name is printed.
-
-    Parameters
-    ----------
-    bbox : list | tuple | numpy.ndarray | shapely geometry | GeoDataFrame | GeoSeries
-        The area of interest as ``[minx, miny, maxx, maxy]`` in lon/lat, a Shapely
-        geometry (its bounding box is used), or a GeoDataFrame/GeoSeries (its
-        total bounds are used).
-
-    url : bool
-        If ``True`` (default) return the PBF download URL; if ``False`` return the
-        Geofabrik id. Note that ids can be path-like (e.g. ``"us/illinois"``) and
-        are not always resolvable by :func:`pyrosm.get_data`.
-
-    update : bool
-        If ``True``, fetch Geofabrik's live ``index-v1.json`` instead of using the
-        vendored snapshot.
-
-    Returns
-    -------
-    str
-        The PBF URL (default) or the Geofabrik id of the smallest extract that
-        fully covers ``bbox``.
-
-    Raises
-    ------
-    ValueError
-        If no single extract fully covers ``bbox`` (it spans several extracts or
-        lies outside Geofabrik's coverage).
-    """
-    poly = _bbox_to_polygon(bbox)
+def _covering_extract_url(geom, update=False):
+    """Return the PBF URL of the smallest Geofabrik extract that covers ``geom``."""
+    # The crop downstream filters by the geometry's bounding-box envelope, so the
+    # extract must cover that envelope, not just an irregular polygon.
+    geom = geom.envelope
     gdf = _load_index(update)
 
-    covering = gdf[gdf.covers(poly)]
+    covering = gdf[gdf.covers(geom)]
     if len(covering) == 0:
-        intersecting = sorted(gdf[gdf.intersects(poly)]["id"].tolist())
+        intersecting = sorted(gdf[gdf.intersects(geom)]["id"].tolist())
         if intersecting:
             preview = ", ".join(intersecting[:5])
             more = "" if len(intersecting) <= 5 else ", ..."
             raise ValueError(
-                "No single Geofabrik extract fully covers the bounding box; it "
-                "extends beyond the extent(s) it overlaps (%s%s). Use a smaller "
-                "bounding box, or download a covering parent extract." % (preview, more)
+                "No single Geofabrik extract fully covers the area; it extends "
+                "beyond the extent(s) it overlaps (%s%s). Use a smaller area, or "
+                "download a covering parent extract." % (preview, more)
             )
-        raise ValueError(
-            "The bounding box lies outside Geofabrik's available extracts."
-        )
+        raise ValueError("The area lies outside Geofabrik's available extracts.")
 
     ranked = covering.assign(
         _area=covering.geometry.to_crs(_EQUAL_AREA_CRS).area
@@ -155,6 +123,99 @@ def get_data_by_bbox(bbox, url=True, update=False):
         label = "'%s'" % name
     else:
         label = "'%s' (id: %s)" % (name, best["id"])
-    print("Suggested Geofabrik extract for the bounding box: %s" % label)
+    print("Geofabrik extract covering the area: %s" % label)
+    return best["pbf"]
 
-    return best["pbf"] if url else best["id"]
+
+def _fmt_coord(value):
+    return ("%.5f" % value).rstrip("0").rstrip(".")
+
+
+def _bbox_filename(bounds):
+    return "bbox_%s_%s_%s_%s.osm.pbf" % tuple(_fmt_coord(v) for v in bounds)
+
+
+def _default_target_dir(directory):
+    if directory is not None:
+        return directory
+    return os.path.join(tempfile.gettempdir(), "pyrosm")
+
+
+def _download_optionally_crop(
+    geom, crop, download, cropped_name, output_path, update, directory
+):
+    """Look up the covering extract, then optionally download and crop it.
+
+    Shared by :func:`get_data_by_bbox` and
+    :func:`pyrosm.data.geocoding.get_data_by_geocoding`.
+    """
+    url = _covering_extract_url(geom, update)
+    if not download:
+        return url
+
+    # Aliased so the ``download`` flag does not shadow the download function.
+    from pyrosm.utils.download import download as _download_file
+
+    full_path = _download_file(url, os.path.basename(url), update, directory)
+    if not crop:
+        return full_path
+
+    from pyrosm import OSM
+
+    target = output_path or os.path.join(_default_target_dir(directory), cropped_name)
+    os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
+    return OSM(full_path, bounding_box=geom).to_pbf(output_path=target)
+
+
+def get_data_by_bbox(
+    bbox, crop=True, download=True, update=False, directory=None, output_path=None
+):
+    """Download (and by default crop) the OSM data covering a bounding box.
+
+    Finds the smallest Geofabrik extract whose extent fully covers ``bbox``,
+    downloads it, and -- by default -- crops it to ``bbox`` before returning the
+    cropped file path.
+
+    Parameters
+    ----------
+    bbox : list | tuple | numpy.ndarray | shapely geometry | GeoDataFrame | GeoSeries
+        The area of interest as ``[minx, miny, maxx, maxy]`` in lon/lat, a Shapely
+        geometry (its bounding box is used), or a GeoDataFrame/GeoSeries (its total
+        bounds are used).
+
+    crop : bool
+        When ``True`` (default), crop the downloaded extract to ``bbox`` and return
+        the cropped file, named ``bbox_<minx>_<miny>_<maxx>_<maxy>.osm.pbf``. When
+        ``False``, return the full downloaded extract.
+
+    download : bool
+        When ``True`` (default), download the covering extract. When ``False``,
+        skip the download and return the covering extract's PBF URL instead.
+
+    update : bool
+        When ``True``, re-download the extract even if it already exists locally.
+
+    directory : str, optional
+        Directory to download into / write the cropped file to. ``None`` (default)
+        uses a pyrosm temp directory.
+
+    output_path : str, optional
+        Path for the cropped file when ``crop=True`` (overrides the automatic
+        name). Ignored when ``crop=False`` or ``download=False``.
+
+    Returns
+    -------
+    str
+        The cropped file path (default), the full extract path (``crop=False``), or
+        the covering extract's PBF URL (``download=False``).
+
+    Raises
+    ------
+    ValueError
+        If no single extract fully covers ``bbox``.
+    """
+    geom = _bbox_to_polygon(bbox)
+    cropped_name = _bbox_filename(geom.bounds)
+    return _download_optionally_crop(
+        geom, crop, download, cropped_name, output_path, update, directory
+    )
