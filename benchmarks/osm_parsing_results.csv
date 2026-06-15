@@ -1,0 +1,11 @@
+task,tool,seconds,features,status
+buildings,pyrosm,7.35,176868,ok
+buildings,quackosm,17.03,176902,ok
+buildings,pyosmium,22.56,176902,ok
+buildings,osmium-tool,35.4,176409,ok
+buildings,osmnx,40.92,177372,ok
+roads,pyrosm,13.02,296783,ok
+roads,quackosm,66.32,296549,ok
+roads,pyosmium,92.19,300015,ok
+roads,osmium-tool,143.1,296783,ok
+roads,osmnx,90.29,1059349,ok
