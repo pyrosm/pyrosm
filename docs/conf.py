@@ -46,6 +46,10 @@ extensions = [
     "myst_nb",
 ]
 
+# Enable MyST's colon-fence syntax (:::{admonition} ... :::) so notebook markdown
+# cells can use admonitions/directives that also render cleanly in the notebook UI.
+myst_enable_extensions = ["colon_fence"]
+
 # pyrosm is not installed for the docs build; mock its compiled Cython
 # extensions, binary deps, and the generated protobuf message modules so autodoc
 # can import the pure-Python wrappers and read their docstrings without compiling
