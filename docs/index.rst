@@ -7,8 +7,8 @@ Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps in
 Points of Interest (POI), landuse, natural elements, administrative boundaries and much more.
 Fully customized queries are supported which makes it possible to parse any kind of data from OSM,
 even with more specific filters. Getting the data is just as easy: pyrosm allows you to search and download a PBF for any location in the world based on the place name (via geocoding) or by a bounding box.
-It can also crop a PBF to a smaller area before reading. As of 2026, pyrosm is the fastest PBF extraction 
-and cropping tool designed for Python and one of the fastest tools overall (see benchmarks).
+It can also crop a PBF to a smaller area before reading. Pyrosm is designed for speed, and currently it is one of the 
+fastest PBF extraction and cropping tools available (see :doc:`benchmarks <benchmarks/benchmarks>`). 
 
 Pyrosm is easy to use and it provides a somewhat similar user interface as `OSMnx <https://github.com/gboeing/osmnx>`__.
 The main difference between pyrosm and OSMnx is that OSMnx reads the data using an OverPass API, whereas pyrosm reads
@@ -68,8 +68,8 @@ Getting started
     tags_and_columns.ipynb
     saving_and_cropping.ipynb
     graphs.ipynb
-    contributions
     benchmarks/benchmarks.ipynb
+    contributions
 
 .. toctree::
     :caption: Reference Guide
