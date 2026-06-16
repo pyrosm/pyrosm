@@ -92,7 +92,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "sphinx_book_theme"
 html_title = ""
-html_logo = "img/pyrosm_logo_1.png"
+html_logo = "img/pyrosm_logo.png"
 
 html_theme_options = {
     # "external_links": [],
