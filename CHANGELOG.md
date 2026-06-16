@@ -1,8 +1,10 @@
 Changelog
 =========
 
-Unreleased
-----------
+v0.9.0rc1
+---------
+
+First release candidate for v0.9.0. This release lowers the read path's memory use and speeds it up, adds fetching data by bounding box and by place name, and writes OSM data back to PBF (editing attributes/tags and cropping).
 
 - NEW: Add a `tags_to_keep` parameter to the feature methods (`get_network`, `get_buildings`, `get_pois`, `get_landuse`, `get_natural`, `get_boundaries`). When given, only those OSM tag keys are kept as columns (replacing the default tag-column set), reducing memory; structural columns, filtering and `extra_attributes` are unaffected and the default behaviour is unchanged (#87)
 - NEW: Add a `keep_metadata` parameter to `OSM(...)` (default `True`). Set `keep_metadata=False` to drop the element metadata columns (`timestamp`, `version`, `changeset`) from the returned GeoDataFrames and skip decoding the per-node metadata while parsing, lowering memory use and parse time on node-heavy files; the default behaviour is unchanged and history (`.osh.pbf`) files keep the metadata they require (#87, #150)
