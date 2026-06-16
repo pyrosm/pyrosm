@@ -64,7 +64,7 @@ if _linetrace:
 
 setup(
     name="pyrosm",
-    version="0.8.0",
+    version="0.9.0",
     license="MIT",
     description="A Python tool to parse OSM data from Protobuf format into GeoDataFrame.",
     long_description=read_long_description(),
