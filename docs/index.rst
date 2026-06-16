@@ -1,12 +1,14 @@
-Pyrosm
-======
+Pyrosm -- Python's Rapid OSM Parser
+===================================
 
-Pyrosm is a Python library for reading OpenStreetMap from `Protocolbuffer Binary Format <https://wiki.openstreetmap.org/wiki/PBF_Format>`__ -files (*.osm.pbf)
+Pyrosm is a Python library for reading OpenStreetMap from `Protocolbuffer Binary Format <https://wiki.openstreetmap.org/wiki/PBF_Format>`__ -files (``*.osm.pbf``)
 into `Geopandas <https://geopandas.org/>`__ GeoDataFrames.
 Pyrosm makes it easy to extract various datasets from OpenStreetMap pbf-dumps including e.g. road networks, buildings,
 Points of Interest (POI), landuse, natural elements, administrative boundaries and much more.
 Fully customized queries are supported which makes it possible to parse any kind of data from OSM,
-even with more specific filters.
+even with more specific filters. Getting the data is just as easy: pyrosm allows you to search and download a PBF for any location in the world based on the place name (via geocoding) or by a bounding box.
+It can also crop a PBF to a smaller area before reading. Pyrosm is designed for speed, and currently it is one of the 
+fastest PBF extraction and cropping tools available (see :doc:`benchmarks <benchmarks/benchmarks>`). 
 
 Pyrosm is easy to use and it provides a somewhat similar user interface as `OSMnx <https://github.com/gboeing/osmnx>`__.
 The main difference between pyrosm and OSMnx is that OSMnx reads the data using an OverPass API, whereas pyrosm reads
@@ -15,11 +17,11 @@ This makes it possible to parse OSM data faster and make it more feasible to ext
 
 .. figure:: img/NY_roads_and_buildings.PNG
 
-
 Current features
 ----------------
 
-- download PBF data easily from hundreds of locations across the world
+- download PBF data easily from any location in the world
+- find and download the right extract for a bounding box or a place name
 - read street networks (separately for driving, cycling, walking and all-combined)
 - read buildings from PBF
 - read Points of Interest (POI) from PBF
@@ -28,7 +30,9 @@ Current features
 - read boundaries from PBF (such as administrative borders)
 - read any other data from PBF by using a custom user-defined filter
 - filter data based on bounding box
-- export networks as a directed graph to `igraph`, `networkx` and `pandana`
+- control which OSM tags are parsed into columns
+- crop a PBF to a smaller area and write modified OSM data back to PBF
+- export networks as a directed graph to `igraph`, `networkx` and `pandarm`
 
 When should I use Pyrosm?
 -------------------------
@@ -37,9 +41,9 @@ Pyrosm can of course be used whenever you need to parse data from OSM into geopa
 However, `pyrosm` is better suited for situations where you want to fetch data for whole city or larger regions (even whole country).
 
 If you are interested to fetch OSM data for smaller areas such as neighborhoods, or search data around a specific location/address,
-we recommend using `OSMnx <https://github.com/gboeing/osmnx>`__ which is more flexible in terms of specifying the area of interest.
+we recommend using `OSMnx <https://github.com/gboeing/osmnx>`__ which is more flexible in terms of specifying the area of interest and fetching only the data requested via API.
 That being said, it is also possible to extract neighborhood level information with pyrosm and filter data based on a bounding box
-(see `docs <https://pyrosm.readthedocs.io/en/latest/basics.html#filtering-data-based-on-bounding-box>`__).
+(see `docs <https://pyrosm.readthedocs.io/en/latest/reading_osm_data.html#filtering-data-based-on-bounding-box>`__).
 
 License
 -------
@@ -57,11 +61,15 @@ Getting started
     :caption: Contents
 
     installation.ipynb
-    basics.ipynb
+    quickstart.ipynb
+    downloading_data.ipynb
+    reading_osm_data.ipynb
     custom_filter.ipynb
+    tags_and_columns.ipynb
+    saving_and_cropping.ipynb
     graphs.ipynb
+    benchmarks/benchmarks.ipynb
     contributions
-    .. benchmarking.ipynb
 
 .. toctree::
     :caption: Reference Guide

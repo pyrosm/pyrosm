@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="resources/img/pyrosm_logo_2.png" alt="Pyrosm" width="660">
+</p>
+
 # Pyrosm 
 [![Conda Version](https://img.shields.io/conda/vn/conda-forge/pyrosm.svg)](https://anaconda.org/conda-forge/pyrosm)
 [![PyPI version](https://badge.fury.io/py/pyrosm.svg)](https://badge.fury.io/py/pyrosm)

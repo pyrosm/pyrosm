@@ -1,0 +1,68 @@
+# Conda environment for running the pyrosm benchmarks
+# (benchmarks/benchmarks.ipynb + the companion benchmarks/osmextract_benchmark.ipynb).
+#
+# Bundles the pyrosm dev/runtime environment (ci/312-conda.yaml + setup.py),
+# the tools pyrosm is benchmarked against (osmnx, QuackOSM, pyosmium, and Osmosis
+# via openjdk), the notebook/plotting deps, and the R stack for osmextract.
+# osmextract is not on conda-forge -- install it from CRAN after the env exists.
+#
+#   mamba env create -f benchmarks/benchmarks.yaml
+#   mamba activate pyrosm-benchmarks
+#   pip install -e .                      # build the LOCAL pyrosm into the env
+#                                         # (needs a C compiler; on conda add
+#                                         #  c-compiler cxx-compiler if you lack one)
+#   R -e 'install.packages("osmextract", repos="https://cloud.r-project.org")'
+#   R -e 'IRkernel::installspec()'        # register the R kernel for Jupyter
+#
+name: pyrosm-benchmarks
+
+channels:
+  - conda-forge
+
+dependencies:
+  # === pyrosm environment (ci/312-conda.yaml + setup.py install_requires) ===
+  - python=3.12
+  # required
+  - cython
+  - cykhash>=2
+  - geopandas>=0.12.0
+  - shapely>=2.1
+  - protobuf>=6.33.5
+  - python-rapidjson
+  - certifi
+  - setuptools>=18.0
+  - pip
+  # optional (graph export)
+  - networkx
+  - pandana
+  - pandarm
+  - python-igraph
+  # testing
+  - osmnx
+  - pyosmium
+  - black
+  - codecov
+  - pytest
+  - pytest-cov
+  - requests
+  # === extra tools pyrosm is benchmarked against ===
+  - quackosm
+  - openjdk            # JRE for Osmosis (download the Osmosis launcher separately)
+  # === benchmark notebook deps (Jupyter / plotting / dataframes) ===
+  - jupyterlab
+  - notebook
+  - ipykernel
+  - ipywidgets
+  - nbformat
+  - nbclient
+  - matplotlib
+  - pandas
+  - numpy
+  # === R stack for the osmextract companion notebook ===
+  # (r-sf brings its own GDAL/GEOS/PROJ; conda-forge normally shares these with
+  #  geopandas, but if the solver fights, install R in a separate env instead.)
+  - r-base
+  - r-sf
+  - r-irkernel
+  # osmextract is installed from CRAN (not on conda-forge):
+  #   R -e 'install.packages("osmextract", repos="https://cloud.r-project.org")'

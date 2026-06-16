@@ -46,9 +46,17 @@ extensions = [
     "myst_nb",
 ]
 
+# Enable MyST's colon-fence syntax (:::{admonition} ... :::) so notebook markdown
+# cells can use admonitions/directives that also render cleanly in the notebook UI.
+myst_enable_extensions = ["colon_fence"]
+
 # pyrosm is not installed for the docs build; mock its compiled Cython
-# extensions (and binary deps) so autodoc can import the pure-Python wrappers
-# and read their docstrings without compiling anything.
+# extensions, binary deps, and the generated protobuf message modules so autodoc
+# can import the pure-Python wrappers and read their docstrings without compiling
+# anything. The pyrosm.proto.*_pb2 modules build real protobuf descriptors at
+# import time, which fails when google.protobuf is mocked, so they are mocked too
+# (otherwise importing pyrosm.utils -> pyrosm.data/pyrosm.pyrosm fails and the
+# whole API reference renders empty).
 autodoc_mock_imports = [
     "pyrosm._arrays",
     "pyrosm.data_filter",
@@ -60,6 +68,8 @@ autodoc_mock_imports = [
     "pyrosm.pbfreader",
     "pyrosm.relations",
     "pyrosm.tagparser",
+    "pyrosm.proto.fileformat_pb2",
+    "pyrosm.proto.osmformat_pb2",
     "google.protobuf",
     "cykhash",
 ]
@@ -82,7 +92,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "sphinx_book_theme"
 html_title = ""
-html_logo = "img/logo.PNG"
+html_logo = "img/pyrosm_logo.png"
 
 html_theme_options = {
     # "external_links": [],
@@ -117,8 +127,8 @@ master_doc = "index"
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-# html_static_path = ["_static"]
-# html_css_files = ['css/custom.css']
+html_static_path = ["_static"]
+html_css_files = ["css/custom.css"]
 
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = "sphinx"

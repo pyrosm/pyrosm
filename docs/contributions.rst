@@ -20,7 +20,7 @@ including the documentation (powered by `sphinx`_).
 Eight Steps for Contributing
 ----------------------------
 
-There are seven basic steps to contributing to pyrosm:
+There are eight basic steps to contributing to pyrosm:
 
 1. Fork the pyrosm git repository
 2. Create a development environment
@@ -43,7 +43,7 @@ want to use command line, you can fork pyrosm repository using following::
 
     git clone git@github.com:your-user-name/pyrosm.git pyrosm-yourname
     cd pyrosm-yourname
-    git remote add upstream git://github.com/htenkanen/pyrosm.git
+    git remote add upstream https://github.com/pyrosm/pyrosm.git
 
 This creates the directory pyrosm-yourname and connects your repository to
 the upstream (main project) pyrosm repository.
@@ -58,67 +58,59 @@ installation of pyrosm. This makes it easy to keep both a stable version of
 python in one place you use for work, and a development version (which you may
 break while playing with code) in another.
 
-An easy way to create a pyrosm development environment is as follows:
+We recommend installing the dependencies from conda-forge with `mamba
+<https://mamba.readthedocs.io/>`_ (or its standalone variant `micromamba
+<https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html>`_), a fast
+drop-in replacement for ``conda``. If you don't have it yet, download and install
+mamba via Miniforge from the `conda-forge download page
+<https://conda-forge.org/download/>`_ -- it ships mamba preconfigured with the
+conda-forge channel.
 
-- Install either `Anaconda <http://docs.continuum.io/anaconda/>`_ or
-  `miniconda <http://conda.pydata.org/miniconda.html>`_
-- Make sure that you have cloned the repository
-- ``cd`` to the *pyrosm* source directory
+Make sure you have cloned the repository and ``cd`` into the *pyrosm* source
+directory. The ``ci/`` folder ships ready-made environment files, one per
+supported Python version (3.10--3.14), that pin every dependency. Create an
+environment from one of them (it is named ``test`` by default), e.g. for Python
+3.14::
 
-Tell conda to create a new environment, named ``pyrosm_dev``, or any other name you would like
-for this environment, by running::
+      mamba env create -f ci/314-conda.yaml
 
-      conda create -n pyrosm_dev
+or, with micromamba::
 
-This will create the new environment, and not touch any of your existing environments,
-nor any existing python installation.
+      micromamba create -f ci/314-conda.yaml
 
-To work in this environment, Windows users should ``activate`` it as follows::
+Then activate it::
 
-      activate pyrosm_dev
+      mamba activate test
 
-macOS and Linux users should use::
-
-      conda activate pyrosm_dev
-
-You will then see a confirmation message to indicate you are in the new development environment.
-
-To view your environments::
-
-      conda info -e
-
-To return to you home root environment::
-
-      deactivate
-
-See the full conda docs `here <http://conda.pydata.org/docs>`__.
-
-At this point you can easily do a *development* install, as detailed in the next sections.
+(with micromamba, use ``micromamba activate test``). You will then see a
+confirmation message indicating you are in the development environment. At this
+point you can do a *development* install, as detailed in the next sections.
 
 3. Installing Dependencies
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To run *pyrosm* in an development environment, you must first install
-*pyrosm*'s dependencies. We suggest doing so using the following commands
-(executed after your development environment has been activated)
-to ensure compatibility of all dependencies::
-
-    conda config --env --add channels conda-forge
-    conda config --env --set channel_priority strict
-    conda install geopandas cython cykhash protobuf python-rapidjson requests networkx python-igraph pandana pytest pytest-cov codecov black
-
-This should install all necessary dependencies including optional and packages for running tests.
+The ``ci/<version>-conda.yaml`` environment file you used in the previous step
+already installs all of *pyrosm*'s dependencies from conda-forge -- the required
+runtime packages (``geopandas``, ``protobuf``, ``python-rapidjson``), the build
+tools (``cython``, ``cykhash``), the optional graph backends (``networkx``,
+``python-igraph``, ``pandarm``) and the tools for running the tests and the
+formatter (``pytest``, ``pytest-cov``, ``black``) -- so there is nothing extra to
+install. If you ever need to refresh them, re-create the environment from the
+same file.
 
 4. Making a development build
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Once dependencies are in place, make an in-place build by navigating to the git
+*pyrosm* contains Cython (``*.pyx``) sources that must be compiled before use.
+Once the environment is in place, make an in-place build by navigating to the git
 clone of the *pyrosm* repository and running::
 
-    python setup.py develop
+    pip install -e . --no-build-isolation
 
-This will install pyrosm into your environment but allows any further changes
-without the need of reinstalling new version.
+This installs pyrosm in editable mode and compiles the Cython extensions against
+the build dependencies provided by the environment (``cython`` and ``cykhash``),
+instead of refetching and recompiling them in an isolated build environment.
+Editing any ``.pyx``/``.pxd`` file requires re-running this command to rebuild.
 
 5. Making changes and writing tests
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
