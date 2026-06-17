@@ -100,20 +100,20 @@ def test_generate_tiles_invalid():
 
 
 def test_read_tiled_buildings_matches_untiled(test_pbf):
-    _assert_matches_untiled(test_pbf, "buildings", 0.015)
+    _assert_matches_untiled(test_pbf, "buildings", 1.0)
 
 
 def test_read_tiled_network_matches_untiled(test_pbf):
-    _assert_matches_untiled(test_pbf, "network", 0.015)
+    _assert_matches_untiled(test_pbf, "network", 1.0)
 
 
 def test_read_tiled_landuse_matches_untiled(helsinki_pbf):
-    _assert_matches_untiled(helsinki_pbf, "landuse", 0.005, relations="drop")
+    _assert_matches_untiled(helsinki_pbf, "landuse", 0.25, relations="drop")
 
 
 def test_read_tiled_custom_criteria_single_tile_matches_untiled(test_pbf):
     _assert_matches_untiled(
-        test_pbf, "custom_criteria", 10.0, custom_filter={"amenity": True}
+        test_pbf, "custom_criteria", 10000.0, custom_filter={"amenity": True}
     )
 
 
@@ -121,17 +121,16 @@ def test_read_tiled_custom_criteria_multitile_ids_and_geoms(test_pbf):
     _assert_matches_untiled(
         test_pbf,
         "custom_criteria",
-        0.015,
+        1.0,
         custom_filter={"amenity": True},
         check_tags=False,
     )
 
 
-def test_read_tiled_boundaries_raises_because_relation_only(helsinki_pbf):
-    # Boundary features are relations; tiled reads cannot reconstruct them, so the
-    # default relations="error" raises.
-    with pytest.raises(ValueError, match="relation"):
-        read_tiled(helsinki_pbf, "boundaries", tile_size=0.005)
+def test_read_tiled_boundaries_no_boundary_data_returns_none(helsinki_pbf):
+    # The bundled Helsinki extract has no assemblable boundary relations (incomplete
+    # boundaries are dropped, #154), so a tiled boundaries read yields no features.
+    assert read_tiled(helsinki_pbf, "boundaries", tile_size=0.25) is None
 
 
 def test_read_tiled_natural_multitile_ids_and_geoms(helsinki_pbf):
@@ -139,16 +138,16 @@ def test_read_tiled_natural_multitile_ids_and_geoms(helsinki_pbf):
     # column is subject to the pyrosm bounding-box node behaviour; ids/geometries
     # still stitch exactly.
     _assert_matches_untiled(
-        helsinki_pbf, "natural", 0.005, relations="drop", check_tags=False
+        helsinki_pbf, "natural", 0.25, relations="drop", check_tags=False
     )
 
 
 def test_read_tiled_single_tile_equals_untiled(test_pbf):
-    _assert_matches_untiled(test_pbf, "buildings", 10.0)
+    _assert_matches_untiled(test_pbf, "buildings", 10000.0)
 
 
 def test_read_tiled_several_tile_sizes(test_pbf):
-    for ts in (0.005, 0.01, 0.02):
+    for ts in (0.5, 1.0, 2.0):
         _assert_matches_untiled(test_pbf, "network", ts)
 
 
@@ -156,12 +155,12 @@ def test_read_tiled_several_tile_sizes(test_pbf):
 
 
 def test_read_tiled_pois_single_tile_matches_untiled(test_pbf):
-    _assert_matches_untiled(test_pbf, "pois", 10.0, custom_filter={"amenity": True})
+    _assert_matches_untiled(test_pbf, "pois", 10000.0, custom_filter={"amenity": True})
 
 
 def test_read_tiled_pois_multitile_ids_and_geoms(test_pbf):
     _assert_matches_untiled(
-        test_pbf, "pois", 0.015, custom_filter={"amenity": True}, check_tags=False
+        test_pbf, "pois", 1.0, custom_filter={"amenity": True}, check_tags=False
     )
 
 
@@ -170,11 +169,11 @@ def test_read_tiled_pois_multitile_ids_and_geoms(test_pbf):
 
 def test_read_tiled_relations_error_raises(helsinki_pbf):
     with pytest.raises(ValueError, match="relation"):
-        read_tiled(helsinki_pbf, "buildings", tile_size=0.005, relations="error")
+        read_tiled(helsinki_pbf, "buildings", tile_size=0.25, relations="error")
 
 
 def test_read_tiled_relations_drop_matches_nonrelation(helsinki_pbf):
-    _assert_matches_untiled(helsinki_pbf, "buildings", 0.005, relations="drop")
+    _assert_matches_untiled(helsinki_pbf, "buildings", 0.25, relations="drop")
 
 
 # --- input handling -------------------------------------------------------
@@ -182,23 +181,23 @@ def test_read_tiled_relations_drop_matches_nonrelation(helsinki_pbf):
 
 def test_read_tiled_does_not_mutate_custom_filter(test_pbf):
     cf = {"amenity": True}
-    read_tiled(test_pbf, "pois", tile_size=0.015, custom_filter=cf)
+    read_tiled(test_pbf, "pois", tile_size=1.0, custom_filter=cf)
     assert cf == {"amenity": True}
 
 
 def test_read_tiled_rejects_network_nodes_true(test_pbf):
     with pytest.raises(ValueError, match="nodes=True"):
-        read_tiled(test_pbf, "network", tile_size=0.02, nodes=True)
+        read_tiled(test_pbf, "network", tile_size=1.0, nodes=True)
 
 
 def test_read_tiled_rejects_unsupported_layer(test_pbf):
     with pytest.raises(ValueError, match="[Uu]nsupported layer"):
-        read_tiled(test_pbf, "roads", tile_size=0.02)
+        read_tiled(test_pbf, "roads", tile_size=1.0)
 
 
 def test_read_tiled_rejects_bad_relations(test_pbf):
     with pytest.raises(ValueError, match="relations"):
-        read_tiled(test_pbf, "buildings", tile_size=0.02, relations="keep")
+        read_tiled(test_pbf, "buildings", tile_size=1.0, relations="keep")
 
 
 def test_generate_tiles_step_rounds_to_zero():
@@ -209,7 +208,7 @@ def test_generate_tiles_step_rounds_to_zero():
 def test_read_tiled_explicit_extent_matches_untiled(test_pbf):
     ext = _extent(test_pbf)
     full = OSM(test_pbf).get_buildings().sort_values("id").reset_index(drop=True)
-    tiled = read_tiled(test_pbf, "buildings", tile_size=0.015, extent=ext)
+    tiled = read_tiled(test_pbf, "buildings", tile_size=1.0, extent=ext)
     tiled = tiled.sort_values("id").reset_index(drop=True)
     assert full["id"].equals(tiled["id"])
 
@@ -217,7 +216,7 @@ def test_read_tiled_explicit_extent_matches_untiled(test_pbf):
 def test_read_tiled_returns_none_when_no_data(test_pbf):
     # An explicit extent away from the data leaves every tile empty.
     assert (
-        read_tiled(test_pbf, "buildings", tile_size=0.02, extent=[0, 0, 0.02, 0.02])
+        read_tiled(test_pbf, "buildings", tile_size=1.0, extent=[0, 0, 0.02, 0.02])
         is None
     )
 
@@ -225,7 +224,7 @@ def test_read_tiled_returns_none_when_no_data(test_pbf):
 def test_read_tiled_requires_extent_without_header_bbox(monkeypatch, test_pbf):
     monkeypatch.setattr("pyrosm.tiling.get_bounding_box", lambda fp: None)
     with pytest.raises(ValueError, match="no bounding box"):
-        read_tiled(test_pbf, "buildings", tile_size=0.02)
+        read_tiled(test_pbf, "buildings", tile_size=1.0)
 
 
 class _FakeOSM:
@@ -250,7 +249,7 @@ def test_read_tiled_fails_closed_without_identity_columns(monkeypatch, test_pbf)
     frame = gpd.GeoDataFrame({"id": [1]}, geometry=[Point(0, 0)], crs="EPSG:4326")
     _patch_osm(monkeypatch, frame)
     with pytest.raises(ValueError, match="osm_type"):
-        read_tiled(test_pbf, "buildings", tile_size=0.02, extent=_extent(test_pbf))
+        read_tiled(test_pbf, "buildings", tile_size=1.0, extent=_extent(test_pbf))
 
 
 def test_read_tiled_fails_closed_on_duplicate_key_in_tile(monkeypatch, test_pbf):
@@ -261,7 +260,7 @@ def test_read_tiled_fails_closed_on_duplicate_key_in_tile(monkeypatch, test_pbf)
     )
     _patch_osm(monkeypatch, frame)
     with pytest.raises(ValueError, match="multiple rows"):
-        read_tiled(test_pbf, "buildings", tile_size=0.02, extent=_extent(test_pbf))
+        read_tiled(test_pbf, "buildings", tile_size=1.0, extent=_extent(test_pbf))
 
 
 def test_read_tiled_handles_frame_without_tags_column(monkeypatch, test_pbf):
@@ -269,7 +268,121 @@ def test_read_tiled_handles_frame_without_tags_column(monkeypatch, test_pbf):
         {"osm_type": ["way"], "id": [1]}, geometry=[Point(0, 0)], crs="EPSG:4326"
     )
     _patch_osm(monkeypatch, frame)
-    out = read_tiled(test_pbf, "buildings", tile_size=10.0, extent=_extent(test_pbf))
+    out = read_tiled(test_pbf, "buildings", tile_size=10000.0, extent=_extent(test_pbf))
     assert "tags" not in out.columns
     assert list(out["id"]) == [1]
     assert out.columns[-1] == "geometry"
+
+
+# --- km^2 tile_size and auto-sizing ---------------------------------------
+
+
+def test_read_tiled_tile_size_is_km2_area(helsinki_pbf):
+    # A km^2 tile_size produces full tiles whose ground area matches the target.
+    import math
+    import pyrosm.tiling as T
+
+    ext = _extent(helsinki_pbf)
+    target = 0.25
+    dlon, dlat = T._km2_to_degree_steps(target, T._extent_centre_latitude(ext))
+    tiles = T._build_tile_grid(ext, dlon, dlat)
+    assert len(tiles) > 1
+
+    areas = []
+    for x0, y0, x1, y1 in tiles:
+        w_km = (
+            (x1 - x0)
+            * T._KM_PER_DEG_LON_EQUATOR
+            * math.cos(math.radians((y0 + y1) / 2))
+        )
+        h_km = (y1 - y0) * T._KM_PER_DEG_LAT
+        areas.append(w_km * h_km)
+    # The full (unclamped) tiles match the target area to within the E7 snapping.
+    assert max(areas) == pytest.approx(target, rel=0.02)
+
+
+def test_read_tiled_auto_tile_size_matches_untiled(helsinki_pbf):
+    full = OSM(helsinki_pbf).get_buildings()
+    full = full[full["osm_type"] != "relation"]
+    tiled = read_tiled(helsinki_pbf, "buildings", tile_size=None, relations="drop")
+    assert set(tiled["id"]) == set(full["id"])
+
+
+def test_auto_tile_km2_units(monkeypatch):
+    import math
+    import sys
+    import types
+
+    import pyrosm.tiling as T
+
+    # 1000 MB available, 100 MB file -> budget = 1000*SAFETY, peak = K_MB_PER_MB*100.
+    fake_psutil = types.SimpleNamespace(
+        virtual_memory=lambda: types.SimpleNamespace(available=1000 * 1e6)
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(T.os.path, "getsize", lambda fp: 100 * 1e6)
+
+    area = T._auto_tile_km2("dummy.osm.pbf", 300.0)
+    n = max(1, math.ceil(T.K_MB_PER_MB * 100 / (1000 * T.SAFETY)))
+    assert area == pytest.approx(300.0 / n)
+
+
+def test_auto_tile_km2_fallback_without_psutil(monkeypatch):
+    import sys
+
+    import pyrosm.tiling as T
+
+    # No psutil available -> fixed fallback.
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    assert T._auto_tile_km2("dummy.osm.pbf", 300.0) == T.DEFAULT_TILE_KM2
+
+
+def test_auto_tile_km2_fallback_on_unreadable_file_size(monkeypatch):
+    import sys
+    import types
+
+    import pyrosm.tiling as T
+
+    fake_psutil = types.SimpleNamespace(
+        virtual_memory=lambda: types.SimpleNamespace(available=1000 * 1e6)
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    def _raise(fp):
+        raise OSError("no such file")
+
+    monkeypatch.setattr(T.os.path, "getsize", _raise)
+    assert T._auto_tile_km2("dummy.osm.pbf", 300.0) == T.DEFAULT_TILE_KM2
+
+
+def test_read_tiled_rejects_nonpositive_tile_size(test_pbf):
+    with pytest.raises(ValueError, match="km"):
+        read_tiled(test_pbf, "buildings", tile_size=0, extent=_extent(test_pbf))
+
+
+def test_auto_tile_km2_fallback_on_zero_available_memory(monkeypatch):
+    import sys
+    import types
+
+    import pyrosm.tiling as T
+
+    fake_psutil = types.SimpleNamespace(
+        virtual_memory=lambda: types.SimpleNamespace(available=0)
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(T.os.path, "getsize", lambda fp: 100 * 1e6)
+    assert T._auto_tile_km2("dummy.osm.pbf", 300.0) == T.DEFAULT_TILE_KM2
+
+
+def test_auto_tile_km2_fallback_on_nonpositive_extent_area(monkeypatch):
+    import sys
+    import types
+
+    import pyrosm.tiling as T
+
+    fake_psutil = types.SimpleNamespace(
+        virtual_memory=lambda: types.SimpleNamespace(available=1000 * 1e6)
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    monkeypatch.setattr(T.os.path, "getsize", lambda fp: 100 * 1e6)
+    assert T._auto_tile_km2("dummy.osm.pbf", 0.0) == T.DEFAULT_TILE_KM2
