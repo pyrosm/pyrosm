@@ -2,6 +2,7 @@ import pytest
 import geopandas as gpd
 import pandas as pd
 from pyrosm import OSM, get_data, read_tiled, generate_tiles
+from pyrosm.tiling import LAYER_METHODS
 from pyrosm.utils import get_bounding_box
 from shapely.geometry import box, Point
 
@@ -23,8 +24,8 @@ def _extent(fp):
 def _assert_matches_untiled(
     fp, layer, tile_size, relations="error", check_tags=True, **kw
 ):
-    """read_tiled() must reproduce the untiled get_<layer>() result."""
-    full = getattr(OSM(fp), "get_" + layer)(**kw)
+    """read_tiled() must reproduce the untiled layer read."""
+    full = getattr(OSM(fp), LAYER_METHODS[layer])(**kw)
     tiled = read_tiled(fp, layer, tile_size=tile_size, relations=relations, **kw)
 
     if relations == "drop" and full is not None:
@@ -78,14 +79,14 @@ def test_generate_tiles_single_tile_when_large(test_pbf):
     assert len(generate_tiles(_extent(test_pbf), 10.0)) == 1
 
 
-def test_generate_tiles_aoi_reduces(test_pbf):
+def test_generate_tiles_mask_reduces(test_pbf):
     ext = _extent(test_pbf)
     minx, miny, maxx, maxy = ext
-    aoi = box(minx, miny, (minx + maxx) / 2, (miny + maxy) / 2)
+    mask = box(minx, miny, (minx + maxx) / 2, (miny + maxy) / 2)
     full = generate_tiles(ext, 0.008)
-    reduced = generate_tiles(ext, 0.008, aoi=aoi)
+    reduced = generate_tiles(ext, 0.008, mask=mask)
     assert 0 < len(reduced) < len(full)
-    assert all(box(*t).intersects(aoi) for t in reduced)
+    assert all(box(*t).intersects(mask) for t in reduced)
 
 
 def test_generate_tiles_invalid():
@@ -108,6 +109,29 @@ def test_read_tiled_network_matches_untiled(test_pbf):
 
 def test_read_tiled_landuse_matches_untiled(helsinki_pbf):
     _assert_matches_untiled(helsinki_pbf, "landuse", 0.005, relations="drop")
+
+
+def test_read_tiled_custom_criteria_single_tile_matches_untiled(test_pbf):
+    _assert_matches_untiled(
+        test_pbf, "custom_criteria", 10.0, custom_filter={"amenity": True}
+    )
+
+
+def test_read_tiled_custom_criteria_multitile_ids_and_geoms(test_pbf):
+    _assert_matches_untiled(
+        test_pbf,
+        "custom_criteria",
+        0.015,
+        custom_filter={"amenity": True},
+        check_tags=False,
+    )
+
+
+def test_read_tiled_boundaries_raises_because_relation_only(helsinki_pbf):
+    # Boundary features are relations; tiled reads cannot reconstruct them, so the
+    # default relations="error" raises.
+    with pytest.raises(ValueError, match="relation"):
+        read_tiled(helsinki_pbf, "boundaries", tile_size=0.005)
 
 
 def test_read_tiled_natural_multitile_ids_and_geoms(helsinki_pbf):
@@ -169,7 +193,7 @@ def test_read_tiled_rejects_network_nodes_true(test_pbf):
 
 def test_read_tiled_rejects_unsupported_layer(test_pbf):
     with pytest.raises(ValueError, match="[Uu]nsupported layer"):
-        read_tiled(test_pbf, "boundaries", tile_size=0.02)
+        read_tiled(test_pbf, "roads", tile_size=0.02)
 
 
 def test_read_tiled_rejects_bad_relations(test_pbf):

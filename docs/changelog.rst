@@ -4,6 +4,7 @@ Changelog
 Unreleased
 ----------
 
+- NEW: Add ``pyrosm.read_tiled(...)`` and ``pyrosm.generate_tiles(...)`` for reading a layer from a ``.osm.pbf`` in spatial bounding-box tiles, stitched into one GeoDataFrame identical to an untiled read. Only one tile's node coordinates are resident at a time, so peak parse memory is bounded by the tile size rather than the whole file, at the cost of re-reading the source once per tile. Supports the ``network`` (without ``nodes=True``), ``buildings``, ``pois``, ``landuse``, ``natural``, ``boundaries`` and ``custom_criteria`` layers; an optional ``mask`` geometry restricts the tile grid, and ``relations="error"``/``"drop"`` controls relation-derived rows, which cannot be reconstructed across tiles (`#312 <https://github.com/pyrosm/pyrosm/pull/312>`__)
 - FIXED: ``get_boundaries()`` no longer force-closes incomplete administrative boundaries into polygons. A boundary relation whose member ways run off the PBF extent cannot form a closed ring, and was previously closed with a spurious straight edge bridging the gap (the stray lines crossing boundary plots); such incomplete boundaries are now dropped, matching how osmium and GDAL skip areas they cannot assemble (`#154 <https://github.com/pyrosm/pyrosm/issues/154>`__)
 
 v0.9.0 (Jun 16, 2026)

@@ -19,3 +19,10 @@ Reading data
 
 .. autoclass:: pyrosm.pyrosm.OSM
     :members:
+
+Reading data in tiles
+---------------------
+
+.. autofunction:: pyrosm.tiling.read_tiled
+
+.. autofunction:: pyrosm.tiling.generate_tiles

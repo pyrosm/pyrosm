@@ -19,16 +19,26 @@ from shapely.geometry import box
 from pyrosm.pyrosm import OSM
 from pyrosm.utils import get_bounding_box
 
-# Layers that return a single GeoDataFrame with one row per element, for which
-# ``(osm_type, id)`` is a unique identity key.
-SUPPORTED_LAYERS = ("network", "buildings", "pois", "landuse", "natural")
+# Layers read_tiled can stitch, mapped to the OSM method that produces them. Each
+# returns a single GeoDataFrame with one row per element, so ``(osm_type, id)`` is a
+# unique identity key. ``boundaries`` is included for API completeness, but its
+# features are relations (see read_tiled's ``layer`` docs).
+LAYER_METHODS = {
+    "network": "get_network",
+    "buildings": "get_buildings",
+    "pois": "get_pois",
+    "landuse": "get_landuse",
+    "natural": "get_natural",
+    "boundaries": "get_boundaries",
+    "custom_criteria": "get_data_by_custom_criteria",
+}
 
 # Native OSM coordinate quantum (10^-7 degrees); tile edges are placed on this
 # integer grid so the boundaries are exact and reproducible.
 _E7 = 10_000_000
 
 
-def generate_tiles(extent, tile_size, aoi=None):
+def generate_tiles(extent, tile_size, mask=None):
     """Build a grid of bounding-box tiles covering ``extent``.
 
     Parameters
@@ -37,8 +47,8 @@ def generate_tiles(extent, tile_size, aoi=None):
         Area to cover as ``[minx, miny, maxx, maxy]`` in decimal degrees.
     tile_size : float
         Tile edge length in decimal degrees. Must be positive.
-    aoi : shapely geometry, optional
-        When given, tiles whose bounding box does not intersect ``aoi`` are
+    mask : shapely geometry, optional
+        When given, tiles whose bounding box does not intersect ``mask`` are
         dropped (a grid-reduction control only; the kept tiles are still read
         with their full bounding box).
 
@@ -72,7 +82,7 @@ def generate_tiles(extent, tile_size, aoi=None):
         while y < max_y:
             y2 = min(y + step, max_y)
             bbox = [x / _E7, y / _E7, x2 / _E7, y2 / _E7]
-            if aoi is None or box(*bbox).intersects(aoi):
+            if mask is None or box(*bbox).intersects(mask):
                 tiles.append(bbox)
             y = y2
         x = x2
@@ -83,7 +93,7 @@ def read_tiled(
     filepath,
     layer="network",
     tile_size=0.5,
-    aoi=None,
+    mask=None,
     extent=None,
     relations="error",
     keep_metadata=True,
@@ -110,12 +120,18 @@ def read_tiled(
         Path to an ``*.osm.pbf`` file.
     layer : str
         One of ``"network"``, ``"buildings"``, ``"pois"``, ``"landuse"``,
-        ``"natural"``. ``get_network(nodes=True)`` (which returns a node/edge
-        tuple) is not supported.
+        ``"natural"``, ``"boundaries"``, ``"custom_criteria"``.
+        ``"custom_criteria"`` maps to ``OSM.get_data_by_custom_criteria`` and
+        requires a ``custom_filter`` keyword. ``get_network(nodes=True)`` (which
+        returns a node/edge tuple) is not supported. ``"boundaries"`` is accepted
+        for completeness, but boundary features are relations (which cannot be
+        reconstructed across tiles), so a tiled boundary read raises under the
+        default ``relations="error"``; read boundaries with a plain
+        ``OSM().get_boundaries()`` instead.
     tile_size : float
         Tile edge length in decimal degrees (default ``0.5``). Smaller tiles
         lower peak memory but re-read the file more times.
-    aoi : shapely geometry, optional
+    mask : shapely geometry, optional
         Restrict the tile grid to tiles intersecting this geometry. Features are
         not clipped to it; the result equals an untiled read over the union of the
         kept tile boxes.
@@ -133,7 +149,7 @@ def read_tiled(
     keep_metadata : bool
         Passed to each tile's ``OSM`` object (default ``True``).
     **layer_kwargs
-        Extra keyword arguments forwarded to the ``get_<layer>`` method
+        Extra keyword arguments forwarded to the layer's ``OSM`` method
         (e.g. ``custom_filter``, ``tags_to_keep``, ``extra_attributes``).
 
     Returns
@@ -141,10 +157,10 @@ def read_tiled(
     geopandas.GeoDataFrame or None
         The stitched layer, or ``None`` when no tile yields any feature.
     """
-    if layer not in SUPPORTED_LAYERS:
+    if layer not in LAYER_METHODS:
         raise ValueError(
             "Unsupported layer '{layer}'. Supported layers: {ok}.".format(
-                layer=layer, ok=", ".join(SUPPORTED_LAYERS)
+                layer=layer, ok=", ".join(LAYER_METHODS)
             )
         )
     if relations not in ("error", "drop"):
@@ -164,9 +180,9 @@ def read_tiled(
             )
         extent = list(header_bbox.bounds)
 
-    tiles = generate_tiles(extent, tile_size, aoi)
+    tiles = generate_tiles(extent, tile_size, mask)
 
-    method = "get_" + layer
+    method = LAYER_METHODS[layer]
     frames = []
     for tile in tiles:
         osm = OSM(filepath, bounding_box=tile, keep_metadata=keep_metadata)
