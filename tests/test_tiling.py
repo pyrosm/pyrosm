@@ -1,10 +1,21 @@
 import pytest
 import geopandas as gpd
 import pandas as pd
+import shapely
 from pyrosm import OSM, get_data, read_tiled, generate_tiles
 from pyrosm.tiling import LAYER_METHODS
 from pyrosm.utils import get_bounding_box
 from shapely.geometry import box, Point
+
+
+def _assert_geom_exact(a, b):
+    # Exact coordinate equality (tolerance 0), but order-canonical via normalize: a
+    # relation assembled from (in-tile + completed) member ways may list its rings or
+    # vertices in a different order than the untiled read while being the same
+    # geometry. shapely.normalize canonicalises that ordering.
+    na = gpd.GeoSeries(shapely.normalize(a.values), index=a.index, crs=a.crs)
+    nb = gpd.GeoSeries(shapely.normalize(b.values), index=b.index, crs=b.crs)
+    assert na.geom_equals_exact(nb, tolerance=0).all()
 
 
 @pytest.fixture
@@ -15,6 +26,11 @@ def test_pbf():
 @pytest.fixture
 def helsinki_pbf():
     return get_data("helsinki_pbf")
+
+
+@pytest.fixture
+def helsinki_history_pbf():
+    return get_data("helsinki_test_history_pbf")
 
 
 def _extent(fp):
@@ -43,8 +59,8 @@ def _assert_matches_untiled(
     # Same column set (order may differ).
     assert set(a.columns) == set(b.columns)
     b = b[a.columns]
-    # Same geometries, row-aligned by the sorted key.
-    assert a.geometry.geom_equals(b.geometry).all()
+    # Same geometries (exact coordinates), row-aligned by the sorted key.
+    _assert_geom_exact(a.geometry, b.geometry)
     # Every non-string column keeps its exact dtype. Only free-form string columns
     # are exempt: pandas infers object vs StringDtype from content, which is not
     # stable even between two untiled reads, so they are compared dtype-insensitively.
@@ -176,6 +192,129 @@ def test_read_tiled_relations_drop_matches_nonrelation(helsinki_pbf):
     _assert_matches_untiled(helsinki_pbf, "buildings", 0.25, relations="drop")
 
 
+def test_read_tiled_relations_complete_buildings_matches_untiled(helsinki_pbf):
+    # The default: relations rebuilt from their full member set across tiles, so the
+    # stitched result (relations included) equals the untiled read.
+    _assert_matches_untiled(helsinki_pbf, "buildings", 0.25, relations="complete")
+
+
+def test_read_tiled_relations_complete_landuse_matches_untiled(helsinki_pbf):
+    _assert_matches_untiled(helsinki_pbf, "landuse", 0.25, relations="complete")
+
+
+def test_read_tiled_relations_complete_is_default(helsinki_pbf):
+    # No relations= argument uses "complete", so building relations are present and
+    # match the untiled geometries.
+    full = OSM(helsinki_pbf).get_buildings()
+    tiled = read_tiled(helsinki_pbf, "buildings", tile_size=0.25)
+    full_rel = set(full[full["osm_type"] == "relation"]["id"])
+    tiled_rel = set(tiled[tiled["osm_type"] == "relation"]["id"])
+    assert full_rel == tiled_rel
+    assert len(full_rel) > 0
+
+
+def test_read_tiled_relations_complete_keep_metadata_false(helsinki_pbf):
+    # Completion honours keep_metadata=False (the probe and the member-only read use
+    # the same setting) and still rebuilds the relations.
+    full = OSM(helsinki_pbf, keep_metadata=False).get_buildings()
+    tiled = read_tiled(helsinki_pbf, "buildings", tile_size=0.25, keep_metadata=False)
+    assert "timestamp" not in tiled.columns
+    full_rel = set(full[full["osm_type"] == "relation"]["id"])
+    tiled_rel = set(tiled[tiled["osm_type"] == "relation"]["id"])
+    assert full_rel == tiled_rel
+    assert len(full_rel) > 0
+
+
+def test_parse_relations_only_includes_relations_dropped_by_layer(helsinki_pbf):
+    # Relation definitions come from an unfiltered relation parse, so relations whose
+    # tiled/bbox geometry is dropped (or that belong to another layer) are still
+    # present as candidates.
+    from pyrosm.pbfreader import parse_relations_only
+
+    all_rel = parse_relations_only(helsinki_pbf)
+    n_all = len(all_rel.get("id", []))
+    n_building_rel = (OSM(helsinki_pbf).get_buildings()["osm_type"] == "relation").sum()
+    assert n_all > n_building_rel > 0
+
+
+def test_read_tiled_complete_scoping_is_kept_tile_union(helsinki_pbf):
+    # Scoping is by kept tile, not by clipping to the mask polygon.
+    ext = _extent(helsinki_pbf)
+    minx, miny, maxx, maxy = ext
+    mask = box(minx, miny, (minx + maxx) / 2, maxy)  # left half only
+
+    full = read_tiled(helsinki_pbf, "buildings", tile_size=0.1, relations="complete")
+    masked = read_tiled(
+        helsinki_pbf, "buildings", tile_size=0.1, mask=mask, relations="complete"
+    )
+
+    full_rel = full[full["osm_type"] == "relation"].set_index("id").geometry
+    masked_rel = masked[masked["osm_type"] == "relation"].set_index("id").geometry
+
+    # (a) Relations whose members lie only in masked-out tiles are absent: the kept
+    # set is a non-empty proper subset of the unmasked tiled set.
+    assert set(masked_rel.index) < set(full_rel.index)
+    assert len(masked_rel) > 0
+
+    # Kept relations are byte-for-coordinate identical to the unmasked read -- the
+    # mask never clips or alters a relation that is kept.
+    for rid in masked_rel.index:
+        a = shapely.normalize(masked_rel.loc[rid])
+        b = shapely.normalize(full_rel.loc[rid])
+        assert a.equals_exact(b, tolerance=0)
+
+    # (b) A relation that lies (partly) outside the mask polygon but has a member in a
+    # kept tile is still present in full -- proving tile scoping rather than polygon
+    # clipping (a polygon clip would have cut or dropped such relations).
+    assert any(not mask.contains(g) for g in masked_rel)
+
+
+def test_fetch_relation_members_returns_empty_for_no_match(test_pbf):
+    from pyrosm.pbfreader import fetch_relation_members
+
+    member_ways, coords = fetch_relation_members(test_pbf, set())
+    assert member_ways == []
+    assert coords is None
+
+
+def test_candidate_relations_edge_cases(helsinki_pbf):
+    from pyrosm.pbfreader import parse_relations_only
+    from pyrosm.tiling import _candidate_relations
+
+    # No relations at all -> no candidates.
+    assert _candidate_relations({}, {1, 2}) == (None, set())
+    # Relations present but none has a member in the kept tiles -> no candidates.
+    relations = parse_relations_only(helsinki_pbf)
+    candidates, ids = _candidate_relations(relations, set())
+    assert candidates is None
+    assert ids == set()
+
+
+def test_relation_completion_reader_on_history_file(helsinki_history_pbf):
+    # Exercise the relation-only reader passes (incl. their OSH latest-version
+    # branches) on a history file at a fixed timestamp.
+    from pyrosm.pbfreader import fetch_relation_members, parse_relations_only
+
+    probe = OSM(helsinki_history_pbf)
+    probe._set_current_time("2021-01-01")
+    unix_time = probe._current_timestamp
+
+    relations = parse_relations_only(helsinki_history_pbf, unix_time)
+    assert len(relations.get("id", [])) > 0
+
+    member_ids = set()
+    for members in relations["members"]:
+        for mid, mtype in zip(members["member_id"], members["member_type"]):
+            if mtype == b"way":
+                member_ids.add(int(mid))
+
+    member_ways, coords = fetch_relation_members(
+        helsinki_history_pbf, member_ids, unix_time
+    )
+    assert len(member_ways) > 0
+    assert coords is not None
+
+
 # --- input handling -------------------------------------------------------
 
 
@@ -249,7 +388,13 @@ def test_read_tiled_fails_closed_without_identity_columns(monkeypatch, test_pbf)
     frame = gpd.GeoDataFrame({"id": [1]}, geometry=[Point(0, 0)], crs="EPSG:4326")
     _patch_osm(monkeypatch, frame)
     with pytest.raises(ValueError, match="osm_type"):
-        read_tiled(test_pbf, "buildings", tile_size=1.0, extent=_extent(test_pbf))
+        read_tiled(
+            test_pbf,
+            "buildings",
+            tile_size=1.0,
+            extent=_extent(test_pbf),
+            relations="drop",
+        )
 
 
 def test_read_tiled_fails_closed_on_duplicate_key_in_tile(monkeypatch, test_pbf):
@@ -260,7 +405,13 @@ def test_read_tiled_fails_closed_on_duplicate_key_in_tile(monkeypatch, test_pbf)
     )
     _patch_osm(monkeypatch, frame)
     with pytest.raises(ValueError, match="multiple rows"):
-        read_tiled(test_pbf, "buildings", tile_size=1.0, extent=_extent(test_pbf))
+        read_tiled(
+            test_pbf,
+            "buildings",
+            tile_size=1.0,
+            extent=_extent(test_pbf),
+            relations="drop",
+        )
 
 
 def test_read_tiled_handles_frame_without_tags_column(monkeypatch, test_pbf):
@@ -268,7 +419,13 @@ def test_read_tiled_handles_frame_without_tags_column(monkeypatch, test_pbf):
         {"osm_type": ["way"], "id": [1]}, geometry=[Point(0, 0)], crs="EPSG:4326"
     )
     _patch_osm(monkeypatch, frame)
-    out = read_tiled(test_pbf, "buildings", tile_size=10000.0, extent=_extent(test_pbf))
+    out = read_tiled(
+        test_pbf,
+        "buildings",
+        tile_size=10000.0,
+        extent=_extent(test_pbf),
+        relations="drop",
+    )
     assert "tags" not in out.columns
     assert list(out["id"]) == [1]
     assert out.columns[-1] == "geometry"
@@ -302,10 +459,9 @@ def test_read_tiled_tile_size_is_km2_area(helsinki_pbf):
 
 
 def test_read_tiled_auto_tile_size_matches_untiled(helsinki_pbf):
-    full = OSM(helsinki_pbf).get_buildings()
-    full = full[full["osm_type"] != "relation"]
-    tiled = read_tiled(helsinki_pbf, "buildings", tile_size=None, relations="drop")
-    assert set(tiled["id"]) == set(full["id"])
+    # tile_size=None auto-sizes; the stitched result -- including the completed
+    # relations -- equals the untiled read (geometries, columns and dtypes).
+    _assert_matches_untiled(helsinki_pbf, "buildings", None, relations="complete")
 
 
 def test_auto_tile_km2_units(monkeypatch):

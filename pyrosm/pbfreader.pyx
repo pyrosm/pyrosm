@@ -651,3 +651,85 @@ cdef _parse_osm_data(
 
     return (all_nodes, all_ways, all_relations, node_coordinates_lookup,
             completed_relation_ways)
+
+
+def parse_relations_only(filepath, unix_time_filter=None):
+    """Parse every relation in the file (member ids, roles, tags, metadata) without
+    parsing the nodes or ways. Relations carry no coordinates, so this is independent
+    of any bounding box and cheap (relations are few). Returns the same relations
+    dict-of-arrays shape as ``parse_osm_data``'s ``all_relations`` (empty dict when
+    the file has no relations). Used by ``read_tiled`` to obtain relation definitions
+    once per call, including relations whose tiled geometry was dropped."""
+    _warn_if_slow_protobuf_backend()
+    all_relations = []
+    for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath):
+        for pgroup in pblock.primitivegroup:
+            if len(pgroup.relations) > 0:
+                all_relations += parse_relations(
+                    pgroup.relations, str_table, unix_time_filter
+                )
+
+    relations_df = create_df(concatenate_dicts_of_arrays(all_relations))
+    if "id" not in relations_df.columns:
+        return {}
+    if unix_time_filter is not None:
+        relations_df = relations_df.loc[relations_df["visible"] == True].copy()
+        relations_df = get_latest_version(relations_df)
+    return {col: relations_df[col].values for col in relations_df.columns}
+
+
+def fetch_relation_members(filepath, member_way_ids, unix_time_filter=None,
+                           keep_metadata=True):
+    """Fetch only the given member ways (by id) and their node coordinates with two
+    id-filtered streaming passes over the file -- never materialising the rest of the
+    ways/nodes. Returns ``(member_way_records, node_coordinates)`` where
+    ``node_coordinates`` is a ``NodeLocations`` (or ``None`` when no member ways were
+    found). Used by ``read_tiled``'s relation completion to assemble candidate
+    relations without loading the bulk."""
+    member_id_set = set(int(w) for w in member_way_ids)
+
+    member_ways = []
+    if len(member_id_set) > 0:
+        for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath):
+            for pgroup in pblock.primitivegroup:
+                if len(pgroup.ways) > 0:
+                    member_ways += parse_ways(
+                        pgroup.ways, str_table, None, unix_time_filter, member_id_set
+                    )
+        member_ways = explode_way_tags(member_ways)
+        if unix_time_filter is not None and len(member_ways) > 0:
+            mw_df = pd.DataFrame(member_ways)
+            mw_df = mw_df.loc[mw_df["visible"] == True].copy()
+            mw_df = get_latest_version(mw_df)
+            member_ways = clean_empty_values_from_ways(
+                mw_df.to_dict(orient="records")
+            )
+
+    if len(member_ways) == 0:
+        return [], None
+
+    node_ids = set()
+    for way in member_ways:
+        for node_id in way["nodes"]:
+            node_ids.add(node_id)
+
+    node_id_filter = np.array(sorted(node_ids), dtype=np.int64)
+    member_nodes = []
+    for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath):
+        for pgroup in pblock.primitivegroup:
+            if len(pgroup.dense.id) > 0:
+                member_nodes += parse_dense(pblock, pgroup.dense, str_table, None,
+                                            unix_time_filter, node_id_filter,
+                                            keep_metadata)
+            elif len(pgroup.nodes) > 0:
+                member_nodes += [parse_nodes(pblock, pgroup.nodes, str_table, None,
+                                             unix_time_filter, node_id_filter,
+                                             keep_metadata)]
+
+    coords_df = create_df(concatenate_dicts_of_arrays(member_nodes))
+    if "id" not in coords_df.columns:
+        return member_ways, None
+    if unix_time_filter is not None:
+        coords_df = coords_df.loc[coords_df["visible"] == True].copy()
+        coords_df = get_latest_version(coords_df)
+    return member_ways, NodeLocations(coords_df)

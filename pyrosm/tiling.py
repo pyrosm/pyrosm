@@ -14,10 +14,12 @@ import os
 import warnings
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 from rapidjson import dumps
 from shapely.geometry import box
 
+from pyrosm.pbfreader import fetch_relation_members, parse_relations_only
 from pyrosm.pyrosm import OSM
 from pyrosm.utils import get_bounding_box
 
@@ -171,13 +173,92 @@ def generate_tiles(extent, tile_size, mask=None):
     return _build_tile_grid(extent, tile_size, tile_size, mask)
 
 
+def _relation_member_way_ids(members):
+    """The way-member ids of one relation's ``members`` record (member_type 'way')."""
+    ids = []
+    member_ids = members["member_id"]
+    member_types = members["member_type"]
+    for j in range(len(member_ids)):
+        if member_types[j] == b"way":
+            ids.append(int(member_ids[j]))
+    return ids
+
+
+def _candidate_relations(relations, extent_ways):
+    """Slice ``relations`` (a ``parse_relations_only`` dict) to the relations that
+    have at least one member way present in the kept tiles (``extent_ways``), plus
+    the set of all those candidates' member way-ids. Membership-based, so a relation
+    whose tiled geometry was dropped is still a candidate."""
+    members_col = relations.get("members")
+    if members_col is None:
+        return None, set()
+
+    keep_idx = []
+    member_ids = set()
+    for i in range(len(members_col)):
+        way_ids = _relation_member_way_ids(members_col[i])
+        if any(wid in extent_ways for wid in way_ids):
+            keep_idx.append(i)
+            member_ids.update(way_ids)
+    if not keep_idx:
+        return None, set()
+
+    idx = np.array(keep_idx, dtype=np.int64)
+    candidates = {col: relations[col][idx] for col in relations}
+    return candidates, member_ids
+
+
+def _read_relations_from_members(
+    filepath,
+    method,
+    candidates,
+    member_ways,
+    member_coords,
+    keep_metadata,
+    unix_time,
+    layer_kwargs,
+):
+    """Assemble the candidate relations from pre-fetched member ways/nodes by feeding
+    them through the normal layer read (no bbox, no re-parse), and return only the
+    relation rows. Reuses each layer's relation filter and tag handling."""
+    osm = OSM(filepath, keep_metadata=keep_metadata)
+    # Pre-load the member-only data so the layer method assembles relations without
+    # re-parsing or loading the bulk; bounding_box is None, so nothing is clipped.
+    # _osh_file is cleared and no timestamp is passed: the members were already
+    # materialised at the right time, and this guarantees no re-parse is triggered.
+    osm._osh_file = False
+    osm._current_timestamp = unix_time
+    osm._nodes = {}
+    osm._node_coordinates = member_coords
+    osm._way_records = member_ways
+    osm._relations = candidates
+    osm._relation_member_ways = None
+
+    # Forward the layer's filter/tag kwargs (e.g. custom_filter), but not timestamp
+    # (the members are already materialised and re-parsing must not be triggered).
+    completion_kwargs = {
+        k: v for k, v in copy.deepcopy(layer_kwargs).items() if k != "timestamp"
+    }
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r".*(did not contain any OSM nodes|[Cc]ould not find any).*",
+        )
+        gdf = getattr(osm, method)(**completion_kwargs)
+
+    if gdf is None or len(gdf) == 0:
+        return None
+    rel = gdf[gdf["osm_type"] == "relation"]
+    return rel.reset_index(drop=True) if len(rel) else None
+
+
 def read_tiled(
     filepath,
     layer="network",
     tile_size=None,
     mask=None,
     extent=None,
-    relations="error",
+    relations="complete",
     keep_metadata=True,
     **layer_kwargs,
 ):
@@ -205,11 +286,9 @@ def read_tiled(
         ``"natural"``, ``"boundaries"``, ``"custom_criteria"``.
         ``"custom_criteria"`` maps to ``OSM.get_data_by_custom_criteria`` and
         requires a ``custom_filter`` keyword. ``get_network(nodes=True)`` (which
-        returns a node/edge tuple) is not supported. ``"boundaries"`` is accepted
-        for completeness, but boundary features are relations (which cannot be
-        reconstructed across tiles), so a tiled boundary read raises under the
-        default ``relations="error"``; read boundaries with a plain
-        ``OSM().get_boundaries()`` instead.
+        returns a node/edge tuple) is not supported. ``"boundaries"`` features are
+        relations; with the default ``relations="complete"`` they are rebuilt from
+        their full member set across tiles.
     tile_size : float, optional
         Target tile **area in square kilometres**. Each tile is a square on the
         ground (a latitude-dependent rectangle in degrees, sized at the extent's
@@ -230,10 +309,13 @@ def read_tiled(
         not supported -- the planar tile grid would span the wrong side of the
         globe; pass a non-wrapping extent for such data.
     relations : str
-        How relation-derived rows (e.g. multipolygons) are handled. ``"error"``
-        (default) raises if any appear, because relations spanning tiles cannot be
-        reconstructed exactly here; ``"drop"`` excludes them and returns only the
-        node/way rows.
+        How relation-derived rows (e.g. multipolygons, boundaries) are handled.
+        ``"complete"`` (default) rebuilds every relation that has a member way in the
+        kept tiles from its full member set -- fetched once per call with two
+        id-filtered passes over the file, never loading the bulk -- so relations are
+        correct and not cut at tile edges; ``"drop"`` excludes all relation rows; and
+        ``"error"`` raises if any relation row appears. ``network`` carries no
+        relations, so the setting has no effect there.
     keep_metadata : bool
         Passed to each tile's ``OSM`` object (default ``True``).
     **layer_kwargs
@@ -251,8 +333,8 @@ def read_tiled(
                 layer=layer, ok=", ".join(LAYER_METHODS)
             )
         )
-    if relations not in ("error", "drop"):
-        raise ValueError("'relations' should be either 'error' or 'drop'.")
+    if relations not in ("complete", "drop", "error"):
+        raise ValueError("'relations' should be one of 'complete', 'drop' or 'error'.")
     if layer == "network" and layer_kwargs.get("nodes"):
         raise ValueError(
             "read_tiled does not support get_network(nodes=True): it returns a "
@@ -279,6 +361,26 @@ def read_tiled(
     tiles = _build_tile_grid(extent, delta_lon, delta_lat, mask)
 
     method = LAYER_METHODS[layer]
+    # Networks carry no relation geometries, so completion is a no-op there; skip its
+    # cost and treat "complete" like "drop" (there are no relation rows to drop).
+    completing = relations == "complete" and layer != "network"
+
+    # Relation completion (once per call) needs every relation's definition and the
+    # member ways present in the kept tiles. Parse the relation definitions up front.
+    unix_time = None
+    all_relations = None
+    all_member_ids = set()
+    extent_ways = set()
+    if completing:
+        probe = OSM(filepath, keep_metadata=keep_metadata)
+        probe._set_current_time(layer_kwargs.get("timestamp"))
+        unix_time = probe._current_timestamp
+        all_relations = parse_relations_only(filepath, unix_time)
+        members_col = all_relations.get("members")
+        if members_col is not None:
+            for members in members_col:
+                all_member_ids.update(_relation_member_way_ids(members))
+
     frames = []
     for tile in tiles:
         osm = OSM(filepath, bounding_box=tile, keep_metadata=keep_metadata)
@@ -294,6 +396,12 @@ def read_tiled(
                 message=r".*(did not contain any OSM nodes|[Cc]ould not find any).*",
             )
             gdf = getattr(osm, method)(**tile_kwargs)
+
+        # Record which relation member ways are present in this kept tile (used to
+        # decide which relations to complete). The tile's parsed ways are available
+        # even when the layer yields no feature rows.
+        if completing and osm._way_records:
+            extent_ways |= {w["id"] for w in osm._way_records} & all_member_ids
 
         if gdf is None or len(gdf) == 0:
             continue
@@ -312,21 +420,48 @@ def read_tiled(
             )
         frames.append(gdf)
 
-    if not frames:
-        return None
-
-    stitched = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs=frames[0].crs)
-
-    has_relation = (stitched["osm_type"] == "relation").any()
-    if relations == "error":
-        if has_relation:
+    # The per-tile (non-relation) result.
+    bulk = None
+    if frames:
+        bulk = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs=frames[0].crs)
+        has_relation = (bulk["osm_type"] == "relation").any()
+        if relations == "error" and has_relation:
             raise ValueError(
                 "Tiled read of '{layer}' contains relation-derived features, "
                 "which cannot be reconstructed exactly across tiles. Pass "
-                "relations='drop' to exclude them.".format(layer=layer)
+                "relations='drop' to exclude them, or relations='complete' to "
+                "rebuild them.".format(layer=layer)
             )
-    else:
-        stitched = stitched[stitched["osm_type"] != "relation"]
+        if relations in ("drop", "complete"):
+            # Per-tile relation rows are partial (cut at tile edges); drop them and,
+            # for "complete", replace them with the rebuilt relations below.
+            bulk = bulk[bulk["osm_type"] != "relation"]
+
+    # Rebuild the relations once, from the complete member set of every relation that
+    # has a member way in the kept tiles.
+    relation_gdf = None
+    if completing and extent_ways:
+        candidates, member_ids = _candidate_relations(all_relations, extent_ways)
+        if candidates is not None:
+            member_ways, member_coords = fetch_relation_members(
+                filepath, member_ids, unix_time, keep_metadata
+            )
+            if member_ways:
+                relation_gdf = _read_relations_from_members(
+                    filepath,
+                    method,
+                    candidates,
+                    member_ways,
+                    member_coords,
+                    keep_metadata,
+                    unix_time,
+                    layer_kwargs,
+                )
+
+    parts = [p for p in (bulk, relation_gdf) if p is not None and len(p) > 0]
+    if not parts:
+        return None
+    stitched = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=parts[0].crs)
 
     stitched = stitched.drop_duplicates(
         subset=["osm_type", "id"], keep="first"
