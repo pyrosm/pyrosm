@@ -27,7 +27,11 @@ from pyrosm.natural import natural_relation_filter
 from pyrosm.pbfreader import fetch_member_nodes, fetch_member_ways, parse_relations_only
 from pyrosm.pois import poi_relation_filter
 from pyrosm.pyrosm import OSM
-from pyrosm.utils import get_bounding_box, validate_custom_filter
+from pyrosm.utils import (
+    get_bounding_box,
+    validate_bounding_box,
+    validate_custom_filter,
+)
 
 # Layers read_tiled can stitch, mapped to the OSM method that produces them. Each
 # returns a single GeoDataFrame with one row per element, so ``(osm_type, id)`` is a
@@ -318,18 +322,18 @@ def read_tiled(
     filepath,
     layer="network",
     tile_size=None,
-    mask=None,
-    extent=None,
+    bounding_box=None,
     relations="complete",
     keep_metadata=True,
     **layer_kwargs,
 ):
     """Read one OSM layer in spatial tiles and return one stitched GeoDataFrame.
 
-    The result has the same rows, the same set of columns and the same values as
-    the equivalent untiled ``OSM(filepath).get_<layer>`` call, but only one tile's
-    node coordinates are held in memory at a time. The source file is re-read once
-    per tile. Row and column order may differ from the untiled read (column order
+    The result has the same rows, the same set of columns and the same values as the
+    untiled ``OSM(filepath).get_<layer>`` read clipped to ``bounding_box`` (relations
+    rebuilt whole from their full member set, never cut at the box edge), but only one
+    tile's node coordinates are held in memory at a time. The source file is re-read
+    once per tile. Row and column order may differ (column order
     is deterministic with the geometry column last; the untiled order is itself
     parse-order dependent). Structural columns keep their dtype; free-form string
     columns hold identical values but their pandas string representation (``object``
@@ -360,16 +364,16 @@ def read_tiled(
         falling back to ``DEFAULT_TILE_KM2`` when that cannot be determined. The
         centre-latitude longitude scaling is accurate for city/region extents; a
         very tall multi-latitude extent gets a coarser area approximation.
-    mask : shapely geometry, optional
-        Restrict the tile grid to tiles intersecting this geometry. Features are
-        not clipped to it; the result equals an untiled read over the union of the
-        kept tile boxes.
-    extent : list, optional
-        Area to tile as ``[minx, miny, maxx, maxy]``. Defaults to the file's
-        bounding box from the PBF header; required when the header has none.
-        Extents that cross the antimeridian (longitude wrapping past +/-180) are
-        not supported -- the planar tile grid would span the wrong side of the
-        globe; pass a non-wrapping extent for such data.
+    bounding_box : list | shapely geometry, optional
+        Restrict the read to this area, exactly like ``OSM(bounding_box=...)`` -- a
+        ``[minx, miny, maxx, maxy]`` list, or a Shapely ``Polygon`` / ``MultiPolygon``
+        / closed ``LineString`` / ``LinearRing``. The tiling covers the bounding
+        box's extent and the stitched result keeps whole features that intersect it
+        (for a polygon, the result is clipped to the polygon by intersection, not to
+        the tile grid). When ``None`` (default) the whole file is read, using the
+        extent from the PBF header (required when the header has none). Bounding
+        boxes that cross the antimeridian (longitude wrapping past +/-180) are not
+        supported -- the planar tile grid would span the wrong side of the globe.
     relations : str
         How relation-derived rows (e.g. multipolygons, boundaries) are handled.
         ``"complete"`` (default) rebuilds every relation that has a member way in the
@@ -403,14 +407,41 @@ def read_tiled(
             "(nodes, edges) tuple and slices ways into segments. Use nodes=False."
         )
 
-    if extent is None:
+    # Resolve the area to read (validated like OSM's bounding_box): the extent to
+    # tile, plus the geometry to clip the stitched result to. OSM clips to the box
+    # by intersection (it turns a list into a box geometry too), so the result keeps
+    # whole features that intersect the box -- match that for every bounding box.
+    clip_geom = None
+    if bounding_box is None:
         header_bbox = get_bounding_box(filepath)
         if header_bbox is None:
             raise ValueError(
-                "The PBF header has no bounding box, so the extent to tile is "
-                "unknown. Pass extent=[minx, miny, maxx, maxy]."
+                "The PBF header has no bounding box, so there is no area to read. "
+                "Pass bounding_box=[minx, miny, maxx, maxy] or a shapely geometry."
             )
         extent = list(header_bbox.bounds)
+    elif type(bounding_box) in OSM.allowed_bbox_types:
+        clip_geom = validate_bounding_box(bounding_box)
+        extent = list(clip_geom.bounds)
+    elif isinstance(bounding_box, list):
+        if len(bounding_box) != 4:
+            raise ValueError(
+                "When passing bounding_box as a list it should contain 4 "
+                "coordinates: [minx, miny, maxx, maxy]."
+            )
+        minx, miny, maxx, maxy = bounding_box
+        if minx >= maxx or miny >= maxy:
+            raise ValueError(
+                "Invalid bounding_box {bbox}: expected [minx, miny, maxx, maxy] "
+                "with minx < maxx and miny < maxy.".format(bbox=bounding_box)
+            )
+        extent = list(bounding_box)
+        clip_geom = box(minx, miny, maxx, maxy)
+    else:
+        raise ValueError(
+            "bounding_box should be a list, a Shapely Polygon/MultiPolygon or a "
+            "LinearRing."
+        )
 
     # Choose a tile area (km^2) and turn it into latitude-aware degree steps.
     if tile_size is None:
@@ -420,7 +451,7 @@ def read_tiled(
     delta_lon, delta_lat = _km2_to_degree_steps(
         tile_size, _extent_centre_latitude(extent)
     )
-    tiles = _build_tile_grid(extent, delta_lon, delta_lat, mask)
+    tiles = _build_tile_grid(extent, delta_lon, delta_lat)
 
     method = LAYER_METHODS[layer]
     # Networks carry no relation geometries, so completion is a no-op there; skip its
@@ -546,6 +577,15 @@ def read_tiled(
     stitched = stitched.drop_duplicates(
         subset=["osm_type", "id"], keep="first"
     ).reset_index(drop=True)
+
+    # Clip to the bounding box (matching OSM): keep whole features that intersect it.
+    if clip_geom is not None:
+        orig_cols = list(stitched.columns)
+        filt = gpd.GeoDataFrame({"geometry": [clip_geom]}, crs="epsg:4326", index=[0])
+        stitched = gpd.sjoin(stitched, filt, how="inner")
+        stitched = stitched[orig_cols].reset_index(drop=True)
+        if len(stitched) == 0:
+            return None
 
     # pyrosm's bounding-box node path can leave a row's "tags" as a raw dict
     # instead of the canonical JSON string; normalise so the column is uniform.

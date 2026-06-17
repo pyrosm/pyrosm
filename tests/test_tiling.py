@@ -5,7 +5,7 @@ import shapely
 from pyrosm import OSM, get_data, read_tiled, generate_tiles
 from pyrosm.tiling import LAYER_METHODS
 from pyrosm.utils import get_bounding_box
-from shapely.geometry import box, Point
+from shapely.geometry import box, Point, Polygon
 
 
 def _assert_geom_exact(a, b):
@@ -35,6 +35,14 @@ def helsinki_history_pbf():
 
 def _extent(fp):
     return list(get_bounding_box(fp).bounds)
+
+
+def _clip_to(gdf, geom):
+    """The untiled ``gdf`` clipped to ``geom`` the way OSM's bounding_box does: keep
+    whole features that intersect it (no geometry cutting)."""
+    cols = list(gdf.columns)
+    filt = gpd.GeoDataFrame({"geometry": [geom]}, crs="epsg:4326", index=[0])
+    return gpd.sjoin(gdf, filt, how="inner")[cols].reset_index(drop=True)
 
 
 def _assert_matches_untiled(
@@ -245,6 +253,18 @@ def test_read_tiled_relations_complete_is_default(helsinki_pbf):
     assert len(full_rel) > 0
 
 
+def test_read_tiled_suppresses_per_tile_incomplete_relation_warning(helsinki_pbf):
+    # Each tile is a bbox read, so straddling relations trigger the OSM reader's
+    # "incomplete relation" warning -- but read_tiled rebuilds them once per call, so
+    # that internal warning must not leak out to the caller.
+    import warnings
+
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        read_tiled(helsinki_pbf, "buildings", tile_size=0.25)
+    assert not [w for w in record if "extend beyond the bounding box" in str(w.message)]
+
+
 def test_read_tiled_relations_complete_keep_metadata_false(helsinki_pbf):
     # Completion honours keep_metadata=False (the probe and the member-only read use
     # the same setting) and still rebuilds the relations.
@@ -269,36 +289,44 @@ def test_parse_relations_only_includes_relations_dropped_by_layer(helsinki_pbf):
     assert n_all > n_building_rel > 0
 
 
-def test_read_tiled_complete_scoping_is_kept_tile_union(helsinki_pbf):
-    # Scoping is by kept tile, not by clipping to the mask polygon.
-    ext = _extent(helsinki_pbf)
-    minx, miny, maxx, maxy = ext
-    mask = box(minx, miny, (minx + maxx) / 2, maxy)  # left half only
-
-    full = read_tiled(helsinki_pbf, "buildings", tile_size=0.1, relations="complete")
-    masked = read_tiled(
-        helsinki_pbf, "buildings", tile_size=0.1, mask=mask, relations="complete"
+def _assert_bbox_clips_like_untiled(fp, layer, bounding_box, clip_geom, tile_size=0.25):
+    """read_tiled(bounding_box=...) equals the whole-file layer read clipped to the
+    box: same (osm_type, id) rows and exact geometries (relations rebuilt whole)."""
+    tiled = read_tiled(
+        fp, layer, tile_size=tile_size, bounding_box=bounding_box, relations="complete"
     )
+    oracle = _clip_to(getattr(OSM(fp), LAYER_METHODS[layer])(), clip_geom)
+    a = oracle.sort_values(["osm_type", "id"]).reset_index(drop=True)
+    b = tiled.sort_values(["osm_type", "id"]).reset_index(drop=True)
+    assert a[["osm_type", "id"]].equals(b[["osm_type", "id"]])
+    _assert_geom_exact(a.geometry, b.geometry)
+    return b
 
-    full_rel = full[full["osm_type"] == "relation"].set_index("id").geometry
-    masked_rel = masked[masked["osm_type"] == "relation"].set_index("id").geometry
 
-    # (a) Relations whose members lie only in masked-out tiles are absent: the kept
-    # set is a non-empty proper subset of the unmasked tiled set.
-    assert set(masked_rel.index) < set(full_rel.index)
-    assert len(masked_rel) > 0
+def test_read_tiled_bounding_box_clips_like_untiled(helsinki_pbf):
+    # A list bounding_box restricts the read to features intersecting it and keeps whole
+    # (un-clipped) geometries -- identical to the whole-file read clipped to the box,
+    # with relations rebuilt whole (never cut at the box edge). Covers the way-based and
+    # node-heavy/relation-aware layers the plan names.
+    geom = box(24.94, 60.165, 24.95, 60.175)
+    for layer in ("buildings", "landuse", "natural"):
+        b = _assert_bbox_clips_like_untiled(
+            helsinki_pbf, layer, list(geom.bounds), geom
+        )
+        if layer == "buildings":
+            # Relations are kept whole, not clipped: at least one kept relation extends
+            # beyond the box (clipping the geometry to the box would have cut it).
+            rel = b[b["osm_type"] == "relation"].geometry
+            assert len(rel) > 0
+            assert any(not geom.contains(g) for g in rel)
 
-    # Kept relations are byte-for-coordinate identical to the unmasked read -- the
-    # mask never clips or alters a relation that is kept.
-    for rid in masked_rel.index:
-        a = shapely.normalize(masked_rel.loc[rid])
-        b = shapely.normalize(full_rel.loc[rid])
-        assert a.equals_exact(b, tolerance=0)
 
-    # (b) A relation that lies (partly) outside the mask polygon but has a member in a
-    # kept tile is still present in full -- proving tile scoping rather than polygon
-    # clipping (a polygon clip would have cut or dropped such relations).
-    assert any(not mask.contains(g) for g in masked_rel)
+def test_read_tiled_polygon_bounding_box_clips_like_untiled(helsinki_pbf):
+    # A polygon bounding_box clips the stitched result to the polygon (by intersection),
+    # matching the whole-file read clipped to the same polygon, across layers.
+    geom = box(24.93, 60.16, 24.95, 60.175)
+    for layer in ("buildings", "landuse", "natural"):
+        _assert_bbox_clips_like_untiled(helsinki_pbf, layer, geom, geom)
 
 
 def test_layer_relation_filters_reused_from_feature_modules():
@@ -526,23 +554,36 @@ def test_generate_tiles_step_rounds_to_zero():
         generate_tiles([0, 0, 1, 1], 1e-9)
 
 
-def test_read_tiled_explicit_extent_matches_untiled(test_pbf):
+def test_read_tiled_full_bounding_box_matches_untiled(test_pbf):
+    # A bounding_box equal to the data extent clips nothing, so the result matches the
+    # untiled read.
     ext = _extent(test_pbf)
     full = OSM(test_pbf).get_buildings().sort_values("id").reset_index(drop=True)
-    tiled = read_tiled(test_pbf, "buildings", tile_size=1.0, extent=ext)
+    tiled = read_tiled(test_pbf, "buildings", tile_size=1.0, bounding_box=ext)
     tiled = tiled.sort_values("id").reset_index(drop=True)
     assert full["id"].equals(tiled["id"])
 
 
 def test_read_tiled_returns_none_when_no_data(test_pbf):
-    # An explicit extent away from the data leaves every tile empty.
+    # A bounding_box away from the data leaves every tile empty.
     assert (
-        read_tiled(test_pbf, "buildings", tile_size=1.0, extent=[0, 0, 0.02, 0.02])
+        read_tiled(
+            test_pbf, "buildings", tile_size=1.0, bounding_box=[0, 0, 0.02, 0.02]
+        )
         is None
     )
 
 
-def test_read_tiled_requires_extent_without_header_bbox(monkeypatch, test_pbf):
+def test_read_tiled_rejects_bad_bounding_box(test_pbf):
+    with pytest.raises(ValueError, match="4"):
+        read_tiled(test_pbf, "buildings", tile_size=1.0, bounding_box=[0, 0, 1])
+    with pytest.raises(ValueError, match="Invalid bounding_box"):
+        read_tiled(test_pbf, "buildings", tile_size=1.0, bounding_box=[1, 0, 0, 1])
+    with pytest.raises(ValueError, match="bounding_box"):
+        read_tiled(test_pbf, "buildings", tile_size=1.0, bounding_box="nope")
+
+
+def test_read_tiled_requires_bounding_box_without_header_bbox(monkeypatch, test_pbf):
     monkeypatch.setattr("pyrosm.tiling.get_bounding_box", lambda fp: None)
     with pytest.raises(ValueError, match="no bounding box"):
         read_tiled(test_pbf, "buildings", tile_size=1.0)
@@ -551,6 +592,8 @@ def test_read_tiled_requires_extent_without_header_bbox(monkeypatch, test_pbf):
 class _FakeOSM:
     """Stand-in for OSM whose get_<layer> returns a fixed frame, to exercise the
     fail-closed guards that real supported layers cannot trigger."""
+
+    allowed_bbox_types = OSM.allowed_bbox_types
 
     def __init__(self, frame, *args, **kwargs):
         self._frame = frame
@@ -574,7 +617,6 @@ def test_read_tiled_fails_closed_without_identity_columns(monkeypatch, test_pbf)
             test_pbf,
             "buildings",
             tile_size=1.0,
-            extent=_extent(test_pbf),
             relations="drop",
         )
 
@@ -591,7 +633,6 @@ def test_read_tiled_fails_closed_on_duplicate_key_in_tile(monkeypatch, test_pbf)
             test_pbf,
             "buildings",
             tile_size=1.0,
-            extent=_extent(test_pbf),
             relations="drop",
         )
 
@@ -605,12 +646,33 @@ def test_read_tiled_handles_frame_without_tags_column(monkeypatch, test_pbf):
         test_pbf,
         "buildings",
         tile_size=10000.0,
-        extent=_extent(test_pbf),
         relations="drop",
     )
     assert "tags" not in out.columns
     assert list(out["id"]) == [1]
     assert out.columns[-1] == "geometry"
+
+
+def test_read_tiled_returns_none_when_clip_removes_all(monkeypatch, test_pbf):
+    # A polygon bounding_box whose envelope drives a tile that yields a feature, but
+    # whose polygon excludes that feature -> the post-clip result is empty.
+    frame = gpd.GeoDataFrame(
+        {"osm_type": ["way"], "id": [1]}, geometry=[Point(0.3, 0.3)], crs="EPSG:4326"
+    )
+    _patch_osm(monkeypatch, frame)
+    triangle = Polygon(
+        [(0, 0), (0.4, 0), (0, 0.4)]
+    )  # envelope holds the point; it does not
+    assert (
+        read_tiled(
+            test_pbf,
+            "buildings",
+            tile_size=10000.0,
+            bounding_box=triangle,
+            relations="drop",
+        )
+        is None
+    )
 
 
 # --- km^2 tile_size and auto-sizing ---------------------------------------
@@ -695,7 +757,7 @@ def test_auto_tile_km2_fallback_on_unreadable_file_size(monkeypatch):
 
 def test_read_tiled_rejects_nonpositive_tile_size(test_pbf):
     with pytest.raises(ValueError, match="km"):
-        read_tiled(test_pbf, "buildings", tile_size=0, extent=_extent(test_pbf))
+        read_tiled(test_pbf, "buildings", tile_size=0, bounding_box=_extent(test_pbf))
 
 
 def test_auto_tile_km2_fallback_on_zero_available_memory(monkeypatch):
