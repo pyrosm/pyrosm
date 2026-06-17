@@ -204,3 +204,34 @@ def test_complete_relations_available_for_custom_criteria(helsinki_pbf):
     assert len(common) > 0
     for rid in common:
         assert _geom_exact(complete_rel.loc[rid], whole_rel.loc[rid])
+
+
+def _incomplete_relation_warnings(record):
+    return [r for r in record if "extend beyond the bounding box" in str(r.message)]
+
+
+def test_complete_relations_warns_when_box_cuts_relations(helsinki_pbf):
+    # A bounding-box read that cuts relations warns and points to the option, when
+    # completion was not requested.
+    with pytest.warns(UserWarning, match="extend beyond the bounding box"):
+        OSM(helsinki_pbf, bounding_box=STRADDLING_BBOX).get_buildings()
+
+
+def test_complete_relations_no_warning_when_enabled(helsinki_pbf):
+    import warnings
+
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        OSM(
+            helsinki_pbf, bounding_box=STRADDLING_BBOX, complete_relations=True
+        ).get_buildings()
+    assert _incomplete_relation_warnings(record) == []
+
+
+def test_complete_relations_no_warning_for_whole_file(helsinki_pbf):
+    import warnings
+
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        OSM(helsinki_pbf).get_buildings()
+    assert _incomplete_relation_warnings(record) == []

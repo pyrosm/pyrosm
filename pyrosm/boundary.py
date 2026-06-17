@@ -15,6 +15,7 @@ def get_boundary_data(
     bounding_box,
     keep_metadata=True,
     relation_member_ways=None,
+    complete_relations=False,
 ):
     if boundary_type == "all":
         boundary_type = True
@@ -61,6 +62,7 @@ def get_boundary_data(
         tags_as_columns,
         bounding_box,
         keep_metadata=keep_metadata,
+        complete_relations=complete_relations,
     )
 
     if gdf is None:

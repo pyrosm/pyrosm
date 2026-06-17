@@ -1,3 +1,4 @@
+import warnings
 import pandas as pd
 import geopandas as gpd
 import numpy as np
@@ -138,12 +139,50 @@ cpdef prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_c
         relation_gdf = gpd.GeoDataFrame()
     return relation_gdf
 
+cdef int _count_straddling_relations(relations, relation_ways):
+    """Count filtered relations the bounding box cut: some member ways are present
+    (inside the box) and some are missing (outside it), so the assembled geometry is
+    incomplete. Used to warn when complete_relations was not requested."""
+    cdef int j, n_straddling = 0
+    if relations is None or relation_ways is None:
+        return 0
+    present = set(relation_ways["id"].tolist())
+    for members in relations["members"]:
+        member_ids = members["member_id"]
+        member_types = members["member_type"]
+        way_ids = set()
+        for j in range(len(member_ids)):
+            if member_types[j] == b"way":
+                way_ids.add(int(member_ids[j]))
+        n_present = len(way_ids & present)
+        if 0 < n_present < len(way_ids):
+            n_straddling += 1
+    return n_straddling
+
+
 cpdef prepare_geodataframe(nodes, node_coordinates, ways,
                            relations, relation_ways,
                            tags_as_columns, bounding_box,
                            parse_network=False,
                            calculate_seg_lengths=False,
-                           bint keep_metadata=True):
+                           bint keep_metadata=True,
+                           bint complete_relations=False):
+
+    # Warn when a bounding-box read returned relations the box cut (some member ways
+    # fall outside the box, so the geometry is incomplete) and completion was not
+    # requested. Skipped for whole-file reads (which hold every member) and when
+    # complete_relations=True (the user already opted into fetching the full members).
+    if bounding_box is not None and not complete_relations:
+        n_straddling = _count_straddling_relations(relations, relation_ways)
+        if n_straddling > 0:
+            warnings.warn(
+                f"{n_straddling} relation(s) extend beyond the bounding box and were "
+                f"returned with incomplete geometry (some member ways fall outside "
+                f"the box). Pass complete_relations=True to OSM(...) to fetch their "
+                f"full member set.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     # Prepare ways
     way_gdf, node_attr = prepare_way_gdf(node_coordinates,

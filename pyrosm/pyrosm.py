@@ -450,6 +450,7 @@ class OSM:
             self.bounding_box,
             keep_metadata=self.keep_metadata,
             relation_member_ways=self._relation_member_ways,
+            complete_relations=self.complete_relations,
         )
 
         # Do not keep node information unless specifically asked for
@@ -531,6 +532,7 @@ class OSM:
             self.bounding_box,
             keep_metadata=self.keep_metadata,
             relation_member_ways=self._relation_member_ways,
+            complete_relations=self.complete_relations,
         )
 
         # Do not keep node information unless specifically asked for
@@ -612,6 +614,7 @@ class OSM:
             self.bounding_box,
             keep_metadata=self.keep_metadata,
             relation_member_ways=self._relation_member_ways,
+            complete_relations=self.complete_relations,
         )
 
         # Do not keep node information unless specifically asked for
@@ -717,6 +720,7 @@ class OSM:
             self.bounding_box,
             keep_metadata=self.keep_metadata,
             relation_member_ways=self._relation_member_ways,
+            complete_relations=self.complete_relations,
         )
 
         # Do not keep node information unless specifically asked for
@@ -843,6 +847,7 @@ class OSM:
             self.bounding_box,
             keep_metadata=self.keep_metadata,
             relation_member_ways=self._relation_member_ways,
+            complete_relations=self.complete_relations,
         )
 
         # Do not keep node information unless specifically asked for
@@ -969,6 +974,7 @@ class OSM:
             self.bounding_box,
             keep_metadata=self.keep_metadata,
             relation_member_ways=self._relation_member_ways,
+            complete_relations=self.complete_relations,
         )
 
         # Do not keep node information unless specifically asked for
