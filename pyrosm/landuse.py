@@ -4,6 +4,18 @@ from pyrosm.utils import validate_custom_filter
 import warnings
 
 
+def landuse_relation_filter(custom_filter):
+    """The effective relation ``custom_filter`` a landuse read applies (ensuring a
+    ``landuse`` key). Shared with ``read_tiled`` so it can scope relation completion
+    to the same relations this layer keeps."""
+    if custom_filter is None:
+        return {"landuse": [True]}
+    custom_filter = validate_custom_filter(custom_filter)
+    if "landuse" not in custom_filter.keys():
+        custom_filter = {**custom_filter, "landuse": [True]}
+    return custom_filter
+
+
 def get_landuse_data(
     nodes,
     node_coordinates,
@@ -16,16 +28,8 @@ def get_landuse_data(
     relation_member_ways=None,
     complete_relations=False,
 ):
-    # If custom_filter has not been defined, initialize with default
-    if custom_filter is None:
-        custom_filter = {"landuse": [True]}
-    else:
-        # Check that the custom filter is in correct format
-        custom_filter = validate_custom_filter(custom_filter)
-
-        # Ensure that the "landuse" tag exists
-        if "landuse" not in custom_filter.keys():
-            custom_filter["landuse"] = [True]
+    # Default/validate the filter (ensures a "landuse" key).
+    custom_filter = landuse_relation_filter(custom_filter)
 
     # Call signature for fetching buildings
     nodes, ways, relation_ways, relations = get_osm_data(

@@ -19,9 +19,15 @@ import pandas as pd
 from rapidjson import dumps
 from shapely.geometry import box
 
-from pyrosm.pbfreader import fetch_relation_members, parse_relations_only
+from pyrosm.boundary import boundary_relation_filter
+from pyrosm.buildings import building_relation_filter
+from pyrosm.data_manager import get_osm_data
+from pyrosm.landuse import landuse_relation_filter
+from pyrosm.natural import natural_relation_filter
+from pyrosm.pbfreader import fetch_member_nodes, fetch_member_ways, parse_relations_only
+from pyrosm.pois import poi_relation_filter
 from pyrosm.pyrosm import OSM
-from pyrosm.utils import get_bounding_box
+from pyrosm.utils import get_bounding_box, validate_custom_filter
 
 # Layers read_tiled can stitch, mapped to the OSM method that produces them. Each
 # returns a single GeoDataFrame with one row per element, so ``(osm_type, id)`` is a
@@ -208,6 +214,58 @@ def _candidate_relations(relations, extent_ways):
     return candidates, member_ids
 
 
+def _layer_relation_filter_spec(layer, layer_kwargs):
+    """The ``(custom_filter, osm_keys, filter_type)`` the layer applies to relations,
+    reused from the feature modules so completion can be narrowed to the relations the
+    layer would actually keep (rather than every relation that touches the tiles)."""
+    custom_filter = copy.deepcopy(layer_kwargs.get("custom_filter"))
+    if layer == "buildings":
+        return building_relation_filter(custom_filter), None, "keep"
+    if layer == "landuse":
+        return landuse_relation_filter(custom_filter), None, "keep"
+    if layer == "natural":
+        return natural_relation_filter(custom_filter), None, "keep"
+    if layer == "boundaries":
+        boundary_type = layer_kwargs.get("boundary_type", "administrative")
+        return boundary_relation_filter(custom_filter, boundary_type), None, "keep"
+    if layer == "pois":
+        return poi_relation_filter(custom_filter), None, "keep"
+    # custom_criteria -- mirror get_data_by_custom_criteria's normalisation so the
+    # prefilter matches the read: osm_keys str -> list, filter_type lowercased.
+    osm_keys = layer_kwargs.get("osm_keys_to_keep")
+    if isinstance(osm_keys, str):
+        osm_keys = [osm_keys]
+    filter_type = layer_kwargs.get("filter_type", "keep")
+    if isinstance(filter_type, str):
+        filter_type = filter_type.lower()
+    return validate_custom_filter(custom_filter), osm_keys, filter_type
+
+
+def _filter_relations_to_layer(layer, candidates, member_ways, layer_kwargs):
+    """Narrow the candidate relations (and their member ways) to the relations the
+    requested layer keeps, by running the layer's own relation filter over the cheap
+    member-way records (no node coordinates needed). Returns
+    ``(layer_relations, layer_member_ways)`` -- ``(None, [])`` when the layer keeps
+    none."""
+    data_filter, osm_keys, filter_type = _layer_relation_filter_spec(
+        layer, layer_kwargs
+    )
+    # get_osm_data filters relations by their tags and keeps only relations whose
+    # member ways are present; tags_as_columns is irrelevant here (we use only the
+    # filtered relation set, not the assembled rows).
+    _, _, _, layer_relations = get_osm_data(
+        None, member_ways, candidates, [], data_filter, filter_type, osm_keys
+    )
+    if layer_relations is None:
+        return None, []
+
+    layer_member_ids = set()
+    for members in layer_relations["members"]:
+        layer_member_ids.update(_relation_member_way_ids(members))
+    layer_member_ways = [w for w in member_ways if w["id"] in layer_member_ids]
+    return layer_relations, layer_member_ways
+
+
 def _read_relations_from_members(
     filepath,
     method,
@@ -221,6 +279,8 @@ def _read_relations_from_members(
     """Assemble the candidate relations from pre-fetched member ways/nodes by feeding
     them through the normal layer read (no bbox, no re-parse), and return only the
     relation rows. Reuses each layer's relation filter and tag handling."""
+    if member_coords is None:
+        return None
     osm = OSM(filepath, keep_metadata=keep_metadata)
     # Pre-load the member-only data so the layer method assembles relations without
     # re-parsing or loading the bulk; bounding_box is None, so nothing is clipped.
@@ -362,8 +422,12 @@ def read_tiled(
 
     method = LAYER_METHODS[layer]
     # Networks carry no relation geometries, so completion is a no-op there; skip its
-    # cost and treat "complete" like "drop" (there are no relation rows to drop).
+    # cost and treat "complete" like "drop" (there are no relation rows to drop). A
+    # custom_criteria read with keep_relations=False also yields no relation rows, so
+    # there is nothing to complete -- short-circuit before any member fetch.
     completing = relations == "complete" and layer != "network"
+    if layer == "custom_criteria" and layer_kwargs.get("keep_relations") is False:
+        completing = False
 
     # Relation completion (once per call) needs every relation's definition and the
     # member ways present in the kept tiles. Parse the relation definitions up front.
@@ -443,15 +507,27 @@ def read_tiled(
     if completing and extent_ways:
         candidates, member_ids = _candidate_relations(all_relations, extent_ways)
         if candidates is not None:
-            member_ways, member_coords = fetch_relation_members(
+            # Cheap pass: member ways of every candidate relation (way records only,
+            # no coordinates). Then narrow to the relations the requested layer keeps,
+            # so the expensive node fetch never touches other relation types' members.
+            member_ways = fetch_member_ways(
                 filepath, member_ids, unix_time, keep_metadata
             )
-            if member_ways:
+            layer_relations, layer_member_ways = _filter_relations_to_layer(
+                layer, candidates, member_ways, layer_kwargs
+            )
+            if layer_relations is not None and layer_member_ways:
+                node_ids = set()
+                for way in layer_member_ways:
+                    node_ids.update(way["nodes"])
+                member_coords = fetch_member_nodes(
+                    filepath, node_ids, unix_time, keep_metadata
+                )
                 relation_gdf = _read_relations_from_members(
                     filepath,
                     method,
-                    candidates,
-                    member_ways,
+                    layer_relations,
+                    layer_member_ways,
                     member_coords,
                     keep_metadata,
                     unix_time,

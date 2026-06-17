@@ -678,42 +678,42 @@ def parse_relations_only(filepath, unix_time_filter=None):
     return {col: relations_df[col].values for col in relations_df.columns}
 
 
-def fetch_relation_members(filepath, member_way_ids, unix_time_filter=None,
-                           keep_metadata=True):
-    """Fetch only the given member ways (by id) and their node coordinates with two
-    id-filtered streaming passes over the file -- never materialising the rest of the
-    ways/nodes. Returns ``(member_way_records, node_coordinates)`` where
-    ``node_coordinates`` is a ``NodeLocations`` (or ``None`` when no member ways were
-    found). Used by ``read_tiled``'s relation completion to assemble candidate
-    relations without loading the bulk."""
+def fetch_member_ways(filepath, member_way_ids, unix_time_filter=None,
+                      keep_metadata=True):
+    """Fetch only the given member ways (by id) with one id-filtered streaming pass --
+    the way records (with their node-id lists) but NOT the node coordinates. Cheap
+    relative to the node pass. Used by ``read_tiled`` to obtain candidate member ways
+    before narrowing to the requested layer's relations."""
     member_id_set = set(int(w) for w in member_way_ids)
+    if len(member_id_set) == 0:
+        return []
 
     member_ways = []
-    if len(member_id_set) > 0:
-        for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath):
-            for pgroup in pblock.primitivegroup:
-                if len(pgroup.ways) > 0:
-                    member_ways += parse_ways(
-                        pgroup.ways, str_table, None, unix_time_filter, member_id_set
-                    )
-        member_ways = explode_way_tags(member_ways)
-        if unix_time_filter is not None and len(member_ways) > 0:
-            mw_df = pd.DataFrame(member_ways)
-            mw_df = mw_df.loc[mw_df["visible"] == True].copy()
-            mw_df = get_latest_version(mw_df)
-            member_ways = clean_empty_values_from_ways(
-                mw_df.to_dict(orient="records")
-            )
+    for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath):
+        for pgroup in pblock.primitivegroup:
+            if len(pgroup.ways) > 0:
+                member_ways += parse_ways(
+                    pgroup.ways, str_table, None, unix_time_filter, member_id_set
+                )
+    member_ways = explode_way_tags(member_ways)
+    if unix_time_filter is not None and len(member_ways) > 0:
+        mw_df = pd.DataFrame(member_ways)
+        mw_df = mw_df.loc[mw_df["visible"] == True].copy()
+        mw_df = get_latest_version(mw_df)
+        member_ways = clean_empty_values_from_ways(mw_df.to_dict(orient="records"))
+    return member_ways
 
-    if len(member_ways) == 0:
-        return [], None
 
-    node_ids = set()
-    for way in member_ways:
-        for node_id in way["nodes"]:
-            node_ids.add(node_id)
+def fetch_member_nodes(filepath, node_ids, unix_time_filter=None, keep_metadata=True):
+    """Fetch the coordinates of the given node ids with one id-filtered streaming pass
+    and return them as a ``NodeLocations`` (or ``None`` when none are found). This is
+    the expensive completion pass; ``read_tiled`` calls it only for the requested
+    layer's relations' member nodes."""
+    node_id_set = set(int(n) for n in node_ids)
+    if len(node_id_set) == 0:
+        return None
 
-    node_id_filter = np.array(sorted(node_ids), dtype=np.int64)
+    node_id_filter = np.array(sorted(node_id_set), dtype=np.int64)
     member_nodes = []
     for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath):
         for pgroup in pblock.primitivegroup:
@@ -728,8 +728,27 @@ def fetch_relation_members(filepath, member_way_ids, unix_time_filter=None,
 
     coords_df = create_df(concatenate_dicts_of_arrays(member_nodes))
     if "id" not in coords_df.columns:
-        return member_ways, None
+        return None
     if unix_time_filter is not None:
         coords_df = coords_df.loc[coords_df["visible"] == True].copy()
         coords_df = get_latest_version(coords_df)
-    return member_ways, NodeLocations(coords_df)
+    return NodeLocations(coords_df)
+
+
+def fetch_relation_members(filepath, member_way_ids, unix_time_filter=None,
+                           keep_metadata=True):
+    """Fetch the given member ways and their node coordinates (two id-filtered passes).
+    Thin wrapper over ``fetch_member_ways`` + ``fetch_member_nodes``; returns
+    ``(member_way_records, node_coordinates_or_None)``."""
+    member_ways = fetch_member_ways(
+        filepath, member_way_ids, unix_time_filter, keep_metadata
+    )
+    if len(member_ways) == 0:
+        return [], None
+    node_ids = set()
+    for way in member_ways:
+        for node_id in way["nodes"]:
+            node_ids.add(node_id)
+    return member_ways, fetch_member_nodes(
+        filepath, node_ids, unix_time_filter, keep_metadata
+    )

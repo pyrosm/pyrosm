@@ -202,6 +202,38 @@ def test_read_tiled_relations_complete_landuse_matches_untiled(helsinki_pbf):
     _assert_matches_untiled(helsinki_pbf, "landuse", 0.25, relations="complete")
 
 
+def test_read_tiled_relations_complete_natural_matches_untiled(helsinki_pbf):
+    # Exercises the natural layer's completion path (no natural relations in the
+    # bundled data, so it equals the untiled read).
+    _assert_matches_untiled(
+        helsinki_pbf, "natural", 0.25, relations="complete", check_tags=False
+    )
+
+
+def test_read_tiled_relations_complete_pois_matches_untiled(test_pbf):
+    _assert_matches_untiled(
+        test_pbf,
+        "pois",
+        1.0,
+        relations="complete",
+        custom_filter={"amenity": True},
+        check_tags=False,
+    )
+
+
+def test_read_tiled_relations_complete_custom_criteria_matches_untiled(helsinki_pbf):
+    # custom_criteria with a building filter rebuilds the building relations.
+    _assert_matches_untiled(
+        helsinki_pbf,
+        "custom_criteria",
+        0.25,
+        relations="complete",
+        custom_filter={"building": True},
+        osm_keys_to_keep="building",
+        check_tags=False,
+    )
+
+
 def test_read_tiled_relations_complete_is_default(helsinki_pbf):
     # No relations= argument uses "complete", so building relations are present and
     # match the untiled geometries.
@@ -269,12 +301,127 @@ def test_read_tiled_complete_scoping_is_kept_tile_union(helsinki_pbf):
     assert any(not mask.contains(g) for g in masked_rel)
 
 
+def test_layer_relation_filters_reused_from_feature_modules():
+    # The per-layer relation filters completion reuses match the feature defaults.
+    from pyrosm.boundary import boundary_relation_filter
+    from pyrosm.buildings import building_relation_filter
+    from pyrosm.landuse import landuse_relation_filter
+    from pyrosm.natural import natural_relation_filter
+    from pyrosm.pois import poi_relation_filter
+
+    assert building_relation_filter(None) == {"building": [True]}
+    assert "building" in building_relation_filter({"amenity": True})
+    assert landuse_relation_filter(None) == {"landuse": [True]}
+    assert natural_relation_filter(None) == {"natural": [True]}
+    assert boundary_relation_filter(None, "administrative") == {
+        "boundary": ["administrative"]
+    }
+    assert boundary_relation_filter(None, "all") == {"boundary": [True]}
+    assert poi_relation_filter(None) == {
+        "amenity": [True],
+        "shop": [True],
+        "tourism": [True],
+    }
+
+
+def test_read_tiled_complete_does_not_overfetch_non_layer_relations(
+    helsinki_pbf, monkeypatch
+):
+    # Completion's expensive node fetch is scoped to the requested layer's relations,
+    # not every relation touching the tiles.
+    import pyrosm.pbfreader as pbf
+    import pyrosm.tiling as tiling
+
+    fetched = set()
+    orig = pbf.fetch_member_nodes
+
+    def spy(filepath, node_ids, *args, **kwargs):
+        fetched.update(int(n) for n in node_ids)
+        return orig(filepath, node_ids, *args, **kwargs)
+
+    monkeypatch.setattr(tiling, "fetch_member_nodes", spy)
+
+    gdf = read_tiled(helsinki_pbf, "buildings", tile_size=0.25)
+    assert (gdf["osm_type"] == "relation").sum() > 0
+
+    # Upper bound: the member nodes of *all* relations intersecting the file.
+    all_member_ids = set()
+    all_rel = pbf.parse_relations_only(helsinki_pbf)
+    for members in all_rel["members"]:
+        all_member_ids.update(tiling._relation_member_way_ids(members))
+    all_member_ways = pbf.fetch_member_ways(helsinki_pbf, all_member_ids)
+    all_nodes = set()
+    for way in all_member_ways:
+        all_nodes.update(way["nodes"])
+
+    # The layer-scoped fetch is non-empty and strictly smaller than the all-relation
+    # member-node set (the route/boundary members are no longer fetched).
+    assert 0 < len(fetched) < len(all_nodes)
+
+
+def test_read_tiled_custom_criteria_keep_relations_false_skips_completion(
+    helsinki_pbf, monkeypatch
+):
+    # keep_relations=False returns no relation rows, so completion (and its node
+    # fetch) is short-circuited entirely.
+    import pyrosm.pbfreader as pbf
+    import pyrosm.tiling as tiling
+
+    calls = {"n": 0}
+    orig = pbf.fetch_member_nodes
+
+    def spy(*args, **kwargs):
+        calls["n"] += 1
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(tiling, "fetch_member_nodes", spy)
+
+    gdf = read_tiled(
+        helsinki_pbf,
+        "custom_criteria",
+        tile_size=0.25,
+        custom_filter={"building": True},
+        keep_relations=False,
+    )
+    assert calls["n"] == 0
+    if gdf is not None:
+        assert (gdf["osm_type"] == "relation").sum() == 0
+
+
 def test_fetch_relation_members_returns_empty_for_no_match(test_pbf):
     from pyrosm.pbfreader import fetch_relation_members
 
     member_ways, coords = fetch_relation_members(test_pbf, set())
     assert member_ways == []
     assert coords is None
+
+
+def test_custom_criteria_filter_spec_osm_keys(test_pbf):
+    from pyrosm.tiling import _layer_relation_filter_spec
+
+    # A string osm_keys_to_keep is normalised to a list; absent -> None (derived).
+    _, keys, ft = _layer_relation_filter_spec(
+        "custom_criteria",
+        {"custom_filter": {"building": True}, "osm_keys_to_keep": "building"},
+    )
+    assert keys == ["building"]
+    assert ft == "keep"
+    _, keys2, _ = _layer_relation_filter_spec(
+        "custom_criteria", {"custom_filter": {"building": True}}
+    )
+    assert keys2 is None
+
+
+def test_read_relations_from_members_without_coords_returns_none(test_pbf):
+    from pyrosm.tiling import _read_relations_from_members
+
+    # No member node coordinates -> nothing to assemble.
+    assert (
+        _read_relations_from_members(
+            test_pbf, "get_buildings", {}, [], None, True, None, {}
+        )
+        is None
+    )
 
 
 def test_candidate_relations_edge_cases(helsinki_pbf):

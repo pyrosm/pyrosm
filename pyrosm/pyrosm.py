@@ -30,7 +30,7 @@ from pyrosm.buildings import get_building_data
 from pyrosm.landuse import get_landuse_data
 from pyrosm.natural import get_natural_data
 from pyrosm.networks import get_network_data
-from pyrosm.pois import get_poi_data
+from pyrosm.pois import get_poi_data, poi_relation_filter
 from pyrosm.user_defined import get_user_defined_data
 from pyrosm.graphs import to_networkx, to_igraph, to_pandana, to_pandarm
 
@@ -805,17 +805,8 @@ class OSM:
         'tourism', 'viewpoint', 'wilderness_hut', 'zoo']
 
         """
-        # If custom_filter has not been defined, initialize with default
-        if custom_filter is None:
-            custom_filter = {"amenity": True, "shop": True, "tourism": True}
-
-        else:
-            # Check that the custom filter is in correct format
-            if not isinstance(custom_filter, dict):
-                raise ValueError(
-                    f"'custom_filter' should be a Python dictionary. "
-                    f"Got {custom_filter} with type {type(custom_filter)}."
-                )
+        # Default/validate the filter (the amenity/shop/tourism default when none).
+        custom_filter = poi_relation_filter(custom_filter)
 
         self._read_pbf(timestamp)
 

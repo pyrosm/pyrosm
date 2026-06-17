@@ -4,6 +4,18 @@ from pyrosm.utils import validate_custom_filter
 import warnings
 
 
+def building_relation_filter(custom_filter):
+    """The effective relation ``custom_filter`` a buildings read applies (ensuring a
+    ``building`` key). Shared with ``read_tiled`` so it can scope relation completion
+    to the same relations this layer keeps."""
+    if custom_filter is None:
+        return {"building": [True]}
+    custom_filter = validate_custom_filter(custom_filter)
+    if "building" not in custom_filter.keys():
+        custom_filter = {**custom_filter, "building": [True]}
+    return custom_filter
+
+
 def get_building_data(
     node_coordinates,
     way_records,
@@ -15,16 +27,8 @@ def get_building_data(
     relation_member_ways=None,
     complete_relations=False,
 ):
-    # If custom_filter has not been defined, initialize with default
-    if custom_filter is None:
-        custom_filter = {"building": [True]}
-    else:
-        # Check that the custom filter is in correct format
-        custom_filter = validate_custom_filter(custom_filter)
-
-        # Ensure that the "building" tag exists
-        if "building" not in custom_filter.keys():
-            custom_filter["building"] = [True]
+    # Default/validate the filter (ensures a "building" key).
+    custom_filter = building_relation_filter(custom_filter)
 
     # Call signature for fetching buildings
     nodes, ways, relation_ways, relations = get_osm_data(

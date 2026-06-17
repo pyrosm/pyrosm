@@ -4,6 +4,21 @@ from pyrosm.utils import validate_custom_filter
 import warnings
 
 
+def boundary_relation_filter(custom_filter, boundary_type):
+    """The effective relation ``custom_filter`` a boundaries read applies for the
+    given ``boundary_type`` (ensuring a ``boundary`` key). Shared with ``read_tiled``
+    so it can scope relation completion to the same relations this layer keeps."""
+    if boundary_type == "all":
+        boundary_type = True
+    else:
+        boundary_type = [boundary_type]
+    if custom_filter is None:
+        custom_filter = {"boundary": boundary_type}
+    if "boundary" not in custom_filter.keys():
+        custom_filter = {**custom_filter, "boundary": True}
+    return validate_custom_filter(custom_filter)
+
+
 def get_boundary_data(
     node_coordinates,
     way_records,
@@ -17,20 +32,8 @@ def get_boundary_data(
     relation_member_ways=None,
     complete_relations=False,
 ):
-    if boundary_type == "all":
-        boundary_type = True
-    else:
-        boundary_type = [boundary_type]
-
-    # If custom_filter has not been defined, initialize with default
-    if custom_filter is None:
-        custom_filter = {"boundary": boundary_type}
-
-    if "boundary" not in custom_filter.keys():
-        custom_filter["boundary"] = True
-
-    # Check that the custom filter is in correct format
-    custom_filter = validate_custom_filter(custom_filter)
+    # Default/validate the filter for this boundary_type (ensures a "boundary" key).
+    custom_filter = boundary_relation_filter(custom_filter, boundary_type)
 
     # Call signature for fetching buildings
     nodes, ways, relation_ways, relations = get_osm_data(

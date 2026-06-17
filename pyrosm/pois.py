@@ -4,6 +4,16 @@ from pyrosm.utils import validate_custom_filter
 import warnings
 
 
+def poi_relation_filter(custom_filter):
+    """The effective relation ``custom_filter`` a POI read applies -- the
+    amenity/shop/tourism default when none is given, validated/normalised the same way
+    ``get_poi_data`` does. Shared with ``read_tiled`` so it can scope relation
+    completion to the same relations this layer keeps."""
+    if custom_filter is None:
+        custom_filter = {"amenity": True, "shop": True, "tourism": True}
+    return validate_custom_filter(custom_filter)
+
+
 def get_poi_data(
     nodes,
     node_coordinates,

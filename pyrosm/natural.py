@@ -4,6 +4,18 @@ from pyrosm.utils import validate_custom_filter
 import warnings
 
 
+def natural_relation_filter(custom_filter):
+    """The effective relation ``custom_filter`` a natural read applies (ensuring a
+    ``natural`` key). Shared with ``read_tiled`` so it can scope relation completion
+    to the same relations this layer keeps."""
+    if custom_filter is None:
+        return {"natural": [True]}
+    custom_filter = validate_custom_filter(custom_filter)
+    if "natural" not in custom_filter.keys():
+        custom_filter = {**custom_filter, "natural": [True]}
+    return custom_filter
+
+
 def get_natural_data(
     nodes,
     node_coordinates,
@@ -16,16 +28,8 @@ def get_natural_data(
     relation_member_ways=None,
     complete_relations=False,
 ):
-    # If custom_filter has not been defined, initialize with default
-    if custom_filter is None:
-        custom_filter = {"natural": [True]}
-    else:
-        # Check that the custom filter is in correct format
-        custom_filter = validate_custom_filter(custom_filter)
-
-        # Ensure that the "landuse" tag exists
-        if "natural" not in custom_filter.keys():
-            custom_filter["natural"] = [True]
+    # Default/validate the filter (ensures a "natural" key).
+    custom_filter = natural_relation_filter(custom_filter)
 
     # Call signature for fetching buildings
     nodes, ways, relation_ways, relations = get_osm_data(
