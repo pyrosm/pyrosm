@@ -57,6 +57,18 @@ class OSM:
         the per-node metadata is then also skipped while parsing, which lowers
         peak memory on node-heavy files. History (`.osh.pbf`) parsing keeps the
         metadata it requires regardless of this flag.
+
+    complete_relations : bool (default: False)
+        When reading with a `bounding_box`, a relation (e.g. a multipolygon or
+        boundary) is normally assembled from only the member ways that fall
+        inside the box, so a relation straddling the edge of the box comes out
+        with a partial geometry. Set this to `True` to fetch each such relation's
+        full member set (member ways and their nodes, even outside the box) so
+        the geometry is complete. This adds two extra streaming passes over the
+        file (only when a relation actually has missing members), so it is
+        opt-in. It has no effect on a whole-file read (no `bounding_box`), which
+        already holds every member. Only member ways are completed; relations
+        whose members are themselves relations (super-relations) are not.
     """
 
     allowed_bbox_types = [
@@ -67,13 +79,19 @@ class OSM:
         LinearRing,
     ]
 
-    def __init__(self, filepath, bounding_box=None, keep_metadata=True):
+    def __init__(
+        self, filepath, bounding_box=None, keep_metadata=True, complete_relations=False
+    ):
         # Check input file
         self.filepath = validate_input_file(filepath)
 
         if not isinstance(keep_metadata, bool):
             raise ValueError("'keep_metadata' should be a boolean.")
         self.keep_metadata = keep_metadata
+
+        if not isinstance(complete_relations, bool):
+            raise ValueError("'complete_relations' should be a boolean.")
+        self.complete_relations = complete_relations
 
         # Check if file contains history
         self._osh_file = False
@@ -123,24 +141,33 @@ class OSM:
         self._node_coordinates = None
         self._way_records = None
         self._relations = None
+        self._relation_member_ways = None
 
         # Timestamp
         self._current_timestamp = None
         self._timestamp_changed = False
 
     def _get_pbf_elements(self, bounding_box):
-        nodes, ways, relations, node_coordinates = parse_osm_data(
+        (
+            nodes,
+            ways,
+            relations,
+            node_coordinates,
+            relation_member_ways,
+        ) = parse_osm_data(
             self.filepath,
             bounding_box,
             exclude_relations=False,
             unix_time_filter=self._current_timestamp,
             keep_metadata=self.keep_metadata,
+            complete_relations=self.complete_relations,
         )
 
         self._nodes = nodes
         self._way_records = ways
         self._relations = relations
         self._node_coordinates = node_coordinates
+        self._relation_member_ways = relation_member_ways
 
     def _read_pbf(self, timestamp=None):
         # PBF reading requires a list of bounding box coordinates
@@ -422,6 +449,7 @@ class OSM:
             custom_filter,
             self.bounding_box,
             keep_metadata=self.keep_metadata,
+            relation_member_ways=self._relation_member_ways,
         )
 
         # Do not keep node information unless specifically asked for
@@ -502,6 +530,7 @@ class OSM:
             custom_filter,
             self.bounding_box,
             keep_metadata=self.keep_metadata,
+            relation_member_ways=self._relation_member_ways,
         )
 
         # Do not keep node information unless specifically asked for
@@ -582,6 +611,7 @@ class OSM:
             custom_filter,
             self.bounding_box,
             keep_metadata=self.keep_metadata,
+            relation_member_ways=self._relation_member_ways,
         )
 
         # Do not keep node information unless specifically asked for
@@ -686,6 +716,7 @@ class OSM:
             name,
             self.bounding_box,
             keep_metadata=self.keep_metadata,
+            relation_member_ways=self._relation_member_ways,
         )
 
         # Do not keep node information unless specifically asked for
@@ -811,6 +842,7 @@ class OSM:
             custom_filter,
             self.bounding_box,
             keep_metadata=self.keep_metadata,
+            relation_member_ways=self._relation_member_ways,
         )
 
         # Do not keep node information unless specifically asked for
@@ -936,6 +968,7 @@ class OSM:
             keep_relations,
             self.bounding_box,
             keep_metadata=self.keep_metadata,
+            relation_member_ways=self._relation_member_ways,
         )
 
         # Do not keep node information unless specifically asked for

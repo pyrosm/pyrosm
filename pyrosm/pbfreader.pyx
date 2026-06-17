@@ -331,6 +331,7 @@ cdef parse_ways(
         string_table,
         node_lookup,
         unix_time_filter,
+        way_id_filter=None,
 ):
     cdef long long id
     cdef int version, i, timestamp, n=len(data)
@@ -341,6 +342,11 @@ cdef parse_ways(
         if unix_time_filter is not None:
             # Filter way versions according the time filter
             if way.info.timestamp > unix_time_filter:
+                continue
+        if way_id_filter is not None:
+            # Completeness pass: keep ways by id (relation member completion),
+            # regardless of whether their nodes fall inside the bounding box.
+            if way.id not in way_id_filter:
                 continue
         nodes = parse_nodeids_from_ref_deltas(way.refs)
         if node_lookup is not None:
@@ -455,10 +461,11 @@ cpdef parse_osm_data(
         exclude_relations,
         unix_time_filter,
         bint keep_metadata=True,
+        bint complete_relations=False,
 ):
     _warn_if_slow_protobuf_backend()
     return _parse_osm_data(filepath, bounding_box, exclude_relations,
-                           unix_time_filter, keep_metadata)
+                           unix_time_filter, keep_metadata, complete_relations)
 
 
 cdef _parse_osm_data(
@@ -467,6 +474,7 @@ cdef _parse_osm_data(
         exclude_relations,
         unix_time_filter,
         bint keep_metadata=True,
+        bint complete_relations=False,
 ):
     all_ways = []
     all_nodes = []
@@ -514,7 +522,7 @@ cdef _parse_osm_data(
             UserWarning,
             stacklevel=2,
         )
-        return {}, [], {}, {}
+        return {}, [], {}, {}, []
 
     # Keep the closest record to the timestamp if filter is used
     if unix_time_filter is not None:
@@ -537,6 +545,59 @@ cdef _parse_osm_data(
     all_nodes = {col: nodes_df[col].values for col in nodes_df.columns}
     all_relations = {col: relations_df[col].values for col in relations_df.columns}
 
+    # Complete the member ways of relations that straddle the bounding box (the
+    # relation analogue of the #236 node completion below). A relation is assembled
+    # from only the member ways present in the box, so a relation straddling the box
+    # gets a partial geometry. When `complete_relations` is on, fetch the missing
+    # member ways (id-filtered second pass, no bbox filter) of relations that already
+    # have >=1 member way in the box -- i.e. relations that appear in results -- and
+    # keep them in a SEPARATE set, never appended to `all_ways`. That keeps out-of-box
+    # member ways out of normal way-feature results (e.g. networks); they are routed
+    # only into relation assembly (see data_manager.get_way_arrays). Their missing node
+    # coordinates are picked up by the #236 pass below. bbox-only and opt-in.
+    completed_relation_ways = []
+    if complete_relations and bounding_box is not None and len(all_ways) > 0:
+        present_way_ids = set()
+        for way in all_ways:
+            present_way_ids.add(way["id"])
+
+        missing_way_ids = set()
+        for members in all_relations.get("members", []):
+            member_ids = members["member_id"]
+            member_types = members["member_type"]
+            # Only way members can be completed (node/relation members are not ways).
+            way_member_ids = [
+                int(member_ids[j])
+                for j in range(len(member_ids))
+                if member_types[j] == b"way"
+            ]
+            # Complete only relations that already have a member way in the box; a
+            # relation entirely outside the box does not appear in results, and one
+            # fully inside has no missing members.
+            if not any(wid in present_way_ids for wid in way_member_ids):
+                continue
+            for wid in way_member_ids:
+                if wid not in present_way_ids:
+                    missing_way_ids.add(wid)
+
+        if len(missing_way_ids) > 0:
+            for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath):
+                for pgroup in pblock.primitivegroup:
+                    if len(pgroup.ways) > 0:
+                        completed_relation_ways += parse_ways(
+                            pgroup.ways, str_table, None, unix_time_filter,
+                            missing_way_ids,
+                        )
+            completed_relation_ways = explode_way_tags(completed_relation_ways)
+            if unix_time_filter is not None and len(completed_relation_ways) > 0:
+                # Mirror the OSH latest-version selection applied to all_ways above.
+                cw_df = pd.DataFrame(completed_relation_ways)
+                cw_df = cw_df.loc[cw_df["visible"] == True].copy()
+                cw_df = get_latest_version(cw_df)
+                completed_relation_ways = clean_empty_values_from_ways(
+                    cw_df.to_dict(orient="records")
+                )
+
     # Complete the geometries of ways that straddle the bounding box (#236). A way is
     # kept when >=1 of its nodes is inside the box, but the box-filtered node parse
     # dropped the vertices that lie just outside it, so its polygon/line would otherwise
@@ -549,7 +610,9 @@ cdef _parse_osm_data(
     if bounding_box is not None and len(all_ways) > 0:
         present_ids = set(nodes_df["id"].tolist())
         missing_ids = set()
-        for way in all_ways:
+        # Completed relation member ways also need their out-of-box vertices fetched
+        # into the coordinate store so the relation geometries are complete.
+        for way in all_ways + completed_relation_ways:
             for node_id in way["nodes"]:
                 if node_id not in present_ids:
                     missing_ids.add(node_id)
@@ -586,4 +649,5 @@ cdef _parse_osm_data(
     # replacing the per-node dict-of-dicts; geometry/graph code reads through it.
     node_coordinates_lookup = NodeLocations(coords_df)
 
-    return all_nodes, all_ways, all_relations, node_coordinates_lookup
+    return (all_nodes, all_ways, all_relations, node_coordinates_lookup,
+            completed_relation_ways)

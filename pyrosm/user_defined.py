@@ -17,6 +17,7 @@ def get_user_defined_data(
     keep_relations,
     bounding_box,
     keep_metadata=True,
+    relation_member_ways=None,
 ):
     if not keep_nodes:
         nodes = None
@@ -43,6 +44,7 @@ def get_user_defined_data(
         filter_type=filter_type,
         osm_keys=osm_keys,
         keep_metadata=keep_metadata,
+        relation_member_ways=relation_member_ways,
     )
 
     # If there weren't any data, return empty GeoDataFrame
