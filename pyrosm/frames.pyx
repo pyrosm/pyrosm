@@ -123,9 +123,16 @@ cpdef prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_c
                                       tags_as_columns,
                                       keep_metadata)
 
-        relation_gdf = gpd.GeoDataFrame(relations, crs="epsg:4326").assign(
-            osm_type="relation"
-        )
+        # prepare_relations returns an empty GeoDataFrame when no relation could
+        # be assembled into a geometry (e.g. every boundary relation is incomplete
+        # and was dropped). It then has no geometry column, so building a
+        # GeoDataFrame(..., crs=...) from it would raise -- return empty instead.
+        if "geometry" not in relations:
+            relation_gdf = gpd.GeoDataFrame()
+        else:
+            relation_gdf = gpd.GeoDataFrame(relations, crs="epsg:4326").assign(
+                osm_type="relation"
+            )
 
     else:
         relation_gdf = gpd.GeoDataFrame()

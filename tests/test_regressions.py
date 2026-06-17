@@ -970,7 +970,9 @@ def test_tags_to_keep_applies_to_all_feature_methods():
     are dropped, and rows/geometry are unchanged."""
     from pyrosm import OSM, get_data
 
-    osm = OSM(get_data("helsinki_pbf"))
+    # The region extract is used because the small helsinki_pbf has only
+    # incomplete boundaries (all dropped, #154), leaving get_boundaries empty.
+    osm = OSM(get_data("helsinki_region_pbf"))
     cases = [
         (osm.get_network, {}, "highway"),
         (osm.get_landuse, {}, "landuse"),
@@ -1130,3 +1132,16 @@ def test_way_tag_columns_built_only_when_nonempty():
                 assert (
                     gdf[c].notna().any()
                 ), f"{feature}: tag column {c!r} is entirely empty"
+
+
+def test_incomplete_boundaries_dropped_not_force_closed():
+    """#154 — administrative boundaries whose member ways run off the PBF extent
+    cannot form a closed ring. They are dropped (matching how osmium and GDAL skip
+    areas they cannot assemble), not force-closed into polygons with a spurious
+    straight edge bridging the gap (the stray lines that slashed across
+    get_boundaries() plots). Every boundary in the bundled Helsinki extract crosses
+    its edge, so none can be assembled and get_boundaries returns nothing; pre-fix
+    it returned 8 force-closed stray polygons."""
+    from pyrosm import OSM, get_data
+
+    assert OSM(get_data("helsinki_pbf")).get_boundaries() is None

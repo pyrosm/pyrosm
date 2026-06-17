@@ -14,6 +14,12 @@ def helsinki_pbf():
     return pbf_path
 
 
+@pytest.fixture
+def helsinki_region_pbf():
+    pbf_path = get_data("helsinki_region_pbf")
+    return pbf_path
+
+
 def test_lazy_public_api():
     import pyrosm
 
@@ -80,11 +86,13 @@ def test_custom(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
 
-def test_boundaries(helsinki_pbf):
+def test_boundaries(helsinki_region_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
 
-    osm = OSM(helsinki_pbf)
+    # helsinki_pbf has only incomplete boundaries (all dropped, #154); the region
+    # extract contains complete ones.
+    osm = OSM(helsinki_region_pbf)
     gdf = osm.get_boundaries()
     assert isinstance(gdf, GeoDataFrame)
 
@@ -153,7 +161,9 @@ def test_invalid_osm_pbf_raises_meaningful_error(tmp_path):
     #    (reproduces the cryptic "Error -5 while decompressing data" from #156).
     header = BlobHeader(type="OSMHeader", datasize=20).SerializeToString()
     bad_zlib = tmp_path / "bad_zlib.pbf"
-    bad_zlib.write_bytes(struct.pack("!L", len(header)) + header + b"notzlibdata000000000")
+    bad_zlib.write_bytes(
+        struct.pack("!L", len(header)) + header + b"notzlibdata000000000"
+    )
     with pytest.raises(InvalidOSMFileError):
         OSM(bad_zlib)
 
