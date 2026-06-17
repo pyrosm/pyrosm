@@ -12,6 +12,8 @@ def get_building_data(
     custom_filter,
     bounding_box,
     keep_metadata=True,
+    relation_member_ways=None,
+    complete_relations=False,
 ):
     # If custom_filter has not been defined, initialize with default
     if custom_filter is None:
@@ -34,6 +36,7 @@ def get_building_data(
         filter_type="keep",
         osm_keys=None,
         keep_metadata=keep_metadata,
+        relation_member_ways=relation_member_ways,
     )
 
     # If there weren't any data, return empty GeoDataFrame
@@ -55,5 +58,6 @@ def get_building_data(
         tags_as_columns,
         bounding_box,
         keep_metadata=keep_metadata,
+        complete_relations=complete_relations,
     )
     return gdf

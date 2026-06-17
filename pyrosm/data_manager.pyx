@@ -68,7 +68,7 @@ cdef separate_relation_ways(way_records, relation_way_ids):
             normal_ways.append(way)
     return normal_ways, relation_ways
 
-cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, data_filter, filter_type):
+cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, data_filter, filter_type, relation_member_ways=None):
     # Get all ways including the ones associated with relations
     ways = filter_osm_records(way_records,
                       data_filter,
@@ -76,15 +76,23 @@ cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, da
                       relation_way_ids,
                       filter_type)
 
+    # Completed member ways fetched outside the bounding box (complete_relations).
+    # They are kept out of way_records so they never leak into normal way features;
+    # route only those belonging to THIS layer's relations into relation assembly.
+    extra_relation_ways = []
+    if relation_member_ways and relation_way_ids is not None:
+        _, extra_relation_ways = separate_relation_ways(relation_member_ways, relation_way_ids)
+
     # If there is not data in the area, do not continue
     # (return None for ways and relations)
-    if len(ways) == 0:
+    if len(ways) == 0 and len(extra_relation_ways) == 0:
         return None, None
 
     relation_arrays = None
     if relation_way_ids is not None:
         # Separate ways that are part of a relation
         ways, relation_ways = separate_relation_ways(ways, relation_way_ids)
+        relation_ways = relation_ways + extra_relation_ways
         if len(relation_ways) > 0:
             relation_ways = convert_way_records_to_lists(relation_ways, tags_as_columns)
             relation_arrays = convert_to_arrays_and_drop_empty(relation_ways)
@@ -98,10 +106,10 @@ cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, da
 
     return way_arrays, relation_arrays
 
-cpdef _get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, bint keep_metadata=True):
-    return get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, keep_metadata)
+cpdef _get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, bint keep_metadata=True, relation_member_ways=None):
+    return get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, keep_metadata, relation_member_ways)
 
-cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, bint keep_metadata=True):
+cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, bint keep_metadata=True, relation_member_ways=None):
 
     # Structural columns that must always be kept; element metadata (timestamp,
     # version) is materialized only when keep_metadata is True. Build a new list
@@ -137,7 +145,8 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
                                          osm_keys,
                                          tags_as_columns,
                                          data_filter,
-                                         filter_type)
+                                         filter_type,
+                                         relation_member_ways)
 
     # If relation ways could not be parsed, also relations should be returned as None
     if relation_ways is None:
@@ -164,7 +173,7 @@ cdef get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter, filter_t
     filtered_nodes.update(tags)
     return filtered_nodes
 
-cdef _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys, bint keep_metadata=True):
+cdef _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys, bint keep_metadata=True, relation_member_ways=None):
     if osm_keys is None:
         # Convert filter to appropriate form and parse keys
         data_filter, osm_keys = get_data_filter_and_osm_keys(data_filter)
@@ -178,8 +187,8 @@ cdef _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_fi
         node_arrays = None
 
     # Parse ways and relations
-    ways, relation_ways, filtered_relations = get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, keep_metadata)
+    ways, relation_ways, filtered_relations = get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, keep_metadata, relation_member_ways)
     return node_arrays, ways, relation_ways, filtered_relations
 
-cpdef get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys=None, bint keep_metadata=True):
-    return _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys, keep_metadata)
+cpdef get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys=None, bint keep_metadata=True, relation_member_ways=None):
+    return _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys, keep_metadata, relation_member_ways)
