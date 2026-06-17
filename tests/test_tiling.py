@@ -309,8 +309,8 @@ def test_layer_relation_filters_reused_from_feature_modules():
     from pyrosm.natural import natural_relation_filter
     from pyrosm.pois import poi_relation_filter
 
+    # Defaults.
     assert building_relation_filter(None) == {"building": [True]}
-    assert "building" in building_relation_filter({"amenity": True})
     assert landuse_relation_filter(None) == {"landuse": [True]}
     assert natural_relation_filter(None) == {"natural": [True]}
     assert boundary_relation_filter(None, "administrative") == {
@@ -322,6 +322,30 @@ def test_layer_relation_filters_reused_from_feature_modules():
         "shop": [True],
         "tourism": [True],
     }
+
+    # A user custom_filter lacking the layer's key gets it added (and is validated).
+    assert building_relation_filter({"amenity": True}) == {
+        "amenity": [True],
+        "building": [True],
+    }
+    assert landuse_relation_filter({"amenity": True}) == {
+        "amenity": [True],
+        "landuse": [True],
+    }
+    assert natural_relation_filter({"amenity": True}) == {
+        "amenity": [True],
+        "natural": [True],
+    }
+    assert boundary_relation_filter({"admin_level": ["8"]}, "administrative") == {
+        "admin_level": ["8"],
+        "boundary": [True],
+    }
+    assert poi_relation_filter({"shop": ["bakery"]}) == {"shop": ["bakery"]}
+
+    # A user custom_filter that already has the layer's key is left as-is.
+    assert building_relation_filter({"building": ["house"]}) == {"building": ["house"]}
+    assert landuse_relation_filter({"landuse": ["forest"]}) == {"landuse": ["forest"]}
+    assert natural_relation_filter({"natural": ["wood"]}) == {"natural": ["wood"]}
 
 
 def test_read_tiled_complete_does_not_overfetch_non_layer_relations(
@@ -384,6 +408,17 @@ def test_read_tiled_custom_criteria_keep_relations_false_skips_completion(
         keep_relations=False,
     )
     assert calls["n"] == 0
+    if gdf is not None:
+        assert (gdf["osm_type"] == "relation").sum() == 0
+
+
+def test_read_tiled_complete_with_no_relation_definitions(test_pbf, monkeypatch):
+    # When the file has no relation definitions, completion finds nothing to rebuild
+    # and the result carries no relation rows.
+    import pyrosm.tiling as tiling
+
+    monkeypatch.setattr(tiling, "parse_relations_only", lambda *a, **k: {})
+    gdf = read_tiled(test_pbf, "buildings", tile_size=1.0)
     if gdf is not None:
         assert (gdf["osm_type"] == "relation").sum() == 0
 

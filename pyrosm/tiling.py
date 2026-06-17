@@ -235,9 +235,8 @@ def _layer_relation_filter_spec(layer, layer_kwargs):
     osm_keys = layer_kwargs.get("osm_keys_to_keep")
     if isinstance(osm_keys, str):
         osm_keys = [osm_keys]
-    filter_type = layer_kwargs.get("filter_type", "keep")
-    if isinstance(filter_type, str):
-        filter_type = filter_type.lower()
+    # filter_type has already been validated as a string by the per-tile read.
+    filter_type = layer_kwargs.get("filter_type", "keep").lower()
     return validate_custom_filter(custom_filter), osm_keys, filter_type
 
 
@@ -506,33 +505,30 @@ def read_tiled(
     relation_gdf = None
     if completing and extent_ways:
         candidates, member_ids = _candidate_relations(all_relations, extent_ways)
-        if candidates is not None:
-            # Cheap pass: member ways of every candidate relation (way records only,
-            # no coordinates). Then narrow to the relations the requested layer keeps,
-            # so the expensive node fetch never touches other relation types' members.
-            member_ways = fetch_member_ways(
-                filepath, member_ids, unix_time, keep_metadata
+        # Cheap pass: member ways of every candidate relation (way records only, no
+        # coordinates). Then narrow to the relations the requested layer keeps, so the
+        # expensive node fetch never touches other relation types' members.
+        member_ways = fetch_member_ways(filepath, member_ids, unix_time, keep_metadata)
+        layer_relations, layer_member_ways = _filter_relations_to_layer(
+            layer, candidates, member_ways, layer_kwargs
+        )
+        if layer_relations is not None and layer_member_ways:
+            node_ids = set()
+            for way in layer_member_ways:
+                node_ids.update(way["nodes"])
+            member_coords = fetch_member_nodes(
+                filepath, node_ids, unix_time, keep_metadata
             )
-            layer_relations, layer_member_ways = _filter_relations_to_layer(
-                layer, candidates, member_ways, layer_kwargs
+            relation_gdf = _read_relations_from_members(
+                filepath,
+                method,
+                layer_relations,
+                layer_member_ways,
+                member_coords,
+                keep_metadata,
+                unix_time,
+                layer_kwargs,
             )
-            if layer_relations is not None and layer_member_ways:
-                node_ids = set()
-                for way in layer_member_ways:
-                    node_ids.update(way["nodes"])
-                member_coords = fetch_member_nodes(
-                    filepath, node_ids, unix_time, keep_metadata
-                )
-                relation_gdf = _read_relations_from_members(
-                    filepath,
-                    method,
-                    layer_relations,
-                    layer_member_ways,
-                    member_coords,
-                    keep_metadata,
-                    unix_time,
-                    layer_kwargs,
-                )
 
     parts = [p for p in (bulk, relation_gdf) if p is not None and len(p) > 0]
     if not parts:
