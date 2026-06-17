@@ -301,7 +301,10 @@ def _read_relations_from_members(
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
-            message=r".*(did not contain any OSM nodes|[Cc]ould not find any).*",
+            message=(
+                r".*(did not contain any OSM nodes|[Cc]ould not find any|"
+                r"extend beyond the bounding box).*"
+            ),
         )
         gdf = getattr(osm, method)(**completion_kwargs)
 
@@ -451,12 +454,17 @@ def read_tiled(
         # copy per tile so the caller's arguments are never mutated.
         tile_kwargs = copy.deepcopy(layer_kwargs)
         with warnings.catch_warnings():
-            # Empty tiles are expected when the grid (or an AOI) covers areas with
-            # no data; their "no nodes" / "could not find any" warnings are not
-            # actionable here.
+            # Suppress per-tile bbox-read warnings that are not actionable here:
+            # empty tiles ("no nodes" / "could not find any") when the grid covers
+            # areas with no data, and the incomplete-relation warning ("extend beyond
+            # the bounding box") -- relations are handled once per call by `relations`,
+            # not by each tile's read.
             warnings.filterwarnings(
                 "ignore",
-                message=r".*(did not contain any OSM nodes|[Cc]ould not find any).*",
+                message=(
+                    r".*(did not contain any OSM nodes|[Cc]ould not find any|"
+                    r"extend beyond the bounding box).*"
+                ),
             )
             gdf = getattr(osm, method)(**tile_kwargs)
 
