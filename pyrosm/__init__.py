@@ -10,11 +10,13 @@ except PackageNotFoundError:  # running from a source tree without an install
 # need protobuf + numpy) do not pay that cost when importing a pyrosm submodule.
 __all__ = [
     "OSM",
+    "generate_tiles",
     "geocode",
     "get_data",
     "get_data_by_bbox",
     "get_data_by_geocoding",
     "get_path",
+    "read_tiled",
 ]
 
 
@@ -35,4 +37,8 @@ def __getattr__(name):
         from pyrosm.data import geocode, get_data_by_geocoding
 
         return geocode if name == "geocode" else get_data_by_geocoding
+    if name in ("read_tiled", "generate_tiles"):
+        from pyrosm.tiling import read_tiled, generate_tiles
+
+        return read_tiled if name == "read_tiled" else generate_tiles
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
