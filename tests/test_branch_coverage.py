@@ -20,6 +20,11 @@ def helsinki_pbf():
     return get_data("helsinki_pbf")
 
 
+@pytest.fixture
+def helsinki_region_pbf():
+    return get_data("helsinki_region_pbf")
+
+
 # --- natural.py ---------------------------------------------------------------
 
 
@@ -49,11 +54,12 @@ def test_get_boundaries_returns_none_for_empty_area(helsinki_pbf):
     assert gdf is None
 
 
-def test_get_boundaries_filter_by_name(helsinki_pbf):
+def test_get_boundaries_filter_by_name(helsinki_region_pbf):
     """Filtering boundaries by name returns only the matching boundary
     (boundary.py name-filter branch). Helsinki has named neighbourhood
-    boundaries (e.g. 'Kallio')."""
-    osm = OSM(helsinki_pbf)
+    boundaries (e.g. 'Kallio'). The region extract is used because helsinki_pbf's
+    boundaries are all incomplete and dropped (#154)."""
+    osm = OSM(helsinki_region_pbf)
     all_boundaries = osm.get_boundaries()
     assert "Kallio" in set(all_boundaries["name"].dropna())
 

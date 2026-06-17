@@ -138,11 +138,14 @@ cdef get_relations(relations, relation_ways, node_coordinates, bint keep_metadat
         if ways is None:
             continue
 
+        # Boundaries are dropped when their outer ways do not close (#154); other
+        # relation types keep the existing geometry handling.
         geometry = create_relation_geometry(node_coordinates,
                                             ways,
                                             member_roles,
                                             force_linestring,
-                                            make_multipolygon
+                                            make_multipolygon,
+                                            "boundary" in tag_keys
                                             )
         if geometry is None:
             continue

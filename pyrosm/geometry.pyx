@@ -144,9 +144,19 @@ cdef _create_point_geometries(xarray, yarray):
         else None for geom in geometries
     ]
 
+cdef bint _is_closed_ring(coords):
+    # A closed ring needs at least 4 positions and identical first/last points.
+    # OSM closed ways repeat the same node id at both ends, so their coordinates
+    # are exactly equal and a plain comparison is sufficient.
+    if coords.shape[0] < 4:
+        return False
+    return coords[0, 0] == coords[-1, 0] and coords[0, 1] == coords[-1, 1]
+
+
 cdef create_relation_geometry(node_coordinates, ways,
                               member_roles, force_linestring,
-                              make_multipolygon):
+                              make_multipolygon,
+                              bint drop_if_open=False):
     cdef int i, m_cnt
     cdef str role
     # Get coordinates for relation
@@ -225,10 +235,15 @@ cdef create_relation_geometry(node_coordinates, ways,
 
     if len(shell) > 1:
         if not make_multipolygon:
-            ring = create_linear_ring(
-                get_coordinates(
-                    line_merge(multilinestrings(shell))
-                ))
+            coords = get_coordinates(line_merge(multilinestrings(shell)))
+            # An administrative boundary whose member ways run off the PBF extent
+            # cannot form a closed ring. Rather than force-close it with a spurious
+            # straight edge across the map (#154), drop it -- matching how osmium
+            # and GDAL skip areas they cannot assemble. Scoped to boundaries
+            # (drop_if_open); other relations keep the existing behaviour.
+            if drop_if_open and not _is_closed_ring(coords):
+                return None
+            ring = create_linear_ring(coords)
             if ring is None:
                 return None
             geom = polygons(ring, holes)
@@ -251,7 +266,12 @@ cdef create_relation_geometry(node_coordinates, ways,
                 geom = polygons(rings, holes)
 
     else:
-        ring = create_linear_ring(get_coordinates(shell))
+        coords = get_coordinates(shell)
+        # A single, non-closed boundary member way cannot form a polygon; drop it
+        # rather than force-closing it into a ring with a spurious edge (#154).
+        if drop_if_open and not _is_closed_ring(coords):
+            return None
+        ring = create_linear_ring(coords)
         if ring is None:
             return None
 

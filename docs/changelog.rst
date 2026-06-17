@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- FIXED: ``get_boundaries()`` no longer force-closes incomplete administrative boundaries into polygons. A boundary relation whose member ways run off the PBF extent cannot form a closed ring, and was previously closed with a spurious straight edge bridging the gap (the stray lines crossing boundary plots); such incomplete boundaries are now dropped, matching how osmium and GDAL skip areas they cannot assemble (`#154 <https://github.com/pyrosm/pyrosm/issues/154>`__)
+
 v0.9.0 (Jun 16, 2026)
 ---------------------
 

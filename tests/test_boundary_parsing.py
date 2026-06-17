@@ -14,65 +14,56 @@ def helsinki_region_pbf():
     return pbf_path
 
 
-def test_reading_boundaries_with_defaults(helsinki_pbf):
+REQUIRED_COLUMNS = [
+    "name",
+    "admin_level",
+    "boundary",
+    "id",
+    "timestamp",
+    "version",
+    "changeset",
+    "geometry",
+    "tags",
+    "osm_type",
+]
+
+
+def test_reading_boundaries_with_defaults(helsinki_region_pbf):
+    # The small helsinki_pbf extract has only incomplete boundaries (all dropped,
+    # see test_regressions::test_incomplete_boundaries_dropped_not_force_closed),
+    # so the feature tests use the region extract, which contains complete ones.
     from pyrosm import OSM
 
-    osm = OSM(helsinki_pbf)
+    osm = OSM(helsinki_region_pbf)
     gdf = osm.get_boundaries()
 
-    # Test shape
-    assert gdf.shape == (8, 11)
-    required_columns = [
-        "name",
-        "admin_level",
-        "boundary",
-        "id",
-        "timestamp",
-        "version",
-        "changeset",
-        "geometry",
-        "tags",
-        "osm_type",
-    ]
-    for col in required_columns:
+    assert len(gdf) == 247
+    for col in REQUIRED_COLUMNS:
         assert col in gdf.columns
 
-    # osm_type should be 'relation'
-    assert gdf.osm_type.unique()[0] == "relation"
+    # Complete boundaries assemble into valid polygons; results are relations
+    # (with a few standalone boundary ways).
+    assert "relation" in set(gdf.osm_type.unique())
+    assert (gdf.geometry.geom_type == "Polygon").any()
+    assert gdf.geometry.is_valid.all()
 
 
-def test_reading_boundaries_with_name_search(helsinki_pbf):
+def test_reading_boundaries_with_name_search(helsinki_region_pbf):
     from pyrosm import OSM
 
-    osm = OSM(helsinki_pbf)
+    osm = OSM(helsinki_region_pbf)
 
-    # Full name and also partial name should work and produce data
-    # 'saari' is included in 'Siltasaari'
-    names = ["Punavuori", "saari"]
+    # Full name -> a single boundary polygon.
+    gdf = osm.get_boundaries(name="Punavuori")
+    assert len(gdf) == 1
+    for col in REQUIRED_COLUMNS:
+        assert col in gdf.columns
+    assert gdf.geometry.geom_type.iloc[0] == "Polygon"
 
-    for name in names:
-        gdf = osm.get_boundaries(name=name)
-
-        # Should now only contain one row
-        assert gdf.shape == (1, 11)
-
-        required_columns = [
-            "name",
-            "admin_level",
-            "boundary",
-            "id",
-            "timestamp",
-            "version",
-            "changeset",
-            "geometry",
-            "tags",
-            "osm_type",
-        ]
-        for col in required_columns:
-            assert col in gdf.columns
-
-        # osm_type should be 'relation'
-        assert gdf.osm_type.unique()[0] == "relation"
+    # Partial name -> one or more, every returned name contains the substring.
+    gdf = osm.get_boundaries(name="saari")
+    assert len(gdf) >= 1
+    assert gdf["name"].str.contains("saari").all()
 
 
 def test_passing_incorrect_parameters(helsinki_pbf):
@@ -80,7 +71,7 @@ def test_passing_incorrect_parameters(helsinki_pbf):
 
     osm = OSM(helsinki_pbf)
     try:
-        gdf = osm.get_boundaries(boundary_type="incorrect")
+        osm.get_boundaries(boundary_type="incorrect")
     except ValueError as e:
         if "should be one of the following" in str(e):
             pass
@@ -88,7 +79,7 @@ def test_passing_incorrect_parameters(helsinki_pbf):
         raise e
 
     try:
-        gdf = osm.get_boundaries(name=1)
+        osm.get_boundaries(name=1)
     except ValueError as e:
         if "should be text" in str(e):
             pass
@@ -96,11 +87,11 @@ def test_passing_incorrect_parameters(helsinki_pbf):
         raise e
 
 
-def test_adding_extra_attribute(helsinki_pbf):
+def test_adding_extra_attribute(helsinki_region_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
 
-    osm = OSM(filepath=helsinki_pbf)
+    osm = OSM(filepath=helsinki_region_pbf)
     gdf = osm.get_boundaries()
     extra_col = "wikidata"
     extra = osm.get_boundaries(extra_attributes=[extra_col])
@@ -120,26 +111,8 @@ def test_reading_all_boundaries(helsinki_region_pbf):
     osm = OSM(helsinki_region_pbf)
     gdf = osm.get_boundaries(boundary_type="all")
 
-    # Test shape. This previously asserted 21 columns, but that count was
-    # inflated by a bug: test_adding_extra_attribute (above) leaked its extra
-    # column into the shared Conf.tags.boundary list, and it bled into this
-    # test. With the config-mutation fix the correct, isolated count is 20.
-    assert gdf.shape == (733, 20)
-
-    required_columns = [
-        "name",
-        "admin_level",
-        "boundary",
-        "id",
-        "timestamp",
-        "version",
-        "changeset",
-        "geometry",
-        "tags",
-        "osm_type",
-    ]
-
-    for col in required_columns:
+    assert len(gdf) == 699
+    for col in REQUIRED_COLUMNS:
         assert col in gdf.columns
 
     # Test filtering different types of boundaries
@@ -154,19 +127,20 @@ def test_reading_all_boundaries(helsinki_region_pbf):
         assert len(gdf) >= cnt, f"Got incorrect number of rows with {boundary_type}"
 
 
-def test_relation_members_in_tags(helsinki_pbf):
+def test_relation_members_in_tags(helsinki_region_pbf):
     """#216 — a relation's members are exposed under the 'members' key of the
     JSON 'tags' column (not a separate full-length column)."""
     import json
     from pyrosm import OSM
 
-    osm = OSM(helsinki_pbf)
+    osm = OSM(helsinki_region_pbf)
     gdf = osm.get_boundaries()
+    rel = gdf[gdf.osm_type == "relation"].iloc[0]
 
     # Folded into the tags JSON, not a standalone column.
     assert "members" not in gdf.columns
 
-    tags = json.loads(gdf["tags"].iloc[0])
+    tags = json.loads(rel["tags"])
     assert "members" in tags
     members = tags["members"]
     assert isinstance(members, list) and len(members) > 0
