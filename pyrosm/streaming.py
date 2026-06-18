@@ -8,7 +8,11 @@ coordinates the kept ways reference and assembles the geometries vectorised. Pea
 memory is bounded by the working set rather than the whole file.
 
 Phase 1 covers way-based buildings; later phases add the other layers, relations, tag
-columns, history and the disk-backed coordinate join.
+columns, history and the disk-backed coordinate join. Phase 2 adds an optional ``output``
+path: when given, the buildings are assembled in chunks and appended to a single
+GeoParquet file (one row group per chunk) instead of one in-memory frame, so the output
+is never fully materialised. ``pyarrow`` is an optional dependency, required only for
+``output``.
 """
 
 import os
@@ -29,6 +33,10 @@ _SMALL_FILE_BLOBS = 16
 
 _BUILDING = b"building"
 _MEMBER_WAY = 1  # Relation.MemberType WAY (proto/osmformat.proto)
+
+# When streaming to GeoParquet, assemble and write this many ways per chunk so the
+# output frame is never fully materialised.
+_OUTPUT_CHUNK_SIZE = 250_000
 
 # Per-worker globals, set by the pool initializer (or directly for the in-process path).
 _FILEPATH = None
@@ -231,17 +239,12 @@ def _node_lookup(shard_paths, needed):
     return NodeLocations(coords)
 
 
-def _assemble_buildings(shard_paths):
-    """Assemble the building ways into a GeoDataFrame using pyrosm's own geometry
-    pipeline (missing-node handling, polygon/linestring typing, dropna, orientation),
-    so the result matches the in-memory reader exactly."""
-    from pyrosm.frames import prepare_geodataframe
-
+def _collect_kept_ways(shard_paths):
+    """The building ways to output: ids, values and node-ref arrays, after dropping the
+    ones that belong to a building relation (pyrosm assigns those to the relation)."""
     way_id, value, ref_slices = _collect_building_ways(shard_paths)
     if len(way_id) == 0:
         return None
-
-    # Drop ways that belong to a building relation (pyrosm assigns them to the relation).
     relation_ways = np.unique(
         np.concatenate(
             [np.load(p, allow_pickle=True)["relation_ways"] for p in shard_paths]
@@ -254,11 +257,22 @@ def _assemble_buildings(shard_paths):
         ref_slices = [r for r, k in zip(ref_slices, keep) if k]
         if len(way_id) == 0:
             return None
+    return way_id, value, ref_slices
 
-    node_coordinates = _node_lookup(shard_paths, np.unique(np.concatenate(ref_slices)))
+
+def _ways_dict(way_id, value, ref_slices):
+    """Pack way arrays into the ``way_elements`` dict pyrosm's assembly expects."""
     nodes = np.empty(len(ref_slices), dtype=object)
     nodes[:] = ref_slices
-    ways = {"id": way_id, "nodes": nodes, "building": value}
+    return {"id": way_id, "nodes": nodes, "building": value}
+
+
+def _assemble_chunk(node_coordinates, ways):
+    """Build one GeoDataFrame from a way dict using pyrosm's own geometry pipeline
+    (missing-node handling, polygon/linestring typing, dropna, orientation), so the
+    result matches the in-memory reader exactly."""
+    from pyrosm.frames import prepare_geodataframe
+
     gdf = prepare_geodataframe(
         None,
         node_coordinates,
@@ -274,13 +288,79 @@ def _assemble_buildings(shard_paths):
     return gdf
 
 
-def get_buildings(filepath, workers=None):
-    """Read building geometries from ``filepath`` and return a GeoDataFrame.
+def _assemble_buildings(shard_paths):
+    """Assemble all building ways into a single in-memory GeoDataFrame."""
+    kept = _collect_kept_ways(shard_paths)
+    if kept is None:
+        return None
+    way_id, value, ref_slices = kept
+    node_coordinates = _node_lookup(shard_paths, np.unique(np.concatenate(ref_slices)))
+    return _assemble_chunk(node_coordinates, _ways_dict(way_id, value, ref_slices))
 
-    Phase 1: way-based buildings only (relations come later). ``workers`` defaults to
+
+def _require_pyarrow():
+    """``output`` writes GeoParquet, which needs the optional ``pyarrow`` dependency."""
+    try:
+        import pyarrow.parquet  # noqa: F401
+    except ImportError as e:
+        raise ImportError(
+            "Writing to GeoParquet (output=...) requires the optional 'pyarrow' "
+            "dependency. Install it with `pip install pyarrow`."
+        ) from e
+
+
+def _stream_buildings_to_parquet(shard_paths, output, chunk_size):
+    """Assemble the building ways in chunks and append each chunk as a row group to a
+    single GeoParquet at ``output``, so the output frame is never fully materialised.
+    Every chunk is pinned to the first chunk's schema (its per-chunk bbox / geometry
+    types aside, the schema is identical) so the file is valid GeoParquet. Returns the
+    path, or ``None`` if there were no buildings to write."""
+    import pyarrow.parquet as pq
+    from geopandas.io.arrow import _geopandas_to_arrow
+
+    kept = _collect_kept_ways(shard_paths)
+    if kept is None:
+        return None
+    way_id, value, ref_slices = kept
+    node_coordinates = _node_lookup(shard_paths, np.unique(np.concatenate(ref_slices)))
+
+    writer = None
+    schema = None
+    try:
+        for start in range(0, len(way_id), chunk_size):
+            sl = slice(start, start + chunk_size)
+            ways = _ways_dict(way_id[sl], value[sl], ref_slices[sl])
+            gdf = _assemble_chunk(node_coordinates, ways)
+            if gdf is None or len(gdf) == 0:
+                continue
+            table = _geopandas_to_arrow(gdf, index=False, geometry_encoding="WKB")
+            if writer is None:
+                schema = table.schema
+                writer = pq.ParquetWriter(output, schema)
+            else:
+                table = table.replace_schema_metadata(schema.metadata)
+            writer.write_table(table)
+    finally:
+        if writer is not None:
+            writer.close()
+    return output if writer is not None else None
+
+
+def get_buildings(filepath, workers=None, output=None):
+    """Read building geometries from ``filepath``.
+
+    With ``output=None`` (the default) returns an in-memory GeoDataFrame. With
+    ``output`` set to a path, the buildings are streamed to a GeoParquet file in chunks
+    (never fully materialised) and the path is returned; this needs the optional
+    ``pyarrow`` dependency.
+
+    Phase 1/2: way-based buildings only (relations come later). ``workers`` defaults to
     one for small files (no multiprocessing overhead) and otherwise to a worker per
     CPU, bounded by the blob count.
     """
+    if output is not None:
+        _require_pyarrow()
+
     data_blobs = [
         (offset, size)
         for (blob_type, offset, size) in _index_blobs(filepath)
@@ -292,6 +372,8 @@ def get_buildings(filepath, workers=None):
     shard_dir = tempfile.mkdtemp(prefix="pyrosm_stream_")
     try:
         shard_paths = _decode_all(filepath, data_blobs, workers, shard_dir)
-        return _assemble_buildings(shard_paths)
+        if output is None:
+            return _assemble_buildings(shard_paths)
+        return _stream_buildings_to_parquet(shard_paths, output, _OUTPUT_CHUNK_SIZE)
     finally:
         shutil.rmtree(shard_dir, ignore_errors=True)

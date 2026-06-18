@@ -1,5 +1,6 @@
-"""Phase 1 parity: the streaming buildings reader vs OSM(fp).get_buildings() way rows."""
+"""Streaming reader parity vs OSM(fp).get_buildings() way rows, plus output= GeoParquet."""
 
+import sys
 import zlib
 from struct import pack, unpack
 
@@ -93,3 +94,37 @@ def test_streaming_buildings_raw_blob_matches(helsinki_pbf, tmp_path):
     _assert_matches(
         raw_buildings, zlib_buildings.sort_values("id").reset_index(drop=True)
     )
+
+
+def test_streaming_buildings_output_parquet_matches(helsinki_pbf, tmp_path):
+    # The streamed GeoParquet must reload equal to the in-memory frame.
+    out = str(tmp_path / "buildings.parquet")
+    in_memory = streaming.get_buildings(helsinki_pbf)
+    returned = streaming.get_buildings(helsinki_pbf, output=out)
+    assert returned == out
+    reloaded = gpd.read_parquet(out)
+    assert isinstance(reloaded, gpd.GeoDataFrame)
+    assert reloaded.crs == in_memory.crs
+    _assert_matches(reloaded, in_memory.sort_values("id").reset_index(drop=True))
+
+
+def test_streaming_buildings_output_is_chunked(helsinki_pbf, tmp_path, monkeypatch):
+    # A small chunk size must stream multiple row groups (output not materialised at
+    # once) while still reloading equal to the in-memory frame.
+    import pyarrow.parquet as pq
+
+    monkeypatch.setattr(streaming, "_OUTPUT_CHUNK_SIZE", 50)
+    out = str(tmp_path / "buildings_chunked.parquet")
+    in_memory = streaming.get_buildings(helsinki_pbf)
+    streaming.get_buildings(helsinki_pbf, output=out)
+    assert pq.ParquetFile(out).metadata.num_row_groups > 1
+    reloaded = gpd.read_parquet(out)
+    _assert_matches(reloaded, in_memory.sort_values("id").reset_index(drop=True))
+
+
+def test_streaming_output_requires_pyarrow(helsinki_pbf, tmp_path, monkeypatch):
+    # Without pyarrow, output= must fail fast with an actionable error (and not decode).
+    monkeypatch.setitem(sys.modules, "pyarrow", None)
+    monkeypatch.setitem(sys.modules, "pyarrow.parquet", None)
+    with pytest.raises(ImportError, match="pyarrow"):
+        streaming.get_buildings(helsinki_pbf, output=str(tmp_path / "x.parquet"))
