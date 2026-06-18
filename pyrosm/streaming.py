@@ -29,9 +29,12 @@ column-for-column the in-memory reader's output.
 
 Phase 4b generalises the reader over the *layer*: the buildings-specific selection becomes
 a key-presence filter on a list of ``osm_keys``, and the assembly takes the layer's
-``tags_as_columns``, so ``get_buildings`` and ``get_landuse`` (and further area layers) are
-thin wrappers over one ``_get_layer``. Still to come: value-level ``custom_filter``
-refinement, node features (POIs / ``natural`` nodes), the network path, bounding boxes,
+``tags_as_columns``, so ``get_buildings`` / ``get_landuse`` / ``get_natural`` are thin
+wrappers over one ``_get_layer``. Layers that emit point features (``natural``, POIs) also
+select the matching *nodes* (tags parsed from the dense ``keys_vals`` stream) and assemble
+them through ``prepare_geodataframe``'s node path; layers that do not (buildings, boundary)
+pass ``include_nodes=False``. Still to come: value-level ``custom_filter`` refinement, the
+remaining layers (POIs / boundaries / custom criteria), the network path, bounding boxes,
 history and the disk-backed coordinate join.
 """
 
@@ -47,7 +50,7 @@ import numpy as np
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
 from pyrosm.primitive_block_decoder import decode_primitive_block
 from pyrosm._arrays import way_records_to_arrays
-from pyrosm.tagparser import explode_way_tags
+from pyrosm.tagparser import explode_way_tags, explode_node_tag_array
 
 # Below this many data blobs the multiprocessing overhead is not worth it, so the read
 # runs in-process (1 worker). Small bundled extracts therefore decode without a pool.
@@ -61,10 +64,12 @@ _MEMBER_TYPE = {0: b"node", 1: b"way", 2: b"relation"}
 _OUTPUT_CHUNK_SIZE = 250_000
 
 # Per-worker globals, set by the pool initializer (or directly for the in-process path).
-# ``_OSM_KEYS`` holds the layer's filter keys (utf-8 bytes) used to pre-select elements.
+# ``_OSM_KEYS`` holds the layer's filter keys (utf-8 bytes) used to pre-select elements;
+# ``_INCLUDE_NODES`` is False for layers that emit no node features (buildings, boundary).
 _FILEPATH = None
 _SHARD_DIR = None
 _OSM_KEYS = None
+_INCLUDE_NODES = True
 
 
 def _index_blobs(filepath):
@@ -149,6 +154,63 @@ def _resolve_tags(string_table, keys, vals, start, end):
     }
 
 
+def _matching_nodes(string_table, nodes, osm_keys, node_lon, node_lat):
+    """Dense nodes carrying any of ``osm_keys`` -> a dict of parallel arrays/lists
+    (``id`` / ``lon`` / ``lat`` / ``tags`` + ``version`` / ``timestamp`` / ``changeset`` /
+    ``visible`` metadata) for the matching nodes, or ``None``. Tags are parsed from the
+    block's dense ``keys_vals`` stream; untagged nodes (the vast majority) cost nothing.
+    """
+    if nodes is None:
+        return None
+    key_indices = set(_key_indices(string_table, osm_keys))
+    keys_vals = nodes["keys_vals"]
+    if not key_indices or len(keys_vals) == 0:
+        return None
+    ids = nodes["id"]
+    idx, tags = [], []
+    p, end = 0, len(keys_vals)
+    for node_i in range(len(ids)):
+        pairs = []
+        matched = False
+        while p < end and keys_vals[p] != 0:
+            k, v = keys_vals[p], keys_vals[p + 1]
+            p += 2
+            pairs.append((k, v))
+            if k in key_indices:
+                matched = True
+        p += 1  # skip the per-node 0 terminator
+        if matched:
+            idx.append(node_i)
+            tags.append(
+                {
+                    string_table[k]
+                    .decode("utf-8", "replace"): string_table[v]
+                    .decode("utf-8", "replace")
+                    for k, v in pairs
+                }
+            )
+    if not idx:
+        return None
+    idx = np.array(idx, dtype=np.int64)
+
+    # DenseInfo metadata is optional; when a field is absent the decoder returns an empty
+    # array, so default it like pyrosm's parse_dense (visible -> False, the rest -> 0).
+    def meta(name):
+        arr = nodes[name]
+        return arr[idx] if len(arr) == len(ids) else np.zeros(len(idx), dtype=np.int64)
+
+    return {
+        "id": ids[idx],
+        "lon": node_lon[idx],
+        "lat": node_lat[idx],
+        "tags": tags,
+        "version": meta("version"),
+        "timestamp": meta("timestamp"),
+        "changeset": meta("changeset"),
+        "visible": meta("visible"),
+    }
+
+
 def _layer_relations(string_table, relations, osm_keys):
     """The relations carrying any of ``osm_keys`` in this block. Yields, per relation, its
     id, member id/type/role arrays, full tag dict and ``version``/``timestamp``/
@@ -195,11 +257,12 @@ def _layer_relations(string_table, relations, osm_keys):
         }
 
 
-def _init_worker(filepath, shard_dir, osm_keys):
-    global _FILEPATH, _SHARD_DIR, _OSM_KEYS
+def _init_worker(filepath, shard_dir, osm_keys, include_nodes):
+    global _FILEPATH, _SHARD_DIR, _OSM_KEYS, _INCLUDE_NODES
     _FILEPATH = filepath
     _SHARD_DIR = shard_dir
     _OSM_KEYS = osm_keys
+    _INCLUDE_NODES = include_nodes
 
 
 def _offsets_from_lengths(lengths):
@@ -224,6 +287,7 @@ def _decode_batch(task):
     the shard path."""
     worker_id, blobs = task
     node_id, node_lon, node_lat = [], [], []
+    nf = {k: [] for k in ("id", "lon", "lat", "tags", "meta")}
     bld_id, bld_refs, bld_tags = [], [], []
     bld_version, bld_timestamp, bld_visible = [], [], []
     all_id, all_refs, all_count = [], [], []
@@ -234,9 +298,32 @@ def _decode_batch(task):
             string_table, header, nodes, ways, relations = decode_primitive_block(data)
             if nodes is not None:
                 gran = header["granularity"]
+                lat = (nodes["lat"] * gran + header["lat_offset"]) / 1e9
+                lon = (nodes["lon"] * gran + header["lon_offset"]) / 1e9
                 node_id.append(nodes["id"])
-                node_lat.append((nodes["lat"] * gran + header["lat_offset"]) / 1e9)
-                node_lon.append((nodes["lon"] * gran + header["lon_offset"]) / 1e9)
+                node_lat.append(lat)
+                node_lon.append(lon)
+                found = (
+                    _matching_nodes(string_table, nodes, _OSM_KEYS, lon, lat)
+                    if _INCLUDE_NODES
+                    else None
+                )
+                if found is not None:
+                    nf["id"].append(found["id"])
+                    nf["lon"].append(found["lon"])
+                    nf["lat"].append(found["lat"])
+                    nf["tags"].extend(found["tags"])
+                    nf["meta"].append(
+                        np.stack(
+                            [
+                                found["version"],
+                                found["timestamp"],
+                                found["changeset"],
+                                found["visible"],
+                            ],
+                            axis=1,
+                        )
+                    )
             if ways is not None:
                 all_id.append(ways["id"])
                 all_refs.append(ways["refs"])
@@ -263,6 +350,13 @@ def _decode_batch(task):
         node_id=np.concatenate(node_id) if node_id else np.empty(0, np.int64),
         node_lon=np.concatenate(node_lon) if node_lon else np.empty(0),
         node_lat=np.concatenate(node_lat) if node_lat else np.empty(0),
+        nfeat_id=np.concatenate(nf["id"]) if nf["id"] else np.empty(0, np.int64),
+        nfeat_lon=np.concatenate(nf["lon"]) if nf["lon"] else np.empty(0),
+        nfeat_lat=np.concatenate(nf["lat"]) if nf["lat"] else np.empty(0),
+        nfeat_tags=_object_array(nf["tags"]),
+        nfeat_meta=(
+            np.concatenate(nf["meta"]) if nf["meta"] else np.empty((0, 4), np.int64)
+        ),
         way_id=np.concatenate(bld_id) if bld_id else np.empty(0, np.int64),
         refs=np.concatenate(bld_refs) if bld_refs else np.empty(0, np.int64),
         refs_off=_offsets_from_lengths([len(r) for r in bld_refs]),
@@ -306,7 +400,7 @@ def _auto_workers(n_blobs):
     return min(os.cpu_count() or 1, n_blobs)
 
 
-def _decode_all(filepath, blobs, workers, shard_dir, osm_keys):
+def _decode_all(filepath, blobs, workers, shard_dir, osm_keys, include_nodes):
     """Decode every data blob into per-worker shards; return the shard paths."""
     n = len(blobs)
     per = (n + workers - 1) // workers
@@ -316,10 +410,12 @@ def _decode_all(filepath, blobs, workers, shard_dir, osm_keys):
         if blobs[i * per : (i + 1) * per]
     ]
     if workers == 1:
-        _init_worker(filepath, shard_dir, osm_keys)
+        _init_worker(filepath, shard_dir, osm_keys, include_nodes)
         return [_decode_batch(tasks[0])] if tasks else []
     with Pool(
-        workers, initializer=_init_worker, initargs=(filepath, shard_dir, osm_keys)
+        workers,
+        initializer=_init_worker,
+        initargs=(filepath, shard_dir, osm_keys, include_nodes),
     ) as pool:
         return pool.map(_decode_batch, tasks)
 
@@ -347,6 +443,44 @@ def _collect_building_ways(shard_paths):
                 }
             )
     return records
+
+
+def _collect_node_features(shard_paths, tags_as_columns, keep_metadata):
+    """Read the spilled node features back and explode their tags into the same columns
+    the in-memory reader builds (``id`` / ``lon`` / ``lat`` / ``visible`` + the metadata
+    when ``keep_metadata``, plus the layer tag columns and a JSON ``tags`` column).
+    ``None`` if no node carried the layer's keys."""
+    ids, lon, lat, tags, meta = [], [], [], [], []
+    for path in shard_paths:
+        z = np.load(path, allow_pickle=True)
+        nid = z["nfeat_id"]
+        if len(nid) == 0:
+            continue
+        ids.append(nid)
+        lon.append(z["nfeat_lon"])
+        lat.append(z["nfeat_lat"])
+        tags.append(z["nfeat_tags"])
+        meta.append(z["nfeat_meta"])
+    if not ids:
+        return None
+    meta = np.concatenate(meta)
+    node_arrays = {
+        "id": np.concatenate(ids),
+        "lon": np.concatenate(lon),
+        "lat": np.concatenate(lat),
+        "tags": np.concatenate(tags),
+        "visible": meta[:, 3].astype(bool),
+    }
+    if keep_metadata:
+        node_arrays["version"] = meta[:, 0]
+        node_arrays["timestamp"] = meta[:, 1]
+        node_arrays["changeset"] = meta[:, 2]
+    # Mirror get_osm_nodes: merge the exploded tag columns in (the original 'tags' dict
+    # array stays only when no node had leftover tags, exactly as the in-memory reader).
+    node_arrays.update(
+        explode_node_tag_array(node_arrays["tags"], list(tags_as_columns))
+    )
+    return node_arrays
 
 
 def _node_lookup(shard_paths, needed):
@@ -482,10 +616,10 @@ def _needed_node_ids(kept, relation_ways):
     return np.unique(np.concatenate(refs))
 
 
-def _gather_buildings(shard_paths):
-    """Shared gather for both output modes: standalone building ways, building relations,
-    their member ways and the node coordinates all of them reference. ``None`` if there
-    is nothing to assemble."""
+def _gather_layer(shard_paths, tags_as_columns, keep_metadata):
+    """Shared gather for both output modes: node features, standalone ways, relations,
+    their member ways and the node coordinates the ways/relations reference. ``None`` if
+    there is nothing to assemble."""
     relations, member_ids = _load_building_relations(shard_paths)
     relation_ways = (
         _gather_relation_ways(shard_paths, member_ids)
@@ -496,10 +630,11 @@ def _gather_buildings(shard_paths):
     if relation_ways is None:
         relations = None
     kept = _collect_kept_ways(shard_paths, member_ids)
-    if kept is None and relations is None:
+    node_features = _collect_node_features(shard_paths, tags_as_columns, keep_metadata)
+    if kept is None and relations is None and node_features is None:
         return None
     node_coordinates = _node_lookup(shard_paths, _needed_node_ids(kept, relation_ways))
-    return kept, relations, relation_ways, node_coordinates
+    return node_features, kept, relations, relation_ways, node_coordinates
 
 
 def _assemble_chunk(
@@ -509,11 +644,12 @@ def _assemble_chunk(
     relation_ways,
     tags_as_columns,
     keep_metadata,
+    nodes=None,
 ):
-    """Build one GeoDataFrame from way and/or relation elements using pyrosm's own tag +
-    geometry pipeline (full columns, missing-node handling, polygon/linestring typing,
-    ring assembly, dropna, orientation), so the result matches the in-memory reader
-    exactly."""
+    """Build one GeoDataFrame from node, way and/or relation elements using pyrosm's own
+    tag + geometry pipeline (full columns, missing-node handling, polygon/linestring
+    typing, ring assembly, dropna, orientation), so the result matches the in-memory
+    reader exactly."""
     from pyrosm.frames import prepare_geodataframe
 
     ways = (
@@ -522,7 +658,7 @@ def _assemble_chunk(
         else None
     )
     gdf = prepare_geodataframe(
-        None,
+        nodes,
         node_coordinates,
         ways,
         relations,
@@ -537,13 +673,19 @@ def _assemble_chunk(
 
 
 def _assemble_layer(shard_paths, tags_as_columns, keep_metadata):
-    """Assemble all matching ways and relations into a single in-memory GeoDataFrame."""
-    gathered = _gather_buildings(shard_paths)
+    """Assemble all matching nodes, ways and relations into one in-memory GeoDataFrame."""
+    gathered = _gather_layer(shard_paths, tags_as_columns, keep_metadata)
     if gathered is None:
         return None
-    kept, relations, relation_ways, node_coordinates = gathered
+    node_features, kept, relations, relation_ways, node_coordinates = gathered
     return _assemble_chunk(
-        node_coordinates, kept, relations, relation_ways, tags_as_columns, keep_metadata
+        node_coordinates,
+        kept,
+        relations,
+        relation_ways,
+        tags_as_columns,
+        keep_metadata,
+        nodes=node_features,
     )
 
 
@@ -615,52 +757,53 @@ def _stream_layer_to_parquet(
     there was nothing to write."""
     from geopandas.io.arrow import _geopandas_to_arrow
 
-    gathered = _gather_buildings(shard_paths)
+    gathered = _gather_layer(shard_paths, tags_as_columns, keep_metadata)
     if gathered is None:
         return None
-    kept, relations, relation_ways, node_coordinates = gathered
+    node_features, kept, relations, relation_ways, node_coordinates = gathered
 
     def to_table(gdf):
         return _geopandas_to_arrow(gdf, index=False, geometry_encoding="WKB")
+
+    def chunk_table(way_records=None, relations=None, relation_ways=None, nodes=None):
+        gdf = _assemble_chunk(
+            node_coordinates,
+            way_records,
+            relations,
+            relation_ways,
+            tags_as_columns,
+            keep_metadata,
+            nodes=nodes,
+        )
+        return to_table(gdf) if gdf is not None and len(gdf) > 0 else None
 
     def way_tables():
         if kept is None:
             return
         for start in range(0, len(kept), chunk_size):
-            gdf = _assemble_chunk(
-                node_coordinates,
-                kept[start : start + chunk_size],
-                None,
-                None,
-                tags_as_columns,
-                keep_metadata,
-            )
-            if gdf is not None and len(gdf) > 0:
-                yield to_table(gdf)
+            t = chunk_table(way_records=kept[start : start + chunk_size])
+            if t is not None:
+                yield t
 
-    relation_table = None
-    if relations is not None:
-        rgdf = _assemble_chunk(
-            node_coordinates,
-            None,
-            relations,
-            relation_ways,
-            tags_as_columns,
-            keep_metadata,
-        )
-        if rgdf is not None and len(rgdf) > 0:
-            relation_table = to_table(rgdf)
+    node_table = chunk_table(nodes=node_features) if node_features is not None else None
+    relation_table = (
+        chunk_table(relations=relations, relation_ways=relation_ways)
+        if relations is not None
+        else None
+    )
 
-    # The union schema must cover both the way and relation row shapes; peek the first way
-    # chunk so it can be unified with the relation rows before the first write.
+    # The union schema must cover the node / way / relation row shapes; peek the first way
+    # chunk so it can be unified with the node and relation rows before the first write.
     way_gen = way_tables()
     first_way = next(way_gen, None)
-    samples = [t for t in (first_way, relation_table) if t is not None]
+    samples = [t for t in (node_table, first_way, relation_table) if t is not None]
     if not samples:
         return None
     schema = _union_schema(samples)
 
     def all_tables():
+        if node_table is not None:
+            yield node_table
         if first_way is not None:
             yield first_way
         yield from way_gen
@@ -670,11 +813,20 @@ def _stream_layer_to_parquet(
     return _write_tables(output, all_tables(), schema)
 
 
-def _get_layer(filepath, osm_keys, tags_as_columns, workers, output, keep_metadata):
-    """Read a way + relation layer: decode the file in parallel selecting the elements
-    that carry any of ``osm_keys``, then assemble them with the full ``tags_as_columns``
-    schema (every occurring tag as its own column, the rest in a JSON ``tags`` column, and
-    -- when ``keep_metadata`` -- the element metadata), matching the in-memory reader.
+def _get_layer(
+    filepath,
+    osm_keys,
+    tags_as_columns,
+    workers,
+    output,
+    keep_metadata,
+    include_nodes=True,
+):
+    """Read a layer: decode the file in parallel selecting the elements that carry any of
+    ``osm_keys`` (and, when ``include_nodes``, the matching nodes as point features), then
+    assemble them with the full ``tags_as_columns`` schema (every occurring tag as its own
+    column, the rest in a JSON ``tags`` column, and -- when ``keep_metadata`` -- the
+    element metadata), matching the in-memory reader.
 
     Returns an in-memory GeoDataFrame, or -- when ``output`` is a path -- streams the layer
     to a chunked GeoParquet there and returns the path (needs the optional ``pyarrow``).
@@ -694,7 +846,7 @@ def _get_layer(filepath, osm_keys, tags_as_columns, workers, output, keep_metada
     shard_dir = tempfile.mkdtemp(prefix="pyrosm_stream_")
     try:
         shard_paths = _decode_all(
-            filepath, data_blobs, workers, shard_dir, osm_key_bytes
+            filepath, data_blobs, workers, shard_dir, osm_key_bytes, include_nodes
         )
         if output is None:
             return _assemble_layer(shard_paths, tags_as_columns, keep_metadata)
@@ -712,7 +864,13 @@ def get_buildings(filepath, workers=None, output=None, keep_metadata=True):
     from pyrosm.config import Conf
 
     return _get_layer(
-        filepath, ["building"], Conf.tags.building, workers, output, keep_metadata
+        filepath,
+        ["building"],
+        Conf.tags.building,
+        workers,
+        output,
+        keep_metadata,
+        include_nodes=False,
     )
 
 
@@ -723,4 +881,15 @@ def get_landuse(filepath, workers=None, output=None, keep_metadata=True):
 
     return _get_layer(
         filepath, ["landuse"], Conf.tags.landuse, workers, output, keep_metadata
+    )
+
+
+def get_natural(filepath, workers=None, output=None, keep_metadata=True):
+    """Read natural features (nodes + ways + relations) from ``filepath``, with the same
+    columns as ``OSM(...).get_natural()``. See :func:`_get_layer` for the keyword
+    arguments."""
+    from pyrosm.config import Conf
+
+    return _get_layer(
+        filepath, ["natural"], Conf.tags.natural, workers, output, keep_metadata
     )

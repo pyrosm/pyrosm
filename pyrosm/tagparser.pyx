@@ -90,3 +90,9 @@ cdef explode_tag_array(tag_array, tags_as_columns):
     if any_other:
         data["tags"] = other_list
     return data
+
+cpdef explode_node_tag_array(tag_array, tags_as_columns):
+    """Python entry point to the node tag-explosion (splits a tag-dict array into the
+    occurring ``tags_as_columns`` columns plus a JSON ``tags`` column), so an alternative
+    reader can build node features with the same columns as the in-memory reader."""
+    return explode_tag_array(tag_array, tags_as_columns)

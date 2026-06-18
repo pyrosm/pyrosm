@@ -125,6 +125,26 @@ def test_streaming_landuse_full_column_parity(fixture, request):
     _assert_full_parity(mine, ref)
 
 
+@pytest.mark.parametrize("fixture", ["test_pbf", "helsinki_pbf"])
+def test_streaming_natural_full_column_parity(fixture, request):
+    # natural includes NODE features (points), so this exercises the node path too.
+    fp = request.getfixturevalue(fixture)
+    mine = streaming.get_natural(fp)
+    ref = OSM(fp).get_natural()
+    if ref is None:
+        assert mine is None
+        return
+    n_node = int((ref["osm_type"] == "node").sum())
+    assert int((mine["osm_type"] == "node").sum()) == n_node
+    _assert_full_parity(mine, ref)
+
+
+def test_streaming_natural_has_node_rows(helsinki_pbf):
+    # The bundled Helsinki extract has natural node features; assert they are produced.
+    mine = streaming.get_natural(helsinki_pbf)
+    assert int((mine["osm_type"] == "node").sum()) > 0
+
+
 def test_streaming_buildings_keep_metadata_false_parity(helsinki_pbf):
     # keep_metadata=False must drop the element-metadata columns exactly as the in-memory
     # reader does (whatever its handling) -- full column + value parity either way.
