@@ -155,20 +155,61 @@ def retrieve(data, update, directory):
     )
 
 
-def search_source(name):
+def _find_sources(name):
+    """Return every ``(region_key, source_dict)`` whose region lists ``name``.
+
+    Mirrors the lookup ``search_source`` does, but collects all matches so a name
+    that exists in more than one region (e.g. the country 'georgia' and the US
+    state 'georgia') can be detected instead of silently taking the first (#162).
+    """
+    found = []
     for source, available in sources.available.items():
         # Cities are kept as CamelCase, so need to make lower
         if source == "cities":
-            available = [src.lower() for src in available]
-        if isinstance(available, list):
+            if name in [src.lower() for src in available]:
+                found.append((source, sources.__dict__[source].__dict__[name]))
+        elif isinstance(available, list):
             if name in available:
-                return sources.__dict__[source].__dict__[name]
+                found.append((source, sources.__dict__[source].__dict__[name]))
         elif isinstance(available, dict):
             # Sub-regions should be looked one level further down
             for subregion, available2 in available.items():
                 if name in available2:
-                    return sources.subregions.__dict__[subregion].__dict__[name]
-    raise ValueError(f"Could not retrieve url for '{name}'.")
+                    found.append(
+                        (
+                            subregion,
+                            sources.subregions.__dict__[subregion].__dict__[name],
+                        )
+                    )
+    return found
+
+
+def search_source(name):
+    # A region-qualified name ("europe/georgia", "usa/georgia") picks one of the
+    # regions that share a name (#162).
+    if "/" in name:
+        qualifier, base = name.split("/", 1)
+        for region, source in _find_sources(base):
+            if region == qualifier:
+                return source
+        raise ValueError(f"Could not retrieve url for '{name}'.")
+
+    found = _find_sources(name)
+    if not found:
+        raise ValueError(f"Could not retrieve url for '{name}'.")
+
+    # The same name in different regions pointing at different files (the country
+    # 'georgia' vs the US state 'georgia') is ambiguous -- do not silently pick
+    # one; ask the caller to qualify it (#162). Names that resolve to the same
+    # file (a UK county reachable via both 'great_britain' and 'united_kingdom')
+    # are not ambiguous.
+    if len({source["url"] for _, source in found}) > 1:
+        options = " or ".join(f"'{region}/{name}'" for region, _ in found)
+        raise ValueError(
+            f"The dataset name '{name}' is ambiguous -- it exists in multiple "
+            f"regions. Use a region-qualified name, e.g. {options}."
+        )
+    return found[0][1]
 
 
 def get_data(dataset, update=False, directory=None):
@@ -208,6 +249,11 @@ def get_data(dataset, update=False, directory=None):
 
     elif dataset == "ulanbator_test_pbf":
         return retrieve(_ulanbator_test_pbf, update, directory)
+
+    # A region-qualified name ("usa/georgia") disambiguates a name shared by
+    # multiple regions; route it straight to the resolver (#162).
+    elif "/" in dataset:
+        return retrieve(search_source(dataset), update, directory)
 
     elif dataset in sources._all_sources:
         return retrieve(search_source(dataset), update, directory)
