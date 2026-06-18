@@ -2,7 +2,7 @@
   <img src="resources/img/pyrosm_logo_2.png" alt="Pyrosm" width="660">
 </p>
 
-# Pyrosm –- Python’s Rapid OSM Parser
+# Pyrosm – Python’s Rapid OSM Parser
 [![Conda Version](https://img.shields.io/conda/vn/conda-forge/pyrosm.svg)](https://anaconda.org/conda-forge/pyrosm)
 [![PyPI version](https://badge.fury.io/py/pyrosm.svg)](https://badge.fury.io/py/pyrosm)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/pyrosm.svg?logo=python&logoColor=%23fff)](https://pypi.org/project/pyrosm)
