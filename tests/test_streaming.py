@@ -24,6 +24,11 @@ def helsinki_pbf():
     return get_data("helsinki_pbf")
 
 
+@pytest.fixture
+def helsinki_region_pbf():
+    return get_data("helsinki_region_pbf")
+
+
 def _rewrite_pbf_raw(src, dst):
     """Re-encode every blob of ``src`` with an uncompressed ``raw`` payload. Bundled
     extracts are all zlib, so this synthesises a file that exercises the streaming
@@ -152,6 +157,45 @@ def test_streaming_pois_default_parity(fixture, request):
     fp = request.getfixturevalue(fixture)
     mine = streaming.get_pois(fp)
     ref = OSM(fp).get_pois()
+    if ref is None:
+        assert mine is None
+        return
+    _assert_full_parity(mine, ref)
+
+
+def test_streaming_boundaries_parity(helsinki_region_pbf):
+    # The Helsinki region extract has administrative boundaries (relations + ways).
+    mine = streaming.get_boundaries(helsinki_region_pbf)
+    ref = OSM(helsinki_region_pbf).get_boundaries()
+    assert ref is not None and (ref["osm_type"] == "relation").any()
+    _assert_full_parity(mine, ref)
+
+
+def test_streaming_custom_criteria_value_filter_parity(helsinki_pbf):
+    flt = {"amenity": ["restaurant", "cafe", "pub"]}
+    mine = streaming.get_data_by_custom_criteria(helsinki_pbf, custom_filter=flt)
+    ref = OSM(helsinki_pbf).get_data_by_custom_criteria(custom_filter=flt)
+    assert mine is not None and len(mine) > 0
+    _assert_full_parity(mine, ref)
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {"keep_nodes": False},
+        {"keep_ways": False},
+        {"keep_relations": False},
+        {"keep_nodes": False, "keep_relations": False},
+    ],
+)
+def test_streaming_custom_criteria_keep_flags_parity(helsinki_pbf, flags):
+    # keep_nodes / keep_ways / keep_relations must select element kinds exactly as the
+    # in-memory reader.
+    flt = {"amenity": True}
+    mine = streaming.get_data_by_custom_criteria(
+        helsinki_pbf, custom_filter=flt, **flags
+    )
+    ref = OSM(helsinki_pbf).get_data_by_custom_criteria(custom_filter=flt, **flags)
     if ref is None:
         assert mine is None
         return

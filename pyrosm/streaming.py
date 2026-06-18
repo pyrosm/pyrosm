@@ -34,9 +34,12 @@ layers that emit point features, the matching *nodes* -- tags parsed from the de
 ``keys_vals`` stream) by filter-key presence; the gather then refines them by pyrosm's
 exact value filter (``element_should_be_kept``), so value-level filters like
 ``{"amenity": ["restaurant"]}`` match the in-memory reader. Layers that emit no node rows
-(buildings, boundary) pass ``include_nodes=False``. Still to come: the remaining layers
-(boundaries / custom criteria), the network path, bounding boxes, history and the
-disk-backed coordinate join.
+(buildings, boundary) pass ``include_nodes=False``; ``get_data_by_custom_criteria`` adds
+``keep_nodes`` / ``keep_ways`` / ``keep_relations`` and an explicit ``osm_keys`` set. So all
+the area / point layers -- ``get_buildings`` / ``get_landuse`` / ``get_natural`` /
+``get_pois`` / ``get_boundaries`` / ``get_data_by_custom_criteria`` -- are wrappers over one
+``_get_layer``. Still to come: the network path, bounding boxes, history and the disk-backed
+coordinate join.
 """
 
 import os
@@ -633,27 +636,40 @@ def _needed_node_ids(kept, relation_ways):
     return np.unique(np.concatenate(refs))
 
 
-def _gather_layer(shard_paths, tags_as_columns, keep_metadata, filter_spec):
+def _gather_layer(
+    shard_paths,
+    tags_as_columns,
+    keep_metadata,
+    filter_spec,
+    keep_ways=True,
+    keep_relations=True,
+):
     """Shared gather for both output modes: node features, standalone ways, relations,
     their member ways and the node coordinates the ways/relations reference. ``filter_spec``
     is ``(osm_keys, data_filter, filter_type)``; the spilled key-presence candidates are
-    refined here by pyrosm's exact value filter. ``None`` if there is nothing to assemble.
-    """
+    refined here by pyrosm's exact value filter. ``keep_ways`` / ``keep_relations`` drop
+    those element kinds from the output (``get_data_by_custom_criteria``). ``None`` if there
+    is nothing to assemble."""
     osm_keys, data_filter, filter_type = filter_spec
 
     def keep(tag):
         return element_should_be_kept(tag, osm_keys, data_filter, filter_type)
 
-    relations, member_ids = _load_building_relations(shard_paths, keep)
-    relation_ways = (
-        _gather_relation_ways(shard_paths, member_ids)
-        if relations is not None
-        else None
-    )
-    # No member way is present (all outside the data) -> the relation cannot be assembled.
-    if relation_ways is None:
-        relations = None
-    kept = _collect_kept_ways(shard_paths, member_ids, keep)
+    if keep_relations:
+        relations, member_ids = _load_building_relations(shard_paths, keep)
+        relation_ways = (
+            _gather_relation_ways(shard_paths, member_ids)
+            if relations is not None
+            else None
+        )
+        # No member way present (all outside the data) -> the relation can't be assembled.
+        if relation_ways is None:
+            relations = None
+    else:
+        # Without relations there is no member-way set, so matching ways that would have
+        # been members stay as standalone ways (matching get_data_by_custom_criteria).
+        relations, relation_ways, member_ids = None, None, np.empty(0, np.int64)
+    kept = _collect_kept_ways(shard_paths, member_ids, keep) if keep_ways else None
     node_features = _collect_node_features(
         shard_paths, tags_as_columns, keep_metadata, keep
     )
@@ -698,9 +714,18 @@ def _assemble_chunk(
     return gdf
 
 
-def _assemble_layer(shard_paths, tags_as_columns, keep_metadata, filter_spec):
+def _assemble_layer(
+    shard_paths, tags_as_columns, keep_metadata, filter_spec, keep_ways, keep_relations
+):
     """Assemble all matching nodes, ways and relations into one in-memory GeoDataFrame."""
-    gathered = _gather_layer(shard_paths, tags_as_columns, keep_metadata, filter_spec)
+    gathered = _gather_layer(
+        shard_paths,
+        tags_as_columns,
+        keep_metadata,
+        filter_spec,
+        keep_ways,
+        keep_relations,
+    )
     if gathered is None:
         return None
     node_features, kept, relations, relation_ways, node_coordinates = gathered
@@ -776,14 +801,28 @@ def _write_tables(output, tables, schema):
 
 
 def _stream_layer_to_parquet(
-    shard_paths, output, chunk_size, tags_as_columns, keep_metadata, filter_spec
+    shard_paths,
+    output,
+    chunk_size,
+    tags_as_columns,
+    keep_metadata,
+    filter_spec,
+    keep_ways,
+    keep_relations,
 ):
     """Stream the layer (nodes, then ways in chunks, then relations) to a chunked
     GeoParquet at ``output``, so the frame is never fully materialised. Returns the path,
     or ``None`` if there was nothing to write."""
     from geopandas.io.arrow import _geopandas_to_arrow
 
-    gathered = _gather_layer(shard_paths, tags_as_columns, keep_metadata, filter_spec)
+    gathered = _gather_layer(
+        shard_paths,
+        tags_as_columns,
+        keep_metadata,
+        filter_spec,
+        keep_ways,
+        keep_relations,
+    )
     if gathered is None:
         return None
     node_features, kept, relations, relation_ways, node_coordinates = gathered
@@ -848,20 +887,26 @@ def _get_layer(
     output,
     keep_metadata,
     include_nodes=True,
+    keep_ways=True,
+    keep_relations=True,
+    osm_keys=None,
 ):
     """Read a layer: decode the file in parallel selecting the elements that carry any of
-    ``custom_filter``'s keys (and, when ``include_nodes``, the matching nodes as point
-    features), refine them by the exact value filter (``filter_type`` keep/exclude), then
-    assemble with the full ``tags_as_columns`` schema (every occurring tag as its own
-    column, the rest in a JSON ``tags`` column, and -- when ``keep_metadata`` -- the
-    element metadata), matching the in-memory reader.
+    the filter keys (``osm_keys`` if given, else ``custom_filter``'s keys; and, when
+    ``include_nodes``, the matching nodes as point features), refine them by the exact value
+    filter (``filter_type`` keep/exclude), then assemble with the full ``tags_as_columns``
+    schema (every occurring tag as its own column, the rest in a JSON ``tags`` column, and
+    -- when ``keep_metadata`` -- the element metadata), matching the in-memory reader.
+    ``keep_ways`` / ``keep_relations`` drop those element kinds from the output.
 
     Returns an in-memory GeoDataFrame, or -- when ``output`` is a path -- streams the layer
     to a chunked GeoParquet there and returns the path (needs the optional ``pyarrow``).
     ``workers`` defaults to one for small files and otherwise to a worker per CPU."""
     if output is not None:
         _require_pyarrow()
-    data_filter, osm_keys = parse_custom_filter(custom_filter)
+    data_filter, derived_keys = parse_custom_filter(custom_filter)
+    if osm_keys is None:
+        osm_keys = derived_keys
     filter_spec = (osm_keys, data_filter, filter_type)
     osm_key_bytes = [k.encode("utf-8") for k in osm_keys]
 
@@ -880,7 +925,12 @@ def _get_layer(
         )
         if output is None:
             return _assemble_layer(
-                shard_paths, tags_as_columns, keep_metadata, filter_spec
+                shard_paths,
+                tags_as_columns,
+                keep_metadata,
+                filter_spec,
+                keep_ways,
+                keep_relations,
             )
         return _stream_layer_to_parquet(
             shard_paths,
@@ -889,6 +939,8 @@ def _get_layer(
             tags_as_columns,
             keep_metadata,
             filter_spec,
+            keep_ways,
+            keep_relations,
         )
     finally:
         shutil.rmtree(shard_dir, ignore_errors=True)
@@ -970,4 +1022,100 @@ def get_pois(
         workers,
         output,
         keep_metadata,
+    )
+
+
+def get_boundaries(
+    filepath,
+    boundary_type="administrative",
+    name=None,
+    custom_filter=None,
+    workers=None,
+    output=None,
+    keep_metadata=True,
+):
+    """Read boundaries (ways + relations) from ``filepath``, with the same columns as
+    ``OSM(...).get_boundaries()``. ``boundary_type`` selects the ``boundary=*`` value
+    (``"all"`` for any); ``name`` keeps only boundaries whose name contains that text. See
+    :func:`_get_layer` for the other keyword arguments."""
+    from pyrosm.config import Conf
+    from pyrosm.utils import validate_custom_filter, validate_boundary_type
+
+    boundary_type = validate_boundary_type(boundary_type)
+    value = True if boundary_type == "all" else [boundary_type]
+    if custom_filter is None:
+        custom_filter = {"boundary": value}
+    if "boundary" not in custom_filter:
+        custom_filter["boundary"] = True
+    gdf = _get_layer(
+        filepath,
+        validate_custom_filter(custom_filter),
+        "keep",
+        list(Conf.tags.boundary),
+        workers,
+        output,
+        keep_metadata,
+        include_nodes=False,
+    )
+    # Name post-filter (substring match), as OSM.get_boundaries does. Only meaningful for
+    # the in-memory frame; the streamed-to-disk path returns its path unfiltered.
+    if name is not None and gdf is not None and output is None:
+        if "name" not in gdf.columns:
+            raise ValueError(
+                "Could not filter by name from given area. "
+                "Any of the OSM elements did not have a name tag."
+            )
+        gdf = gdf.dropna(subset=["name"])
+        gdf = gdf.loc[gdf["name"].str.contains(name)].reset_index(drop=True).copy()
+    return gdf
+
+
+def get_data_by_custom_criteria(
+    filepath,
+    custom_filter,
+    osm_keys_to_keep=None,
+    filter_type="keep",
+    tags_as_columns=None,
+    keep_nodes=True,
+    keep_ways=True,
+    keep_relations=True,
+    workers=None,
+    output=None,
+    keep_metadata=True,
+):
+    """Read OSM elements matching an arbitrary ``custom_filter`` from ``filepath``, with the
+    same columns as ``OSM(...).get_data_by_custom_criteria(...)``. ``osm_keys_to_keep`` (if
+    given) is the set of keys filtered on; ``keep_nodes`` / ``keep_ways`` / ``keep_relations``
+    select which element kinds are returned. See :func:`_get_layer` for the other keyword
+    arguments."""
+    from pyrosm.config import Conf
+    from pyrosm.utils import validate_custom_filter, validate_osm_keys
+
+    custom_filter = validate_custom_filter(custom_filter)
+    filter_type = filter_type.lower()
+    validate_osm_keys(osm_keys_to_keep)
+    if isinstance(osm_keys_to_keep, str):
+        osm_keys_to_keep = [osm_keys_to_keep]
+    if tags_as_columns is None:
+        tags_as_columns = []
+        for k in custom_filter.keys():
+            try:
+                tags_as_columns += getattr(Conf.tags, k)
+            except Exception:
+                pass
+        # Keys without a dedicated column set become columns themselves.
+        if len(tags_as_columns) == 0:
+            tags_as_columns = list(custom_filter.keys())
+    return _get_layer(
+        filepath,
+        custom_filter,
+        filter_type,
+        tags_as_columns,
+        workers,
+        output,
+        keep_metadata,
+        include_nodes=keep_nodes,
+        keep_ways=keep_ways,
+        keep_relations=keep_relations,
+        osm_keys=osm_keys_to_keep,
     )
