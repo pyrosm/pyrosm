@@ -163,6 +163,24 @@ def test_streaming_pois_default_parity(fixture, request):
     _assert_full_parity(mine, ref)
 
 
+@pytest.mark.parametrize("network_type", ["walking", "driving", "cycling"])
+def test_streaming_network_parity(network_type, helsinki_pbf):
+    # Street network: highway ways as LineString edges + a 'length' column, via the
+    # predefined exclude filters.
+    mine = streaming.get_network(helsinki_pbf, network_type=network_type)
+    ref = OSM(helsinki_pbf).get_network(network_type=network_type)
+    assert ref is not None and len(ref) > 0
+    _assert_full_parity(mine, ref)
+
+
+def test_streaming_network_custom_filter_parity(helsinki_pbf):
+    flt = {"highway": ["footway", "path", "pedestrian"]}
+    mine = streaming.get_network(helsinki_pbf, custom_filter=flt, filter_type="keep")
+    ref = OSM(helsinki_pbf).get_network(custom_filter=flt, filter_type="keep")
+    assert mine is not None and len(mine) > 0
+    _assert_full_parity(mine, ref)
+
+
 def test_streaming_boundaries_parity(helsinki_region_pbf):
     # The Helsinki region extract has administrative boundaries (relations + ways).
     mine = streaming.get_boundaries(helsinki_region_pbf)

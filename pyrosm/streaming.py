@@ -38,8 +38,13 @@ exact value filter (``element_should_be_kept``), so value-level filters like
 ``keep_nodes`` / ``keep_ways`` / ``keep_relations`` and an explicit ``osm_keys`` set. So all
 the area / point layers -- ``get_buildings`` / ``get_landuse`` / ``get_natural`` /
 ``get_pois`` / ``get_boundaries`` / ``get_data_by_custom_criteria`` -- are wrappers over one
-``_get_layer``. Still to come: the network path, bounding boxes, history and the disk-backed
-coordinate join.
+``_get_layer``.
+
+Phase 4c adds the street network (``get_network``): the highway ways are assembled through
+pyrosm's ``parse_network`` path into LineString edges with a ``length`` column, via the
+predefined exclude filters or a custom filter. Still to come: the graph-export node frame
+(``get_network(nodes=True)``, which needs node metadata in the coordinate store), bounding
+boxes, history and the disk-backed coordinate join.
 """
 
 import os
@@ -878,6 +883,26 @@ def _stream_layer_to_parquet(
     return _write_tables(output, all_tables(), schema)
 
 
+def _decode_and_run(filepath, osm_key_bytes, include_nodes, workers, run):
+    """Index + parallel-decode ``filepath`` into a temp shard dir, call ``run(shard_paths)``
+    and clean up. The shared front half of every public read."""
+    data_blobs = [
+        (offset, size)
+        for (blob_type, offset, size) in _index_blobs(filepath)
+        if blob_type == "OSMData"
+    ]
+    if workers is None:
+        workers = _auto_workers(len(data_blobs))
+    shard_dir = tempfile.mkdtemp(prefix="pyrosm_stream_")
+    try:
+        shard_paths = _decode_all(
+            filepath, data_blobs, workers, shard_dir, osm_key_bytes, include_nodes
+        )
+        return run(shard_paths)
+    finally:
+        shutil.rmtree(shard_dir, ignore_errors=True)
+
+
 def _get_layer(
     filepath,
     custom_filter,
@@ -910,19 +935,7 @@ def _get_layer(
     filter_spec = (osm_keys, data_filter, filter_type)
     osm_key_bytes = [k.encode("utf-8") for k in osm_keys]
 
-    data_blobs = [
-        (offset, size)
-        for (blob_type, offset, size) in _index_blobs(filepath)
-        if blob_type == "OSMData"
-    ]
-    if workers is None:
-        workers = _auto_workers(len(data_blobs))
-
-    shard_dir = tempfile.mkdtemp(prefix="pyrosm_stream_")
-    try:
-        shard_paths = _decode_all(
-            filepath, data_blobs, workers, shard_dir, osm_key_bytes, include_nodes
-        )
+    def run(shard_paths):
         if output is None:
             return _assemble_layer(
                 shard_paths,
@@ -942,8 +955,45 @@ def _get_layer(
             keep_ways,
             keep_relations,
         )
-    finally:
-        shutil.rmtree(shard_dir, ignore_errors=True)
+
+    return _decode_and_run(filepath, osm_key_bytes, include_nodes, workers, run)
+
+
+def _assemble_network(
+    shard_paths, tags_as_columns, keep_metadata, filter_spec, segments
+):
+    """Assemble the matching highway ways as a network (LineString edges + length) using
+    pyrosm's ``parse_network`` path. Returns ``(edges, nodes)``; ``nodes`` is the graph-export
+    node frame, only built when ``segments`` (``get_network(nodes=True)``)."""
+    from pyrosm.frames import prepare_geodataframe
+
+    osm_keys, data_filter, filter_type = filter_spec
+
+    def keep(tag):
+        return element_should_be_kept(tag, osm_keys, data_filter, filter_type)
+
+    kept = _collect_kept_ways(shard_paths, np.empty(0, np.int64), keep)
+    if kept is None:
+        return None, None
+    node_coordinates = _node_lookup(shard_paths, _needed_node_ids(kept, None))
+    ways = _ways_arrays(kept, tags_as_columns, keep_metadata)
+    edges, node_gdf = prepare_geodataframe(
+        None,
+        node_coordinates,
+        ways,
+        None,
+        None,
+        list(tags_as_columns),
+        None,
+        parse_network=True,
+        calculate_seg_lengths=segments,
+        keep_metadata=keep_metadata,
+    )
+    # The per-way 'nodes' list is dropped by default (it breaks file export), matching
+    # OSM.get_network with the default keep_node_info=False.
+    if edges is not None and "nodes" in edges.columns:
+        edges = edges.drop(columns=["nodes"])
+    return edges, node_gdf
 
 
 def get_buildings(filepath, workers=None, output=None, keep_metadata=True):
@@ -1119,3 +1169,67 @@ def get_data_by_custom_criteria(
         keep_relations=keep_relations,
         osm_keys=osm_keys_to_keep,
     )
+
+
+def get_network(
+    filepath,
+    network_type="walking",
+    nodes=False,
+    custom_filter=None,
+    filter_type="exclude",
+    workers=None,
+    keep_metadata=True,
+):
+    """Read a street network (``highway=*`` ways as LineString edges + a ``length`` column)
+    from ``filepath``, with the same columns as ``OSM(...).get_network()``. ``network_type``
+    selects a predefined filter (``walking`` / ``driving`` / ``cycling`` / ...); a
+    ``custom_filter`` replaces it (``filter_type`` keep/exclude).
+
+    ``nodes=True`` (the graph-export node frame) is not yet supported by this backend: the
+    coordinate store carries only id/lon/lat, so the node frame would lack the element
+    metadata the in-memory reader produces."""
+    from pyrosm.config import Conf
+    from pyrosm.utils import validate_custom_filter
+
+    if nodes:
+        raise NotImplementedError(
+            "get_network(nodes=True) (graph-export node frame) is not yet supported by "
+            "the streaming backend; only the edges are available."
+        )
+
+    tags_as_columns = list(Conf.tags.highway)
+    if custom_filter is not None:
+        custom_filter = validate_custom_filter(custom_filter)
+        filter_type = filter_type.lower()
+        if filter_type not in ("keep", "exclude"):
+            raise ValueError(
+                "'filter_type' -parameter should be either 'keep' or 'exclude'."
+            )
+        network_filter = custom_filter
+        # Expose the filter keys as columns too (e.g. 'bicycle', 'service').
+        for key in custom_filter.keys():
+            if key not in tags_as_columns:
+                tags_as_columns.append(key)
+    else:
+        if network_type not in Conf._possible_network_filters:
+            raise ValueError(
+                "'network_type' should be one of: "
+                + ", ".join(Conf._possible_network_filters)
+            )
+        network_filter = getattr(Conf.network_filters, network_type)
+        # Predefined networks are always exclude filters keyed on 'highway'.
+        filter_type = "exclude"
+
+    data_filter, _ = parse_custom_filter(network_filter)
+    # Networks always select highway ways (the filter values may reference other keys).
+    filter_spec = (["highway"], data_filter, filter_type)
+
+    def run(shard_paths):
+        return _assemble_network(
+            shard_paths, tags_as_columns, keep_metadata, filter_spec, segments=nodes
+        )
+
+    edges, node_gdf = _decode_and_run(filepath, [b"highway"], False, workers, run)
+    if nodes:
+        return node_gdf, edges
+    return edges
