@@ -245,6 +245,12 @@ cdef record_should_be_kept(tag, osm_keys, data_filter, filter_type):
     return True
 
 
+cpdef element_should_be_kept(tag, osm_keys, data_filter, filter_type):
+    """Python entry point to the per-element keep/exclude decision, so an alternative
+    reader can refine its key-presence candidates by the exact value filter pyrosm uses."""
+    return record_should_be_kept(tag, osm_keys, data_filter, filter_type)
+
+
 cdef filter_relation_indices(relations, osm_keys, data_filter, filter_type):
     cdef int i, n = len(relations.get("tags", []))
     indices = []

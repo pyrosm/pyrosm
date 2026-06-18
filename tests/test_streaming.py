@@ -145,6 +145,31 @@ def test_streaming_natural_has_node_rows(helsinki_pbf):
     assert int((mine["osm_type"] == "node").sum()) > 0
 
 
+@pytest.mark.parametrize("fixture", ["test_pbf", "helsinki_pbf"])
+def test_streaming_pois_default_parity(fixture, request):
+    # The default POI filter ({"amenity": True, "shop": True, "tourism": True}) over
+    # nodes + ways + relations.
+    fp = request.getfixturevalue(fixture)
+    mine = streaming.get_pois(fp)
+    ref = OSM(fp).get_pois()
+    if ref is None:
+        assert mine is None
+        return
+    _assert_full_parity(mine, ref)
+
+
+def test_streaming_pois_value_filter_parity(helsinki_pbf):
+    # A value-level custom_filter must refine to the exact values (not just key presence),
+    # matching OSM().get_pois(custom_filter=...).
+    flt = {"amenity": ["restaurant", "cafe", "bar"]}
+    mine = streaming.get_pois(helsinki_pbf, custom_filter=flt)
+    ref = OSM(helsinki_pbf).get_pois(custom_filter=flt)
+    assert mine is not None and len(mine) > 0
+    # Every kept element really has one of the requested amenity values.
+    assert mine["amenity"].isin(flt["amenity"]).all()
+    _assert_full_parity(mine, ref)
+
+
 def test_streaming_buildings_keep_metadata_false_parity(helsinki_pbf):
     # keep_metadata=False must drop the element-metadata columns exactly as the in-memory
     # reader does (whatever its handling) -- full column + value parity either way.

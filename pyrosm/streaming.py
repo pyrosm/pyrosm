@@ -27,15 +27,16 @@ metadata), and assembly runs those records through pyrosm's own tag-explosion co
 column, the rest land in the JSON ``tags`` column, and ``keep_metadata`` is honoured --
 column-for-column the in-memory reader's output.
 
-Phase 4b generalises the reader over the *layer*: the buildings-specific selection becomes
-a key-presence filter on a list of ``osm_keys``, and the assembly takes the layer's
-``tags_as_columns``, so ``get_buildings`` / ``get_landuse`` / ``get_natural`` are thin
-wrappers over one ``_get_layer``. Layers that emit point features (``natural``, POIs) also
-select the matching *nodes* (tags parsed from the dense ``keys_vals`` stream) and assemble
-them through ``prepare_geodataframe``'s node path; layers that do not (buildings, boundary)
-pass ``include_nodes=False``. Still to come: value-level ``custom_filter`` refinement, the
-remaining layers (POIs / boundaries / custom criteria), the network path, bounding boxes,
-history and the disk-backed coordinate join.
+Phase 4b generalises the reader over the *layer*: each layer is a ``custom_filter`` +
+``tags_as_columns``, so ``get_buildings`` / ``get_landuse`` / ``get_natural`` / ``get_pois``
+are thin wrappers over one ``_get_layer``. The workers pre-select the elements (and, for
+layers that emit point features, the matching *nodes* -- tags parsed from the dense
+``keys_vals`` stream) by filter-key presence; the gather then refines them by pyrosm's
+exact value filter (``element_should_be_kept``), so value-level filters like
+``{"amenity": ["restaurant"]}`` match the in-memory reader. Layers that emit no node rows
+(buildings, boundary) pass ``include_nodes=False``. Still to come: the remaining layers
+(boundaries / custom criteria), the network path, bounding boxes, history and the
+disk-backed coordinate join.
 """
 
 import os
@@ -51,6 +52,8 @@ from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
 from pyrosm.primitive_block_decoder import decode_primitive_block
 from pyrosm._arrays import way_records_to_arrays
 from pyrosm.tagparser import explode_way_tags, explode_node_tag_array
+from pyrosm.data_filter import element_should_be_kept
+from pyrosm.data_manager import parse_custom_filter
 
 # Below this many data blobs the multiprocessing overhead is not worth it, so the read
 # runs in-process (1 worker). Small bundled extracts therefore decode without a pool.
@@ -445,11 +448,11 @@ def _collect_building_ways(shard_paths):
     return records
 
 
-def _collect_node_features(shard_paths, tags_as_columns, keep_metadata):
-    """Read the spilled node features back and explode their tags into the same columns
-    the in-memory reader builds (``id`` / ``lon`` / ``lat`` / ``visible`` + the metadata
-    when ``keep_metadata``, plus the layer tag columns and a JSON ``tags`` column).
-    ``None`` if no node carried the layer's keys."""
+def _collect_node_features(shard_paths, tags_as_columns, keep_metadata, keep):
+    """Read the spilled node features back, refine them by the exact value filter ``keep``
+    and explode their tags into the same columns the in-memory reader builds (``id`` /
+    ``lon`` / ``lat`` / ``visible`` + metadata when ``keep_metadata``, plus the layer tag
+    columns and a JSON ``tags`` column). ``None`` if no node passes."""
     ids, lon, lat, tags, meta = [], [], [], [], []
     for path in shard_paths:
         z = np.load(path, allow_pickle=True)
@@ -463,12 +466,16 @@ def _collect_node_features(shard_paths, tags_as_columns, keep_metadata):
         meta.append(z["nfeat_meta"])
     if not ids:
         return None
-    meta = np.concatenate(meta)
+    tag_array = np.concatenate(tags)
+    mask = np.fromiter((keep(t) for t in tag_array), dtype=bool, count=len(tag_array))
+    if not mask.any():
+        return None
+    meta = np.concatenate(meta)[mask]
     node_arrays = {
-        "id": np.concatenate(ids),
-        "lon": np.concatenate(lon),
-        "lat": np.concatenate(lat),
-        "tags": np.concatenate(tags),
+        "id": np.concatenate(ids)[mask],
+        "lon": np.concatenate(lon)[mask],
+        "lat": np.concatenate(lat)[mask],
+        "tags": tag_array[mask],
         "visible": meta[:, 3].astype(bool),
     }
     if keep_metadata:
@@ -490,6 +497,13 @@ def _node_lookup(shard_paths, needed):
 
     from pyrosm.node_lookup import NodeLocations
 
+    if len(needed) == 0:
+        # Node-only result (the filter matched no ways/relations): no coordinates needed.
+        empty = np.empty(0, np.int64)
+        return NodeLocations(
+            pd.DataFrame({"id": empty, "lon": np.empty(0), "lat": np.empty(0)})
+        )
+
     lon = np.full(len(needed), np.nan)
     lat = np.full(len(needed), np.nan)
     for path in shard_paths:
@@ -508,11 +522,11 @@ def _node_lookup(shard_paths, needed):
     return NodeLocations(coords)
 
 
-def _collect_kept_ways(shard_paths, exclude_ids):
-    """The standalone building way records to output, after dropping the ones that are
-    members of a building relation (pyrosm assigns those to the relation, so they are not
-    standalone way rows)."""
-    records = _collect_building_ways(shard_paths)
+def _collect_kept_ways(shard_paths, exclude_ids, keep):
+    """The standalone way records to output: the spilled candidates refined by the exact
+    value filter ``keep``, then with the building-relation member ways dropped (pyrosm
+    assigns those to the relation, so they are not standalone way rows)."""
+    records = [r for r in _collect_building_ways(shard_paths) if keep(r["tags"])]
     if not records:
         return None
     if len(exclude_ids):
@@ -523,26 +537,30 @@ def _collect_kept_ways(shard_paths, exclude_ids):
     return records
 
 
-def _load_building_relations(shard_paths):
-    """Reassemble the building relations spilled across shards into the ``relations``
-    struct pyrosm's assembly expects (``id`` / ``members`` / ``tags``), and return it
-    together with the unique set of all their member ids. ``(None, empty)`` if there are
-    no building relations."""
+def _load_building_relations(shard_paths, keep):
+    """Reassemble the spilled relations into the ``relations`` struct pyrosm's assembly
+    expects (``id`` / ``members`` / ``tags`` / metadata), refined by the exact value filter
+    ``keep``, and return it with the unique set of their member ids. ``(None, empty)`` when
+    no relation passes."""
     ids, members, tags, meta = [], [], [], []
     for path in shard_paths:
         z = np.load(path, allow_pickle=True)
         rid = z["rel_id"]
         if len(rid) == 0:
             continue
-        memid, memoff, memtype, memrole, rtags = (
+        memid, memoff, memtype, memrole, rtags, rmeta = (
             z["rel_memid"],
             z["rel_memoff"],
             z["rel_memtype"],
             z["rel_memrole"],
             z["rel_tags"],
+            z["rel_meta"],
         )
         for k in range(len(rid)):
+            if not keep(rtags[k]):
+                continue
             s, e = memoff[k], memoff[k + 1]
+            ids.append(int(rid[k]))
             members.append(
                 {
                     "member_id": memid[s:e],
@@ -553,13 +571,12 @@ def _load_building_relations(shard_paths):
                 }
             )
             tags.append(rtags[k])
-        ids.append(rid)
-        meta.append(z["rel_meta"])
+            meta.append(rmeta[k])
     if not ids:
         return None, np.empty(0, np.int64)
-    meta = np.concatenate(meta)
+    meta = np.array(meta, dtype=np.int64).reshape(-1, 3)
     relations = {
-        "id": np.concatenate(ids),
+        "id": np.array(ids, dtype=np.int64),
         "members": _object_array(members),
         "tags": _object_array(tags),
         "version": meta[:, 0],
@@ -616,11 +633,18 @@ def _needed_node_ids(kept, relation_ways):
     return np.unique(np.concatenate(refs))
 
 
-def _gather_layer(shard_paths, tags_as_columns, keep_metadata):
+def _gather_layer(shard_paths, tags_as_columns, keep_metadata, filter_spec):
     """Shared gather for both output modes: node features, standalone ways, relations,
-    their member ways and the node coordinates the ways/relations reference. ``None`` if
-    there is nothing to assemble."""
-    relations, member_ids = _load_building_relations(shard_paths)
+    their member ways and the node coordinates the ways/relations reference. ``filter_spec``
+    is ``(osm_keys, data_filter, filter_type)``; the spilled key-presence candidates are
+    refined here by pyrosm's exact value filter. ``None`` if there is nothing to assemble.
+    """
+    osm_keys, data_filter, filter_type = filter_spec
+
+    def keep(tag):
+        return element_should_be_kept(tag, osm_keys, data_filter, filter_type)
+
+    relations, member_ids = _load_building_relations(shard_paths, keep)
     relation_ways = (
         _gather_relation_ways(shard_paths, member_ids)
         if relations is not None
@@ -629,8 +653,10 @@ def _gather_layer(shard_paths, tags_as_columns, keep_metadata):
     # No member way is present (all outside the data) -> the relation cannot be assembled.
     if relation_ways is None:
         relations = None
-    kept = _collect_kept_ways(shard_paths, member_ids)
-    node_features = _collect_node_features(shard_paths, tags_as_columns, keep_metadata)
+    kept = _collect_kept_ways(shard_paths, member_ids, keep)
+    node_features = _collect_node_features(
+        shard_paths, tags_as_columns, keep_metadata, keep
+    )
     if kept is None and relations is None and node_features is None:
         return None
     node_coordinates = _node_lookup(shard_paths, _needed_node_ids(kept, relation_ways))
@@ -672,9 +698,9 @@ def _assemble_chunk(
     return gdf
 
 
-def _assemble_layer(shard_paths, tags_as_columns, keep_metadata):
+def _assemble_layer(shard_paths, tags_as_columns, keep_metadata, filter_spec):
     """Assemble all matching nodes, ways and relations into one in-memory GeoDataFrame."""
-    gathered = _gather_layer(shard_paths, tags_as_columns, keep_metadata)
+    gathered = _gather_layer(shard_paths, tags_as_columns, keep_metadata, filter_spec)
     if gathered is None:
         return None
     node_features, kept, relations, relation_ways, node_coordinates = gathered
@@ -750,14 +776,14 @@ def _write_tables(output, tables, schema):
 
 
 def _stream_layer_to_parquet(
-    shard_paths, output, chunk_size, tags_as_columns, keep_metadata
+    shard_paths, output, chunk_size, tags_as_columns, keep_metadata, filter_spec
 ):
-    """Stream the layer (ways in chunks, then relations) to a chunked GeoParquet at
-    ``output``, so the frame is never fully materialised. Returns the path, or ``None`` if
-    there was nothing to write."""
+    """Stream the layer (nodes, then ways in chunks, then relations) to a chunked
+    GeoParquet at ``output``, so the frame is never fully materialised. Returns the path,
+    or ``None`` if there was nothing to write."""
     from geopandas.io.arrow import _geopandas_to_arrow
 
-    gathered = _gather_layer(shard_paths, tags_as_columns, keep_metadata)
+    gathered = _gather_layer(shard_paths, tags_as_columns, keep_metadata, filter_spec)
     if gathered is None:
         return None
     node_features, kept, relations, relation_ways, node_coordinates = gathered
@@ -815,7 +841,8 @@ def _stream_layer_to_parquet(
 
 def _get_layer(
     filepath,
-    osm_keys,
+    custom_filter,
+    filter_type,
     tags_as_columns,
     workers,
     output,
@@ -823,8 +850,9 @@ def _get_layer(
     include_nodes=True,
 ):
     """Read a layer: decode the file in parallel selecting the elements that carry any of
-    ``osm_keys`` (and, when ``include_nodes``, the matching nodes as point features), then
-    assemble them with the full ``tags_as_columns`` schema (every occurring tag as its own
+    ``custom_filter``'s keys (and, when ``include_nodes``, the matching nodes as point
+    features), refine them by the exact value filter (``filter_type`` keep/exclude), then
+    assemble with the full ``tags_as_columns`` schema (every occurring tag as its own
     column, the rest in a JSON ``tags`` column, and -- when ``keep_metadata`` -- the
     element metadata), matching the in-memory reader.
 
@@ -833,6 +861,8 @@ def _get_layer(
     ``workers`` defaults to one for small files and otherwise to a worker per CPU."""
     if output is not None:
         _require_pyarrow()
+    data_filter, osm_keys = parse_custom_filter(custom_filter)
+    filter_spec = (osm_keys, data_filter, filter_type)
     osm_key_bytes = [k.encode("utf-8") for k in osm_keys]
 
     data_blobs = [
@@ -849,9 +879,16 @@ def _get_layer(
             filepath, data_blobs, workers, shard_dir, osm_key_bytes, include_nodes
         )
         if output is None:
-            return _assemble_layer(shard_paths, tags_as_columns, keep_metadata)
+            return _assemble_layer(
+                shard_paths, tags_as_columns, keep_metadata, filter_spec
+            )
         return _stream_layer_to_parquet(
-            shard_paths, output, _OUTPUT_CHUNK_SIZE, tags_as_columns, keep_metadata
+            shard_paths,
+            output,
+            _OUTPUT_CHUNK_SIZE,
+            tags_as_columns,
+            keep_metadata,
+            filter_spec,
         )
     finally:
         shutil.rmtree(shard_dir, ignore_errors=True)
@@ -865,7 +902,8 @@ def get_buildings(filepath, workers=None, output=None, keep_metadata=True):
 
     return _get_layer(
         filepath,
-        ["building"],
+        {"building": [True]},
+        "keep",
         Conf.tags.building,
         workers,
         output,
@@ -880,7 +918,13 @@ def get_landuse(filepath, workers=None, output=None, keep_metadata=True):
     from pyrosm.config import Conf
 
     return _get_layer(
-        filepath, ["landuse"], Conf.tags.landuse, workers, output, keep_metadata
+        filepath,
+        {"landuse": [True]},
+        "keep",
+        Conf.tags.landuse,
+        workers,
+        output,
+        keep_metadata,
     )
 
 
@@ -891,5 +935,39 @@ def get_natural(filepath, workers=None, output=None, keep_metadata=True):
     from pyrosm.config import Conf
 
     return _get_layer(
-        filepath, ["natural"], Conf.tags.natural, workers, output, keep_metadata
+        filepath,
+        {"natural": [True]},
+        "keep",
+        Conf.tags.natural,
+        workers,
+        output,
+        keep_metadata,
+    )
+
+
+def get_pois(
+    filepath, custom_filter=None, workers=None, output=None, keep_metadata=True
+):
+    """Read points of interest (nodes + ways + relations) from ``filepath``, with the same
+    columns as ``OSM(...).get_pois(custom_filter=...)``. ``custom_filter`` defaults to
+    ``{"amenity": True, "shop": True, "tourism": True}``. See :func:`_get_layer` for the
+    other keyword arguments."""
+    from pyrosm.config import Conf
+    from pyrosm.utils import validate_custom_filter
+
+    if custom_filter is None:
+        custom_filter = {"amenity": True, "shop": True, "tourism": True}
+    # Per-key tag columns, exactly as OSM.get_pois builds them (Conf.tags.<key>, or the
+    # basic tags for keys without a dedicated column set).
+    tags_as_columns = []
+    for k in custom_filter.keys():
+        tags_as_columns += getattr(Conf.tags, k, list(Conf.tags._basic_tags))
+    return _get_layer(
+        filepath,
+        validate_custom_filter(custom_filter),
+        "keep",
+        tags_as_columns,
+        workers,
+        output,
+        keep_metadata,
     )
