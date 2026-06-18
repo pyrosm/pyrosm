@@ -44,13 +44,15 @@ Phase 4c adds the street network (``get_network``): the highway ways are assembl
 pyrosm's ``parse_network`` path into LineString edges with a ``length`` column, via the
 predefined exclude filters or a custom filter.
 
-Phase 4d starts ``bounding_box`` reads: each worker flags which nodes fall inside the box,
-and the gather keeps a way when at least one of its nodes is in-box (kept whole, so the
-geometry is not cut at the edge -- and because *all* coordinates are spilled, the out-of-box
-vertices need no second pass). pyrosm's own ``prepare_geodataframe`` then applies the final
-spatial filter. Wired for ``get_network`` so far. Still to come: bounding boxes for the area
-/ point layers (with the relation member-completion semantics), the graph-export node frame
-(``get_network(nodes=True)``), history and the disk-backed coordinate join.
+Phase 4d adds ``bounding_box`` reads for every layer: each worker flags which nodes fall
+inside the box, and the gather keeps a way when at least one of its nodes is in-box (kept
+whole, so the geometry is not cut at the edge -- and because *all* coordinates are spilled,
+the out-of-box vertices need no second pass). Relations are restricted to those with an
+in-box member; their member ways are likewise in-box-only (partial geometry) unless
+``complete_relations``, in which case the full member set is gathered. pyrosm's own
+``prepare_geodataframe`` then applies the final spatial filter. Still to come: the
+graph-export node frame (``get_network(nodes=True)``), ``.osh`` history and the disk-backed
+coordinate join.
 """
 
 import os
@@ -641,12 +643,36 @@ def _load_building_relations(shard_paths, keep):
     return relations, member_ids
 
 
-def _gather_relation_ways(shard_paths, member_ids):
-    """Look up the member ways (id -> node refs) of the building relations from the
-    spilled all-ways store. Returned as a ``{id, nodes}`` dict sorted by id ascending --
-    pyrosm aligns member roles to the sorted member ids, so the ways must match that
-    order. ``None`` if none of the member ways are present."""
+def _restrict_relations_to_box(relations, present_ids):
+    """Keep only the relations with at least one member way inside the box (``present_ids``)
+    -- out-of-box relations are dropped by the final spatial filter anyway, and excluding
+    them here keeps their tags from leaking as spurious all-None columns. Returns the
+    filtered struct and its member ids (``(None, empty)`` if none qualify)."""
+    mask = np.array(
+        [
+            not present_ids.isdisjoint(
+                m["member_id"][m["member_type"] == b"way"].tolist()
+            )
+            for m in relations["members"]
+        ],
+        dtype=bool,
+    )
+    if not mask.any():
+        return None, np.empty(0, np.int64)
+    kept = {k: v[mask] for k, v in relations.items()}
+    member_ids = np.unique(np.concatenate([m["member_id"] for m in kept["members"]]))
+    return kept, member_ids
+
+
+def _gather_relation_ways(shard_paths, member_ids, in_box=None):
+    """Look up the member ways (id -> node refs) of the relations from the spilled all-ways
+    store. Returned as a ``{id, nodes}`` dict sorted by id ascending -- pyrosm aligns member
+    roles to the sorted member ids, so the ways must match that order. When ``in_box`` is
+    given (a bounding-box read without ``complete_relations``), only member ways with a node
+    in the box are kept, so the relation geometry is the in-box partial -- matching the
+    in-memory reader. ``None`` if no member way is present."""
     found = {}
+    inside = None if in_box is None else set(in_box.tolist())
     for path in shard_paths:
         z = np.load(path, allow_pickle=True)
         wid, off, refs = z["all_id"], z["all_refs_off"], z["all_refs"]
@@ -654,7 +680,9 @@ def _gather_relation_ways(shard_paths, member_ids):
             continue
         pos = np.clip(np.searchsorted(member_ids, wid), 0, len(member_ids) - 1)
         for k in np.nonzero(member_ids[pos] == wid)[0]:
-            found[int(wid[k])] = refs[off[k] : off[k + 1]]
+            way_refs = refs[off[k] : off[k + 1]]
+            if inside is None or not inside.isdisjoint(way_refs.tolist()):
+                found[int(wid[k])] = way_refs
     if not found:
         return None
     ids = np.array(sorted(found), dtype=np.int64)
@@ -694,33 +722,48 @@ def _gather_layer(
     filter_spec,
     keep_ways=True,
     keep_relations=True,
+    bounding_box=None,
+    complete_relations=False,
 ):
     """Shared gather for both output modes: node features, standalone ways, relations,
     their member ways and the node coordinates the ways/relations reference. ``filter_spec``
     is ``(osm_keys, data_filter, filter_type)``; the spilled key-presence candidates are
     refined here by pyrosm's exact value filter. ``keep_ways`` / ``keep_relations`` drop
-    those element kinds from the output (``get_data_by_custom_criteria``). ``None`` if there
+    those element kinds from the output (``get_data_by_custom_criteria``). With a
+    ``bounding_box`` only in-box ways/nodes are kept; relation member ways are likewise
+    restricted to in-box (partial geometry) unless ``complete_relations``. ``None`` if there
     is nothing to assemble."""
     osm_keys, data_filter, filter_type = filter_spec
 
     def keep(tag):
         return element_should_be_kept(tag, osm_keys, data_filter, filter_type)
 
+    in_box = _in_box_nodes(shard_paths) if bounding_box is not None else None
     if keep_relations:
         relations, member_ids = _load_building_relations(shard_paths, keep)
+        if relations is not None and in_box is not None:
+            # Restrict to relations with >=1 member way in the box (the rest are dropped by
+            # the final spatial filter anyway; excluding them here keeps their tags from
+            # creating spurious all-None columns and matches the in-memory completion scope).
+            present = _gather_relation_ways(shard_paths, member_ids, in_box)
+            present_ids = set() if present is None else set(present["id"].tolist())
+            relations, member_ids = _restrict_relations_to_box(relations, present_ids)
+        member_box = None if complete_relations else in_box
         relation_ways = (
-            _gather_relation_ways(shard_paths, member_ids)
+            _gather_relation_ways(shard_paths, member_ids, member_box)
             if relations is not None
             else None
         )
-        # No member way present (all outside the data) -> the relation can't be assembled.
+        # No member way present (all outside the data/box) -> the relation can't be built.
         if relation_ways is None:
             relations = None
     else:
         # Without relations there is no member-way set, so matching ways that would have
         # been members stay as standalone ways (matching get_data_by_custom_criteria).
         relations, relation_ways, member_ids = None, None, np.empty(0, np.int64)
-    kept = _collect_kept_ways(shard_paths, member_ids, keep) if keep_ways else None
+    kept = (
+        _collect_kept_ways(shard_paths, member_ids, keep, in_box) if keep_ways else None
+    )
     node_features = _collect_node_features(
         shard_paths, tags_as_columns, keep_metadata, keep
     )
@@ -738,11 +781,13 @@ def _assemble_chunk(
     tags_as_columns,
     keep_metadata,
     nodes=None,
+    bounding_box=None,
+    complete_relations=False,
 ):
     """Build one GeoDataFrame from node, way and/or relation elements using pyrosm's own
     tag + geometry pipeline (full columns, missing-node handling, polygon/linestring
-    typing, ring assembly, dropna, orientation), so the result matches the in-memory
-    reader exactly."""
+    typing, ring assembly, dropna, orientation, the ``bounding_box`` spatial filter), so the
+    result matches the in-memory reader exactly."""
     from pyrosm.frames import prepare_geodataframe
 
     ways = (
@@ -757,8 +802,9 @@ def _assemble_chunk(
         relations,
         relation_ways,
         list(tags_as_columns),
-        None,
+        bounding_box,
         keep_metadata=keep_metadata,
+        complete_relations=complete_relations,
     )
     if gdf is not None and "nodes" in gdf.columns:
         gdf = gdf.drop(columns=["nodes"])
@@ -766,7 +812,14 @@ def _assemble_chunk(
 
 
 def _assemble_layer(
-    shard_paths, tags_as_columns, keep_metadata, filter_spec, keep_ways, keep_relations
+    shard_paths,
+    tags_as_columns,
+    keep_metadata,
+    filter_spec,
+    keep_ways,
+    keep_relations,
+    bounding_box,
+    complete_relations,
 ):
     """Assemble all matching nodes, ways and relations into one in-memory GeoDataFrame."""
     gathered = _gather_layer(
@@ -776,6 +829,8 @@ def _assemble_layer(
         filter_spec,
         keep_ways,
         keep_relations,
+        bounding_box,
+        complete_relations,
     )
     if gathered is None:
         return None
@@ -788,6 +843,8 @@ def _assemble_layer(
         tags_as_columns,
         keep_metadata,
         nodes=node_features,
+        bounding_box=bounding_box,
+        complete_relations=complete_relations,
     )
 
 
@@ -860,6 +917,8 @@ def _stream_layer_to_parquet(
     filter_spec,
     keep_ways,
     keep_relations,
+    bounding_box,
+    complete_relations,
 ):
     """Stream the layer (nodes, then ways in chunks, then relations) to a chunked
     GeoParquet at ``output``, so the frame is never fully materialised. Returns the path,
@@ -873,6 +932,8 @@ def _stream_layer_to_parquet(
         filter_spec,
         keep_ways,
         keep_relations,
+        bounding_box,
+        complete_relations,
     )
     if gathered is None:
         return None
@@ -890,6 +951,8 @@ def _stream_layer_to_parquet(
             tags_as_columns,
             keep_metadata,
             nodes=nodes,
+            bounding_box=bounding_box,
+            complete_relations=complete_relations,
         )
         return to_table(gdf) if gdf is not None and len(gdf) > 0 else None
 
@@ -977,6 +1040,8 @@ def _get_layer(
     keep_ways=True,
     keep_relations=True,
     osm_keys=None,
+    bounding_box=None,
+    complete_relations=False,
 ):
     """Read a layer: decode the file in parallel selecting the elements that carry any of
     the filter keys (``osm_keys`` if given, else ``custom_filter``'s keys; and, when
@@ -984,7 +1049,9 @@ def _get_layer(
     filter (``filter_type`` keep/exclude), then assemble with the full ``tags_as_columns``
     schema (every occurring tag as its own column, the rest in a JSON ``tags`` column, and
     -- when ``keep_metadata`` -- the element metadata), matching the in-memory reader.
-    ``keep_ways`` / ``keep_relations`` drop those element kinds from the output.
+    ``keep_ways`` / ``keep_relations`` drop those element kinds from the output. A
+    ``bounding_box`` restricts the read to that area (relations are partial unless
+    ``complete_relations``).
 
     Returns an in-memory GeoDataFrame, or -- when ``output`` is a path -- streams the layer
     to a chunked GeoParquet there and returns the path (needs the optional ``pyarrow``).
@@ -996,6 +1063,7 @@ def _get_layer(
         osm_keys = derived_keys
     filter_spec = (osm_keys, data_filter, filter_type)
     osm_key_bytes = [k.encode("utf-8") for k in osm_keys]
+    bounds = _bbox_bounds(bounding_box)
 
     def run(shard_paths):
         if output is None:
@@ -1006,6 +1074,8 @@ def _get_layer(
                 filter_spec,
                 keep_ways,
                 keep_relations,
+                bounding_box,
+                complete_relations,
             )
         return _stream_layer_to_parquet(
             shard_paths,
@@ -1016,9 +1086,13 @@ def _get_layer(
             filter_spec,
             keep_ways,
             keep_relations,
+            bounding_box,
+            complete_relations,
         )
 
-    return _decode_and_run(filepath, osm_key_bytes, include_nodes, workers, run)
+    return _decode_and_run(
+        filepath, osm_key_bytes, include_nodes, workers, run, bbox_bounds=bounds
+    )
 
 
 def _assemble_network(
@@ -1059,10 +1133,17 @@ def _assemble_network(
     return edges, node_gdf
 
 
-def get_buildings(filepath, workers=None, output=None, keep_metadata=True):
+def get_buildings(
+    filepath,
+    bounding_box=None,
+    complete_relations=False,
+    workers=None,
+    output=None,
+    keep_metadata=True,
+):
     """Read building geometries (ways + relations) from ``filepath``, with the same columns
-    as ``OSM(...).get_buildings()``. See :func:`_get_layer` for ``output`` / ``workers`` /
-    ``keep_metadata``."""
+    as ``OSM(...).get_buildings()``. See :func:`_get_layer` for ``bounding_box`` /
+    ``complete_relations`` / ``output`` / ``workers`` / ``keep_metadata``."""
     from pyrosm.config import Conf
 
     return _get_layer(
@@ -1074,10 +1155,19 @@ def get_buildings(filepath, workers=None, output=None, keep_metadata=True):
         output,
         keep_metadata,
         include_nodes=False,
+        bounding_box=bounding_box,
+        complete_relations=complete_relations,
     )
 
 
-def get_landuse(filepath, workers=None, output=None, keep_metadata=True):
+def get_landuse(
+    filepath,
+    bounding_box=None,
+    complete_relations=False,
+    workers=None,
+    output=None,
+    keep_metadata=True,
+):
     """Read landuse geometries (ways + relations) from ``filepath``, with the same columns
     as ``OSM(...).get_landuse()``. See :func:`_get_layer` for the keyword arguments."""
     from pyrosm.config import Conf
@@ -1090,10 +1180,19 @@ def get_landuse(filepath, workers=None, output=None, keep_metadata=True):
         workers,
         output,
         keep_metadata,
+        bounding_box=bounding_box,
+        complete_relations=complete_relations,
     )
 
 
-def get_natural(filepath, workers=None, output=None, keep_metadata=True):
+def get_natural(
+    filepath,
+    bounding_box=None,
+    complete_relations=False,
+    workers=None,
+    output=None,
+    keep_metadata=True,
+):
     """Read natural features (nodes + ways + relations) from ``filepath``, with the same
     columns as ``OSM(...).get_natural()``. See :func:`_get_layer` for the keyword
     arguments."""
@@ -1107,11 +1206,19 @@ def get_natural(filepath, workers=None, output=None, keep_metadata=True):
         workers,
         output,
         keep_metadata,
+        bounding_box=bounding_box,
+        complete_relations=complete_relations,
     )
 
 
 def get_pois(
-    filepath, custom_filter=None, workers=None, output=None, keep_metadata=True
+    filepath,
+    custom_filter=None,
+    bounding_box=None,
+    complete_relations=False,
+    workers=None,
+    output=None,
+    keep_metadata=True,
 ):
     """Read points of interest (nodes + ways + relations) from ``filepath``, with the same
     columns as ``OSM(...).get_pois(custom_filter=...)``. ``custom_filter`` defaults to
@@ -1135,6 +1242,8 @@ def get_pois(
         workers,
         output,
         keep_metadata,
+        bounding_box=bounding_box,
+        complete_relations=complete_relations,
     )
 
 
@@ -1143,6 +1252,8 @@ def get_boundaries(
     boundary_type="administrative",
     name=None,
     custom_filter=None,
+    bounding_box=None,
+    complete_relations=False,
     workers=None,
     output=None,
     keep_metadata=True,
@@ -1169,6 +1280,8 @@ def get_boundaries(
         output,
         keep_metadata,
         include_nodes=False,
+        bounding_box=bounding_box,
+        complete_relations=complete_relations,
     )
     # Name post-filter (substring match), as OSM.get_boundaries does. Only meaningful for
     # the in-memory frame; the streamed-to-disk path returns its path unfiltered.
@@ -1192,6 +1305,8 @@ def get_data_by_custom_criteria(
     keep_nodes=True,
     keep_ways=True,
     keep_relations=True,
+    bounding_box=None,
+    complete_relations=False,
     workers=None,
     output=None,
     keep_metadata=True,
@@ -1231,6 +1346,8 @@ def get_data_by_custom_criteria(
         keep_ways=keep_ways,
         keep_relations=keep_relations,
         osm_keys=osm_keys_to_keep,
+        bounding_box=bounding_box,
+        complete_relations=complete_relations,
     )
 
 

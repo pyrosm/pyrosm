@@ -173,6 +173,42 @@ def test_streaming_network_parity(network_type, helsinki_pbf):
     _assert_full_parity(mine, ref)
 
 
+def _central_bbox(gdf, frac=0.4):
+    minx, miny, maxx, maxy = gdf.total_bounds
+    pad = (1 - frac) / 2
+    return [
+        minx + (maxx - minx) * pad,
+        miny + (maxy - miny) * pad,
+        minx + (maxx - minx) * (1 - pad),
+        miny + (maxy - miny) * (1 - pad),
+    ]
+
+
+@pytest.mark.parametrize("complete_relations", [False, True])
+def test_streaming_buildings_bounding_box_parity(helsinki_pbf, complete_relations):
+    # A bounding box restricts buildings (ways + relations) to that area; relations are
+    # partial by default, complete with complete_relations=True -- matching the in-memory
+    # reader either way.
+    bbox = _central_bbox(OSM(helsinki_pbf).get_buildings())
+    mine = streaming.get_buildings(
+        helsinki_pbf, bounding_box=bbox, complete_relations=complete_relations
+    )
+    ref = OSM(
+        helsinki_pbf, bounding_box=bbox, complete_relations=complete_relations
+    ).get_buildings()
+    assert ref is not None and (ref["osm_type"] == "relation").any()
+    _assert_full_parity(mine, ref)
+
+
+def test_streaming_pois_bounding_box_parity(helsinki_pbf):
+    # bbox over a layer with node features (POIs): nodes + ways restricted to the box.
+    bbox = _central_bbox(OSM(helsinki_pbf).get_pois())
+    mine = streaming.get_pois(helsinki_pbf, bounding_box=bbox)
+    ref = OSM(helsinki_pbf, bounding_box=bbox).get_pois()
+    assert ref is not None and (ref["osm_type"] == "node").any()
+    _assert_full_parity(mine, ref)
+
+
 def test_streaming_network_bounding_box_parity(helsinki_pbf):
     # A bounding box restricts the network to ways with >=1 node inside it (kept whole),
     # then the final spatial filter clips to the box -- matching the in-memory reader.
