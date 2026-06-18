@@ -1145,3 +1145,113 @@ def test_incomplete_boundaries_dropped_not_force_closed():
     from pyrosm import OSM, get_data
 
     assert OSM(get_data("helsinki_pbf")).get_boundaries() is None
+
+
+def test_get_data_disambiguates_ambiguous_region_name(monkeypatch):
+    """#162 — 'georgia' is both a country (europe) and a US state
+    (north-america/us), which resolve to different Geofabrik files. The bare name
+    used to silently return the country. It is now rejected as ambiguous, and a
+    region-qualified name resolves each one; get_data routes a qualified name to
+    the correct file."""
+    import pyrosm.data as data
+    from pyrosm.data import search_source
+
+    # The two regions resolve to different files.
+    state = search_source("usa/georgia")["url"]
+    country = search_source("europe/georgia")["url"]
+    assert state.endswith("north-america/us/georgia-latest.osm.pbf")
+    assert country.endswith("europe/georgia-latest.osm.pbf")
+    assert state != country
+
+    # The bare, ambiguous name raises with guidance (search_source and get_data).
+    with pytest.raises(ValueError, match="ambiguous"):
+        search_source("georgia")
+    with pytest.raises(ValueError, match="ambiguous"):
+        data.get_data("georgia")
+
+    # A benign collision (same file reachable via two groupings) is not ambiguous.
+    assert search_source("oxfordshire")["url"].endswith(
+        "england/oxfordshire-latest.osm.pbf"
+    )
+
+    # An unknown region qualifier is rejected.
+    with pytest.raises(ValueError, match="Could not retrieve"):
+        search_source("nowhere/georgia")
+
+    # get_data routes a region-qualified name to the resolved file (download stubbed).
+    captured = {}
+
+    def fake_retrieve(d, update, directory):
+        captured["url"] = d["url"]
+        return "/fake/path"
+
+    monkeypatch.setattr(data, "retrieve", fake_retrieve)
+    data.get_data("usa/georgia")
+    assert captured["url"].endswith("north-america/us/georgia-latest.osm.pbf")
+
+    # A source-registry entry that is neither a region list nor a subregion dict is
+    # skipped rather than crashing the lookup.
+    monkeypatch.setattr(
+        data.sources, "available", {**data.sources.available, "_stray": 42}
+    )
+    assert data._find_sources("finland")
+
+
+def test_get_data_dispatch_and_lazy_attrs(monkeypatch):
+    """Exercise get_data's dispatch table -- bundled files, gist-hosted test data,
+    the name-normalisation variants (spaces, underscores, dashes) and the
+    not-available error -- plus the deprecated get_path alias and the lazy
+    pyrosm.data attribute loader."""
+    import os
+    import pyrosm.data as data
+
+    # Non-string input is rejected up front.
+    with pytest.raises(ValueError, match="should be text"):
+        data.get_data(123)
+
+    # An unknown name reports that it is not available.
+    with pytest.raises(ValueError, match="is not available"):
+        data.get_data("not_a_real_place_xyz")
+
+    # Bundled data is returned as a local path, no download.
+    assert os.path.exists(data.get_data("test_pbf"))
+
+    # Stub the network so the retrieve-backed branches (and retrieve itself) run
+    # offline; capture the resolved filename for each.
+    seen = []
+
+    def fake_download(url, filename, update, target_dir):
+        seen.append(filename)
+        return "/fake/" + filename
+
+    monkeypatch.setattr(data, "download", fake_download)
+
+    # Gist-hosted test datasets dispatch to retrieve directly.
+    for name in (
+        "helsinki_region_pbf",
+        "helsinki_history_pbf",
+        "helsinki_test_history_pbf",
+        "ulanbator_test_pbf",
+    ):
+        data.get_data(name)
+
+    # A plain region name resolves through search_source.
+    data.get_data("finland")
+
+    # Name-normalisation variants: spaces removed (a city), space->underscore and
+    # dash->underscore (a region).
+    data.get_data("Brandenburg Havel")
+    data.get_data("new zealand")
+    data.get_data("new-zealand")
+    assert seen  # everything above went through the stubbed download
+
+    # get_path is the deprecated alias for get_data.
+    with pytest.warns(DeprecationWarning, match="get_path"):
+        assert os.path.exists(data.get_path("test_pbf"))
+
+    # The optional geo helpers are exposed lazily via module __getattr__.
+    assert callable(data.get_data_by_bbox)
+    assert callable(data.geocode)
+    assert callable(data.get_data_by_geocoding)
+    with pytest.raises(AttributeError):
+        data.this_attr_does_not_exist
