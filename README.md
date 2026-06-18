@@ -2,7 +2,7 @@
   <img src="resources/img/pyrosm_logo_2.png" alt="Pyrosm" width="660">
 </p>
 
-# Pyrosm 
+# Pyrosm –- Python’s Rapid OSM Parser
 [![Conda Version](https://img.shields.io/conda/vn/conda-forge/pyrosm.svg)](https://anaconda.org/conda-forge/pyrosm)
 [![PyPI version](https://badge.fury.io/py/pyrosm.svg)](https://badge.fury.io/py/pyrosm)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/pyrosm.svg?logo=python&logoColor=%23fff)](https://pypi.org/project/pyrosm)
@@ -10,6 +10,8 @@
 [![Coverage Status](https://codecov.io/gh/pyrosm/pyrosm/branch/master/graph/badge.svg)](https://codecov.io/gh/pyrosm/pyrosm) 
 [![CodeFactor](https://www.codefactor.io/repository/github/pyrosm/pyrosm/badge)](https://www.codefactor.io/repository/github/pyrosm/pyrosm)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/pyrosm?color=yellow&label=Downloads)](https://pypistats.org/packages/pyrosm)
+[![Downloads (PyPI total)](https://static.pepy.tech/personalized-badge/pyrosm?period=total&units=international_system&left_color=grey&right_color=orange&left_text=Downloads%20(pypi))](https://pepy.tech/project/pyrosm)
+[![Downloads (conda-forge total)](https://img.shields.io/conda/dn/conda-forge/pyrosm?label=Downloads%20%28conda-forge%29)](https://anaconda.org/conda-forge/pyrosm)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.3755057.svg)](https://doi.org/10.5281/zenodo.3755057)
 [![License](https://anaconda.org/conda-forge/pyrosm/badges/license.svg)](https://anaconda.org/conda-forge/pyrosm/)
 
@@ -35,16 +37,19 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
 
 ## Current features
 
- - download PBF data easily from hundreds of locations across the world
- - read street networks (separately for driving, cycling, walking and all-combined)
- - read buildings from PBF
- - read Points of Interest (POI) from PBF
- - read landuse from PBF
- - read "natural" from PBF
- - read boundaries from PBF (+ allow searching by name)
- - read any other data from PBF by using a custom user-defined filter
- - filter data based on bounding box
- - export networks as a directed graph to `igraph`, `networkx` and `pandana`
+- download PBF data easily from any location in the world
+- find and download the right extract for a bounding box or a place name
+- read street networks (separately for driving, cycling, walking and all-combined)
+- read buildings from PBF
+- read Points of Interest (POI) from PBF
+- read landuse from PBF
+- read "natural" from PBF
+- read boundaries from PBF (such as administrative borders)
+- read any other data from PBF by using a custom user-defined filter
+- filter data based on bounding box
+- control which OSM tags are parsed into columns
+- crop a PBF to a smaller area and write modified OSM data back to PBF
+- export networks as a directed graph to `igraph`, `networkx` and `pandarm`
  
 ## Install
 
