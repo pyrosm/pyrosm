@@ -823,3 +823,26 @@ def test_keep_all_drops_untagged_standalone_way():
     assert list(ways["id"]) == [1]
     assert relation_ways is None
     assert relations is None
+
+
+def test_custom_filter_key_outside_conf_uses_key_as_column(test_pbf):
+    """A custom_filter key with no predefined Conf.tags entry still works: the
+    getattr lookup falls through and the key itself becomes the column."""
+    from pyrosm import OSM
+
+    osm = OSM(filepath=test_pbf)
+    gdf = osm.get_data_by_custom_criteria(custom_filter={"source": True})
+    assert gdf is not None
+    assert "source" in gdf.columns
+    assert gdf["source"].notna().any()
+
+
+def test_custom_criteria_non_string_filter_type_raises(test_pbf):
+    """A non-string filter_type is rejected by the isinstance guard."""
+    from pyrosm import OSM
+
+    osm = OSM(filepath=test_pbf)
+    with pytest.raises(ValueError, match="should be either"):
+        osm.get_data_by_custom_criteria(
+            custom_filter={"building": True}, filter_type=123
+        )
