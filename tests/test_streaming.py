@@ -112,6 +112,19 @@ def test_streaming_buildings_full_column_parity(fixture, request):
     _assert_full_parity(mine, ref)
 
 
+@pytest.mark.parametrize("fixture", ["test_pbf", "helsinki_pbf"])
+def test_streaming_landuse_full_column_parity(fixture, request):
+    # The generalized layer reader must match OSM().get_landuse() (a different layer:
+    # different filter key and tag columns) column-for-column and value-for-value.
+    fp = request.getfixturevalue(fixture)
+    mine = streaming.get_landuse(fp)
+    ref = OSM(fp).get_landuse()
+    if ref is None:
+        assert mine is None
+        return
+    _assert_full_parity(mine, ref)
+
+
 def test_streaming_buildings_keep_metadata_false_parity(helsinki_pbf):
     # keep_metadata=False must drop the element-metadata columns exactly as the in-memory
     # reader does (whatever its handling) -- full column + value parity either way.
