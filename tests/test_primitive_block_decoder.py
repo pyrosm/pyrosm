@@ -1,8 +1,7 @@
 """Byte-exact parity of the raw ``primitive_block_decoder`` against the protobuf path.
 
-This is the Phase 0 correctness anchor: every node/way/relation field the raw decoder
-emits must equal what protobuf decodes from the same ``PrimitiveBlock`` bytes, on the
-bundled extracts.
+Every node/way/relation field the raw decoder emits must equal what protobuf decodes
+from the same ``PrimitiveBlock`` bytes, on the bundled extracts.
 """
 
 import zlib

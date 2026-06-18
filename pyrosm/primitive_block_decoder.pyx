@@ -6,9 +6,8 @@
 This reads the decompressed ``PrimitiveBlock`` bytes directly, in the protobuf wire
 format documented in ``proto/osmformat.proto``, and returns the node / way / relation
 arrays pyrosm needs -- without building the protobuf library's per-field Python
-objects (measured several times faster). Only this one message is hand-decoded; the
-cheap, infrequent ``BlobHeader`` / ``Blob`` / ``HeaderBlock`` structures keep using
-protobuf.
+objects. Only this one message is hand-decoded; the cheap, infrequent ``BlobHeader`` /
+``Blob`` / ``HeaderBlock`` structures keep using protobuf.
 
 Wire-format primer (the field numbers live in ``primitive_block_decoder.pxd``):
 
