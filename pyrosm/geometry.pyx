@@ -505,105 +505,144 @@ cdef _create_network_geometries_vectorized(node_coordinates, way_elements,
     return way_elements, geometries, from_ids, to_ids, node_attributes
 
 
-cdef _create_way_geometries(node_coordinates,
-                            way_elements,
-                            parse_network,
-                            bint build_node_data=True):
-    if parse_network:
-        return _create_network_geometries_vectorized(
-            node_coordinates, way_elements, build_node_data
-        )
+cdef _has_linear_tag(highway_arr, barrier_arr, route_arr, int i):
+    # A closed way is linear (and so a LineString, not an area) when it carries a
+    # highway/barrier/route tag -- read from THIS way's own tag values.
+    return (
+        (highway_arr is not None and highway_arr[i] is not None)
+        or (barrier_arr is not None and barrier_arr[i] is not None)
+        or (route_arr is not None and route_arr[i] is not None)
+    )
 
-    # Info for constructing geometries:
-    # https://wiki.openstreetmap.org/wiki/Way
 
-    # 'parse_network' determines whether the way is part of a network (and not e.g. a building)
-    # if true, the length of the way (or its segments) will be calculated
+cdef _single_area_geometry(nodes, node_coordinates, area_value, bint has_linear_tag):
+    # One way's non-network geometry: a Polygon when it is a closed area, otherwise
+    # a (Multi)LineString -- the exact per-way decision the loop made. Used for the
+    # ways the vectorised builder leaves out (open ways, closed-but-linear ways,
+    # ways with dropped nodes).
+    if nodes[0] == nodes[-1] and _closed_way_is_polygon(area_value, has_linear_tag):
+        return create_polygon_geometry(nodes, node_coordinates)
+    geom = create_linestring_geometry(nodes, node_coordinates)[0]
+    if isinstance(geom, Geometry) or geom is None:
+        return geom
+    # LineStrings come back as an array of segments.
+    if len(geom) == 1:
+        return geom[0]
+    return multilinestrings(geom)
 
-    cdef long long node
-    cdef list coords
-    cdef int n, i
-    n = len(way_elements['id'])
+
+cdef _create_area_geometries_vectorized(node_coordinates, way_elements):
+    # Vectorised area path: build the closed-area Polygons with a single batched
+    # shapely.polygons(linearrings(...)) call instead of one call per way. A way
+    # takes the batched path only when it is a closed area whose every node is
+    # present with valid coordinates and it has at least 4 coordinates (a ring's
+    # minimum) -- the dominant building/landuse case. Every other way (open ways,
+    # closed ways tagged linear, ways with dropped nodes, too-short rings) falls
+    # back to the exact per-way builder, so the output is identical to before.
+    cdef NodeLocations nc = node_coordinates
+    cdef int n = len(way_elements['id'])
+    cdef int i, w, W, poly_i
     keys = list(way_elements.keys())
+    nodes_col = way_elements['nodes']
 
-    # Containers for geoms and node-ids
-    geometries = []
-    from_ids, to_ids = [], []
-    node_attributes = []
-    parsed_way_indices = []
-
-    # Bind the tag arrays used to type closed ways (Polygon vs LineString) once,
-    # so the per-way decision is plain array reads rather than per-iteration dict
-    # work. A way is typed from its own tag values, not from which columns happen
-    # to exist in the batch.
     highway_arr = way_elements["highway"] if "highway" in way_elements else None
     barrier_arr = way_elements["barrier"] if "barrier" in way_elements else None
     route_arr = way_elements["route"] if "route" in way_elements else None
     area_arr = way_elements["area"] if "area" in way_elements else None
 
-    for i in range(0, n):
-        nodes = way_elements['nodes'][i]
-        # In some cases (e.g. when using clipped pbf file) the nodes list can be empty
-        if len(nodes) == 0:
+    # Flat node ids + per-way offsets, dropping empty ways (as the loop did), with a
+    # per-way "closed area" flag decided from each way's own tags.
+    flat_list = []
+    offsets = [0]
+    nonempty_idx = []
+    is_area = []
+    for i in range(n):
+        wnodes = nodes_col[i]
+        if len(wnodes) == 0:
             continue
-        u = nodes[0]
-        v = nodes[-1]
+        flat_list.extend(wnodes)
+        offsets.append(len(flat_list))
+        nonempty_idx.append(i)
+        if wnodes[0] == wnodes[-1]:
+            area_value = area_arr[i] if area_arr is not None else None
+            is_area.append(_closed_way_is_polygon(
+                area_value,
+                _has_linear_tag(highway_arr, barrier_arr, route_arr, i),
+            ))
+        else:
+            is_area.append(False)
 
-        # If first and last node are the same, it's a closed way
-        if  u == v:
-            if parse_network:
-                # Networks are linear: a closed way (e.g. a roundabout) is a
-                # LineString. Plazas/areas are excluded from the predefined
-                # network filters, and a Polygon is not routable anyway; keeping
-                # this branch linear also avoids leaving from/to ids unset.
-                geom, from_id, to_id, node_data = create_linestring_geometry(nodes, node_coordinates)
-            else:
-                # Decide from THIS way's own tags (not which columns exist in the
-                # batch), honouring the OSM 'area' tag.
-                area_value = area_arr[i] if area_arr is not None else None
-                has_linear_tag = (
-                    (highway_arr is not None and highway_arr[i] is not None)
-                    or (barrier_arr is not None and barrier_arr[i] is not None)
-                    or (route_arr is not None and route_arr[i] is not None)
+    W = len(nonempty_idx)
+    geometries = [None] * W
+
+    if W > 0:
+        flat_nodes = np.asarray(flat_list, dtype=np.int64)
+        offsets = np.asarray(offsets, dtype=np.int64)          # length W + 1
+        way_lengths = offsets[1:] - offsets[:-1]               # length W
+        is_area = np.asarray(is_area, dtype=bool)
+
+        # Vectorised coordinate gather + validity (mirrors is_valid_coordinate_pair).
+        idx, lon, lat = nc.gather(flat_nodes)
+        valid = ((idx >= 0)
+                 & (lon <= 180.0) & (lon >= -180.0)
+                 & (lat <= 90.0) & (lat >= -90.0))
+        valid_count = np.add.reduceat(valid.astype(np.int64), offsets[:-1])
+
+        vectorizable = is_area & (valid_count == way_lengths) & (way_lengths >= 4)
+
+        coords = np.column_stack([lon, lat])                   # (T, 2) float64
+        ring_lengths = way_lengths[vectorizable]
+        ring_positions = _concatenated_ranges(offsets[:-1][vectorizable], ring_lengths)
+        if len(ring_positions) > 0:
+            ring_index = np.repeat(
+                np.arange(len(ring_lengths), dtype=np.int64), ring_lengths
+            )
+            try:
+                poly_geoms = polygons(
+                    linearrings(coords[ring_positions], indices=ring_index)
                 )
-                if _closed_way_is_polygon(area_value, has_linear_tag):
-                    geom = create_polygon_geometry(nodes, node_coordinates)
-                else:
-                    geom, from_id, to_id, node_data = create_linestring_geometry(nodes, node_coordinates)
+            except GEOSException:
+                # A degenerate ring (e.g. all-identical coordinates) makes the
+                # batched ring builder raise where the per-way builder returned
+                # None; demote every batched way to the per-way path so the result
+                # still matches exactly.
+                vectorizable = np.zeros(W, dtype=bool)
+                poly_geoms = None
+            if poly_geoms is not None:
+                poly_i = 0
+                for w in range(W):
+                    if vectorizable[w]:
+                        geometries[w] = poly_geoms[poly_i]
+                        poly_i += 1
 
-        # Otherwise create LineString
-        else:
-            geom, from_id, to_id, node_data = create_linestring_geometry(nodes, node_coordinates)
+        for w in range(W):
+            if not vectorizable[w]:
+                i = nonempty_idx[w]
+                area_value = area_arr[i] if area_arr is not None else None
+                geometries[w] = _single_area_geometry(
+                    nodes_col[i],
+                    nc,
+                    area_value,
+                    _has_linear_tag(highway_arr, barrier_arr, route_arr, i),
+                )
 
-        if parse_network:
-            from_ids.append(from_id)
-            to_ids.append(to_id)
-            node_attributes += node_data
-            # Geometries should be an array of LineStrings at this point
-            geometries.append(geom)
-
-        # In case e.g. amenities have line features,
-        # ensure that geometry is in correct form
-        else:
-            if isinstance(geom, Geometry):
-                geometries.append(geom)
-            elif geom is None:
-                geometries.append(geom)
-            else:
-                # LineStrings are in an array
-                if len(geom) == 1:
-                    geometries.append(geom[0])
-                else:
-                    geometries.append(multilinestrings(geom))
-
-        # Add index
-        parsed_way_indices.append(i)
-
-    # Select valid ways
     for key in keys:
-        way_elements[key] = way_elements[key][parsed_way_indices]
+        way_elements[key] = way_elements[key][nonempty_idx]
 
-    return way_elements, geometries, from_ids, to_ids, node_attributes
+    return way_elements, geometries, [], [], []
+
+
+cdef _create_way_geometries(node_coordinates,
+                            way_elements,
+                            parse_network,
+                            bint build_node_data=True):
+    # Networks are linear and have their own vectorised builder; everything else
+    # (buildings, landuse, ...) goes through the vectorised area builder.
+    if parse_network:
+        return _create_network_geometries_vectorized(
+            node_coordinates, way_elements, build_node_data
+        )
+    return _create_area_geometries_vectorized(node_coordinates, way_elements)
 
 
 cpdef create_way_geometries(node_coordinates, way_elements, parse_network,
