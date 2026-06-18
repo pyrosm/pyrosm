@@ -173,6 +173,25 @@ def test_streaming_network_parity(network_type, helsinki_pbf):
     _assert_full_parity(mine, ref)
 
 
+def test_streaming_network_bounding_box_parity(helsinki_pbf):
+    # A bounding box restricts the network to ways with >=1 node inside it (kept whole),
+    # then the final spatial filter clips to the box -- matching the in-memory reader.
+    full = OSM(helsinki_pbf).get_network(network_type="driving")
+    minx, miny, maxx, maxy = full.total_bounds
+    bbox = [
+        minx + (maxx - minx) * 0.25,
+        miny + (maxy - miny) * 0.25,
+        minx + (maxx - minx) * 0.75,
+        miny + (maxy - miny) * 0.75,
+    ]
+    ref = OSM(helsinki_pbf, bounding_box=bbox).get_network(network_type="driving")
+    mine = streaming.get_network(
+        helsinki_pbf, network_type="driving", bounding_box=bbox
+    )
+    assert ref is not None and 0 < len(ref) < len(full)
+    _assert_full_parity(mine, ref)
+
+
 def test_streaming_network_custom_filter_parity(helsinki_pbf):
     flt = {"highway": ["footway", "path", "pedestrian"]}
     mine = streaming.get_network(helsinki_pbf, custom_filter=flt, filter_type="keep")

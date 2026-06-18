@@ -42,9 +42,15 @@ the area / point layers -- ``get_buildings`` / ``get_landuse`` / ``get_natural``
 
 Phase 4c adds the street network (``get_network``): the highway ways are assembled through
 pyrosm's ``parse_network`` path into LineString edges with a ``length`` column, via the
-predefined exclude filters or a custom filter. Still to come: the graph-export node frame
-(``get_network(nodes=True)``, which needs node metadata in the coordinate store), bounding
-boxes, history and the disk-backed coordinate join.
+predefined exclude filters or a custom filter.
+
+Phase 4d starts ``bounding_box`` reads: each worker flags which nodes fall inside the box,
+and the gather keeps a way when at least one of its nodes is in-box (kept whole, so the
+geometry is not cut at the edge -- and because *all* coordinates are spilled, the out-of-box
+vertices need no second pass). pyrosm's own ``prepare_geodataframe`` then applies the final
+spatial filter. Wired for ``get_network`` so far. Still to come: bounding boxes for the area
+/ point layers (with the relation member-completion semantics), the graph-export node frame
+(``get_network(nodes=True)``), history and the disk-backed coordinate join.
 """
 
 import os
@@ -76,11 +82,13 @@ _OUTPUT_CHUNK_SIZE = 250_000
 
 # Per-worker globals, set by the pool initializer (or directly for the in-process path).
 # ``_OSM_KEYS`` holds the layer's filter keys (utf-8 bytes) used to pre-select elements;
-# ``_INCLUDE_NODES`` is False for layers that emit no node features (buildings, boundary).
+# ``_INCLUDE_NODES`` is False for layers that emit no node features (buildings, boundary);
+# ``_BBOX_BOUNDS`` is ``(xmin, ymin, xmax, ymax)`` when reading a bounding box, else None.
 _FILEPATH = None
 _SHARD_DIR = None
 _OSM_KEYS = None
 _INCLUDE_NODES = True
+_BBOX_BOUNDS = None
 
 
 def _index_blobs(filepath):
@@ -268,12 +276,13 @@ def _layer_relations(string_table, relations, osm_keys):
         }
 
 
-def _init_worker(filepath, shard_dir, osm_keys, include_nodes):
-    global _FILEPATH, _SHARD_DIR, _OSM_KEYS, _INCLUDE_NODES
+def _init_worker(filepath, shard_dir, osm_keys, include_nodes, bbox_bounds):
+    global _FILEPATH, _SHARD_DIR, _OSM_KEYS, _INCLUDE_NODES, _BBOX_BOUNDS
     _FILEPATH = filepath
     _SHARD_DIR = shard_dir
     _OSM_KEYS = osm_keys
     _INCLUDE_NODES = include_nodes
+    _BBOX_BOUNDS = bbox_bounds
 
 
 def _offsets_from_lengths(lengths):
@@ -291,13 +300,40 @@ def _object_array(items):
     return arr
 
 
+def _bbox_bounds(bounding_box):
+    """The ``(xmin, ymin, xmax, ymax)`` rectangle of a bounding box (a list or a shapely
+    geometry), used to flag in-box nodes; ``None`` when no box is given."""
+    if bounding_box is None:
+        return None
+    if isinstance(bounding_box, (list, tuple)):
+        return tuple(bounding_box)
+    return tuple(bounding_box.bounds)
+
+
+def _in_box_mask(lon, lat, bounds):
+    """Boolean mask of the coordinates inside ``bounds`` (``xmin, ymin, xmax, ymax``)."""
+    xmin, ymin, xmax, ymax = bounds
+    return (lon >= xmin) & (lon <= xmax) & (lat >= ymin) & (lat <= ymax)
+
+
+def _filter_features_to_box(found, bounds):
+    """Keep only the node features whose coordinate is inside ``bounds``, or ``None``."""
+    mask = _in_box_mask(found["lon"], found["lat"], bounds)
+    if not mask.any():
+        return None
+    return {
+        k: ([t for t, m in zip(v, mask) if m] if k == "tags" else np.asarray(v)[mask])
+        for k, v in found.items()
+    }
+
+
 def _decode_batch(task):
     """Worker: decode a contiguous run of blobs and spill one shard with the node
     coordinates, the matching layer ways (refs + resolved tags + metadata), *all* ways
     (id + refs, for relation-member lookup) and the matching layer relations, then return
     the shard path."""
     worker_id, blobs = task
-    node_id, node_lon, node_lat = [], [], []
+    node_id, node_lon, node_lat, in_box = [], [], [], []
     nf = {k: [] for k in ("id", "lon", "lat", "tags", "meta")}
     bld_id, bld_refs, bld_tags = [], [], []
     bld_version, bld_timestamp, bld_visible = [], [], []
@@ -314,11 +350,16 @@ def _decode_batch(task):
                 node_id.append(nodes["id"])
                 node_lat.append(lat)
                 node_lon.append(lon)
+                if _BBOX_BOUNDS is not None:
+                    in_box.append(nodes["id"][_in_box_mask(lon, lat, _BBOX_BOUNDS)])
                 found = (
                     _matching_nodes(string_table, nodes, _OSM_KEYS, lon, lat)
                     if _INCLUDE_NODES
                     else None
                 )
+                # A node feature is kept only if it falls inside the bounding box.
+                if found is not None and _BBOX_BOUNDS is not None:
+                    found = _filter_features_to_box(found, _BBOX_BOUNDS)
                 if found is not None:
                     nf["id"].append(found["id"])
                     nf["lon"].append(found["lon"])
@@ -361,6 +402,7 @@ def _decode_batch(task):
         node_id=np.concatenate(node_id) if node_id else np.empty(0, np.int64),
         node_lon=np.concatenate(node_lon) if node_lon else np.empty(0),
         node_lat=np.concatenate(node_lat) if node_lat else np.empty(0),
+        in_box_id=np.concatenate(in_box) if in_box else np.empty(0, np.int64),
         nfeat_id=np.concatenate(nf["id"]) if nf["id"] else np.empty(0, np.int64),
         nfeat_lon=np.concatenate(nf["lon"]) if nf["lon"] else np.empty(0),
         nfeat_lat=np.concatenate(nf["lat"]) if nf["lat"] else np.empty(0),
@@ -411,7 +453,9 @@ def _auto_workers(n_blobs):
     return min(os.cpu_count() or 1, n_blobs)
 
 
-def _decode_all(filepath, blobs, workers, shard_dir, osm_keys, include_nodes):
+def _decode_all(
+    filepath, blobs, workers, shard_dir, osm_keys, include_nodes, bbox_bounds
+):
     """Decode every data blob into per-worker shards; return the shard paths."""
     n = len(blobs)
     per = (n + workers - 1) // workers
@@ -420,14 +464,11 @@ def _decode_all(filepath, blobs, workers, shard_dir, osm_keys, include_nodes):
         for i in range(workers)
         if blobs[i * per : (i + 1) * per]
     ]
+    init_args = (filepath, shard_dir, osm_keys, include_nodes, bbox_bounds)
     if workers == 1:
-        _init_worker(filepath, shard_dir, osm_keys, include_nodes)
+        _init_worker(*init_args)
         return [_decode_batch(tasks[0])] if tasks else []
-    with Pool(
-        workers,
-        initializer=_init_worker,
-        initargs=(filepath, shard_dir, osm_keys, include_nodes),
-    ) as pool:
+    with Pool(workers, initializer=_init_worker, initargs=init_args) as pool:
         return pool.map(_decode_batch, tasks)
 
 
@@ -530,11 +571,16 @@ def _node_lookup(shard_paths, needed):
     return NodeLocations(coords)
 
 
-def _collect_kept_ways(shard_paths, exclude_ids, keep):
+def _collect_kept_ways(shard_paths, exclude_ids, keep, in_box=None):
     """The standalone way records to output: the spilled candidates refined by the exact
-    value filter ``keep``, then with the building-relation member ways dropped (pyrosm
-    assigns those to the relation, so they are not standalone way rows)."""
+    value filter ``keep``, then -- when reading a bounding box -- restricted to ways with at
+    least one node inside it (kept whole, so geometry is not cut at the edge), and finally
+    with the building-relation member ways dropped (pyrosm assigns those to the relation, so
+    they are not standalone way rows)."""
     records = [r for r in _collect_building_ways(shard_paths) if keep(r["tags"])]
+    if in_box is not None:
+        inside = set(in_box.tolist())
+        records = [r for r in records if not inside.isdisjoint(r["nodes"])]
     if not records:
         return None
     if len(exclude_ids):
@@ -883,7 +929,9 @@ def _stream_layer_to_parquet(
     return _write_tables(output, all_tables(), schema)
 
 
-def _decode_and_run(filepath, osm_key_bytes, include_nodes, workers, run):
+def _decode_and_run(
+    filepath, osm_key_bytes, include_nodes, workers, run, bbox_bounds=None
+):
     """Index + parallel-decode ``filepath`` into a temp shard dir, call ``run(shard_paths)``
     and clean up. The shared front half of every public read."""
     data_blobs = [
@@ -896,11 +944,25 @@ def _decode_and_run(filepath, osm_key_bytes, include_nodes, workers, run):
     shard_dir = tempfile.mkdtemp(prefix="pyrosm_stream_")
     try:
         shard_paths = _decode_all(
-            filepath, data_blobs, workers, shard_dir, osm_key_bytes, include_nodes
+            filepath,
+            data_blobs,
+            workers,
+            shard_dir,
+            osm_key_bytes,
+            include_nodes,
+            bbox_bounds,
         )
         return run(shard_paths)
     finally:
         shutil.rmtree(shard_dir, ignore_errors=True)
+
+
+def _in_box_nodes(shard_paths):
+    """The unique ids of all nodes that fell inside the bounding box (spilled per shard).
+    A way is kept when at least one of its nodes is in this set (complete-ways semantics).
+    """
+    ids = [z for z in (np.load(p)["in_box_id"] for p in shard_paths) if len(z)]
+    return np.unique(np.concatenate(ids)) if ids else np.empty(0, np.int64)
 
 
 def _get_layer(
@@ -960,7 +1022,7 @@ def _get_layer(
 
 
 def _assemble_network(
-    shard_paths, tags_as_columns, keep_metadata, filter_spec, segments
+    shard_paths, tags_as_columns, keep_metadata, filter_spec, segments, bounding_box
 ):
     """Assemble the matching highway ways as a network (LineString edges + length) using
     pyrosm's ``parse_network`` path. Returns ``(edges, nodes)``; ``nodes`` is the graph-export
@@ -972,7 +1034,8 @@ def _assemble_network(
     def keep(tag):
         return element_should_be_kept(tag, osm_keys, data_filter, filter_type)
 
-    kept = _collect_kept_ways(shard_paths, np.empty(0, np.int64), keep)
+    in_box = _in_box_nodes(shard_paths) if bounding_box is not None else None
+    kept = _collect_kept_ways(shard_paths, np.empty(0, np.int64), keep, in_box)
     if kept is None:
         return None, None
     node_coordinates = _node_lookup(shard_paths, _needed_node_ids(kept, None))
@@ -984,7 +1047,7 @@ def _assemble_network(
         None,
         None,
         list(tags_as_columns),
-        None,
+        bounding_box,
         parse_network=True,
         calculate_seg_lengths=segments,
         keep_metadata=keep_metadata,
@@ -1177,13 +1240,15 @@ def get_network(
     nodes=False,
     custom_filter=None,
     filter_type="exclude",
+    bounding_box=None,
     workers=None,
     keep_metadata=True,
 ):
     """Read a street network (``highway=*`` ways as LineString edges + a ``length`` column)
     from ``filepath``, with the same columns as ``OSM(...).get_network()``. ``network_type``
     selects a predefined filter (``walking`` / ``driving`` / ``cycling`` / ...); a
-    ``custom_filter`` replaces it (``filter_type`` keep/exclude).
+    ``custom_filter`` replaces it (``filter_type`` keep/exclude). ``bounding_box`` (a
+    ``[minx, miny, maxx, maxy]`` list or a shapely polygon) restricts the read to that area.
 
     ``nodes=True`` (the graph-export node frame) is not yet supported by this backend: the
     coordinate store carries only id/lon/lat, so the node frame would lack the element
@@ -1223,13 +1288,21 @@ def get_network(
     data_filter, _ = parse_custom_filter(network_filter)
     # Networks always select highway ways (the filter values may reference other keys).
     filter_spec = (["highway"], data_filter, filter_type)
+    bounds = _bbox_bounds(bounding_box)
 
     def run(shard_paths):
         return _assemble_network(
-            shard_paths, tags_as_columns, keep_metadata, filter_spec, segments=nodes
+            shard_paths,
+            tags_as_columns,
+            keep_metadata,
+            filter_spec,
+            nodes,
+            bounding_box,
         )
 
-    edges, node_gdf = _decode_and_run(filepath, [b"highway"], False, workers, run)
+    edges, node_gdf = _decode_and_run(
+        filepath, [b"highway"], False, workers, run, bbox_bounds=bounds
+    )
     if nodes:
         return node_gdf, edges
     return edges
