@@ -316,6 +316,25 @@ def test_streaming_buildings_parallel_matches_single(helsinki_pbf):
     _assert_matches(parallel, single.sort_values("id").reset_index(drop=True))
 
 
+def test_auto_workers_decides_on_file_size_not_blob_count(tmp_path):
+    # The default worker count is chosen by file size: parallelising only pays off above
+    # ~70 MB, and blob count must not force a pool for a small file (sparse files give a
+    # size without occupying disk).
+    import os
+
+    small = tmp_path / "small.osm.pbf"
+    small.touch()
+    os.truncate(small, streaming._PARALLEL_MIN_FILE_BYTES - 1)
+    assert streaming._auto_workers(str(small), 10_000) == 1
+
+    big = tmp_path / "big.osm.pbf"
+    big.touch()
+    os.truncate(big, streaming._PARALLEL_MIN_FILE_BYTES + 1)
+    cpus = os.cpu_count() or 1
+    assert streaming._auto_workers(str(big), 10_000) == cpus
+    assert streaming._auto_workers(str(big), 2) == min(cpus, 2)
+
+
 def test_streaming_buildings_raw_blob_matches(helsinki_pbf, tmp_path):
     # Uncompressed `raw` blobs must decode to the same result as the zlib originals.
     raw_fp = str(tmp_path / "helsinki_raw.osm.pbf")

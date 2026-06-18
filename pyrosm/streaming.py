@@ -71,9 +71,11 @@ from pyrosm.tagparser import explode_way_tags, explode_node_tag_array
 from pyrosm.data_filter import element_should_be_kept
 from pyrosm.data_manager import parse_custom_filter
 
-# Below this many data blobs the multiprocessing overhead is not worth it, so the read
-# runs in-process (1 worker). Small bundled extracts therefore decode without a pool.
-_SMALL_FILE_BLOBS = 16
+# Below this file size the multiprocessing overhead (each spawned worker re-imports
+# pyrosm) outweighs the parallel decode, so the read runs in-process (1 worker). The
+# crossover sits around here empirically. Blob count is deliberately not used to decide:
+# extract tools pack very different entity counts per blob, so it does not track the work.
+_PARALLEL_MIN_FILE_BYTES = 70_000_000  # ~70 MB
 
 # Relation.MemberType -> the byte labels pyrosm's relation assembly expects.
 _MEMBER_TYPE = {0: b"node", 1: b"way", 2: b"relation"}
@@ -449,10 +451,13 @@ def _decode_batch(task):
     return path
 
 
-def _auto_workers(n_blobs):
-    if n_blobs < _SMALL_FILE_BLOBS:
+def _auto_workers(filepath, n_blobs):
+    """Pick a worker count for ``filepath``: single-core below the size threshold (where the
+    process-spawn overhead dominates), otherwise a worker per CPU, capped at the blob count.
+    """
+    if os.path.getsize(filepath) < _PARALLEL_MIN_FILE_BYTES:
         return 1
-    return min(os.cpu_count() or 1, n_blobs)
+    return max(1, min(os.cpu_count() or 1, n_blobs))
 
 
 def _decode_all(
@@ -1003,7 +1008,7 @@ def _decode_and_run(
         if blob_type == "OSMData"
     ]
     if workers is None:
-        workers = _auto_workers(len(data_blobs))
+        workers = _auto_workers(filepath, len(data_blobs))
     shard_dir = tempfile.mkdtemp(prefix="pyrosm_stream_")
     try:
         shard_paths = _decode_all(
@@ -1055,7 +1060,8 @@ def _get_layer(
 
     Returns an in-memory GeoDataFrame, or -- when ``output`` is a path -- streams the layer
     to a chunked GeoParquet there and returns the path (needs the optional ``pyarrow``).
-    ``workers`` defaults to one for small files and otherwise to a worker per CPU."""
+    ``workers`` defaults to one for files below ~70 MB and otherwise to a worker per CPU.
+    """
     if output is not None:
         _require_pyarrow()
     data_filter, derived_keys = parse_custom_filter(custom_filter)
