@@ -53,19 +53,23 @@ def _rewrite_pbf_raw(src, dst):
             out.write(blob_bytes)
 
 
-def _untiled_way_buildings(fp):
+def _untiled_buildings(fp):
+    # Way and relation building rows from the in-memory reader (the streaming backend
+    # must reproduce both). osm_type makes the comparison key unambiguous since a way and
+    # a relation can share an id number.
     gdf = OSM(fp).get_buildings()
-    gdf = gdf[gdf["osm_type"] == "way"]
-    return gdf.sort_values("id").reset_index(drop=True)
+    return gdf.sort_values(["osm_type", "id"]).reset_index(drop=True)
 
 
 def _assert_matches(mine, ref):
-    a = mine.sort_values("id").reset_index(drop=True)
-    # Same building way ids.
-    np.testing.assert_array_equal(a["id"].to_numpy(), ref["id"].to_numpy())
+    a = mine.sort_values(["osm_type", "id"]).reset_index(drop=True)
+    b = ref.sort_values(["osm_type", "id"]).reset_index(drop=True)
+    # Same element kinds and ids.
+    np.testing.assert_array_equal(a["osm_type"].to_numpy(), b["osm_type"].to_numpy())
+    np.testing.assert_array_equal(a["id"].to_numpy(), b["id"].to_numpy())
     # Same geometries, exact coordinates (order-canonical via normalize).
     na = gpd.GeoSeries(shapely.normalize(a.geometry.values))
-    nb = gpd.GeoSeries(shapely.normalize(ref.geometry.values))
+    nb = gpd.GeoSeries(shapely.normalize(b.geometry.values))
     assert na.geom_equals_exact(nb, tolerance=0).all()
 
 
@@ -73,9 +77,22 @@ def _assert_matches(mine, ref):
 def test_streaming_buildings_match_untiled(fixture, request):
     fp = request.getfixturevalue(fixture)
     mine = streaming.get_buildings(fp)
-    ref = _untiled_way_buildings(fp)
+    ref = _untiled_buildings(fp)
     assert mine is not None and len(mine) == len(ref) > 0
     _assert_matches(mine, ref)
+
+
+def test_streaming_building_relations_match(helsinki_pbf):
+    # The bundled Helsinki extract has building relations (multipolygons); they must
+    # match the in-memory reader's relation rows exactly.
+    mine = streaming.get_buildings(helsinki_pbf)
+    ref = OSM(helsinki_pbf).get_buildings()
+    n_rel = int((ref["osm_type"] == "relation").sum())
+    assert n_rel > 0
+    assert int((mine["osm_type"] == "relation").sum()) == n_rel
+    _assert_matches(
+        mine[mine["osm_type"] == "relation"], ref[ref["osm_type"] == "relation"]
+    )
 
 
 def test_streaming_buildings_parallel_matches_single(helsinki_pbf):
