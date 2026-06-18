@@ -82,6 +82,45 @@ def test_streaming_buildings_match_untiled(fixture, request):
     _assert_matches(mine, ref)
 
 
+def _assert_full_parity(mine, ref):
+    import pandas as pd
+
+    a = mine.sort_values(["osm_type", "id"]).reset_index(drop=True)
+    b = ref.sort_values(["osm_type", "id"]).reset_index(drop=True)
+    assert set(a.columns) == set(b.columns), set(a.columns).symmetric_difference(
+        b.columns
+    )
+    a = a[b.columns]
+    na = gpd.GeoSeries(shapely.normalize(a.geometry.values))
+    nb = gpd.GeoSeries(shapely.normalize(b.geometry.values))
+    assert na.geom_equals_exact(nb, tolerance=0).all()
+    for col in b.columns:
+        if col == "geometry":
+            continue
+        pd.testing.assert_series_equal(
+            a[col], b[col], check_dtype=False, check_names=False
+        )
+
+
+@pytest.mark.parametrize("fixture", ["test_pbf", "helsinki_pbf"])
+def test_streaming_buildings_full_column_parity(fixture, request):
+    # Every tag column, the JSON 'tags' column and the metadata columns must match
+    # OSM().get_buildings() column-for-column and value-for-value.
+    fp = request.getfixturevalue(fixture)
+    mine = streaming.get_buildings(fp)
+    ref = OSM(fp).get_buildings()
+    _assert_full_parity(mine, ref)
+
+
+def test_streaming_buildings_keep_metadata_false_parity(helsinki_pbf):
+    # keep_metadata=False must drop the element-metadata columns exactly as the in-memory
+    # reader does (whatever its handling) -- full column + value parity either way.
+    mine = streaming.get_buildings(helsinki_pbf, keep_metadata=False)
+    ref = OSM(helsinki_pbf, keep_metadata=False).get_buildings()
+    assert "changeset" not in mine.columns
+    _assert_full_parity(mine, ref)
+
+
 def test_streaming_building_relations_match(helsinki_pbf):
     # The bundled Helsinki extract has building relations (multipolygons); they must
     # match the in-memory reader's relation rows exactly.

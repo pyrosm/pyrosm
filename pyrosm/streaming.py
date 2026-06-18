@@ -18,8 +18,15 @@ live in different blocks than the relation, each worker also spills *every* way 
 building relations by id from those shards -- the same disk-lookup the node coordinates
 use -- so relations need no PBF re-read. The relations and their member ways are handed to
 pyrosm's own ``prepare_geodataframe`` so the assembled multipolygons (roles, ring logic)
-match the in-memory reader exactly. Later phases add the other layers, tag columns,
-history and the disk-backed coordinate join.
+match the in-memory reader exactly.
+
+Phase 4a adds full tag + metadata column parity: each matching way is spilled as a
+pyrosm-shaped way record (its resolved tag dict + ``version`` / ``timestamp`` / ``visible``
+metadata), and assembly runs those records through pyrosm's own tag-explosion converters
+(``explode_way_tags`` + ``way_records_to_arrays``), so every occurring tag becomes its own
+column, the rest land in the JSON ``tags`` column, and ``keep_metadata`` is honoured --
+column-for-column the in-memory reader's output. Later phases add the other layers /
+filters, the network path, bounding boxes, history and the disk-backed coordinate join.
 """
 
 import os
@@ -33,6 +40,8 @@ import numpy as np
 
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
 from pyrosm.primitive_block_decoder import decode_primitive_block
+from pyrosm._arrays import way_records_to_arrays
+from pyrosm.tagparser import explode_way_tags
 
 # Below this many data blobs the multiprocessing overhead is not worth it, so the read
 # runs in-process (1 worker). Small bundled extracts therefore decode without a pool.
@@ -86,26 +95,31 @@ def _read_block(f, offset, size):
 
 
 def _building_ways(string_table, ways):
-    """Select the ways tagged ``building=*``: their ids, node-ref slices and the
-    building value. Returns ``(ids, refs_list, values)`` or ``None``."""
+    """Select the ways tagged ``building=*`` and return, per matching way, its node-ref
+    slice, full (resolved) tag dict and ``version``/``timestamp``/``visible`` metadata --
+    everything pyrosm's way record carries. Returns a dict of parallel arrays/lists, or
+    ``None``."""
     if ways is None or _BUILDING not in string_table:
         return None
     building_idx = string_table.index(_BUILDING)
-    keys = ways["keys"]
+    keys, vals, tags_off = ways["keys"], ways["vals"], ways["tags_off"]
     key_positions = np.nonzero(keys == building_idx)[0]
     if len(key_positions) == 0:
         return None
     # A tag key belongs to the way whose [tags_off[i], tags_off[i+1]) slice contains it.
-    way_index = np.searchsorted(ways["tags_off"], key_positions, side="right") - 1
-    refs, refs_off, vals, ids = (
-        ways["refs"],
-        ways["refs_off"],
-        ways["vals"],
-        ways["id"],
-    )
-    ref_slices = [refs[refs_off[i] : refs_off[i + 1]] for i in way_index]
-    values = [string_table[vals[p]].decode("utf-8", "replace") for p in key_positions]
-    return ids[way_index], ref_slices, values
+    way_index = np.searchsorted(tags_off, key_positions, side="right") - 1
+    refs, refs_off = ways["refs"], ways["refs_off"]
+    return {
+        "id": ways["id"][way_index],
+        "refs": [refs[refs_off[i] : refs_off[i + 1]] for i in way_index],
+        "tags": [
+            _resolve_tags(string_table, keys, vals, tags_off[i], tags_off[i + 1])
+            for i in way_index
+        ],
+        "version": ways["version"][way_index],
+        "timestamp": ways["timestamp"][way_index],
+        "visible": ways["visible"][way_index],
+    }
 
 
 def _resolve_tags(string_table, keys, vals, start, end):
@@ -121,9 +135,9 @@ def _resolve_tags(string_table, keys, vals, start, end):
 
 def _building_relations(string_table, relations):
     """The ``building=*`` relations in this block. Yields, per relation, its id, member
-    id/type/role arrays and full tag dict -- everything pyrosm needs to assemble the
-    multipolygon. Member roles and tags are resolved through the block's string table.
-    """
+    id/type/role arrays, full tag dict and ``version``/``timestamp``/``changeset``
+    metadata -- everything pyrosm needs to assemble the multipolygon and its columns.
+    Member roles and tags are resolved through the block's string table."""
     if relations is None or _BUILDING not in string_table:
         return
     building_idx = string_table.index(_BUILDING)
@@ -133,6 +147,11 @@ def _building_relations(string_table, relations):
     tags_off = relations["tags_off"]
     rel_index = np.unique(np.searchsorted(tags_off, key_positions, side="right") - 1)
     ids, keys, vals = relations["id"], relations["keys"], relations["vals"]
+    version, timestamp, changeset = (
+        relations["version"],
+        relations["timestamp"],
+        relations["changeset"],
+    )
     memids, types, roles, moff = (
         relations["memids"],
         relations["types"],
@@ -146,7 +165,16 @@ def _building_relations(string_table, relations):
             dtype=object,
         )
         tags = _resolve_tags(string_table, keys, vals, tags_off[i], tags_off[i + 1])
-        yield ids[i], memids[s:e], types[s:e], member_role, tags
+        yield {
+            "id": ids[i],
+            "memid": memids[s:e],
+            "memtype": types[s:e],
+            "memrole": member_role,
+            "tags": tags,
+            "version": version[i],
+            "timestamp": timestamp[i],
+            "changeset": changeset[i],
+        }
 
 
 def _init_worker(filepath, shard_dir):
@@ -163,15 +191,24 @@ def _offsets_from_lengths(lengths):
     return off
 
 
+def _object_array(items):
+    """1-D object array of ``items`` (dicts/arrays), avoiding numpy's 2-D coercion."""
+    arr = np.empty(len(items), dtype=object)
+    arr[:] = items
+    return arr
+
+
 def _decode_batch(task):
     """Worker: decode a contiguous run of blobs and spill one shard with the node
-    coordinates, the building ways, *all* ways (id + refs, for relation-member lookup)
-    and the building relations, then return the shard path."""
+    coordinates, the matching building ways (refs + resolved tags + metadata), *all* ways
+    (id + refs, for relation-member lookup) and the building relations, then return the
+    shard path."""
     worker_id, blobs = task
     node_id, node_lon, node_lat = [], [], []
-    bld_id, bld_refs, bld_value = [], [], []
+    bld_id, bld_refs, bld_tags = [], [], []
+    bld_version, bld_timestamp, bld_visible = [], [], []
     all_id, all_refs, all_count = [], [], []
-    rel_id, rel_memid, rel_memtype, rel_memrole, rel_tags = [], [], [], [], []
+    rel = {k: [] for k in ("id", "memid", "memtype", "memrole", "tags", "meta")}
     with open(_FILEPATH, "rb") as f:
         for offset, size in blobs:
             data = _read_block(f, offset, size)
@@ -187,18 +224,19 @@ def _decode_batch(task):
                 all_count.append(np.diff(ways["refs_off"]))
                 found = _building_ways(string_table, ways)
                 if found is not None:
-                    ids, ref_slices, values = found
-                    bld_id.append(ids)
-                    bld_refs.extend(ref_slices)
-                    bld_value.extend(values)
-            for rid, memid, memtype, memrole, tags in _building_relations(
-                string_table, relations
-            ):
-                rel_id.append(rid)
-                rel_memid.append(memid)
-                rel_memtype.append(memtype)
-                rel_memrole.append(memrole)
-                rel_tags.append(tags)
+                    bld_id.append(found["id"])
+                    bld_refs.extend(found["refs"])
+                    bld_tags.extend(found["tags"])
+                    bld_version.append(found["version"])
+                    bld_timestamp.append(found["timestamp"])
+                    bld_visible.append(found["visible"])
+            for r in _building_relations(string_table, relations):
+                rel["id"].append(r["id"])
+                rel["memid"].append(r["memid"])
+                rel["memtype"].append(r["memtype"])
+                rel["memrole"].append(r["memrole"])
+                rel["tags"].append(r["tags"])
+                rel["meta"].append((r["version"], r["timestamp"], r["changeset"]))
 
     path = os.path.join(_SHARD_DIR, "shard_%d.npz" % worker_id)
     np.savez(
@@ -209,22 +247,36 @@ def _decode_batch(task):
         way_id=np.concatenate(bld_id) if bld_id else np.empty(0, np.int64),
         refs=np.concatenate(bld_refs) if bld_refs else np.empty(0, np.int64),
         refs_off=_offsets_from_lengths([len(r) for r in bld_refs]),
-        value=np.array(bld_value, dtype=object),
+        way_tags=_object_array(bld_tags),
+        way_version=(
+            np.concatenate(bld_version) if bld_version else np.empty(0, np.int64)
+        ),
+        way_timestamp=(
+            np.concatenate(bld_timestamp) if bld_timestamp else np.empty(0, np.int64)
+        ),
+        way_visible=(
+            np.concatenate(bld_visible) if bld_visible else np.empty(0, np.int64)
+        ),
         all_id=np.concatenate(all_id) if all_id else np.empty(0, np.int64),
         all_refs=np.concatenate(all_refs) if all_refs else np.empty(0, np.int64),
         all_refs_off=_offsets_from_lengths(
             np.concatenate(all_count).tolist() if all_count else []
         ),
-        rel_id=np.array(rel_id, dtype=np.int64),
-        rel_memid=np.concatenate(rel_memid) if rel_memid else np.empty(0, np.int64),
-        rel_memoff=_offsets_from_lengths([len(m) for m in rel_memid]),
+        rel_id=np.array(rel["id"], dtype=np.int64),
+        rel_memid=(
+            np.concatenate(rel["memid"]) if rel["memid"] else np.empty(0, np.int64)
+        ),
+        rel_memoff=_offsets_from_lengths([len(m) for m in rel["memid"]]),
         rel_memtype=(
-            np.concatenate(rel_memtype) if rel_memtype else np.empty(0, np.int64)
+            np.concatenate(rel["memtype"]) if rel["memtype"] else np.empty(0, np.int64)
         ),
         rel_memrole=(
-            np.concatenate(rel_memrole) if rel_memrole else np.empty(0, dtype=object)
+            np.concatenate(rel["memrole"])
+            if rel["memrole"]
+            else np.empty(0, dtype=object)
         ),
-        rel_tags=np.array(rel_tags, dtype=object),
+        rel_tags=_object_array(rel["tags"]),
+        rel_meta=np.array(rel["meta"], dtype=np.int64).reshape(-1, 3),
     )
     return path
 
@@ -254,18 +306,28 @@ def _decode_all(filepath, blobs, workers, shard_dir):
 
 
 def _collect_building_ways(shard_paths):
-    """Read the spilled building ways back: ids, values and a node-ref array per way."""
-    way_id, value, ref_slices = [], [], []
+    """Read the spilled building ways back as pyrosm-shaped way records (``id``,
+    ``version``, ``timestamp``, ``visible``, ``nodes``, ``tags``)."""
+    records = []
     for path in shard_paths:
         z = np.load(path, allow_pickle=True)
-        wid, off, refs, val = z["way_id"], z["refs_off"], z["refs"], z["value"]
+        wid = z["way_id"]
+        if len(wid) == 0:
+            continue
+        off, refs, tags = z["refs_off"], z["refs"], z["way_tags"]
+        ver, ts, vis = z["way_version"], z["way_timestamp"], z["way_visible"]
         for i in range(len(wid)):
-            ref_slices.append(refs[off[i] : off[i + 1]])
-        way_id.append(wid)
-        value.append(val)
-    way_id = np.concatenate(way_id) if way_id else np.empty(0, np.int64)
-    value = np.concatenate(value) if value else np.empty(0, dtype=object)
-    return way_id, value, ref_slices
+            records.append(
+                {
+                    "id": int(wid[i]),
+                    "version": int(ver[i]),
+                    "timestamp": int(ts[i]),
+                    "visible": bool(vis[i]),
+                    "nodes": refs[off[i] : off[i + 1]].tolist(),
+                    "tags": tags[i],
+                }
+            )
+    return records
 
 
 def _node_lookup(shard_paths, needed):
@@ -294,20 +356,18 @@ def _node_lookup(shard_paths, needed):
 
 
 def _collect_kept_ways(shard_paths, exclude_ids):
-    """The standalone building ways to output: ids, values and node-ref arrays, after
-    dropping the ones that are members of a building relation (pyrosm assigns those to
-    the relation, so they are not standalone way rows)."""
-    way_id, value, ref_slices = _collect_building_ways(shard_paths)
-    if len(way_id) == 0:
+    """The standalone building way records to output, after dropping the ones that are
+    members of a building relation (pyrosm assigns those to the relation, so they are not
+    standalone way rows)."""
+    records = _collect_building_ways(shard_paths)
+    if not records:
         return None
     if len(exclude_ids):
-        keep = ~np.isin(way_id, exclude_ids)
-        way_id = way_id[keep]
-        value = value[keep]
-        ref_slices = [r for r, k in zip(ref_slices, keep) if k]
-        if len(way_id) == 0:
+        exclude = set(exclude_ids.tolist())
+        records = [r for r in records if r["id"] not in exclude]
+        if not records:
             return None
-    return way_id, value, ref_slices
+    return records
 
 
 def _load_building_relations(shard_paths):
@@ -315,7 +375,7 @@ def _load_building_relations(shard_paths):
     struct pyrosm's assembly expects (``id`` / ``members`` / ``tags``), and return it
     together with the unique set of all their member ids. ``(None, empty)`` if there are
     no building relations."""
-    ids, members, tags = [], [], []
+    ids, members, tags, meta = [], [], [], []
     for path in shard_paths:
         z = np.load(path, allow_pickle=True)
         rid = z["rel_id"]
@@ -341,13 +401,18 @@ def _load_building_relations(shard_paths):
             )
             tags.append(rtags[k])
         ids.append(rid)
+        meta.append(z["rel_meta"])
     if not ids:
         return None, np.empty(0, np.int64)
-    members_arr = np.empty(len(members), dtype=object)
-    members_arr[:] = members
-    tags_arr = np.empty(len(tags), dtype=object)
-    tags_arr[:] = tags
-    relations = {"id": np.concatenate(ids), "members": members_arr, "tags": tags_arr}
+    meta = np.concatenate(meta)
+    relations = {
+        "id": np.concatenate(ids),
+        "members": _object_array(members),
+        "tags": _object_array(tags),
+        "version": meta[:, 0],
+        "timestamp": meta[:, 1],
+        "changeset": meta[:, 2],
+    }
     member_ids = np.unique(np.concatenate([m["member_id"] for m in members]))
     return relations, member_ids
 
@@ -374,11 +439,17 @@ def _gather_relation_ways(shard_paths, member_ids):
     return {"id": ids, "nodes": nodes}
 
 
-def _ways_dict(way_id, value, ref_slices):
-    """Pack way arrays into the ``way_elements`` dict pyrosm's assembly expects."""
-    nodes = np.empty(len(ref_slices), dtype=object)
-    nodes[:] = ref_slices
-    return {"id": way_id, "nodes": nodes, "building": value}
+def _ways_arrays(records, keep_metadata):
+    """Convert way records into the ``way_elements`` dict (all occurring tag columns + the
+    JSON ``tags`` column + metadata) pyrosm's assembly expects, reusing pyrosm's own
+    tag-explosion so the columns match the in-memory reader. Consumes (explodes) the
+    records. The augmentation mirrors ``get_osm_ways_and_relations``."""
+    from pyrosm.config import Conf
+
+    tags_as_columns = list(Conf.tags.building) + ["id", "nodes"]
+    if keep_metadata:
+        tags_as_columns += ["timestamp", "version"]
+    return way_records_to_arrays(explode_way_tags(records), tags_as_columns)
 
 
 def _needed_node_ids(kept, relation_ways):
@@ -386,7 +457,7 @@ def _needed_node_ids(kept, relation_ways):
     member ways -- the only coordinates the gather has to pull off disk."""
     refs = []
     if kept is not None:
-        refs.extend(kept[2])
+        refs.extend(r["nodes"] for r in kept)
     if relation_ways is not None:
         refs.extend(relation_ways["nodes"])
     if not refs:
@@ -414,35 +485,41 @@ def _gather_buildings(shard_paths):
     return kept, relations, relation_ways, node_coordinates
 
 
-def _assemble_chunk(node_coordinates, ways, relations=None, relation_ways=None):
-    """Build one GeoDataFrame from way and/or relation elements using pyrosm's own
-    geometry pipeline (missing-node handling, polygon/linestring typing, ring assembly,
-    dropna, orientation), so the result matches the in-memory reader exactly."""
+def _assemble_chunk(
+    node_coordinates, way_records, relations, relation_ways, keep_metadata
+):
+    """Build one GeoDataFrame from way and/or relation elements using pyrosm's own tag +
+    geometry pipeline (full columns, missing-node handling, polygon/linestring typing,
+    ring assembly, dropna, orientation), so the result matches the in-memory reader
+    exactly."""
+    from pyrosm.config import Conf
     from pyrosm.frames import prepare_geodataframe
 
+    ways = _ways_arrays(way_records, keep_metadata) if way_records else None
     gdf = prepare_geodataframe(
         None,
         node_coordinates,
         ways,
         relations,
         relation_ways,
-        ["building"],
+        list(Conf.tags.building),
         None,
-        keep_metadata=False,
+        keep_metadata=keep_metadata,
     )
     if gdf is not None and "nodes" in gdf.columns:
         gdf = gdf.drop(columns=["nodes"])
     return gdf
 
 
-def _assemble_buildings(shard_paths):
+def _assemble_buildings(shard_paths, keep_metadata):
     """Assemble all building ways and relations into a single in-memory GeoDataFrame."""
     gathered = _gather_buildings(shard_paths)
     if gathered is None:
         return None
     kept, relations, relation_ways, node_coordinates = gathered
-    ways = _ways_dict(*kept) if kept is not None else None
-    return _assemble_chunk(node_coordinates, ways, relations, relation_ways)
+    return _assemble_chunk(
+        node_coordinates, kept, relations, relation_ways, keep_metadata
+    )
 
 
 def _require_pyarrow():
@@ -473,76 +550,104 @@ def _align_table(table, schema):
     return pa.Table.from_arrays(arrays, schema=schema)
 
 
-def _write_geoparquet(output, gdfs, schema_gdf=None):
-    """Append each non-empty GeoDataFrame in ``gdfs`` as a row group to a single
-    GeoParquet at ``output``, so the output frame is never fully materialised. All row
-    groups share one schema: when ``schema_gdf`` is given (the column superset -- the
-    relation rows, which carry the ``tags`` column) it defines the schema and the way
-    chunks are aligned to it. Returns the path, or ``None`` if nothing was written."""
-    import pyarrow.parquet as pq
-    from geopandas.io.arrow import _geopandas_to_arrow
+def _union_schema(tables):
+    """One arrow schema holding the union of these tables' fields, with the GeoParquet
+    ``geo`` metadata preserved -- so chunks with different optional columns (way rows have
+    ``visible``, relation rows have ``changeset``) can share one parquet schema."""
+    import pyarrow as pa
 
-    schema = None
-    if schema_gdf is not None and len(schema_gdf) > 0:
-        schema = _geopandas_to_arrow(
-            schema_gdf, index=False, geometry_encoding="WKB"
-        ).schema
+    schema = pa.unify_schemas([t.schema for t in tables], promote_options="permissive")
+    for t in tables:
+        if t.schema.metadata and b"geo" in t.schema.metadata:
+            return schema.with_metadata(t.schema.metadata)
+    return schema
+
+
+def _write_tables(output, tables, schema):
+    """Append each arrow table as a row group to a single GeoParquet at ``output``, each
+    aligned to ``schema``. Returns the path, or ``None`` if nothing was written."""
+    import pyarrow.parquet as pq
 
     writer = None
     try:
-        for gdf in gdfs:
-            if gdf is None or len(gdf) == 0:
+        for table in tables:
+            if table is None or table.num_rows == 0:
                 continue
-            table = _geopandas_to_arrow(gdf, index=False, geometry_encoding="WKB")
-            if schema is None:
-                schema = table.schema
-            table = _align_table(table, schema)
             if writer is None:
                 writer = pq.ParquetWriter(output, schema)
-            writer.write_table(table)
+            writer.write_table(_align_table(table, schema))
     finally:
         if writer is not None:
             writer.close()
     return output if writer is not None else None
 
 
-def _stream_buildings_to_parquet(shard_paths, output, chunk_size):
-    """Stream the buildings (ways then relations) to a chunked GeoParquet at ``output``.
-    Returns the path, or ``None`` if there were no buildings to write."""
+def _stream_buildings_to_parquet(shard_paths, output, chunk_size, keep_metadata):
+    """Stream the buildings (ways in chunks, then relations) to a chunked GeoParquet at
+    ``output``, so the frame is never fully materialised. Returns the path, or ``None`` if
+    there were no buildings to write."""
+    from geopandas.io.arrow import _geopandas_to_arrow
+
     gathered = _gather_buildings(shard_paths)
     if gathered is None:
         return None
     kept, relations, relation_ways, node_coordinates = gathered
 
-    # Relation rows carry the column superset (the 'tags' column); assemble them once (they
-    # are few) so their schema can pin every row group, and the way chunks align to it.
-    relation_gdf = (
-        _assemble_chunk(node_coordinates, None, relations, relation_ways)
-        if relations is not None
-        else None
-    )
+    def to_table(gdf):
+        return _geopandas_to_arrow(gdf, index=False, geometry_encoding="WKB")
 
-    def chunks():
-        if kept is not None:
-            way_id, value, ref_slices = kept
-            for start in range(0, len(way_id), chunk_size):
-                sl = slice(start, start + chunk_size)
-                yield _assemble_chunk(
-                    node_coordinates, _ways_dict(way_id[sl], value[sl], ref_slices[sl])
-                )
-        if relation_gdf is not None and len(relation_gdf) > 0:
-            yield relation_gdf
+    def way_tables():
+        if kept is None:
+            return
+        for start in range(0, len(kept), chunk_size):
+            gdf = _assemble_chunk(
+                node_coordinates,
+                kept[start : start + chunk_size],
+                None,
+                None,
+                keep_metadata,
+            )
+            if gdf is not None and len(gdf) > 0:
+                yield to_table(gdf)
 
-    return _write_geoparquet(output, chunks(), schema_gdf=relation_gdf)
+    relation_table = None
+    if relations is not None:
+        rgdf = _assemble_chunk(
+            node_coordinates, None, relations, relation_ways, keep_metadata
+        )
+        if rgdf is not None and len(rgdf) > 0:
+            relation_table = to_table(rgdf)
+
+    # The union schema must cover both the way and relation row shapes; peek the first way
+    # chunk so it can be unified with the relation rows before the first write.
+    way_gen = way_tables()
+    first_way = next(way_gen, None)
+    samples = [t for t in (first_way, relation_table) if t is not None]
+    if not samples:
+        return None
+    schema = _union_schema(samples)
+
+    def all_tables():
+        if first_way is not None:
+            yield first_way
+        yield from way_gen
+        if relation_table is not None:
+            yield relation_table
+
+    return _write_tables(output, all_tables(), schema)
 
 
-def get_buildings(filepath, workers=None, output=None):
+def get_buildings(filepath, workers=None, output=None, keep_metadata=True):
     """Read building geometries from ``filepath``.
 
-    With ``output=None`` (the default) returns an in-memory GeoDataFrame of the building
-    ways and relations. With ``output`` set to a path, the buildings are streamed to a
-    GeoParquet file in chunks (never fully materialised) and the path is returned; this
-    needs the optional ``pyarrow`` dependency.
+    Returns the building ways and relations with the same columns as the in-memory reader:
+    every occurring ``Conf.tags.building`` tag as its own column, the remaining tags as a
+    JSON ``tags`` column, and -- when ``keep_metadata`` -- the ``version`` / ``timestamp``
+    / ``changeset`` / ``visible`` element metadata.
+
+    With ``output=None`` (the default) returns an in-memory GeoDataFrame. With ``output``
+    set to a path, the buildings are streamed to a GeoParquet file in chunks (never fully
+    materialised) and the path is returned; this needs the optional ``pyarrow`` dependency.
 
     ``workers`` defaults to one for small files (no multiprocessing overhead) and
     otherwise to a worker per CPU, bounded by the blob count.
@@ -562,7 +667,9 @@ def get_buildings(filepath, workers=None, output=None):
     try:
         shard_paths = _decode_all(filepath, data_blobs, workers, shard_dir)
         if output is None:
-            return _assemble_buildings(shard_paths)
-        return _stream_buildings_to_parquet(shard_paths, output, _OUTPUT_CHUNK_SIZE)
+            return _assemble_buildings(shard_paths, keep_metadata)
+        return _stream_buildings_to_parquet(
+            shard_paths, output, _OUTPUT_CHUNK_SIZE, keep_metadata
+        )
     finally:
         shutil.rmtree(shard_dir, ignore_errors=True)
