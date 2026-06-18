@@ -859,7 +859,7 @@ class OSM:
 
     def get_data_by_custom_criteria(
         self,
-        custom_filter,
+        custom_filter=None,
         osm_keys_to_keep=None,
         filter_type="keep",
         tags_as_columns=None,
@@ -876,8 +876,13 @@ class OSM:
         Parameters
         ----------
 
-        custom_filter : dict (required)
-            A custom filter to filter only specific POIs from OpenStreetMap.
+        custom_filter : dict (optional)
+            A custom filter to filter only specific elements from OpenStreetMap.
+            If ``None`` (the default), every tagged element is returned without
+            key/value filtering (tagged nodes, ways, and relations); standalone
+            ways with no tags are dropped. Reading everything is memory-heavy on
+            large extracts, so prefer a pre-filtered PBF and/or a bounding box.
+            ``filter_type`` is ignored in this mode.
 
         osm_keys_to_keep : str | list
             A filter to specify which OSM keys should be kept.
@@ -913,6 +918,16 @@ class OSM:
 
         """
 
+        # custom_filter=None means "return everything": keep every tagged element
+        # with no key/value filtering (issue #113).
+        keep_all = custom_filter is None
+        if keep_all:
+            custom_filter = {}
+            # There is nothing to keep/exclude by value, so filter_type is ignored;
+            # pin it to a valid no-op so a caller-supplied value cannot reject the
+            # request or reach Solver() with an invalid direction.
+            filter_type = "keep"
+
         # Check that the custom filter is in correct format
         custom_filter = validate_custom_filter(custom_filter)
 
@@ -935,16 +950,25 @@ class OSM:
 
         # Tags to keep as columns
         if tags_as_columns is None:
-            tags_as_columns = []
-            for k in custom_filter.keys():
-                try:
+            if keep_all:
+                # No key filter to derive columns from: expose the default columns
+                # of every known feature, so common tags become columns and the
+                # rest land in the JSON 'tags' column.
+                tags_as_columns = []
+                for k in self.conf.tags.available:
                     tags_as_columns += getattr(self.conf.tags, k)
-                except Exception:
-                    pass
-            # If tags weren't available in conf, store keys as columns by default
-            # (all other tags in such cases will be stored in 'tags' column as JSON)
-            if len(tags_as_columns) == 0:
-                tags_as_columns = list(custom_filter.keys())
+                tags_as_columns = list(dict.fromkeys(tags_as_columns))
+            else:
+                tags_as_columns = []
+                for k in custom_filter.keys():
+                    try:
+                        tags_as_columns += getattr(self.conf.tags, k)
+                    except Exception:
+                        pass
+                # If tags weren't available in conf, store keys as columns by
+                # default (all other tags will be stored in 'tags' column as JSON)
+                if len(tags_as_columns) == 0:
+                    tags_as_columns = list(custom_filter.keys())
 
         else:
             # Validate tags
@@ -975,6 +999,7 @@ class OSM:
             keep_metadata=self.keep_metadata,
             relation_member_ways=self._relation_member_ways,
             complete_relations=self.complete_relations,
+            keep_all=keep_all,
         )
 
         # Do not keep node information unless specifically asked for

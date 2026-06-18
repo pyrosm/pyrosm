@@ -1,3 +1,3 @@
-cpdef get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys=*, bint keep_metadata=*, relation_member_ways=*)
+cpdef get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys=*, bint keep_metadata=*, relation_member_ways=*, bint keep_all=*)
 # For debugging purposes
-cpdef _get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, bint keep_metadata=*, relation_member_ways=*)
+cpdef _get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, bint keep_metadata=*, relation_member_ways=*, bint keep_all=*)
