@@ -4,6 +4,14 @@ from cykhash.khashsets cimport any_int64_from_iter, isin_int64, Int64Set_from_bu
 from cpython cimport array
 
 
+# Structural fields the parser attaches to every (flattened) way record; any other
+# top-level key is an OSM tag. Used to decide whether a way carries a real tag when
+# reading all data with no key filter (custom_filter=None / keep_all).
+WAY_STRUCTURAL_KEYS = frozenset(
+    {"id", "version", "timestamp", "visible", "nodes", "changeset"}
+)
+
+
 class Solver:
     """Solver is used to toggle between exclude / keep checks applied in data filter."""
     def __init__(self, direction):
@@ -52,7 +60,8 @@ cdef filter_osm_records(data_records,
                         data_filter,
                         osm_data_type,
                         relation_way_ids,
-                        filter_type):
+                        filter_type,
+                        bint keep_all=False):
     """
     Filter OSM data records by given OSM tag key:value pairs.
     
@@ -124,7 +133,13 @@ cdef filter_osm_records(data_records,
                 filtered_data.append(record)
                 continue
 
-        if not has_osm_data_type(osm_data_type, record_keys):
+        # keep_all (custom_filter=None): keep any way carrying at least one OSM tag,
+        # i.e. any key outside the parser's structural fields. Standalone untagged
+        # ways are dropped (relation-member ways are already kept above).
+        if keep_all:
+            if len(set(record_keys) - WAY_STRUCTURAL_KEYS) == 0:
+                continue
+        elif not has_osm_data_type(osm_data_type, record_keys):
             continue
 
         # Check if should be filtered based on given data_filter.
@@ -199,9 +214,14 @@ cpdef get_mask_by_osmid(src_array, osm_ids):
     return result
 
 
-cdef record_should_be_kept(tag, osm_keys, data_filter, filter_type):
+cdef record_should_be_kept(tag, osm_keys, data_filter, filter_type, bint keep_all=False):
     if tag is None:
         return False
+
+    # keep_all (custom_filter=None): keep any element that carries a tag. For nodes
+    # and relations 'tag' is already the separated tags dict, so this is exact.
+    if keep_all:
+        return len(tag) > 0
 
     cdef str k, osm_key
     filter_keys = list(data_filter.keys())
@@ -245,7 +265,7 @@ cdef record_should_be_kept(tag, osm_keys, data_filter, filter_type):
     return True
 
 
-cdef filter_relation_indices(relations, osm_keys, data_filter, filter_type):
+cdef filter_relation_indices(relations, osm_keys, data_filter, filter_type, bint keep_all=False):
     cdef int i, n = len(relations.get("tags", []))
     indices = []
 
@@ -257,12 +277,12 @@ cdef filter_relation_indices(relations, osm_keys, data_filter, filter_type):
 
     for i in range(0, n):
         tag = relations["tags"][i]
-        if record_should_be_kept(tag, osm_keys, relation_filter, filter_type):
+        if record_should_be_kept(tag, osm_keys, relation_filter, filter_type, keep_all):
             indices.append(i)
     return indices
 
 
-cdef filter_node_indices(node_arrays, osm_keys, data_filter, filter_type):
+cdef filter_node_indices(node_arrays, osm_keys, data_filter, filter_type, bint keep_all=False):
     cdef int i, n = len(node_arrays["tags"])
     indices = []
 
@@ -273,7 +293,7 @@ cdef filter_node_indices(node_arrays, osm_keys, data_filter, filter_type):
 
     for i in range(0, n):
         tag = node_arrays["tags"][i]
-        if record_should_be_kept(tag, osm_keys, node_filter, filter_type):
+        if record_should_be_kept(tag, osm_keys, node_filter, filter_type, keep_all):
             indices.append(i)
 
     return indices
