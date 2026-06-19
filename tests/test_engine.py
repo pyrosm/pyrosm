@@ -252,8 +252,8 @@ def test_read_block_decodes_lzma_and_rejects_unsupported(tmp_path):
 
 
 def _write_shard(path, **overrides):
-    """Write a per-worker shard in the layout decode._decode_batch produces; every array
-    is empty by default so a test can fill in only the ones it needs."""
+    """Write a shard in the layout decode._decode_one_block produces; every array is empty
+    by default so a test can fill in only the ones it needs."""
     arrays = dict(
         node_id=np.empty(0, np.int64),
         node_lon=np.empty(0),
