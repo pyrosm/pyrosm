@@ -215,3 +215,29 @@ def test_auto_workers_decides_on_file_size_not_blob_count(tmp_path):
     cpus = os.cpu_count() or 1
     assert pool._auto_workers(str(big), 10_000) == cpus
     assert pool._auto_workers(str(big), 2) == min(cpus, 2)
+
+
+def test_read_block_decodes_lzma_and_rejects_unsupported(tmp_path):
+    # _read_block must decode an lzma-compressed Blob and raise on a Blob that carries no
+    # recognised compression field.
+    import lzma
+    from pyrosm.engine.blobs import _read_block
+
+    payload = b"raw primitive block bytes"
+
+    blob = Blob()
+    blob.lzma_data = lzma.compress(payload)
+    encoded = blob.SerializeToString()
+    lzma_fp = tmp_path / "lzma_blob.bin"
+    lzma_fp.write_bytes(encoded)
+    with open(lzma_fp, "rb") as f:
+        assert _read_block(f, 0, len(encoded)) == payload
+
+    unsupported = Blob()
+    unsupported.raw_size = len(payload)  # a field is set, but no payload field is
+    bad = unsupported.SerializeToString()
+    bad_fp = tmp_path / "bad_blob.bin"
+    bad_fp.write_bytes(bad)
+    with open(bad_fp, "rb") as f:
+        with pytest.raises(ValueError, match="Unsupported"):
+            _read_block(f, 0, len(bad))

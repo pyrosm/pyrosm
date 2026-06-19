@@ -18,6 +18,7 @@ dependencies:
   # pandarm (the maintained fork) does build on 3.13/3.14 and is exercised instead.
   - pandarm
   - python-igraph
+  - pyarrow
   # testing
   - osmnx
   - pyosmium
