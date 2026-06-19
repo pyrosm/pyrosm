@@ -87,6 +87,13 @@ class OSM:
         Without the guard the read still completes -- it falls back to a single
         process and warns -- but it is not parallel. On Linux (`fork`) no guard is
         needed.
+
+        History reads -- an `.osh.pbf` file, or any feature call with a
+        `timestamp` -- are served by the in-memory reader even when
+        `engine='out_of_core'`: selecting the latest version of each element
+        at/before the timestamp uses pyrosm's `get_latest_version`, which pandas
+        evaluates eagerly over the whole multi-version frame, so history is read
+        in memory.
     """
 
     allowed_bbox_types = [
@@ -174,19 +181,20 @@ class OSM:
         self._current_timestamp = None
         self._timestamp_changed = False
 
-    def _read_engine(self, reader, timestamp, with_relations=True, **kwargs):
+    def _use_engine(self, timestamp):
+        """Whether the out-of-core engine handles this read. History reads -- an ``.osh.pbf``
+        file, or an explicit ``timestamp`` -- route to the in-memory reader instead: selecting
+        the latest version of each element at/before the timestamp is pyrosm's per-id
+        ``get_latest_version`` merge (``df.groupby("id").last()``, each column's last non-null
+        value across an element's versions), which pandas evaluates eagerly over the whole
+        materialised multi-version frame, so history is read in memory."""
+        return self.engine == "out_of_core" and timestamp is None and not self._osh_file
+
+    def _read_engine(self, reader, with_relations=True, **kwargs):
         """Route a feature read to the out-of-core engine reader of the given name, threading
         the constructor-level ``bounding_box`` / ``keep_metadata`` (and ``complete_relations``
-        for the layer readers). History reads are not yet supported by this backend, so any
-        ``.osh.pbf`` file (which selects element versions implicitly even without a
-        ``timestamp``) or an explicit ``timestamp`` raises rather than silently returning all
-        historical versions."""
-        if self._osh_file or timestamp is not None:
-            raise NotImplementedError(
-                "Reading history files (.osh.pbf) or a specific 'timestamp' is not yet "
-                "supported by the out-of-core engine; use engine='in_memory' for history "
-                "reads."
-            )
+        for the layer readers). Only non-history reads reach here; history reads use the
+        in-memory path (see :meth:`_use_engine`)."""
         # Import the package qualified so the 'engine' name does not shadow the constructor
         # parameter of the same name.
         from pyrosm import engine as engine_backend
@@ -364,10 +372,9 @@ class OSM:
         Take a look at the OSM documentation for further details about the data:
         `https://wiki.openstreetmap.org/wiki/Key:highway <https://wiki.openstreetmap.org/wiki/Key:highway>`__
         """
-        if self.engine == "out_of_core":
+        if self._use_engine(timestamp):
             return self._read_engine(
                 "get_network",
-                timestamp,
                 with_relations=False,
                 network_type=network_type,
                 extra_attributes=extra_attributes,
@@ -491,10 +498,9 @@ class OSM:
         `https://wiki.openstreetmap.org/wiki/Key:building <https://wiki.openstreetmap.org/wiki/Key:building>`__
 
         """
-        if self.engine == "out_of_core":
+        if self._use_engine(timestamp):
             return self._read_engine(
                 "get_buildings",
-                timestamp,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
@@ -581,10 +587,9 @@ class OSM:
 
         """
 
-        if self.engine == "out_of_core":
+        if self._use_engine(timestamp):
             return self._read_engine(
                 "get_landuse",
-                timestamp,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
@@ -672,10 +677,9 @@ class OSM:
 
         """
 
-        if self.engine == "out_of_core":
+        if self._use_engine(timestamp):
             return self._read_engine(
                 "get_natural",
-                timestamp,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
@@ -777,10 +781,9 @@ class OSM:
 
         """
 
-        if self.engine == "out_of_core":
+        if self._use_engine(timestamp):
             return self._read_engine(
                 "get_boundaries",
-                timestamp,
                 boundary_type=boundary_type,
                 name=name,
                 custom_filter=custom_filter,
@@ -906,10 +909,9 @@ class OSM:
         'tourism', 'viewpoint', 'wilderness_hut', 'zoo']
 
         """
-        if self.engine == "out_of_core":
+        if self._use_engine(timestamp):
             return self._read_engine(
                 "get_pois",
-                timestamp,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
@@ -1028,7 +1030,7 @@ class OSM:
 
         """
 
-        if self.engine == "out_of_core":
+        if self._use_engine(timestamp):
             if custom_filter is None:
                 raise NotImplementedError(
                     "get_data_by_custom_criteria(custom_filter=None) ('return everything') "
@@ -1037,7 +1039,6 @@ class OSM:
                 )
             return self._read_engine(
                 "get_data_by_custom_criteria",
-                timestamp,
                 custom_filter=custom_filter,
                 osm_keys_to_keep=osm_keys_to_keep,
                 filter_type=filter_type,
