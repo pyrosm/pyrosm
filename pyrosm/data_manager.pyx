@@ -43,6 +43,13 @@ cdef get_data_filter_and_osm_keys(custom_filter):
                          f"Got {custom_filter} with type {type(custom_filter)}.")
 
 
+cpdef parse_custom_filter(custom_filter):
+    """Python entry point: normalise a ``custom_filter`` dict into ``(data_filter,
+    osm_keys)`` exactly as the in-memory reader does, so an alternative reader filters with
+    identical semantics."""
+    return get_data_filter_and_osm_keys(custom_filter)
+
+
 cdef get_relation_arrays(relations, osm_keys, data_filter, filter_type, bint keep_all=False):
     # Get indices for MultiPolygons that also passes data_filter
     indices = filter_relation_indices(relations, osm_keys, data_filter, filter_type, keep_all)

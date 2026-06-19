@@ -11,6 +11,20 @@ The public ``get_*`` readers re-exported here mirror the in-memory reader's outp
 column-for-column.
 """
 
-from pyrosm.engine.readers import get_buildings
+from pyrosm.engine.readers import (
+    get_buildings,
+    get_landuse,
+    get_natural,
+    get_pois,
+    get_boundaries,
+    get_data_by_custom_criteria,
+)
 
-__all__ = ["get_buildings"]
+__all__ = [
+    "get_buildings",
+    "get_landuse",
+    "get_natural",
+    "get_pois",
+    "get_boundaries",
+    "get_data_by_custom_criteria",
+]

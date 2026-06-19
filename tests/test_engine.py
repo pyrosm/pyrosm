@@ -10,7 +10,14 @@ import pytest
 import shapely
 
 from pyrosm import OSM, get_data
-from pyrosm.engine import get_buildings
+from pyrosm.engine import (
+    get_buildings,
+    get_landuse,
+    get_natural,
+    get_pois,
+    get_boundaries,
+    get_data_by_custom_criteria,
+)
 from pyrosm.engine import pool, geoparquet
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
 
@@ -250,6 +257,11 @@ def _write_shard(path, **overrides):
         node_id=np.empty(0, np.int64),
         node_lon=np.empty(0),
         node_lat=np.empty(0),
+        nfeat_id=np.empty(0, np.int64),
+        nfeat_lon=np.empty(0),
+        nfeat_lat=np.empty(0),
+        nfeat_tags=np.empty(0, object),
+        nfeat_meta=np.empty((0, 4), np.int64),
         way_id=np.empty(0, np.int64),
         refs=np.empty(0, np.int64),
         refs_off=np.array([0], np.int64),
@@ -304,8 +316,8 @@ def test_engine_get_buildings_no_buildings_returns_none(tmp_path):
     assert get_buildings(fp, output=str(tmp_path / "x.parquet")) is None
 
 
-def test_engine_building_ways_early_returns():
-    from pyrosm.engine.decode import _building_ways
+def test_engine_matching_ways_early_returns():
+    from pyrosm.engine.decode import _matching_ways
 
     ways = {
         "id": np.array([7], np.int64),
@@ -318,28 +330,39 @@ def test_engine_building_ways_early_returns():
         "timestamp": np.array([1], np.int64),
         "visible": np.array([1], np.int64),
     }
-    assert _building_ways([b"highway"], None) is None  # ways is None guard
-    assert _building_ways([b"highway"], ways) is None  # 'building' not in string table
-    # 'building' is in the table but no way carries it as a key.
-    assert _building_ways([b"highway", b"building"], ways) is None
+    assert _matching_ways([b"highway"], None, [b"building"]) is None  # ways is None
+    assert _matching_ways([b"highway"], ways, [b"building"]) is None  # key not in table
+    # the key is in the table but no way carries it.
+    assert _matching_ways([b"highway", b"building"], ways, [b"building"]) is None
 
 
 def test_engine_collect_empty_and_edge_shards(tmp_path):
     from pyrosm.engine.collect import (
-        _collect_building_ways,
+        _collect_matching_ways,
         _collect_kept_ways,
+        _collect_node_features,
         _node_lookup,
         _collect_relation_ways,
         _needed_node_ids,
-        _collect_buildings,
+        _collect_layer,
     )
+    from pyrosm.data_manager import parse_custom_filter
+
+    def keep_all(tag):
+        return True
+
+    data_filter, osm_keys = parse_custom_filter({"building": [True]})
+    filter_spec = (osm_keys, data_filter, "keep")
 
     empty = str(tmp_path / "empty.npz")
     _write_shard(empty)
-    assert _collect_building_ways([empty]) == []
-    assert _collect_kept_ways([empty], np.empty(0, np.int64)) is None
+    assert _collect_matching_ways([empty]) == []
+    assert _collect_kept_ways([empty], np.empty(0, np.int64), keep_all) is None
+    assert _collect_node_features([empty], [], True, keep_all) is None
     assert _node_lookup([empty], np.array([1, 2], np.int64)) is not None
-    assert _collect_buildings([empty]) is None
+    # Node-only result: no coordinates needed -> empty NodeLocations, not a crash.
+    assert _node_lookup([empty], np.empty(0, np.int64)) is not None
+    assert _collect_layer([empty], [], True, filter_spec, True, True) is None
     assert len(_needed_node_ids(None, None)) == 0
 
     bld = str(tmp_path / "bld.npz")
@@ -353,8 +376,8 @@ def test_engine_collect_empty_and_edge_shards(tmp_path):
         way_timestamp=np.array([100], np.int64),
         way_visible=np.array([1], np.int64),
     )
-    # Excluding the only building way (it is a relation member) leaves nothing standalone.
-    assert _collect_kept_ways([bld], np.array([1], np.int64)) is None
+    # Excluding the only way (it is a relation member) leaves nothing standalone.
+    assert _collect_kept_ways([bld], np.array([1], np.int64), keep_all) is None
 
     ways_only = str(tmp_path / "ways.npz")
     _write_shard(
@@ -389,30 +412,44 @@ def test_engine_stream_parquet_chunk_table_branches(
     pytest.importorskip("pyarrow")
     import tempfile
     import shutil
+    from pyrosm.config import Conf
+    from pyrosm.data_manager import parse_custom_filter
     from pyrosm.engine import geoparquet
     from pyrosm.engine.blobs import _index_blobs
     from pyrosm.engine.pool import _decode_all
-    from pyrosm.engine.collect import _collect_buildings
+    from pyrosm.engine.collect import _collect_layer
 
+    data_filter, osm_keys = parse_custom_filter({"building": [True]})
+    filter_spec = (osm_keys, data_filter, "keep")
+    tac = Conf.tags.building
     data_blobs = [(o, s) for (t, o, s) in _index_blobs(helsinki_pbf) if t == "OSMData"]
     shard_dir = tempfile.mkdtemp()
     try:
-        shards = _decode_all(helsinki_pbf, data_blobs, 1, shard_dir)
-        kept, relations, relation_ways, nc = _collect_buildings(shards)
+        shards = _decode_all(
+            helsinki_pbf, data_blobs, 1, shard_dir, [b"building"], False
+        )
+        node_features, kept, relations, relation_ways, nc = _collect_layer(
+            shards, tac, True, filter_spec, True, True
+        )
         assert kept is not None and relations is not None  # helsinki has both
 
         def write(collected):
-            monkeypatch.setattr(
-                geoparquet, "_collect_buildings", lambda paths: collected
-            )
-            return geoparquet._stream_buildings_to_parquet(
-                shards, str(tmp_path / "o.parquet"), 250_000, True
+            monkeypatch.setattr(geoparquet, "_collect_layer", lambda *a, **k: collected)
+            return geoparquet._stream_layer_to_parquet(
+                shards,
+                str(tmp_path / "o.parquet"),
+                250_000,
+                tac,
+                True,
+                filter_spec,
+                True,
+                True,
             )
 
         # relations only (no standalone ways): way loop skipped, relation chunk written.
-        assert write((None, relations, relation_ways, nc)) is not None
+        assert write((None, None, relations, relation_ways, nc)) is not None
         # ways only (no relations): relation branch skipped.
-        assert write((kept, None, None, nc)) is not None
+        assert write((None, kept, None, None, nc)) is not None
         # a way referencing an absent node assembles empty -> no parts -> None.
         absent = [
             {
@@ -424,10 +461,10 @@ def test_engine_stream_parquet_chunk_table_branches(
                 "tags": {"building": "yes"},
             }
         ]
-        assert write((absent, None, None, nc)) is None
+        assert write((None, absent, None, None, nc)) is None
         # a relation whose member ways are all absent assembles empty -> chunk skipped.
         empty_ways = {"id": np.empty(0, np.int64), "nodes": np.empty(0, dtype=object)}
-        assert write((None, relations, empty_ways, nc)) is None
+        assert write((None, None, relations, empty_ways, nc)) is None
     finally:
         shutil.rmtree(shard_dir, ignore_errors=True)
 
@@ -456,3 +493,225 @@ def test_compat_has_pyarrow_false_when_unavailable(monkeypatch):
         monkeypatch.undo()
         importlib.reload(_compat)  # restore the real, pyarrow-present state
     assert _compat.HAS_PYARROW is True
+
+
+@pytest.fixture
+def helsinki_region_pbf():
+    return get_data("helsinki_region_pbf")
+
+
+@pytest.mark.parametrize("fixture", ["test_pbf", "helsinki_pbf"])
+def test_engine_landuse_full_column_parity(fixture, request):
+    # A different layer (different filter key and tag columns) must match
+    # OSM().get_landuse() column-for-column and value-for-value.
+    fp = request.getfixturevalue(fixture)
+    mine = get_landuse(fp)
+    ref = OSM(fp).get_landuse()
+    if ref is None:
+        assert mine is None
+        return
+    _assert_full_parity(mine, ref)
+
+
+@pytest.mark.parametrize("fixture", ["test_pbf", "helsinki_pbf"])
+def test_engine_natural_full_column_parity(fixture, request):
+    # natural includes NODE point features, so this exercises the node path too.
+    fp = request.getfixturevalue(fixture)
+    mine = get_natural(fp)
+    ref = OSM(fp).get_natural()
+    if ref is None:
+        assert mine is None
+        return
+    n_node = int((ref["osm_type"] == "node").sum())
+    assert int((mine["osm_type"] == "node").sum()) == n_node
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_natural_has_node_rows(helsinki_pbf):
+    # The bundled Helsinki extract has natural node features; assert they are produced.
+    mine = get_natural(helsinki_pbf)
+    assert int((mine["osm_type"] == "node").sum()) > 0
+
+
+@pytest.mark.parametrize("fixture", ["test_pbf", "helsinki_pbf"])
+def test_engine_pois_default_parity(fixture, request):
+    # The default POI filter over nodes + ways + relations.
+    fp = request.getfixturevalue(fixture)
+    mine = get_pois(fp)
+    ref = OSM(fp).get_pois()
+    if ref is None:
+        assert mine is None
+        return
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_pois_value_filter_parity(helsinki_pbf):
+    # A value-level custom_filter must refine to the exact values (not just key presence).
+    flt = {"amenity": ["restaurant", "cafe", "bar"]}
+    mine = get_pois(helsinki_pbf, custom_filter=flt)
+    ref = OSM(helsinki_pbf).get_pois(custom_filter=flt)
+    assert mine is not None and len(mine) > 0
+    assert mine["amenity"].isin(flt["amenity"]).all()
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_custom_criteria_value_filter_parity(helsinki_pbf):
+    flt = {"amenity": ["restaurant", "cafe", "pub"]}
+    mine = get_data_by_custom_criteria(helsinki_pbf, custom_filter=flt)
+    ref = OSM(helsinki_pbf).get_data_by_custom_criteria(custom_filter=flt)
+    assert mine is not None and len(mine) > 0
+    _assert_full_parity(mine, ref)
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {"keep_nodes": False},
+        {"keep_ways": False},
+        {"keep_relations": False},
+        {"keep_nodes": False, "keep_relations": False},
+    ],
+)
+def test_engine_custom_criteria_keep_flags_parity(helsinki_pbf, flags):
+    # keep_nodes / keep_ways / keep_relations must select element kinds exactly as the
+    # in-memory reader.
+    flt = {"amenity": True}
+    mine = get_data_by_custom_criteria(helsinki_pbf, custom_filter=flt, **flags)
+    ref = OSM(helsinki_pbf).get_data_by_custom_criteria(custom_filter=flt, **flags)
+    if ref is None:
+        assert mine is None
+        return
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_boundaries_parity(helsinki_region_pbf):
+    # The Helsinki region extract has administrative boundaries (relations + ways).
+    mine = get_boundaries(helsinki_region_pbf)
+    ref = OSM(helsinki_region_pbf).get_boundaries()
+    assert ref is not None and (ref["osm_type"] == "relation").any()
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_natural_output_parquet_matches(helsinki_pbf, tmp_path):
+    # A point layer (nodes + ways) streamed to GeoParquet must reload equal to the frame.
+    pytest.importorskip("pyarrow")
+    out = str(tmp_path / "natural.parquet")
+    in_memory = get_natural(helsinki_pbf)
+    returned = get_natural(helsinki_pbf, output=out)
+    assert returned == out
+    reloaded = gpd.read_parquet(out)
+    _assert_matches(reloaded, in_memory)
+
+
+def test_engine_boundaries_name_filter_parity(helsinki_region_pbf):
+    # The name= substring post-filter must match OSM().get_boundaries(name=...).
+    mine = get_boundaries(helsinki_region_pbf, name="Vantaa")
+    ref = OSM(helsinki_region_pbf).get_boundaries(name="Vantaa")
+    assert mine is not None and len(mine) > 0
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_custom_criteria_osm_keys_and_explicit_columns(helsinki_pbf):
+    # osm_keys_to_keep as a string (-> list) and an explicit tags_as_columns.
+    kwargs = dict(
+        custom_filter={"building": True},
+        osm_keys_to_keep="building",
+        tags_as_columns=["building"],
+    )
+    mine = get_data_by_custom_criteria(helsinki_pbf, **kwargs)
+    ref = OSM(helsinki_pbf).get_data_by_custom_criteria(**kwargs)
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_custom_criteria_non_conf_key_parity(helsinki_pbf):
+    # A filter key without a dedicated Conf.tags column set becomes its own column.
+    flt = {"source": True}
+    mine = get_data_by_custom_criteria(helsinki_pbf, custom_filter=flt)
+    ref = OSM(helsinki_pbf).get_data_by_custom_criteria(custom_filter=flt)
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_node_feature_edge_cases(tmp_path):
+    from pyrosm.engine.decode import _matching_nodes
+    from pyrosm.engine.collect import _collect_node_features
+
+    # _matching_nodes returns None when there are no dense nodes in the block.
+    assert (
+        _matching_nodes([b"natural"], None, [b"natural"], np.empty(0), np.empty(0))
+        is None
+    )
+    # A node feature that fails the value filter is dropped (no node passes).
+    nfeat = str(tmp_path / "nfeat.npz")
+    _write_shard(
+        nfeat,
+        nfeat_id=np.array([1], np.int64),
+        nfeat_lon=np.array([24.9]),
+        nfeat_lat=np.array([60.1]),
+        nfeat_tags=np.array([{"natural": "tree"}], dtype=object),
+        nfeat_meta=np.zeros((1, 4), np.int64),
+    )
+    assert _collect_node_features([nfeat], ["natural"], True, lambda t: False) is None
+
+
+def test_engine_natural_keep_metadata_false_parity(helsinki_pbf):
+    # keep_metadata=False over a point layer (nodes + ways) must match the in-memory reader.
+    mine = get_natural(helsinki_pbf, keep_metadata=False)
+    ref = OSM(helsinki_pbf, keep_metadata=False).get_natural()
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_boundaries_custom_filter_adds_boundary_key(helsinki_region_pbf):
+    # A custom_filter without 'boundary' gets it added, matching OSM().get_boundaries().
+    flt = {"admin_level": True}
+    mine = get_boundaries(helsinki_region_pbf, custom_filter=dict(flt))
+    ref = OSM(helsinki_region_pbf).get_boundaries(custom_filter=dict(flt))
+    if ref is None or len(ref) == 0:
+        assert mine is None or len(mine) == 0
+        return
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_boundaries_name_without_name_column_raises(helsinki_pbf, monkeypatch):
+    # name= on a result that has no 'name' column raises, as the in-memory reader does.
+    from shapely.geometry import Point
+    from pyrosm.engine import readers
+
+    fake = gpd.GeoDataFrame({"id": [1]}, geometry=[Point(0, 0)])
+    monkeypatch.setattr(readers, "_get_layer", lambda *a, **k: fake)
+    with pytest.raises(ValueError, match="Could not filter by name"):
+        readers.get_boundaries(helsinki_pbf, name="x")
+
+
+def test_engine_boundaries_name_with_output_raises(helsinki_pbf, tmp_path):
+    # name= filtering cannot be combined with output= (the streamed GeoParquet would be
+    # written unfiltered); it must fail fast instead of silently writing all boundaries.
+    with pytest.raises(ValueError, match="cannot be combined with output"):
+        get_boundaries(helsinki_pbf, name="x", output=str(tmp_path / "b.parquet"))
+
+
+def test_engine_stream_skips_empty_node_chunk(tmp_path, monkeypatch):
+    # A node chunk that assembles to nothing is skipped (no row group); with only that
+    # chunk present, the writer produces no parts and returns None.
+    pytest.importorskip("pyarrow")
+    from pyrosm.config import Conf
+    from pyrosm.data_manager import parse_custom_filter
+    from pyrosm.engine import geoparquet
+
+    data_filter, osm_keys = parse_custom_filter({"natural": [True]})
+    filter_spec = (osm_keys, data_filter, "keep")
+    node_features = {
+        "id": np.array([1], np.int64)
+    }  # presence is enough; assemble stubbed
+    monkeypatch.setattr(geoparquet, "_assemble_chunk", lambda *a, **k: None)
+    monkeypatch.setattr(
+        geoparquet,
+        "_collect_layer",
+        lambda *a, **k: (node_features, None, None, None, None),
+    )
+    out = str(tmp_path / "x.parquet")
+    assert (
+        geoparquet._stream_layer_to_parquet(
+            [], out, 250_000, Conf.tags.natural, True, filter_spec, True, True
+        )
+        is None
+    )
