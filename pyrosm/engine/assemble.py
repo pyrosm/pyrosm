@@ -11,6 +11,7 @@ from pyrosm.engine.collect import (
     _collect_layer,
     _collect_kept_ways,
     _node_lookup,
+    _gather_node_records,
     _needed_node_ids,
 )
 
@@ -91,13 +92,21 @@ def _assemble_layer(
 
 
 def _assemble_network(
-    shard_paths, tags_as_columns, keep_metadata, filter_spec, segments, bounding_box
+    shard_paths,
+    tags_as_columns,
+    keep_metadata,
+    filter_spec,
+    segments,
+    bounding_box,
+    filepath=None,
 ):
     """Assemble the matching highway ways as a network (LineString edges + a ``length``
     column) through pyrosm's ``parse_network`` path. Returns ``(edges, nodes)``; ``nodes``
     is the graph-export node frame, only built when ``segments`` is True
-    (``get_network(nodes=True)``). A ``None`` ``data_filter`` (network types ``all`` /
-    ``driving_psv``) keeps every highway way."""
+    (``get_network(nodes=True)``), which needs the node tags + metadata, so the coordinate
+    store is gathered with a second pass over ``filepath`` rather than the lean shard lookup.
+    A ``None`` ``data_filter`` (network types ``all`` / ``driving_psv``) keeps every highway
+    way."""
     from pyrosm.frames import prepare_geodataframe
 
     osm_keys, data_filter, filter_type = filter_spec
@@ -111,7 +120,11 @@ def _assemble_network(
     kept = _collect_kept_ways(shard_paths, np.empty(0, np.int64), keep, in_box)
     if kept is None:
         return None, None
-    node_coordinates = _node_lookup(shard_paths, _needed_node_ids(kept, None))
+    needed = _needed_node_ids(kept, None)
+    if segments:
+        node_coordinates = _gather_node_records(filepath, needed, keep_metadata)
+    else:
+        node_coordinates = _node_lookup(shard_paths, needed)
     ways = _ways_arrays(kept, tags_as_columns, keep_metadata)
     edges, node_gdf = prepare_geodataframe(
         None,

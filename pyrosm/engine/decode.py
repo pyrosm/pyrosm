@@ -139,6 +139,63 @@ def _matching_nodes(string_table, nodes, osm_keys, node_lon, node_lat):
     }
 
 
+def _node_records_by_id(string_table, header, nodes, wanted, keep_metadata):
+    """Full records (id / lon / lat / tags + metadata) for the dense nodes whose id is in
+    ``wanted`` -- the second-pass gather that builds the graph-export node frame's coordinate
+    store. Tags are resolved through the string table; an untagged node gets ``tags=None`` and
+    metadata is included only when ``keep_metadata`` (matching the in-memory reader). Returns a
+    dict of parallel arrays/lists, or ``None`` when no wanted node is in this block."""
+    if nodes is None:
+        return None
+    ids = nodes["id"]
+    gran = header["granularity"]
+    lat = (nodes["lat"] * gran + header["lat_offset"]) / 1e9
+    lon = (nodes["lon"] * gran + header["lon_offset"]) / 1e9
+    keys_vals = nodes["keys_vals"]
+    idx, tags = [], []
+    p, end = 0, len(keys_vals)
+    for node_i in range(len(ids)):
+        pairs = []
+        while p < end and keys_vals[p] != 0:
+            pairs.append((keys_vals[p], keys_vals[p + 1]))
+            p += 2
+        p += 1  # skip the per-node 0 terminator
+        if ids[node_i] in wanted:
+            idx.append(node_i)
+            tags.append(
+                {
+                    string_table[k]
+                    .decode("utf-8", "replace"): string_table[v]
+                    .decode("utf-8", "replace")
+                    for k, v in pairs
+                }
+                if pairs
+                else None
+            )
+    if not idx:
+        return None
+    idx = np.array(idx, dtype=np.int64)
+
+    def meta(name):
+        arr = nodes[name]
+        return arr[idx] if len(arr) == len(ids) else np.zeros(len(idx), dtype=np.int64)
+
+    # 'visible' is kept regardless of keep_metadata (the in-memory node frame retains it);
+    # version/timestamp/changeset are the metadata dropped when keep_metadata is False.
+    record = {
+        "id": ids[idx],
+        "lon": lon[idx],
+        "lat": lat[idx],
+        "tags": tags,
+        "visible": meta("visible").astype(bool),
+    }
+    if keep_metadata:
+        record["version"] = meta("version")
+        record["timestamp"] = meta("timestamp")
+        record["changeset"] = meta("changeset")
+    return record
+
+
 def _layer_relations(string_table, relations, osm_keys):
     """The relations carrying any of ``osm_keys`` in this block. Yields, per relation, its
     id, member id/type/role arrays, full tag dict and ``version``/``timestamp``/
