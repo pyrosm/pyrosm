@@ -25,7 +25,8 @@ def _auto_workers(filepath, n_blobs):
 def _decode_all(
     filepath, blobs, workers, shard_dir, osm_keys, include_nodes, bbox_bounds=None
 ):
-    """Decode every data blob into per-worker shards; return the shard paths."""
+    """Decode every data blob into per-block shards (each worker spills one shard per block
+    as it is decoded); return the flat list of shard paths."""
     n = len(blobs)
     per = (n + workers - 1) // workers
     tasks = [
@@ -36,9 +37,9 @@ def _decode_all(
     init_args = (filepath, shard_dir, osm_keys, include_nodes, bbox_bounds)
     if workers == 1:
         _init_worker(*init_args)
-        return [_decode_batch(tasks[0])] if tasks else []
+        return _decode_batch(tasks[0]) if tasks else []
     with Pool(workers, initializer=_init_worker, initargs=init_args) as pool:
-        return pool.map(_decode_batch, tasks)
+        return [path for paths in pool.map(_decode_batch, tasks) for path in paths]
 
 
 def _decode_and_run(
