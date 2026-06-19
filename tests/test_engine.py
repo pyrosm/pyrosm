@@ -977,3 +977,127 @@ def test_engine_collect_bbox_relation_branches(tmp_path):
     }
     kept, ids = _restrict_relations_to_box(relations, set())
     assert kept is None and len(ids) == 0
+
+
+# ---------------------------------------------------------------------------
+# Public OSM API wired to the out-of-core engine (engine="out_of_core").
+# ---------------------------------------------------------------------------
+
+
+def _osm_parity(fp, method, **kwargs):
+    """The out-of-core engine, reached through the public OSM API, matches the in-memory
+    reader for the given feature method and keyword arguments. A fresh copy of the keyword
+    arguments is passed to each reader since the in-memory reader mutates the custom_filter
+    dict in place (it ensures the layer key), which would otherwise mask the engine's own
+    key-ensuring branch."""
+    import copy
+
+    ref = getattr(OSM(fp), method)(**copy.deepcopy(kwargs))
+    mine = getattr(OSM(fp, engine="out_of_core"), method)(**copy.deepcopy(kwargs))
+    if ref is None:
+        assert mine is None
+        return
+    _assert_full_parity(mine, ref)
+
+
+@pytest.mark.parametrize(
+    "method", ["get_buildings", "get_landuse", "get_natural", "get_pois"]
+)
+def test_osm_out_of_core_layer_parity(method, helsinki_pbf):
+    _osm_parity(helsinki_pbf, method)
+
+
+def test_osm_out_of_core_network_parity(helsinki_pbf):
+    _osm_parity(helsinki_pbf, "get_network", network_type="driving")
+
+
+def test_osm_out_of_core_boundaries_parity(helsinki_region_pbf):
+    _osm_parity(helsinki_region_pbf, "get_boundaries")
+    _osm_parity(helsinki_region_pbf, "get_boundaries", extra_attributes=["wikidata"])
+
+
+def test_osm_out_of_core_custom_criteria_parity(helsinki_pbf):
+    _osm_parity(
+        helsinki_pbf,
+        "get_data_by_custom_criteria",
+        custom_filter={"amenity": ["restaurant", "cafe"]},
+    )
+    # An explicit tags_as_columns (the validated branch) + extra_attributes + a string
+    # osm_keys_to_keep (the str-wrap branch).
+    _osm_parity(
+        helsinki_pbf,
+        "get_data_by_custom_criteria",
+        custom_filter={"amenity": ["restaurant"]},
+        tags_as_columns=["amenity", "name"],
+        extra_attributes=["cuisine"],
+        osm_keys_to_keep="amenity",
+    )
+
+
+def test_osm_out_of_core_custom_filter_parity(helsinki_pbf):
+    # custom_filter with the layer key present, and without it (the engine ensures the key).
+    _osm_parity(helsinki_pbf, "get_buildings", custom_filter={"building": ["retail"]})
+    _osm_parity(helsinki_pbf, "get_buildings", custom_filter={"amenity": ["school"]})
+    _osm_parity(helsinki_pbf, "get_landuse", custom_filter={"landuse": ["residential"]})
+    _osm_parity(
+        helsinki_pbf, "get_natural", custom_filter={"natural": ["wood", "water"]}
+    )
+
+
+def test_osm_out_of_core_extra_attributes_and_tags_to_keep_parity(helsinki_pbf):
+    _osm_parity(helsinki_pbf, "get_buildings", extra_attributes=["wikidata"])
+    _osm_parity(helsinki_pbf, "get_buildings", tags_to_keep=["building", "name"])
+    _osm_parity(
+        helsinki_pbf,
+        "get_pois",
+        custom_filter={"amenity": ["cafe"]},
+        extra_attributes=["operator"],
+    )
+    _osm_parity(
+        helsinki_pbf,
+        "get_network",
+        network_type="cycling",
+        extra_attributes=["maxspeed"],
+    )
+    _osm_parity(helsinki_pbf, "get_network", tags_to_keep=["highway", "name"])
+
+
+@pytest.mark.parametrize("complete_relations", [False, True])
+def test_osm_out_of_core_bbox_complete_relations_parity(
+    helsinki_pbf, complete_relations
+):
+    bbox = _central_bbox(OSM(helsinki_pbf).get_buildings())
+    ref = OSM(
+        helsinki_pbf, bounding_box=bbox, complete_relations=complete_relations
+    ).get_buildings()
+    mine = OSM(
+        helsinki_pbf,
+        bounding_box=bbox,
+        complete_relations=complete_relations,
+        engine="out_of_core",
+    ).get_buildings()
+    _assert_full_parity(mine, ref)
+
+
+def test_osm_engine_validation_and_unsupported_combos(helsinki_pbf):
+    with pytest.raises(ValueError):
+        OSM(helsinki_pbf, engine="bogus")
+    ooc = OSM(helsinki_pbf, engine="out_of_core")
+    with pytest.raises(NotImplementedError):
+        ooc.get_network(nodes=True)
+    with pytest.raises(NotImplementedError):
+        ooc.get_buildings(timestamp="2021-01-01 00:00:00")
+    with pytest.raises(NotImplementedError):
+        ooc.get_data_by_custom_criteria(custom_filter=None)
+
+
+def test_osm_out_of_core_history_file_not_supported(test_pbf, tmp_path):
+    # A .osh.pbf history file selects element versions implicitly even without a timestamp,
+    # which the out-of-core engine does not do, so it must raise rather than return every
+    # historical version. The filename (not the content) marks it as history.
+    import shutil
+
+    osh = str(tmp_path / "history.osh.pbf")
+    shutil.copy(test_pbf, osh)
+    with pytest.raises(NotImplementedError):
+        OSM(osh, engine="out_of_core").get_buildings()
