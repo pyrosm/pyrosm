@@ -1,8 +1,11 @@
 """Worker-count policy and ``multiprocessing.Pool`` orchestration for decoding blobs."""
 
 import os
+import shutil
+import tempfile
 from multiprocessing import Pool
 
+from pyrosm.engine.blobs import _index_blobs
 from pyrosm.engine.decode import _init_worker, _decode_batch
 
 # Parallelising the decode only pays off above this file size; smaller files decode in a
@@ -19,7 +22,9 @@ def _auto_workers(filepath, n_blobs):
     return max(1, min(os.cpu_count() or 1, n_blobs))
 
 
-def _decode_all(filepath, blobs, workers, shard_dir, osm_keys, include_nodes):
+def _decode_all(
+    filepath, blobs, workers, shard_dir, osm_keys, include_nodes, bbox_bounds=None
+):
     """Decode every data blob into per-worker shards; return the shard paths."""
     n = len(blobs)
     per = (n + workers - 1) // workers
@@ -28,12 +33,37 @@ def _decode_all(filepath, blobs, workers, shard_dir, osm_keys, include_nodes):
         for i in range(workers)
         if blobs[i * per : (i + 1) * per]
     ]
+    init_args = (filepath, shard_dir, osm_keys, include_nodes, bbox_bounds)
     if workers == 1:
-        _init_worker(filepath, shard_dir, osm_keys, include_nodes)
+        _init_worker(*init_args)
         return [_decode_batch(tasks[0])] if tasks else []
-    with Pool(
-        workers,
-        initializer=_init_worker,
-        initargs=(filepath, shard_dir, osm_keys, include_nodes),
-    ) as pool:
+    with Pool(workers, initializer=_init_worker, initargs=init_args) as pool:
         return pool.map(_decode_batch, tasks)
+
+
+def _decode_and_run(
+    filepath, osm_key_bytes, include_nodes, workers, run, bbox_bounds=None
+):
+    """Index + parallel-decode ``filepath`` into a temp shard dir, call ``run(shard_paths)``
+    and clean up. The shared front half of every public read."""
+    data_blobs = [
+        (offset, size)
+        for (blob_type, offset, size) in _index_blobs(filepath)
+        if blob_type == "OSMData"
+    ]
+    if workers is None:
+        workers = _auto_workers(filepath, len(data_blobs))
+    shard_dir = tempfile.mkdtemp(prefix="pyrosm_ooc_")
+    try:
+        shard_paths = _decode_all(
+            filepath,
+            data_blobs,
+            workers,
+            shard_dir,
+            osm_key_bytes,
+            include_nodes,
+            bbox_bounds,
+        )
+        return run(shard_paths)
+    finally:
+        shutil.rmtree(shard_dir, ignore_errors=True)

@@ -17,6 +17,7 @@ from pyrosm.engine import (
     get_pois,
     get_boundaries,
     get_data_by_custom_criteria,
+    get_network,
 )
 from pyrosm.engine import pool, geoparquet
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
@@ -257,6 +258,7 @@ def _write_shard(path, **overrides):
         node_id=np.empty(0, np.int64),
         node_lon=np.empty(0),
         node_lat=np.empty(0),
+        in_box_id=np.empty(0, np.int64),
         nfeat_id=np.empty(0, np.int64),
         nfeat_lon=np.empty(0),
         nfeat_lat=np.empty(0),
@@ -715,3 +717,263 @@ def test_engine_stream_skips_empty_node_chunk(tmp_path, monkeypatch):
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "network_type", ["walking", "driving", "driving+service", "cycling", "all"]
+)
+def test_engine_network_parity(network_type, helsinki_pbf):
+    # Street network: highway ways as LineString edges + a 'length' column. 'all' keeps
+    # every highway (a None data_filter); the others apply a predefined exclude filter.
+    mine = get_network(helsinki_pbf, network_type=network_type)
+    ref = OSM(helsinki_pbf).get_network(network_type=network_type)
+    assert ref is not None and len(ref) > 0
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_network_custom_filter_parity(helsinki_pbf):
+    # The 'crossing' key (not among the default highway columns) is added to the column
+    # allow-list; no kept way carries it here, so -- matching the in-memory reader -- it
+    # yields no column.
+    flt = {"highway": ["footway", "path", "pedestrian"], "crossing": True}
+    mine = get_network(helsinki_pbf, custom_filter=flt, filter_type="keep")
+    ref = OSM(helsinki_pbf).get_network(custom_filter=flt, filter_type="keep")
+    assert mine is not None and len(mine) > 0
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_network_nodes_true_not_supported(helsinki_pbf):
+    # The graph-export node frame is not available from the out-of-core engine yet.
+    with pytest.raises(NotImplementedError):
+        get_network(helsinki_pbf, nodes=True)
+
+
+def test_engine_network_invalid_args(helsinki_pbf):
+    with pytest.raises(ValueError):
+        get_network(helsinki_pbf, network_type="not-a-network")
+    with pytest.raises(ValueError):
+        get_network(helsinki_pbf, network_type=123)
+    with pytest.raises(ValueError):
+        get_network(helsinki_pbf, custom_filter={"highway": True}, filter_type="bogus")
+
+
+def _central_bbox(gdf, frac=0.4):
+    # The central `frac` of a layer's extent -- a box that still contains way and relation
+    # features, to exercise the bounding_box read path.
+    minx, miny, maxx, maxy = gdf.total_bounds
+    pad = (1 - frac) / 2
+    return [
+        minx + (maxx - minx) * pad,
+        miny + (maxy - miny) * pad,
+        minx + (maxx - minx) * (1 - pad),
+        miny + (maxy - miny) * (1 - pad),
+    ]
+
+
+@pytest.mark.parametrize("complete_relations", [False, True])
+def test_engine_buildings_bounding_box_parity(helsinki_pbf, complete_relations):
+    # A bounding box restricts buildings (ways + relations) to that area; relations are
+    # partial by default and complete with complete_relations=True -- matching the in-memory
+    # reader either way.
+    bbox = _central_bbox(OSM(helsinki_pbf).get_buildings())
+    mine = get_buildings(
+        helsinki_pbf, bounding_box=bbox, complete_relations=complete_relations
+    )
+    ref = OSM(
+        helsinki_pbf, bounding_box=bbox, complete_relations=complete_relations
+    ).get_buildings()
+    assert ref is not None and (ref["osm_type"] == "relation").any()
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_pois_bounding_box_parity(helsinki_pbf):
+    # bbox over a layer with node features: nodes + ways restricted to the box.
+    bbox = _central_bbox(OSM(helsinki_pbf).get_pois())
+    mine = get_pois(helsinki_pbf, bounding_box=bbox)
+    ref = OSM(helsinki_pbf, bounding_box=bbox).get_pois()
+    assert ref is not None and (ref["osm_type"] == "node").any()
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_network_bounding_box_parity(helsinki_pbf):
+    # A bounding box keeps ways with >=1 node inside it (kept whole), then the final spatial
+    # filter clips to the box -- matching the in-memory reader.
+    full = OSM(helsinki_pbf).get_network(network_type="driving")
+    bbox = _central_bbox(full, frac=0.5)
+    ref = OSM(helsinki_pbf, bounding_box=bbox).get_network(network_type="driving")
+    mine = get_network(helsinki_pbf, network_type="driving", bounding_box=bbox)
+    assert ref is not None and 0 < len(ref) < len(full)
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_custom_criteria_bounding_box_parity(helsinki_pbf):
+    flt = {"building": True}
+    bbox = _central_bbox(OSM(helsinki_pbf).get_buildings())
+    mine = get_data_by_custom_criteria(
+        helsinki_pbf, custom_filter=flt, filter_type="keep", bounding_box=bbox
+    )
+    ref = OSM(helsinki_pbf, bounding_box=bbox).get_data_by_custom_criteria(
+        custom_filter=flt, filter_type="keep"
+    )
+    assert mine is not None and len(mine) > 0
+    _assert_full_parity(mine, ref)
+
+
+def test_engine_bounding_box_polygon_parity(helsinki_pbf):
+    # A shapely-polygon bounding box is validated/normalised through the same path as the
+    # in-memory reader and yields the same result as the equivalent coordinate list.
+    from shapely.geometry import box
+
+    poly = box(*_central_bbox(OSM(helsinki_pbf).get_buildings()))
+    mine = get_buildings(helsinki_pbf, bounding_box=poly)
+    ref = OSM(helsinki_pbf, bounding_box=poly).get_buildings()
+    assert ref is not None and len(ref) > 0
+    _assert_full_parity(mine, ref)
+
+
+@pytest.mark.parametrize("bad", [[1, 2, 3], [25, 61, 24, 60], "not-a-bbox"])
+def test_engine_bounding_box_validation_matches_in_memory(helsinki_pbf, bad):
+    # Malformed boxes (wrong length, inverted coordinates, wrong type) raise the same
+    # ValueError the in-memory reader raises.
+    with pytest.raises(ValueError):
+        OSM(helsinki_pbf, bounding_box=bad)
+    with pytest.raises(ValueError):
+        get_buildings(helsinki_pbf, bounding_box=bad)
+
+
+def test_engine_bbox_helpers():
+    from shapely.geometry import box
+    from pyrosm.engine.bounding_box import (
+        _bbox_bounds,
+        _in_box_mask,
+        _filter_features_to_box,
+    )
+
+    assert _bbox_bounds(None) is None
+    assert _bbox_bounds([0, 1, 2, 3]) == (0, 1, 2, 3)
+    assert _bbox_bounds(box(0, 1, 2, 3)) == (0.0, 1.0, 2.0, 3.0)
+
+    mask = _in_box_mask(np.array([0.0, 5.0]), np.array([0.0, 5.0]), (-1, -1, 1, 1))
+    assert mask.tolist() == [True, False]
+
+    found = {
+        "id": np.array([1, 2], np.int64),
+        "lon": np.array([0.0, 5.0]),
+        "lat": np.array([0.0, 5.0]),
+        "tags": [{"a": "1"}, {"b": "2"}],
+    }
+    kept = _filter_features_to_box(found, (-1, -1, 1, 1))
+    assert kept["id"].tolist() == [1] and kept["tags"] == [{"a": "1"}]
+    assert _filter_features_to_box(found, (10, 10, 11, 11)) is None  # nothing inside
+
+
+def test_engine_in_box_nodes(tmp_path):
+    from pyrosm.engine.bounding_box import _in_box_nodes
+
+    empty = str(tmp_path / "e.npz")
+    _write_shard(empty)
+    assert len(_in_box_nodes([empty])) == 0  # no in-box ids anywhere
+    a = str(tmp_path / "a.npz")
+    _write_shard(a, in_box_id=np.array([3, 1, 3], np.int64))
+    b = str(tmp_path / "b.npz")
+    _write_shard(b, in_box_id=np.array([2], np.int64))
+    assert _in_box_nodes([a, b]).tolist() == [1, 2, 3]  # unique, sorted
+
+
+def test_engine_assemble_network_empty_returns_none(tmp_path):
+    from pyrosm.config import Conf
+    from pyrosm.engine.assemble import _assemble_network
+
+    empty = str(tmp_path / "e.npz")
+    _write_shard(empty)
+    # A None data_filter keeps every highway; with no ways at all the result is empty.
+    edges, nodes = _assemble_network(
+        [empty],
+        list(Conf.tags.highway),
+        True,
+        (["highway"], None, "exclude"),
+        False,
+        None,
+    )
+    assert edges is None and nodes is None
+
+
+def test_engine_assemble_network_edges_without_nodes_column(tmp_path):
+    from pyrosm.config import Conf
+    from pyrosm.engine.assemble import _assemble_network
+
+    shard = str(tmp_path / "s.npz")
+    _write_shard(
+        shard,
+        node_id=np.array([5], np.int64),
+        node_lon=np.array([24.9]),
+        node_lat=np.array([60.1]),
+        way_id=np.array([1], np.int64),
+        refs=np.array([5, 5], np.int64),
+        refs_off=np.array([0, 2], np.int64),
+        way_tags=np.array([{"highway": "footway"}], dtype=object),
+        way_version=np.array([1], np.int64),
+        way_timestamp=np.array([1], np.int64),
+        way_visible=np.array([1], np.int64),
+    )
+    # A degenerate way (both refs the same node) assembles edges that carry no 'nodes'
+    # column, so the default node-info drop is correctly skipped.
+    edges, _ = _assemble_network(
+        [shard],
+        list(Conf.tags.highway),
+        True,
+        (["highway"], None, "exclude"),
+        False,
+        None,
+    )
+    assert edges is not None and "nodes" not in edges.columns
+
+
+def test_engine_assemble_network_none_edges(tmp_path, monkeypatch):
+    from pyrosm import frames
+    from pyrosm.config import Conf
+    from pyrosm.engine import assemble
+
+    shard = str(tmp_path / "s.npz")
+    _write_shard(
+        shard,
+        node_id=np.array([5, 6], np.int64),
+        node_lon=np.array([24.90, 24.91]),
+        node_lat=np.array([60.10, 60.11]),
+        way_id=np.array([1], np.int64),
+        refs=np.array([5, 6], np.int64),
+        refs_off=np.array([0, 2], np.int64),
+        way_tags=np.array([{"highway": "footway"}], dtype=object),
+        way_version=np.array([1], np.int64),
+        way_timestamp=np.array([1], np.int64),
+        way_visible=np.array([1], np.int64),
+    )
+    # When the geometry pipeline yields no edges, the node-info drop is skipped.
+    monkeypatch.setattr(frames, "prepare_geodataframe", lambda *a, **k: (None, None))
+    edges, nodes = assemble._assemble_network(
+        [shard],
+        list(Conf.tags.highway),
+        True,
+        (["highway"], None, "exclude"),
+        False,
+        None,
+    )
+    assert edges is None and nodes is None
+
+
+def test_engine_collect_bbox_relation_branches(tmp_path):
+    from pyrosm.engine.collect import _collect_relation_ways, _restrict_relations_to_box
+
+    empty = str(tmp_path / "e.npz")
+    _write_shard(empty)
+    # No member ids at all -> nothing to look up.
+    assert _collect_relation_ways([empty], np.empty(0, np.int64)) is None
+    # A relation whose only member way is outside the box is dropped entirely.
+    relations = {
+        "id": np.array([1], np.int64),
+        "members": [
+            {"member_id": np.array([5], np.int64), "member_type": np.array([b"way"])}
+        ],
+    }
+    kept, ids = _restrict_relations_to_box(relations, set())
+    assert kept is None and len(ids) == 0

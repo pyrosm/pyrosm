@@ -59,6 +59,8 @@ def _stream_layer_to_parquet(
     filter_spec,
     keep_ways,
     keep_relations,
+    bounding_box=None,
+    complete_relations=False,
 ):
     """Stream the layer (point nodes, then ways in chunks, then relations) to a GeoParquet
     at ``output``, spilling each chunk to its own temporary parquet file and then combining
@@ -74,6 +76,8 @@ def _stream_layer_to_parquet(
         filter_spec,
         keep_ways,
         keep_relations,
+        bounding_box,
+        complete_relations,
     )
     if collected is None:
         return None
@@ -88,6 +92,8 @@ def _stream_layer_to_parquet(
             tags_as_columns,
             keep_metadata,
             nodes=nodes,
+            bounding_box=bounding_box,
+            complete_relations=complete_relations,
         )
         if gdf is None or len(gdf) == 0:
             return None
