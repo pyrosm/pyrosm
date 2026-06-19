@@ -31,3 +31,21 @@ try:
     HAS_PANDARM = True
 except ImportError:
     HAS_PANDARM = False
+
+# pyarrow is an optional dependency, needed only to write GeoParquet via output=
+try:
+    import pyarrow.parquet  # noqa: F401
+
+    HAS_PYARROW = True
+except ImportError:
+    HAS_PYARROW = False
+
+
+def require_pyarrow():
+    """Raise an actionable ImportError when an output= GeoParquet write is requested
+    without the optional pyarrow dependency installed."""
+    if not HAS_PYARROW:
+        raise ImportError(
+            "Writing to GeoParquet (output=...) requires the optional 'pyarrow' "
+            "dependency. Install it with `pip install pyarrow`."
+        )

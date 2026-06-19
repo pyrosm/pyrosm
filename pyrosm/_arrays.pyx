@@ -135,6 +135,16 @@ cpdef concatenate_dicts_of_arrays(dict_list_of_arrays):
 
     return result_arrays
 
+cpdef way_records_to_arrays(records, tags_to_separate_as_arrays):
+    """Convert way/relation records (dicts whose tags have been exploded onto the record)
+    into the harmonized dict-of-arrays used to build a GeoDataFrame -- splitting the OSM
+    keys in ``tags_to_separate_as_arrays`` into their own columns and the rest into the
+    JSON ``tags`` column. Python entry point reusing the same conversion the in-memory
+    reader uses, so an alternative reader can produce byte-identical columns."""
+    return convert_to_arrays_and_drop_empty(
+        convert_way_records_to_lists(records, tags_to_separate_as_arrays)
+    )
+
 cdef char** to_cstring_array(list str_list):
     """
     Converts Python byte-string list to an "array" of c-strings. 

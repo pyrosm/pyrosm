@@ -1255,3 +1255,20 @@ def test_get_data_dispatch_and_lazy_attrs(monkeypatch):
     assert callable(data.get_data_by_geocoding)
     with pytest.raises(AttributeError):
         data.this_attr_does_not_exist
+
+
+def test_engine_collect_relation_ways_handles_no_way_members(tmp_path):
+    """A building relation whose members are all non-way (node/relation) leaves the
+    way-member id set empty; the out-of-core way lookup must short-circuit to None
+    (relation dropped) instead of indexing the empty id array."""
+    import numpy as np
+    from pyrosm.engine.collect import _collect_relation_ways
+
+    shard = str(tmp_path / "shard_0.npz")
+    np.savez(
+        shard,
+        all_id=np.array([1, 2, 3], dtype=np.int64),
+        all_refs=np.array([10, 11, 12], dtype=np.int64),
+        all_refs_off=np.array([0, 1, 2, 3], dtype=np.int64),
+    )
+    assert _collect_relation_ways([shard], np.empty(0, np.int64)) is None

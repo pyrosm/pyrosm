@@ -1,0 +1,108 @@
+"""Stream a layer to a GeoParquet file without materialising the whole output frame.
+
+Each chunk is assembled and written to its own temporary parquet file, so only one chunk
+is in memory at a time. Because pyrosm builds a tag column only when that tag occurs in a
+chunk, different chunks carry different columns; the temporary files are then combined
+under one schema that is the union (by name) of every chunk's columns, so a tag column
+that first appears in a later chunk is not dropped. Needs the optional pyarrow dependency.
+"""
+
+import os
+import shutil
+import tempfile
+
+from pyrosm.engine.collect import _collect_buildings
+from pyrosm.engine.assemble import _assemble_chunk
+
+# Assemble and write this many ways per chunk, so the output frame is never fully
+# materialised.
+_OUTPUT_CHUNK_SIZE = 250_000
+
+
+def _align_table(table, schema):
+    """Reorder ``table`` to ``schema``'s field order, adding any columns it lacks as typed
+    nulls -- so a chunk that materialised only a subset of the union's columns is widened
+    to the full schema (rather than its extra-or-missing columns being dropped)."""
+    import pyarrow as pa
+
+    arrays = [
+        (
+            table.column(i)
+            if (i := table.schema.get_field_index(field.name)) >= 0
+            else pa.nulls(table.num_rows, type=field.type)
+        )
+        for field in schema
+    ]
+    return pa.Table.from_arrays(arrays, schema=schema)
+
+
+def _unify_schemas(schemas):
+    """One arrow schema holding the union (by name) of these schemas' fields, with the
+    GeoParquet ``geo`` metadata preserved -- so the per-chunk parquet files, which can
+    each carry a different subset of the tag columns, combine without dropping any."""
+    import pyarrow as pa
+
+    unified = pa.unify_schemas(schemas, promote_options="permissive")
+    for schema in schemas:
+        if schema.metadata and b"geo" in schema.metadata:
+            return unified.with_metadata(schema.metadata)
+    return unified
+
+
+def _stream_buildings_to_parquet(shard_paths, output, chunk_size, keep_metadata):
+    """Stream the buildings (ways in chunks, then relations) to a GeoParquet at ``output``,
+    spilling each chunk to its own temporary parquet file and then combining the files
+    under the union of their schemas. Returns the path, or ``None`` if there were no
+    buildings to write."""
+    import pyarrow.parquet as pq
+    from geopandas.io.arrow import _geopandas_to_arrow
+
+    collected = _collect_buildings(shard_paths)
+    if collected is None:
+        return None
+    kept, relations, relation_ways, node_coordinates = collected
+
+    def to_table(gdf):
+        return _geopandas_to_arrow(gdf, index=False, geometry_encoding="WKB")
+
+    def chunk_tables():
+        if kept is not None:
+            for start in range(0, len(kept), chunk_size):
+                gdf = _assemble_chunk(
+                    node_coordinates,
+                    kept[start : start + chunk_size],
+                    None,
+                    None,
+                    keep_metadata,
+                )
+                if gdf is not None and len(gdf) > 0:
+                    yield to_table(gdf)
+        if relations is not None:
+            rgdf = _assemble_chunk(
+                node_coordinates, None, relations, relation_ways, keep_metadata
+            )
+            if rgdf is not None and len(rgdf) > 0:
+                yield to_table(rgdf)
+
+    part_dir = tempfile.mkdtemp(prefix="pyrosm_ooc_parquet_")
+    try:
+        # Spill each chunk to its own parquet file (heterogeneous columns allowed).
+        part_paths = []
+        for table in chunk_tables():
+            part_path = os.path.join(part_dir, "part_%d.parquet" % len(part_paths))
+            pq.write_table(table, part_path)
+            part_paths.append(part_path)
+        if not part_paths:
+            return None
+        # Combine the parts into the single output under the union of their schemas, one
+        # part in memory at a time so the full frame is never materialised.
+        schema = _unify_schemas([pq.read_schema(p) for p in part_paths])
+        writer = pq.ParquetWriter(output, schema)
+        try:
+            for part_path in part_paths:
+                writer.write_table(_align_table(pq.read_table(part_path), schema))
+        finally:
+            writer.close()
+        return output
+    finally:
+        shutil.rmtree(part_dir, ignore_errors=True)
