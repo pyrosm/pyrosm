@@ -69,6 +69,24 @@ class OSM:
         opt-in. It has no effect on a whole-file read (no `bounding_box`), which
         already holds every member. Only member ways are completed; relations
         whose members are themselves relations (super-relations) are not.
+
+    engine : str (default: 'in_memory')
+        Which reader backend to use. `'in_memory'` (the default) parses the whole
+        file into memory. `'out_of_core'` decodes the file in a single streaming
+        pass with bounded peak memory, spilling intermediate data to disk.
+
+        The out-of-core backend reads large files (above ~70 MB) using parallel
+        worker processes. On macOS and Windows those workers start with `spawn`,
+        which re-imports the program's entry point, so to read in parallel the
+        `OSM(...)` read must run under an `if __name__ == "__main__":` guard::
+
+            if __name__ == "__main__":
+                osm = OSM(fp, engine="out_of_core")
+                buildings = osm.get_buildings()
+
+        Without the guard the read still completes -- it falls back to a single
+        process and warns -- but it is not parallel. On Linux (`fork`) no guard is
+        needed.
     """
 
     allowed_bbox_types = [
