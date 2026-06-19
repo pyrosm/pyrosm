@@ -241,3 +241,218 @@ def test_read_block_decodes_lzma_and_rejects_unsupported(tmp_path):
     with open(bad_fp, "rb") as f:
         with pytest.raises(ValueError, match="Unsupported"):
             _read_block(f, 0, len(bad))
+
+
+def _write_shard(path, **overrides):
+    """Write a per-worker shard in the layout decode._decode_batch produces; every array
+    is empty by default so a test can fill in only the ones it needs."""
+    arrays = dict(
+        node_id=np.empty(0, np.int64),
+        node_lon=np.empty(0),
+        node_lat=np.empty(0),
+        way_id=np.empty(0, np.int64),
+        refs=np.empty(0, np.int64),
+        refs_off=np.array([0], np.int64),
+        way_tags=np.empty(0, object),
+        way_version=np.empty(0, np.int64),
+        way_timestamp=np.empty(0, np.int64),
+        way_visible=np.empty(0, np.int64),
+        all_id=np.empty(0, np.int64),
+        all_refs=np.empty(0, np.int64),
+        all_refs_off=np.array([0], np.int64),
+        rel_id=np.empty(0, np.int64),
+        rel_memid=np.empty(0, np.int64),
+        rel_memoff=np.array([0], np.int64),
+        rel_memtype=np.empty(0, np.int64),
+        rel_memrole=np.empty(0, object),
+        rel_tags=np.empty(0, object),
+        rel_meta=np.empty((0, 3), np.int64),
+    )
+    arrays.update(overrides)
+    np.savez(path, **arrays)
+
+
+def _write_pbf_no_buildings(path):
+    """Write a minimal one-blob PBF whose only way is untagged, so the engine reads it
+    with ways present but no buildings found."""
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    pb = PrimitiveBlock()
+    pb.stringtable.s.append(b"")
+    way = pb.primitivegroup.add().ways.add()
+    way.id = 100
+    way.refs.extend([1, 1])
+    blob = Blob()
+    blob.raw = pb.SerializeToString()
+    blob_bytes = blob.SerializeToString()
+    bh = BlobHeader()
+    bh.type = "OSMData"
+    bh.datasize = len(blob_bytes)
+    bh_bytes = bh.SerializeToString()
+    with open(path, "wb") as f:
+        f.write(pack("!L", len(bh_bytes)))
+        f.write(bh_bytes)
+        f.write(blob_bytes)
+
+
+def test_engine_get_buildings_no_buildings_returns_none(tmp_path):
+    # A PBF with ways but no buildings yields None from both the in-memory and output paths.
+    fp = str(tmp_path / "no_buildings.osm.pbf")
+    _write_pbf_no_buildings(fp)
+    assert get_buildings(fp) is None
+    pytest.importorskip("pyarrow")
+    assert get_buildings(fp, output=str(tmp_path / "x.parquet")) is None
+
+
+def test_engine_building_ways_early_returns():
+    from pyrosm.engine.decode import _building_ways
+
+    ways = {
+        "id": np.array([7], np.int64),
+        "keys": np.array([0], np.int64),
+        "vals": np.array([0], np.int64),
+        "tags_off": np.array([0, 1], np.int64),
+        "refs": np.array([1, 2], np.int64),
+        "refs_off": np.array([0, 2], np.int64),
+        "version": np.array([1], np.int64),
+        "timestamp": np.array([1], np.int64),
+        "visible": np.array([1], np.int64),
+    }
+    assert _building_ways([b"highway"], None) is None  # ways is None guard
+    assert _building_ways([b"highway"], ways) is None  # 'building' not in string table
+    # 'building' is in the table but no way carries it as a key.
+    assert _building_ways([b"highway", b"building"], ways) is None
+
+
+def test_engine_collect_empty_and_edge_shards(tmp_path):
+    from pyrosm.engine.collect import (
+        _collect_building_ways,
+        _collect_kept_ways,
+        _node_lookup,
+        _collect_relation_ways,
+        _needed_node_ids,
+        _collect_buildings,
+    )
+
+    empty = str(tmp_path / "empty.npz")
+    _write_shard(empty)
+    assert _collect_building_ways([empty]) == []
+    assert _collect_kept_ways([empty], np.empty(0, np.int64)) is None
+    assert _node_lookup([empty], np.array([1, 2], np.int64)) is not None
+    assert _collect_buildings([empty]) is None
+    assert len(_needed_node_ids(None, None)) == 0
+
+    bld = str(tmp_path / "bld.npz")
+    _write_shard(
+        bld,
+        way_id=np.array([1], np.int64),
+        refs=np.array([10, 11], np.int64),
+        refs_off=np.array([0, 2], np.int64),
+        way_tags=np.array([{"building": "yes"}], dtype=object),
+        way_version=np.array([1], np.int64),
+        way_timestamp=np.array([100], np.int64),
+        way_visible=np.array([1], np.int64),
+    )
+    # Excluding the only building way (it is a relation member) leaves nothing standalone.
+    assert _collect_kept_ways([bld], np.array([1], np.int64)) is None
+
+    ways_only = str(tmp_path / "ways.npz")
+    _write_shard(
+        ways_only,
+        all_id=np.array([5], np.int64),
+        all_refs=np.array([10, 11], np.int64),
+        all_refs_off=np.array([0, 2], np.int64),
+    )
+    # Member ids that match no stored way -> no relation ways.
+    assert _collect_relation_ways([ways_only], np.array([999], np.int64)) is None
+
+
+def test_engine_geoparquet_schema_helpers():
+    pa = pytest.importorskip("pyarrow")
+    from pyrosm.engine.geoparquet import _unify_schemas, _align_table
+
+    s1 = pa.schema([pa.field("a", pa.int64())])
+    s2 = pa.schema([pa.field("b", pa.string())])
+    unified = _unify_schemas([s1, s2])  # neither carries GeoParquet 'geo' metadata
+    assert set(unified.names) == {"a", "b"}
+    # A table missing column 'b' is widened with typed nulls rather than dropping columns.
+    aligned = _align_table(pa.table({"a": [1, 2]}), unified)
+    assert aligned.schema.names == ["a", "b"]
+    assert aligned.column("b").null_count == 2
+
+
+def test_engine_stream_parquet_chunk_table_branches(
+    helsinki_pbf, tmp_path, monkeypatch
+):
+    # Drive the chunked writer through its relations-only, ways-only and empty-chunk
+    # branches by feeding it crafted variants of the real collected building data.
+    pytest.importorskip("pyarrow")
+    import tempfile
+    import shutil
+    from pyrosm.engine import geoparquet
+    from pyrosm.engine.blobs import _index_blobs
+    from pyrosm.engine.pool import _decode_all
+    from pyrosm.engine.collect import _collect_buildings
+
+    data_blobs = [(o, s) for (t, o, s) in _index_blobs(helsinki_pbf) if t == "OSMData"]
+    shard_dir = tempfile.mkdtemp()
+    try:
+        shards = _decode_all(helsinki_pbf, data_blobs, 1, shard_dir)
+        kept, relations, relation_ways, nc = _collect_buildings(shards)
+        assert kept is not None and relations is not None  # helsinki has both
+
+        def write(collected):
+            monkeypatch.setattr(
+                geoparquet, "_collect_buildings", lambda paths: collected
+            )
+            return geoparquet._stream_buildings_to_parquet(
+                shards, str(tmp_path / "o.parquet"), 250_000, True
+            )
+
+        # relations only (no standalone ways): way loop skipped, relation chunk written.
+        assert write((None, relations, relation_ways, nc)) is not None
+        # ways only (no relations): relation branch skipped.
+        assert write((kept, None, None, nc)) is not None
+        # a way referencing an absent node assembles empty -> no parts -> None.
+        absent = [
+            {
+                "id": -1,
+                "version": 1,
+                "timestamp": 1,
+                "visible": True,
+                "nodes": [10**18],
+                "tags": {"building": "yes"},
+            }
+        ]
+        assert write((absent, None, None, nc)) is None
+        # a relation whose member ways are all absent assembles empty -> chunk skipped.
+        empty_ways = {"id": np.empty(0, np.int64), "nodes": np.empty(0, dtype=object)}
+        assert write((None, relations, empty_ways, nc)) is None
+    finally:
+        shutil.rmtree(shard_dir, ignore_errors=True)
+
+
+def test_compat_has_pyarrow_false_when_unavailable(monkeypatch):
+    # The optional-dependency flag falls back to False (and require_pyarrow then raises)
+    # when pyarrow cannot be imported.
+    import builtins
+    import importlib
+    from pyrosm.utils import _compat
+
+    real_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name == "pyarrow" or name.startswith("pyarrow."):
+            raise ImportError("pyarrow blocked for test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    try:
+        importlib.reload(_compat)
+        assert _compat.HAS_PYARROW is False
+        with pytest.raises(ImportError, match="pyarrow"):
+            _compat.require_pyarrow()
+    finally:
+        monkeypatch.undo()
+        importlib.reload(_compat)  # restore the real, pyarrow-present state
+    assert _compat.HAS_PYARROW is True
