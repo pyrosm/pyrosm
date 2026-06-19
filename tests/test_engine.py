@@ -742,10 +742,74 @@ def test_engine_network_custom_filter_parity(helsinki_pbf):
     _assert_full_parity(mine, ref)
 
 
-def test_engine_network_nodes_true_not_supported(helsinki_pbf):
-    # The graph-export node frame is not available from the out-of-core engine yet.
-    with pytest.raises(NotImplementedError):
-        get_network(helsinki_pbf, nodes=True)
+@pytest.mark.parametrize("network_type", ["walking", "driving", "all"])
+def test_engine_network_nodes_parity(network_type, helsinki_pbf):
+    # nodes=True returns (nodes, edges): the ways are sliced into per-segment edges and the
+    # graph-export node frame (node coordinates + tags + metadata) is built, both matching
+    # the in-memory reader.
+    mine_nodes, mine_edges = get_network(
+        helsinki_pbf, network_type=network_type, nodes=True
+    )
+    ref_nodes, ref_edges = OSM(helsinki_pbf).get_network(
+        network_type=network_type, nodes=True
+    )
+    assert ref_edges is not None and len(ref_edges) > 0
+    _assert_full_parity(mine_edges, ref_edges)
+    # The node frame has no osm_type/relation rows; key it on id alone.
+    a = mine_nodes.sort_values("id").reset_index(drop=True)
+    b = ref_nodes.sort_values("id").reset_index(drop=True)
+    _assert_full_parity(a.assign(osm_type="node"), b.assign(osm_type="node"))
+
+
+def test_engine_network_nodes_keep_metadata_false_parity(helsinki_pbf):
+    mine_nodes, mine_edges = get_network(
+        helsinki_pbf, network_type="driving", nodes=True, keep_metadata=False
+    )
+    ref_nodes, ref_edges = OSM(helsinki_pbf, keep_metadata=False).get_network(
+        network_type="driving", nodes=True
+    )
+    assert "changeset" not in mine_nodes.columns and "visible" in mine_nodes.columns
+    _assert_full_parity(mine_edges, ref_edges)
+    a = mine_nodes.sort_values("id").reset_index(drop=True).assign(osm_type="node")
+    b = ref_nodes.sort_values("id").reset_index(drop=True).assign(osm_type="node")
+    _assert_full_parity(a, b)
+
+
+def test_engine_node_records_by_id_edge_cases():
+    from pyrosm.engine.decode import _node_records_by_id
+
+    header = {"granularity": 100, "lat_offset": 0, "lon_offset": 0}
+    st = [b"", b"amenity", b"cafe"]
+    # A block with no dense nodes (a way/relation block) yields nothing.
+    assert _node_records_by_id(st, header, None, {1}, True) is None
+    nodes = {
+        "id": np.array([1, 2], np.int64),
+        "lat": np.array([600000000, 600000010], np.int64),
+        "lon": np.array([240000000, 240000010], np.int64),
+        # node 1 untagged; node 2 tagged amenity=cafe (key/value string-table indices 1,2).
+        "keys_vals": np.array([0, 1, 2, 0], np.int64),
+        "version": np.array([3, 3], np.int64),
+        "timestamp": np.array([7, 7], np.int64),
+        "changeset": np.array([9, 9], np.int64),
+        "visible": np.array([1, 1], np.int64),
+    }
+    # No requested id present in the block -> nothing gathered.
+    assert _node_records_by_id(st, header, nodes, {999}, True) is None
+    rec = _node_records_by_id(st, header, nodes, {1, 2}, True)
+    assert rec["tags"] == [None, {"amenity": "cafe"}]
+    assert rec["version"].tolist() == [3, 3] and rec["visible"].dtype == bool
+    # keep_metadata=False drops version/timestamp/changeset but keeps visible.
+    lean = _node_records_by_id(st, header, nodes, {1}, False)
+    assert "version" not in lean and "visible" in lean
+
+
+def test_engine_gather_node_records_empty(helsinki_pbf):
+    from pyrosm.engine.collect import _gather_node_records
+
+    # No node ids requested: every block yields no record, so the rich coordinate store is
+    # built from the empty-array fallback.
+    nc = _gather_node_records(helsinki_pbf, np.empty(0, np.int64), True)
+    assert nc is not None
 
 
 def test_engine_network_invalid_args(helsinki_pbf):
@@ -1084,11 +1148,24 @@ def test_osm_engine_validation_and_unsupported_combos(helsinki_pbf):
         OSM(helsinki_pbf, engine="bogus")
     ooc = OSM(helsinki_pbf, engine="out_of_core")
     with pytest.raises(NotImplementedError):
-        ooc.get_network(nodes=True)
-    with pytest.raises(NotImplementedError):
         ooc.get_buildings(timestamp="2021-01-01 00:00:00")
     with pytest.raises(NotImplementedError):
         ooc.get_data_by_custom_criteria(custom_filter=None)
+
+
+def test_osm_out_of_core_network_nodes_parity(helsinki_pbf):
+    # The public OSM API returns the (nodes, edges) tuple from the out-of-core engine, equal
+    # to the in-memory reader's.
+    mine_nodes, mine_edges = OSM(helsinki_pbf, engine="out_of_core").get_network(
+        network_type="cycling", nodes=True
+    )
+    ref_nodes, ref_edges = OSM(helsinki_pbf).get_network(
+        network_type="cycling", nodes=True
+    )
+    _assert_full_parity(mine_edges, ref_edges)
+    a = mine_nodes.sort_values("id").reset_index(drop=True).assign(osm_type="node")
+    b = ref_nodes.sort_values("id").reset_index(drop=True).assign(osm_type="node")
+    _assert_full_parity(a, b)
 
 
 def test_osm_out_of_core_history_file_not_supported(test_pbf, tmp_path):

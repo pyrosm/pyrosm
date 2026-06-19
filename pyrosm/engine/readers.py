@@ -406,17 +406,11 @@ def get_network(
     columns. ``bounding_box`` (a ``[minx, miny, maxx, maxy]`` list or a shapely polygon)
     restricts the read to that area.
 
-    ``nodes=True`` (the graph-export node frame) is not yet supported by this backend: the
-    coordinate store carries only id/lon/lat, so the node frame would lack the element
-    metadata the in-memory reader produces."""
+    ``nodes=True`` returns ``(nodes, edges)``: the ways are sliced into per-segment edges
+    and the graph-export node frame is built (its node tags + metadata are gathered with a
+    second pass over the file), matching ``OSM(...).get_network(nodes=True)``."""
     from pyrosm.config import Conf
     from pyrosm.utils import validate_custom_filter, validate_tags_as_columns
-
-    if nodes:
-        raise NotImplementedError(
-            "get_network(nodes=True) (graph-export node frame) is not yet supported by "
-            "the out-of-core engine; only the edges are available."
-        )
 
     tags_as_columns = list(Conf.tags.highway)
     if tags_to_keep is not None:
@@ -451,15 +445,16 @@ def get_network(
     bounds = _bbox_bounds(bounding_box)
 
     def run(shard_paths):
-        edges, _ = _assemble_network(
+        edges, node_gdf = _assemble_network(
             shard_paths,
             tags_as_columns,
             keep_metadata,
             filter_spec,
-            False,
+            nodes,
             bounding_box,
+            filepath=filepath,
         )
-        return edges
+        return (node_gdf, edges) if nodes else edges
 
     return _decode_and_run(
         filepath, [b"highway"], False, workers, run, bbox_bounds=bounds

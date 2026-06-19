@@ -121,6 +121,61 @@ def _node_lookup(shard_paths, needed):
     return NodeLocations(coords)
 
 
+# Node-record column dtypes for the graph-export gather (id/coords + element metadata).
+_NODE_RECORD_DTYPES = {
+    "id": np.int64,
+    "lon": np.float64,
+    "lat": np.float64,
+    "version": np.int64,
+    "timestamp": np.int64,
+    "changeset": np.int64,
+    "visible": bool,
+}
+
+
+def _gather_node_records(filepath, node_ids, keep_metadata):
+    """Second pass over the file gathering the full records (coordinates + tags + metadata)
+    of ``node_ids``, returned as a rich ``NodeLocations`` -- the coordinate store the
+    graph-export node frame is built from (its records carry the node tags and metadata the
+    lean coordinate lookup omits). Only the requested (network) nodes are materialised, so
+    peak memory stays bounded by the graph's node set rather than the whole file."""
+    import pandas as pd
+
+    from pyrosm.node_lookup import NodeLocations
+    from pyrosm.primitive_block_decoder import decode_primitive_block
+    from pyrosm.engine.blobs import _index_blobs, _read_block
+    from pyrosm.engine.decode import _node_records_by_id
+
+    wanted = set(node_ids.tolist())
+    cols = ["id", "lon", "lat", "visible"]
+    if keep_metadata:
+        cols += ["version", "timestamp", "changeset"]
+    arrays = {c: [] for c in cols}
+    tags = []
+    with open(filepath, "rb") as f:
+        for blob_type, offset, size in _index_blobs(filepath):
+            if blob_type != "OSMData":
+                continue
+            st, header, nodes, _, _ = decode_primitive_block(
+                _read_block(f, offset, size)
+            )
+            rec = _node_records_by_id(st, header, nodes, wanted, keep_metadata)
+            if rec is not None:
+                for c in cols:
+                    arrays[c].append(rec[c])
+                tags.extend(rec["tags"])
+    frame = {
+        c: (
+            np.concatenate(arrays[c])
+            if arrays[c]
+            else np.empty(0, _NODE_RECORD_DTYPES[c])
+        )
+        for c in cols
+    }
+    frame["tags"] = tags
+    return NodeLocations(pd.DataFrame(frame))
+
+
 def _collect_kept_ways(shard_paths, exclude_ids, keep, in_box=None):
     """The standalone way records to output: the spilled candidates refined by the exact
     value filter ``keep``, then -- when reading a bounding box -- restricted to ways with at
