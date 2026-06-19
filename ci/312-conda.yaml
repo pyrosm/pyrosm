@@ -16,6 +16,7 @@ dependencies:
   - pandana
   - pandarm
   - python-igraph
+  - pyarrow
   # testing
   - osmnx
   - pyosmium
