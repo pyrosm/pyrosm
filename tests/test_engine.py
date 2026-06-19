@@ -33,6 +33,11 @@ def helsinki_pbf():
     return get_data("helsinki_pbf")
 
 
+@pytest.fixture
+def helsinki_history_pbf():
+    return get_data("helsinki_test_history_pbf")
+
+
 def _rewrite_pbf_raw(src, dst):
     """Re-encode every blob of ``src`` with an uncompressed ``raw`` payload. Bundled
     extracts are all zlib, so this synthesises a file that exercises the engine's ``raw``
@@ -1224,7 +1229,9 @@ def test_osm_engine_validation_and_unsupported_combos(helsinki_pbf):
     with pytest.raises(ValueError):
         OSM(helsinki_pbf, engine="bogus")
     ooc = OSM(helsinki_pbf, engine="out_of_core")
-    with pytest.raises(NotImplementedError):
+    # A timestamp on a non-history file routes to the in-memory path, which rejects it
+    # (history timestamps require an .osh.pbf) -- the engine does not silently ignore it.
+    with pytest.raises(ValueError):
         ooc.get_buildings(timestamp="2021-01-01 00:00:00")
     with pytest.raises(NotImplementedError):
         ooc.get_data_by_custom_criteria(custom_filter=None)
@@ -1245,13 +1252,65 @@ def test_osm_out_of_core_network_nodes_parity(helsinki_pbf):
     _assert_full_parity(a, b)
 
 
-def test_osm_out_of_core_history_file_not_supported(test_pbf, tmp_path):
-    # A .osh.pbf history file selects element versions implicitly even without a timestamp,
-    # which the out-of-core engine does not do, so it must raise rather than return every
-    # historical version. The filename (not the content) marks it as history.
-    import shutil
+# History (.osh) reads route to the in-memory selection even under engine="out_of_core"
+# (the latest-version-per-element merge is global, so streaming gives no benefit); the
+# result must match the in-memory reader exactly.
 
-    osh = str(tmp_path / "history.osh.pbf")
-    shutil.copy(test_pbf, osh)
-    with pytest.raises(NotImplementedError):
-        OSM(osh, engine="out_of_core").get_buildings()
+
+def _osm_history_parity(fp, method, timestamp, **kwargs):
+    import copy
+
+    ref = getattr(OSM(fp, engine="in_memory"), method)(
+        timestamp=timestamp, **copy.deepcopy(kwargs)
+    )
+    mine = getattr(OSM(fp, engine="out_of_core"), method)(
+        timestamp=timestamp, **copy.deepcopy(kwargs)
+    )
+    if ref is None:
+        assert mine is None
+        return
+    _assert_full_parity(mine, ref)
+
+
+@pytest.mark.parametrize("timestamp", ["2010-01-01", "2015-01-01"])
+@pytest.mark.parametrize(
+    "method,kwargs",
+    [
+        ("get_network", {}),
+        ("get_buildings", {}),
+        ("get_landuse", {}),
+        ("get_natural", {}),
+        ("get_pois", {}),
+        ("get_boundaries", {}),
+        ("get_data_by_custom_criteria", {"custom_filter": {"highway": True}}),
+    ],
+)
+def test_osm_out_of_core_history_routes_to_in_memory(
+    helsinki_history_pbf, method, kwargs, timestamp
+):
+    _osm_history_parity(helsinki_history_pbf, method, timestamp, **kwargs)
+
+
+def test_osm_out_of_core_history_without_timestamp_routes_to_in_memory(
+    helsinki_history_pbf,
+):
+    # An .osh.pbf with no timestamp uses the current UTC time (with a warning) in both
+    # engines; the out-of-core engine routes to the in-memory selection, matching it.
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ref = OSM(helsinki_history_pbf, engine="in_memory").get_network()
+        mine = OSM(helsinki_history_pbf, engine="out_of_core").get_network()
+    _assert_full_parity(mine, ref)
+
+
+def test_use_engine_routing(helsinki_pbf, helsinki_history_pbf):
+    # The out-of-core engine handles only non-history reads; an .osh file or an explicit
+    # timestamp routes to the in-memory path.
+    assert OSM(helsinki_pbf, engine="out_of_core")._use_engine(None) is True
+    assert OSM(helsinki_pbf, engine="out_of_core")._use_engine("2015-01-01") is False
+    assert OSM(helsinki_pbf, engine="in_memory")._use_engine(None) is False
+    osh = OSM(helsinki_history_pbf, engine="out_of_core")
+    assert osh._use_engine(None) is False
+    assert osh._use_engine("2015-01-01") is False
