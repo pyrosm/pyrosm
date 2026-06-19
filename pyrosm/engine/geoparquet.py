@@ -1,17 +1,18 @@
 """Stream a layer to a GeoParquet file without materialising the whole output frame.
 
-Each chunk is assembled and written to its own temporary parquet file, so only one chunk
-is in memory at a time. Because pyrosm builds a tag column only when that tag occurs in a
-chunk, different chunks carry different columns; the temporary files are then combined
-under one schema that is the union (by name) of every chunk's columns, so a tag column
-that first appears in a later chunk is not dropped. Needs the optional pyarrow dependency.
+Each chunk (the point nodes, then ways in batches, then the relations) is assembled and
+written to its own temporary parquet file, so only one chunk is in memory at a time.
+Because pyrosm builds a tag column only when that tag occurs in a chunk, different chunks
+carry different columns; the temporary files are then combined under one schema that is the
+union (by name) of every chunk's columns, so a tag column that first appears in a later
+chunk is not dropped. Needs the optional pyarrow dependency.
 """
 
 import os
 import shutil
 import tempfile
 
-from pyrosm.engine.collect import _collect_buildings
+from pyrosm.engine.collect import _collect_layer
 from pyrosm.engine.assemble import _assemble_chunk
 
 # Assemble and write this many ways per chunk, so the output frame is never fully
@@ -49,40 +50,63 @@ def _unify_schemas(schemas):
     return unified
 
 
-def _stream_buildings_to_parquet(shard_paths, output, chunk_size, keep_metadata):
-    """Stream the buildings (ways in chunks, then relations) to a GeoParquet at ``output``,
-    spilling each chunk to its own temporary parquet file and then combining the files
-    under the union of their schemas. Returns the path, or ``None`` if there were no
-    buildings to write."""
+def _stream_layer_to_parquet(
+    shard_paths,
+    output,
+    chunk_size,
+    tags_as_columns,
+    keep_metadata,
+    filter_spec,
+    keep_ways,
+    keep_relations,
+):
+    """Stream the layer (point nodes, then ways in chunks, then relations) to a GeoParquet
+    at ``output``, spilling each chunk to its own temporary parquet file and then combining
+    the files under the union of their schemas. Returns the path, or ``None`` if there was
+    nothing to write."""
     import pyarrow.parquet as pq
     from geopandas.io.arrow import _geopandas_to_arrow
 
-    collected = _collect_buildings(shard_paths)
+    collected = _collect_layer(
+        shard_paths,
+        tags_as_columns,
+        keep_metadata,
+        filter_spec,
+        keep_ways,
+        keep_relations,
+    )
     if collected is None:
         return None
-    kept, relations, relation_ways, node_coordinates = collected
+    node_features, kept, relations, relation_ways, node_coordinates = collected
 
-    def to_table(gdf):
+    def to_table(way_records=None, relations=None, relation_ways=None, nodes=None):
+        gdf = _assemble_chunk(
+            node_coordinates,
+            way_records,
+            relations,
+            relation_ways,
+            tags_as_columns,
+            keep_metadata,
+            nodes=nodes,
+        )
+        if gdf is None or len(gdf) == 0:
+            return None
         return _geopandas_to_arrow(gdf, index=False, geometry_encoding="WKB")
 
     def chunk_tables():
+        if node_features is not None:
+            table = to_table(nodes=node_features)
+            if table is not None:
+                yield table
         if kept is not None:
             for start in range(0, len(kept), chunk_size):
-                gdf = _assemble_chunk(
-                    node_coordinates,
-                    kept[start : start + chunk_size],
-                    None,
-                    None,
-                    keep_metadata,
-                )
-                if gdf is not None and len(gdf) > 0:
-                    yield to_table(gdf)
+                table = to_table(way_records=kept[start : start + chunk_size])
+                if table is not None:
+                    yield table
         if relations is not None:
-            rgdf = _assemble_chunk(
-                node_coordinates, None, relations, relation_ways, keep_metadata
-            )
-            if rgdf is not None and len(rgdf) > 0:
-                yield to_table(rgdf)
+            table = to_table(relations=relations, relation_ways=relation_ways)
+            if table is not None:
+                yield table
 
     part_dir = tempfile.mkdtemp(prefix="pyrosm_ooc_parquet_")
     try:
