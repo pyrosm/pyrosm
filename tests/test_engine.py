@@ -225,6 +225,83 @@ def test_auto_workers_decides_on_file_size_not_blob_count(tmp_path):
     assert pool._auto_workers(str(big), 2) == min(cpus, 2)
 
 
+def _fake_executor(raise_init=None, raise_map=None):
+    """A ProcessPoolExecutor stand-in that runs map() in-process, optionally raising at
+    construction or at map() to exercise the parallel branch and its fallback without real
+    worker processes."""
+
+    class _F:
+        def __init__(self, max_workers=None, initializer=None, initargs=()):
+            if raise_init is not None:
+                raise raise_init("simulated")
+            if initializer is not None:
+                initializer(*initargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def map(self, fn, tasks):
+            if raise_map is not None:
+                raise raise_map("simulated")
+            return [fn(t) for t in tasks]
+
+    return _F
+
+
+def test_engine_parallel_decode_runs_and_matches_serial(helsinki_pbf, monkeypatch):
+    # The parallel branch (map over per-worker tasks, then flatten the shard paths) yields
+    # the same result as the single-process path.
+    monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor())
+    mine = get_buildings(helsinki_pbf, workers=3)
+    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
+
+
+@pytest.mark.parametrize("where", ["construction", "run"])
+def test_engine_parallel_decode_falls_back_to_serial(where, helsinki_pbf, monkeypatch):
+    # A process pool that cannot start (OSError, e.g. a restricted environment) or whose
+    # workers die (BrokenProcessPool, e.g. an unguarded __main__) must fall back to a single
+    # process with a warning, not hang or error, and still produce the correct result.
+    from concurrent.futures.process import BrokenProcessPool
+
+    if where == "construction":
+        fake = _fake_executor(raise_init=OSError)
+    else:
+        fake = _fake_executor(raise_map=BrokenProcessPool)
+    monkeypatch.setattr(pool, "ProcessPoolExecutor", fake)
+    with pytest.warns(RuntimeWarning, match="single process"):
+        mine = get_buildings(helsinki_pbf, workers=3)
+    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
+
+
+def test_engine_unguarded_module_read_does_not_hang(test_pbf, tmp_path):
+    # A read at module level (no `if __name__ == "__main__":` guard) must not hang: the
+    # spawned workers cannot re-import the entry point, so the decode falls back to a single
+    # process. Run it as a subprocess with a timeout so a regression surfaces as a failure.
+    import subprocess
+    import sys
+    import textwrap
+
+    script = tmp_path / "unguarded.py"
+    script.write_text(textwrap.dedent("""
+            import warnings
+            from pyrosm import engine
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                gdf = engine.get_buildings(%r, workers=3)
+            print("ROWS", 0 if gdf is None else len(gdf))
+            """ % test_pbf))
+    r = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert "ROWS" in r.stdout, r.stderr[-800:]
+
+
 def test_read_block_decodes_lzma_and_rejects_unsupported(tmp_path):
     # _read_block must decode an lzma-compressed Blob and raise on a Blob that carries no
     # recognised compression field.
