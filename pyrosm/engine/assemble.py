@@ -2,7 +2,17 @@
 tag and geometry pipeline, so the output matches the in-memory reader column-for-column.
 """
 
-from pyrosm.engine.collect import _ways_arrays, _collect_layer
+import numpy as np
+
+from pyrosm.data_filter import element_should_be_kept
+from pyrosm.engine.bounding_box import _in_box_nodes
+from pyrosm.engine.collect import (
+    _ways_arrays,
+    _collect_layer,
+    _collect_kept_ways,
+    _node_lookup,
+    _needed_node_ids,
+)
 
 
 def _assemble_chunk(
@@ -13,11 +23,13 @@ def _assemble_chunk(
     tags_as_columns,
     keep_metadata,
     nodes=None,
+    bounding_box=None,
+    complete_relations=False,
 ):
     """Build one GeoDataFrame from node, way and/or relation elements using pyrosm's own
     tag + geometry pipeline (full columns, missing-node handling, polygon/linestring
-    typing, ring assembly, dropna, orientation), so the result matches the in-memory
-    reader exactly."""
+    typing, ring assembly, dropna, orientation, the ``bounding_box`` spatial filter), so the
+    result matches the in-memory reader exactly."""
     from pyrosm.frames import prepare_geodataframe
 
     ways = (
@@ -32,8 +44,9 @@ def _assemble_chunk(
         relations,
         relation_ways,
         list(tags_as_columns),
-        None,
+        bounding_box,
         keep_metadata=keep_metadata,
+        complete_relations=complete_relations,
     )
     if gdf is not None and "nodes" in gdf.columns:
         gdf = gdf.drop(columns=["nodes"])
@@ -41,7 +54,14 @@ def _assemble_chunk(
 
 
 def _assemble_layer(
-    shard_paths, tags_as_columns, keep_metadata, filter_spec, keep_ways, keep_relations
+    shard_paths,
+    tags_as_columns,
+    keep_metadata,
+    filter_spec,
+    keep_ways=True,
+    keep_relations=True,
+    bounding_box=None,
+    complete_relations=False,
 ):
     """Assemble all matching nodes, ways and relations into one in-memory GeoDataFrame."""
     collected = _collect_layer(
@@ -51,6 +71,8 @@ def _assemble_layer(
         filter_spec,
         keep_ways,
         keep_relations,
+        bounding_box,
+        complete_relations,
     )
     if collected is None:
         return None
@@ -63,4 +85,48 @@ def _assemble_layer(
         tags_as_columns,
         keep_metadata,
         nodes=node_features,
+        bounding_box=bounding_box,
+        complete_relations=complete_relations,
     )
+
+
+def _assemble_network(
+    shard_paths, tags_as_columns, keep_metadata, filter_spec, segments, bounding_box
+):
+    """Assemble the matching highway ways as a network (LineString edges + a ``length``
+    column) through pyrosm's ``parse_network`` path. Returns ``(edges, nodes)``; ``nodes``
+    is the graph-export node frame, only built when ``segments`` is True
+    (``get_network(nodes=True)``). A ``None`` ``data_filter`` (network types ``all`` /
+    ``driving_psv``) keeps every highway way."""
+    from pyrosm.frames import prepare_geodataframe
+
+    osm_keys, data_filter, filter_type = filter_spec
+
+    def keep(tag):
+        return data_filter is None or element_should_be_kept(
+            tag, osm_keys, data_filter, filter_type
+        )
+
+    in_box = _in_box_nodes(shard_paths) if bounding_box is not None else None
+    kept = _collect_kept_ways(shard_paths, np.empty(0, np.int64), keep, in_box)
+    if kept is None:
+        return None, None
+    node_coordinates = _node_lookup(shard_paths, _needed_node_ids(kept, None))
+    ways = _ways_arrays(kept, tags_as_columns, keep_metadata)
+    edges, node_gdf = prepare_geodataframe(
+        None,
+        node_coordinates,
+        ways,
+        None,
+        None,
+        list(tags_as_columns),
+        bounding_box,
+        parse_network=True,
+        calculate_seg_lengths=segments,
+        keep_metadata=keep_metadata,
+    )
+    # The per-way 'nodes' list is dropped by default (it breaks file export), matching
+    # OSM.get_network with the default keep_node_info=False.
+    if edges is not None and "nodes" in edges.columns:
+        edges = edges.drop(columns=["nodes"])
+    return edges, node_gdf

@@ -18,6 +18,7 @@ from pyrosm.engine.readers import (
     get_pois,
     get_boundaries,
     get_data_by_custom_criteria,
+    get_network,
 )
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "get_pois",
     "get_boundaries",
     "get_data_by_custom_criteria",
+    "get_network",
 ]

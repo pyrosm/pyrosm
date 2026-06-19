@@ -11,22 +11,26 @@ import numpy as np
 
 from pyrosm.primitive_block_decoder import decode_primitive_block
 from pyrosm.engine.blobs import _read_block
+from pyrosm.engine.bounding_box import _in_box_mask, _filter_features_to_box
 
 # Per-worker globals, set by the pool initializer (or directly for the in-process path).
 # ``_OSM_KEYS`` holds the layer's filter keys (utf-8 bytes) used to pre-select elements;
-# ``_INCLUDE_NODES`` is False for layers that emit no node features (buildings, boundary).
+# ``_INCLUDE_NODES`` is False for layers that emit no node features (buildings, boundary);
+# ``_BBOX_BOUNDS`` is ``(xmin, ymin, xmax, ymax)`` when reading a bounding box, else None.
 _FILEPATH = None
 _SHARD_DIR = None
 _OSM_KEYS = None
 _INCLUDE_NODES = True
+_BBOX_BOUNDS = None
 
 
-def _init_worker(filepath, shard_dir, osm_keys, include_nodes):
-    global _FILEPATH, _SHARD_DIR, _OSM_KEYS, _INCLUDE_NODES
+def _init_worker(filepath, shard_dir, osm_keys, include_nodes, bbox_bounds):
+    global _FILEPATH, _SHARD_DIR, _OSM_KEYS, _INCLUDE_NODES, _BBOX_BOUNDS
     _FILEPATH = filepath
     _SHARD_DIR = shard_dir
     _OSM_KEYS = osm_keys
     _INCLUDE_NODES = include_nodes
+    _BBOX_BOUNDS = bbox_bounds
 
 
 def _key_indices(string_table, osm_keys):
@@ -201,7 +205,7 @@ def _decode_batch(task):
     tags + metadata), *all* ways (id + refs, for relation-member lookup) and the matching
     layer relations, then return the shard path."""
     worker_id, blobs = task
-    node_id, node_lon, node_lat = [], [], []
+    node_id, node_lon, node_lat, in_box = [], [], [], []
     nf = {k: [] for k in ("id", "lon", "lat", "tags", "meta")}
     way_match_id, way_match_refs, way_match_tags = [], [], []
     way_version, way_timestamp, way_visible = [], [], []
@@ -218,11 +222,16 @@ def _decode_batch(task):
                 node_id.append(nodes["id"])
                 node_lat.append(lat)
                 node_lon.append(lon)
+                if _BBOX_BOUNDS is not None:
+                    in_box.append(nodes["id"][_in_box_mask(lon, lat, _BBOX_BOUNDS)])
                 found = (
                     _matching_nodes(string_table, nodes, _OSM_KEYS, lon, lat)
                     if _INCLUDE_NODES
                     else None
                 )
+                # A node feature is kept only if it falls inside the bounding box.
+                if found is not None and _BBOX_BOUNDS is not None:
+                    found = _filter_features_to_box(found, _BBOX_BOUNDS)
                 if found is not None:
                     nf["id"].append(found["id"])
                     nf["lon"].append(found["lon"])
@@ -265,6 +274,7 @@ def _decode_batch(task):
         node_id=np.concatenate(node_id) if node_id else np.empty(0, np.int64),
         node_lon=np.concatenate(node_lon) if node_lon else np.empty(0),
         node_lat=np.concatenate(node_lat) if node_lat else np.empty(0),
+        in_box_id=np.concatenate(in_box) if in_box else np.empty(0, np.int64),
         nfeat_id=np.concatenate(nf["id"]) if nf["id"] else np.empty(0, np.int64),
         nfeat_lon=np.concatenate(nf["lon"]) if nf["lon"] else np.empty(0),
         nfeat_lat=np.concatenate(nf["lat"]) if nf["lat"] else np.empty(0),
