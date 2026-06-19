@@ -80,7 +80,12 @@ class OSM:
     ]
 
     def __init__(
-        self, filepath, bounding_box=None, keep_metadata=True, complete_relations=False
+        self,
+        filepath,
+        bounding_box=None,
+        keep_metadata=True,
+        complete_relations=False,
+        engine="in_memory",
     ):
         # Check input file
         self.filepath = validate_input_file(filepath)
@@ -92,6 +97,10 @@ class OSM:
         if not isinstance(complete_relations, bool):
             raise ValueError("'complete_relations' should be a boolean.")
         self.complete_relations = complete_relations
+
+        if engine not in ("in_memory", "out_of_core"):
+            raise ValueError("'engine' should be either 'in_memory' or 'out_of_core'.")
+        self.engine = engine
 
         # Check if file contains history
         self._osh_file = False
@@ -146,6 +155,29 @@ class OSM:
         # Timestamp
         self._current_timestamp = None
         self._timestamp_changed = False
+
+    def _read_engine(self, reader, timestamp, with_relations=True, **kwargs):
+        """Route a feature read to the out-of-core engine reader of the given name, threading
+        the constructor-level ``bounding_box`` / ``keep_metadata`` (and ``complete_relations``
+        for the layer readers). History reads are not yet supported by this backend, so any
+        ``.osh.pbf`` file (which selects element versions implicitly even without a
+        ``timestamp``) or an explicit ``timestamp`` raises rather than silently returning all
+        historical versions."""
+        if self._osh_file or timestamp is not None:
+            raise NotImplementedError(
+                "Reading history files (.osh.pbf) or a specific 'timestamp' is not yet "
+                "supported by the out-of-core engine; use engine='in_memory' for history "
+                "reads."
+            )
+        # Import the package qualified so the 'engine' name does not shadow the constructor
+        # parameter of the same name.
+        from pyrosm import engine as engine_backend
+
+        kwargs["bounding_box"] = self.bounding_box
+        kwargs["keep_metadata"] = self.keep_metadata
+        if with_relations:
+            kwargs["complete_relations"] = self.complete_relations
+        return getattr(engine_backend, reader)(self.filepath, **kwargs)
 
     def _get_pbf_elements(self, bounding_box):
         (
@@ -314,6 +346,19 @@ class OSM:
         Take a look at the OSM documentation for further details about the data:
         `https://wiki.openstreetmap.org/wiki/Key:highway <https://wiki.openstreetmap.org/wiki/Key:highway>`__
         """
+        if self.engine == "out_of_core":
+            return self._read_engine(
+                "get_network",
+                timestamp,
+                with_relations=False,
+                network_type=network_type,
+                extra_attributes=extra_attributes,
+                nodes=nodes,
+                custom_filter=custom_filter,
+                filter_type=filter_type,
+                tags_to_keep=tags_to_keep,
+            )
+
         # Get filter (also validates network_type, which still drives the graph
         # semantics even when a custom_filter is provided)
         network_filter = self._get_network_filter(network_type)
@@ -428,6 +473,15 @@ class OSM:
         `https://wiki.openstreetmap.org/wiki/Key:building <https://wiki.openstreetmap.org/wiki/Key:building>`__
 
         """
+        if self.engine == "out_of_core":
+            return self._read_engine(
+                "get_buildings",
+                timestamp,
+                custom_filter=custom_filter,
+                extra_attributes=extra_attributes,
+                tags_to_keep=tags_to_keep,
+            )
+
         # Default tags to keep as columns
         tags_as_columns = list(self.conf.tags.building)
 
@@ -508,6 +562,15 @@ class OSM:
         `https://wiki.openstreetmap.org/wiki/Key:landuse <https://wiki.openstreetmap.org/wiki/Key:landuse>`__
 
         """
+
+        if self.engine == "out_of_core":
+            return self._read_engine(
+                "get_landuse",
+                timestamp,
+                custom_filter=custom_filter,
+                extra_attributes=extra_attributes,
+                tags_to_keep=tags_to_keep,
+            )
 
         self._read_pbf(timestamp)
 
@@ -590,6 +653,15 @@ class OSM:
         `https://wiki.openstreetmap.org/wiki/Key:natural <https://wiki.openstreetmap.org/wiki/Key:natural>`__
 
         """
+
+        if self.engine == "out_of_core":
+            return self._read_engine(
+                "get_natural",
+                timestamp,
+                custom_filter=custom_filter,
+                extra_attributes=extra_attributes,
+                tags_to_keep=tags_to_keep,
+            )
 
         self._read_pbf(timestamp)
 
@@ -686,6 +758,17 @@ class OSM:
         `https://wiki.openstreetmap.org/wiki/Key:boundary <https://wiki.openstreetmap.org/wiki/Key:boundary>`__
 
         """
+
+        if self.engine == "out_of_core":
+            return self._read_engine(
+                "get_boundaries",
+                timestamp,
+                boundary_type=boundary_type,
+                name=name,
+                custom_filter=custom_filter,
+                extra_attributes=extra_attributes,
+                tags_to_keep=tags_to_keep,
+            )
 
         self._read_pbf(timestamp)
 
@@ -805,6 +888,15 @@ class OSM:
         'tourism', 'viewpoint', 'wilderness_hut', 'zoo']
 
         """
+        if self.engine == "out_of_core":
+            return self._read_engine(
+                "get_pois",
+                timestamp,
+                custom_filter=custom_filter,
+                extra_attributes=extra_attributes,
+                tags_to_keep=tags_to_keep,
+            )
+
         # If custom_filter has not been defined, initialize with default
         if custom_filter is None:
             custom_filter = {"amenity": True, "shop": True, "tourism": True}
@@ -917,6 +1009,26 @@ class OSM:
             the time will represent midnight of the given day, such as "2021-01-01 00:00:00".
 
         """
+
+        if self.engine == "out_of_core":
+            if custom_filter is None:
+                raise NotImplementedError(
+                    "get_data_by_custom_criteria(custom_filter=None) ('return everything') "
+                    "is not yet supported by the out-of-core engine; pass an explicit "
+                    "custom_filter."
+                )
+            return self._read_engine(
+                "get_data_by_custom_criteria",
+                timestamp,
+                custom_filter=custom_filter,
+                osm_keys_to_keep=osm_keys_to_keep,
+                filter_type=filter_type,
+                tags_as_columns=tags_as_columns,
+                keep_nodes=keep_nodes,
+                keep_ways=keep_ways,
+                keep_relations=keep_relations,
+                extra_attributes=extra_attributes,
+            )
 
         # custom_filter=None means "return everything": keep every tagged element
         # with no key/value filtering (issue #113).

@@ -79,8 +79,39 @@ def _get_layer(
     )
 
 
+def _resolve_tags_as_columns(base_tags, extra_attributes, tags_to_keep):
+    """Build the tag-as-columns list the way the in-memory feature methods do: ``tags_to_keep``
+    replaces the layer default, ``extra_attributes`` appends (both validated)."""
+    from pyrosm.utils import validate_tags_as_columns
+
+    tags_as_columns = list(base_tags)
+    if tags_to_keep is not None:
+        validate_tags_as_columns(tags_to_keep)
+        tags_as_columns = list(tags_to_keep)
+    if extra_attributes is not None:
+        validate_tags_as_columns(extra_attributes)
+        tags_as_columns = tags_as_columns + list(extra_attributes)
+    return tags_as_columns
+
+
+def _ensure_layer_key(custom_filter, key):
+    """A ``None`` ``custom_filter`` becomes ``{key: [True]}``; otherwise the layer key is
+    ensured present -- mirroring the in-memory ``get_<layer>_data`` default merge."""
+    from pyrosm.utils import validate_custom_filter
+
+    if custom_filter is None:
+        return {key: [True]}
+    custom_filter = dict(validate_custom_filter(custom_filter))
+    if key not in custom_filter:
+        custom_filter[key] = [True]
+    return custom_filter
+
+
 def get_buildings(
     filepath,
+    custom_filter=None,
+    extra_attributes=None,
+    tags_to_keep=None,
     bounding_box=None,
     complete_relations=False,
     workers=None,
@@ -88,16 +119,17 @@ def get_buildings(
     keep_metadata=True,
 ):
     """Read building geometries (ways + relations) from ``filepath`` with the out-of-core
-    engine, with the same columns as ``OSM(...).get_buildings()``. See :func:`_get_layer`
-    for ``bounding_box`` / ``complete_relations`` / ``output`` / ``workers`` /
-    ``keep_metadata``."""
+    engine, with the same columns as ``OSM(...).get_buildings()``. ``custom_filter`` refines
+    which buildings to keep (the ``building`` key is always ensured); ``extra_attributes`` /
+    ``tags_to_keep`` adjust the tag columns. See :func:`_get_layer` for ``bounding_box`` /
+    ``complete_relations`` / ``output`` / ``workers`` / ``keep_metadata``."""
     from pyrosm.config import Conf
 
     return _get_layer(
         filepath,
-        {"building": [True]},
+        _ensure_layer_key(custom_filter, "building"),
         "keep",
-        Conf.tags.building,
+        _resolve_tags_as_columns(Conf.tags.building, extra_attributes, tags_to_keep),
         workers,
         output,
         keep_metadata,
@@ -109,6 +141,9 @@ def get_buildings(
 
 def get_landuse(
     filepath,
+    custom_filter=None,
+    extra_attributes=None,
+    tags_to_keep=None,
     bounding_box=None,
     complete_relations=False,
     workers=None,
@@ -116,15 +151,16 @@ def get_landuse(
     keep_metadata=True,
 ):
     """Read landuse geometries (ways + relations) from ``filepath`` with the out-of-core
-    engine, with the same columns as ``OSM(...).get_landuse()``. See :func:`_get_layer` for
-    the keyword arguments."""
+    engine, with the same columns as ``OSM(...).get_landuse()``. ``custom_filter`` refines
+    which landuse to keep (the ``landuse`` key is always ensured); ``extra_attributes`` /
+    ``tags_to_keep`` adjust the tag columns. See :func:`_get_layer` for the others."""
     from pyrosm.config import Conf
 
     return _get_layer(
         filepath,
-        {"landuse": [True]},
+        _ensure_layer_key(custom_filter, "landuse"),
         "keep",
-        Conf.tags.landuse,
+        _resolve_tags_as_columns(Conf.tags.landuse, extra_attributes, tags_to_keep),
         workers,
         output,
         keep_metadata,
@@ -135,6 +171,9 @@ def get_landuse(
 
 def get_natural(
     filepath,
+    custom_filter=None,
+    extra_attributes=None,
+    tags_to_keep=None,
     bounding_box=None,
     complete_relations=False,
     workers=None,
@@ -142,15 +181,17 @@ def get_natural(
     keep_metadata=True,
 ):
     """Read natural features (nodes + ways + relations) from ``filepath`` with the
-    out-of-core engine, with the same columns as ``OSM(...).get_natural()``. See
-    :func:`_get_layer` for the keyword arguments."""
+    out-of-core engine, with the same columns as ``OSM(...).get_natural()``. ``custom_filter``
+    refines which natural features to keep (the ``natural`` key is always ensured);
+    ``extra_attributes`` / ``tags_to_keep`` adjust the tag columns. See :func:`_get_layer` for
+    the others."""
     from pyrosm.config import Conf
 
     return _get_layer(
         filepath,
-        {"natural": [True]},
+        _ensure_layer_key(custom_filter, "natural"),
         "keep",
-        Conf.tags.natural,
+        _resolve_tags_as_columns(Conf.tags.natural, extra_attributes, tags_to_keep),
         workers,
         output,
         keep_metadata,
@@ -162,6 +203,8 @@ def get_natural(
 def get_pois(
     filepath,
     custom_filter=None,
+    extra_attributes=None,
+    tags_to_keep=None,
     bounding_box=None,
     complete_relations=False,
     workers=None,
@@ -170,8 +213,9 @@ def get_pois(
 ):
     """Read points of interest (nodes + ways + relations) from ``filepath`` with the
     out-of-core engine, with the same columns as ``OSM(...).get_pois(custom_filter=...)``.
-    ``custom_filter`` defaults to ``{"amenity": True, "shop": True, "tourism": True}``. See
-    :func:`_get_layer` for the other keyword arguments."""
+    ``custom_filter`` defaults to ``{"amenity": True, "shop": True, "tourism": True}``;
+    ``extra_attributes`` / ``tags_to_keep`` adjust the tag columns. See :func:`_get_layer` for
+    the other keyword arguments."""
     from pyrosm.config import Conf
     from pyrosm.utils import validate_custom_filter
 
@@ -179,14 +223,14 @@ def get_pois(
         custom_filter = {"amenity": True, "shop": True, "tourism": True}
     # Per-key tag columns, exactly as OSM.get_pois builds them (Conf.tags.<key>, or the
     # basic tags for keys without a dedicated column set).
-    tags_as_columns = []
+    base_tags = []
     for k in custom_filter.keys():
-        tags_as_columns += getattr(Conf.tags, k, list(Conf.tags._basic_tags))
+        base_tags += getattr(Conf.tags, k, list(Conf.tags._basic_tags))
     return _get_layer(
         filepath,
         validate_custom_filter(custom_filter),
         "keep",
-        tags_as_columns,
+        _resolve_tags_as_columns(base_tags, extra_attributes, tags_to_keep),
         workers,
         output,
         keep_metadata,
@@ -200,6 +244,8 @@ def get_boundaries(
     boundary_type="administrative",
     name=None,
     custom_filter=None,
+    extra_attributes=None,
+    tags_to_keep=None,
     bounding_box=None,
     complete_relations=False,
     workers=None,
@@ -209,7 +255,8 @@ def get_boundaries(
     """Read boundaries (ways + relations) from ``filepath`` with the out-of-core engine,
     with the same columns as ``OSM(...).get_boundaries()``. ``boundary_type`` selects the
     ``boundary=*`` value (``"all"`` for any); ``name`` keeps only boundaries whose name
-    contains that text. See :func:`_get_layer` for the other keyword arguments."""
+    contains that text; ``extra_attributes`` / ``tags_to_keep`` adjust the tag columns. See
+    :func:`_get_layer` for the other keyword arguments."""
     from pyrosm.config import Conf
     from pyrosm.utils import validate_custom_filter, validate_boundary_type
 
@@ -229,7 +276,7 @@ def get_boundaries(
         filepath,
         validate_custom_filter(custom_filter),
         "keep",
-        list(Conf.tags.boundary),
+        _resolve_tags_as_columns(Conf.tags.boundary, extra_attributes, tags_to_keep),
         workers,
         output,
         keep_metadata,
@@ -259,6 +306,7 @@ def get_data_by_custom_criteria(
     keep_nodes=True,
     keep_ways=True,
     keep_relations=True,
+    extra_attributes=None,
     bounding_box=None,
     complete_relations=False,
     workers=None,
@@ -269,10 +317,14 @@ def get_data_by_custom_criteria(
     out-of-core engine, with the same columns as
     ``OSM(...).get_data_by_custom_criteria(...)``. ``osm_keys_to_keep`` (if given) is the
     set of keys filtered on; ``keep_nodes`` / ``keep_ways`` / ``keep_relations`` select
-    which element kinds are returned. See :func:`_get_layer` for the other keyword
-    arguments."""
+    which element kinds are returned; ``extra_attributes`` adds further tag columns. See
+    :func:`_get_layer` for the other keyword arguments."""
     from pyrosm.config import Conf
-    from pyrosm.utils import validate_custom_filter, validate_osm_keys
+    from pyrosm.utils import (
+        validate_custom_filter,
+        validate_osm_keys,
+        validate_tags_as_columns,
+    )
 
     custom_filter = validate_custom_filter(custom_filter)
     filter_type = filter_type.lower()
@@ -289,6 +341,11 @@ def get_data_by_custom_criteria(
         # Keys without a dedicated column set become columns themselves.
         if len(tags_as_columns) == 0:
             tags_as_columns = list(custom_filter.keys())
+    else:
+        validate_tags_as_columns(tags_as_columns)
+    if extra_attributes is not None:
+        validate_tags_as_columns(extra_attributes)
+        tags_as_columns = list(tags_as_columns) + list(extra_attributes)
     return _get_layer(
         filepath,
         custom_filter,
@@ -332,9 +389,11 @@ def _network_filter(network_type):
 def get_network(
     filepath,
     network_type="walking",
+    extra_attributes=None,
     nodes=False,
     custom_filter=None,
     filter_type="exclude",
+    tags_to_keep=None,
     bounding_box=None,
     workers=None,
     keep_metadata=True,
@@ -343,14 +402,15 @@ def get_network(
     from ``filepath`` with the out-of-core engine, with the same columns as
     ``OSM(...).get_network()``. ``network_type`` selects a predefined filter (``walking`` /
     ``driving`` / ``cycling`` / ``all`` / ...); a ``custom_filter`` replaces it
-    (``filter_type`` keep/exclude). ``bounding_box`` (a ``[minx, miny, maxx, maxy]`` list or
-    a shapely polygon) restricts the read to that area.
+    (``filter_type`` keep/exclude). ``extra_attributes`` / ``tags_to_keep`` adjust the tag
+    columns. ``bounding_box`` (a ``[minx, miny, maxx, maxy]`` list or a shapely polygon)
+    restricts the read to that area.
 
     ``nodes=True`` (the graph-export node frame) is not yet supported by this backend: the
     coordinate store carries only id/lon/lat, so the node frame would lack the element
     metadata the in-memory reader produces."""
     from pyrosm.config import Conf
-    from pyrosm.utils import validate_custom_filter
+    from pyrosm.utils import validate_custom_filter, validate_tags_as_columns
 
     if nodes:
         raise NotImplementedError(
@@ -359,6 +419,9 @@ def get_network(
         )
 
     tags_as_columns = list(Conf.tags.highway)
+    if tags_to_keep is not None:
+        validate_tags_as_columns(tags_to_keep)
+        tags_as_columns = list(tags_to_keep)
     if custom_filter is not None:
         custom_filter = validate_custom_filter(custom_filter)
         filter_type = filter_type.lower()
@@ -375,6 +438,9 @@ def get_network(
         network_filter = _network_filter(network_type)
         # Predefined networks are always exclude filters keyed on 'highway'.
         filter_type = "exclude"
+    if extra_attributes is not None:
+        validate_tags_as_columns(extra_attributes)
+        tags_as_columns = tags_as_columns + list(extra_attributes)
 
     data_filter = (
         None if network_filter is None else parse_custom_filter(network_filter)[0]
