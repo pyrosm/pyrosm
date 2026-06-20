@@ -3,7 +3,9 @@ into per-worker shards selecting the layer's elements (and, for point layers, th
 nodes), then collects and assembles (or streams to GeoParquet) the requested layer. A
 ``bounding_box`` restricts the read to that area."""
 
-import json
+import os
+
+from rapidjson import dumps, loads
 
 from pyrosm.data_manager import parse_custom_filter
 from pyrosm.utils import _compat
@@ -448,7 +450,7 @@ def _write_nodes_parquet(node_gdf, path):
     """
     node_gdf = node_gdf.copy()
     node_gdf["tags"] = node_gdf["tags"].map(
-        lambda t: json.dumps(t) if isinstance(t, dict) else None
+        lambda t: dumps(t) if isinstance(t, dict) else None
     )
     node_gdf.to_parquet(path)
 
@@ -458,9 +460,7 @@ def _read_nodes_parquet(path):
     :func:`_write_nodes_parquet` back into dicts (``None`` for missing), matching the in-memory
     reader's representation."""
     gdf = cache.read_result(path)
-    gdf["tags"] = gdf["tags"].map(
-        lambda s: json.loads(s) if isinstance(s, str) else None
-    )
+    gdf["tags"] = gdf["tags"].map(lambda s: loads(s) if isinstance(s, str) else None)
     return gdf
 
 
@@ -473,6 +473,19 @@ def _write_network_pair(result, edges_path, nodes_path):
     edges.to_parquet(edges_path)
     _write_nodes_parquet(node_gdf, nodes_path)
     return True
+
+
+def _write_network_dir(result, dirpath):
+    """Write ``get_network(nodes=True, output=dirpath)``'s ``(nodes, edges)`` tuple into
+    ``dirpath`` as ``edges.parquet`` + ``nodes.parquet`` and return ``dirpath``; an empty read
+    writes nothing and returns ``None``."""
+    node_gdf, edges = result
+    if edges is None:
+        return None
+    os.makedirs(dirpath, exist_ok=True)
+    edges.to_parquet(os.path.join(dirpath, "edges.parquet"))
+    _write_nodes_parquet(node_gdf, os.path.join(dirpath, "nodes.parquet"))
+    return dirpath
 
 
 def get_network(
@@ -502,9 +515,11 @@ def get_network(
 
     With ``output=None`` (default) the result is cached to a deterministic GeoParquet under a
     temp dir and reused on identical later reads, like the area/point layers; ``nodes=True``
-    caches the ``(nodes, edges)`` tuple as two files. ``output="path"`` writes the edges there
-    and returns the path (requires ``pyarrow``, and is incompatible with ``nodes=True``). With
-    ``pyarrow`` absent the default read returns the in-memory result with no cache."""
+    caches the ``(nodes, edges)`` tuple as two files. ``output="path"`` writes the edges to that
+    GeoParquet and returns the path; with ``nodes=True`` it writes ``edges.parquet`` +
+    ``nodes.parquet`` into the ``path`` directory and returns the directory (both require
+    ``pyarrow``). With ``pyarrow`` absent the default read returns the in-memory result with no
+    cache."""
     from pyrosm.config import Conf
     from pyrosm.utils import validate_custom_filter, validate_tags_as_columns
 
@@ -540,12 +555,6 @@ def get_network(
     bounding_box = _normalize_bounding_box(bounding_box)
     bounds = _bbox_bounds(bounding_box)
 
-    if output is not None and nodes:
-        raise ValueError(
-            "get_network(nodes=True) cannot be combined with output= -- the (nodes, edges) "
-            "tuple has no single-file GeoParquet form. Omit output= for the tuple, or read "
-            "with nodes=False to stream the edges."
-        )
     if output is not None:
         _compat.require_pyarrow()
 
@@ -566,8 +575,11 @@ def get_network(
             filepath, [b"highway"], False, workers, assemble, bbox_bounds=bounds
         )
 
-    # A user-supplied path writes the edges there and returns the path.
+    # A user-supplied output writes the result there and returns it: a GeoParquet file for the
+    # edges (nodes=False), or a directory holding edges.parquet + nodes.parquet (nodes=True).
     if output is not None:
+        if nodes:
+            return _write_network_dir(decode(), output)
         return output if _write_parquet(decode(), output) else None
 
     # With pyarrow absent there is nowhere to cache, so return the direct in-memory result (the

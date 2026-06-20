@@ -989,15 +989,37 @@ def test_engine_network_output_path_writes_edges(helsinki_pbf, tmp_path):
     _assert_full_parity(written, ref)
 
 
-def test_engine_network_output_with_nodes_raises(helsinki_pbf, tmp_path):
-    # The (nodes, edges) tuple has no single-file form, so output= + nodes=True is rejected.
-    with pytest.raises(ValueError, match="nodes=True"):
-        get_network(
-            helsinki_pbf,
-            network_type="driving",
-            nodes=True,
-            output=str(tmp_path / "n.parquet"),
-        )
+def test_engine_network_output_dir_with_nodes(helsinki_pbf, tmp_path):
+    # output= + nodes=True writes edges.parquet + nodes.parquet into the directory and returns
+    # it; the two files reload equal to the in-memory (nodes, edges) tuple.
+    from pyrosm.engine import readers
+
+    out = str(tmp_path / "net_dir")
+    ret = get_network(helsinki_pbf, network_type="driving", nodes=True, output=out)
+    assert ret == out
+    assert os.path.exists(os.path.join(out, "edges.parquet"))
+    assert os.path.exists(os.path.join(out, "nodes.parquet"))
+    ref_nodes, ref_edges = OSM(helsinki_pbf).get_network(
+        network_type="driving", nodes=True
+    )
+    _assert_full_parity(
+        cache.read_result(os.path.join(out, "edges.parquet")), ref_edges
+    )
+    written_nodes = readers._read_nodes_parquet(os.path.join(out, "nodes.parquet"))
+    a = written_nodes.sort_values("id").reset_index(drop=True).assign(osm_type="node")
+    b = ref_nodes.sort_values("id").reset_index(drop=True).assign(osm_type="node")
+    _assert_full_parity(a, b)
+
+
+def test_engine_network_output_dir_empty_returns_none(test_pbf, tmp_path):
+    # An empty nodes=True read with output= writes nothing and returns None.
+    out = str(tmp_path / "empty_dir")
+    flt = {"highway": ["definitely_not_a_real_highway_xyz"]}
+    ret = get_network(
+        test_pbf, custom_filter=flt, filter_type="keep", nodes=True, output=out
+    )
+    assert ret is None
+    assert not os.path.exists(out)
 
 
 def test_engine_network_pyarrow_absent_falls_back(

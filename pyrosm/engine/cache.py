@@ -11,9 +11,10 @@ no cache.
 """
 
 import hashlib
-import json
 import os
 import tempfile
+
+from rapidjson import dumps
 
 
 def cache_dir():
@@ -47,7 +48,7 @@ def result_path(filepath, key_params):
         "params": _stable(key_params),
     }
     digest = hashlib.sha1(
-        json.dumps(key, sort_keys=True, default=str).encode("utf-8")
+        dumps(key, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:16]
     return os.path.join(cache_dir(), "result_%s.parquet" % digest)
 
