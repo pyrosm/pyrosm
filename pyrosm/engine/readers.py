@@ -3,12 +3,15 @@ into per-worker shards selecting the layer's elements (and, for point layers, th
 nodes), then collects and assembles (or streams to GeoParquet) the requested layer. A
 ``bounding_box`` restricts the read to that area."""
 
+import os
+import tempfile
+
 from pyrosm.data_manager import parse_custom_filter
-from pyrosm.utils._compat import require_pyarrow
+from pyrosm.utils import _compat
 from pyrosm.engine.pool import _decode_and_run
 from pyrosm.engine.bounding_box import _bbox_bounds, _normalize_bounding_box
 from pyrosm.engine.assemble import _assemble_layer, _assemble_network
-from pyrosm.engine import geoparquet
+from pyrosm.engine import cache, geoparquet
 
 
 def _get_layer(
@@ -43,7 +46,7 @@ def _get_layer(
     (otherwise it falls back to one process with a warning) -- see the package docstring.
     """
     if output is not None:
-        require_pyarrow()
+        _compat.require_pyarrow()
     data_filter, derived_keys = parse_custom_filter(custom_filter)
     if osm_keys is None:
         osm_keys = derived_keys
@@ -51,6 +54,68 @@ def _get_layer(
     osm_key_bytes = [k.encode("utf-8") for k in osm_keys]
     bounding_box = _normalize_bounding_box(bounding_box)
     bounds = _bbox_bounds(bounding_box)
+
+    # Per-layer result cache: when returning an in-memory frame (not streaming to a user file)
+    # and pyarrow is available, assemble the layer once via the bounded per-call path, write its
+    # result to a deterministic GeoParquet keyed by the read, and reuse that file on any identical
+    # later read instead of re-decoding the PBF. Each layer is cached separately, so memory stays
+    # bounded by one layer. With pyarrow absent the engine returns the in-memory frame (no cache).
+    if output is None and _compat.HAS_PYARROW:
+        key_params = {
+            "filter_spec": filter_spec,
+            "tags_as_columns": tags_as_columns,
+            "keep_metadata": keep_metadata,
+            "include_nodes": include_nodes,
+            "keep_ways": keep_ways,
+            "keep_relations": keep_relations,
+            "bounding_box": bounding_box,
+            "complete_relations": complete_relations,
+        }
+        cache_path = cache.result_path(filepath, key_params)
+        # An empty result is recorded with a side marker, so an identical later read returns None
+        # without re-decoding the whole file.
+        empty_marker = cache_path + ".empty"
+        if os.path.exists(empty_marker):
+            return None
+        if not os.path.exists(cache_path):
+            # Stream to a unique temp file in the cache dir, then atomically move it into place,
+            # so concurrent identical first-reads never share a temp file or see a half-written
+            # cache. The temp file is removed unless it was moved into place.
+            fd, tmp_path = tempfile.mkstemp(
+                dir=os.path.dirname(cache_path),
+                prefix=os.path.basename(cache_path) + ".",
+                suffix=".tmp",
+            )
+            os.close(fd)
+            try:
+                written = _decode_and_run(
+                    filepath,
+                    osm_key_bytes,
+                    include_nodes,
+                    workers,
+                    lambda shard_paths: geoparquet._stream_layer_to_parquet(
+                        shard_paths,
+                        tmp_path,
+                        geoparquet._OUTPUT_CHUNK_SIZE,
+                        tags_as_columns,
+                        keep_metadata,
+                        filter_spec,
+                        keep_ways,
+                        keep_relations,
+                        bounding_box,
+                        complete_relations,
+                    ),
+                    bbox_bounds=bounds,
+                )
+                if written is None:
+                    with open(empty_marker, "w"):
+                        pass
+                    return None
+                os.replace(tmp_path, cache_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+        return cache.read_result(cache_path)
 
     def run(shard_paths):
         if output is None:

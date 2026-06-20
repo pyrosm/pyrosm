@@ -1,6 +1,8 @@
 """Out-of-core engine buildings reader: parity vs the in-memory OSM(fp).get_buildings()
 way and relation rows, plus the output= GeoParquet path and the worker-count policy."""
 
+import glob
+import os
 import zlib
 from struct import pack, unpack
 
@@ -19,8 +21,33 @@ from pyrosm.engine import (
     get_data_by_custom_criteria,
     get_network,
 )
-from pyrosm.engine import pool, geoparquet
+from pyrosm.engine import pool, geoparquet, cache
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
+
+# Captured before the autouse fixture below stubs the module attribute, so a test can exercise
+# the real cache_dir() implementation.
+_real_cache_dir = cache.cache_dir
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _shared_cache_dir(tmp_path_factory):
+    # Point the per-layer result cache at one temp dir for the whole session: parity tests that
+    # read the same layer reuse the cached parquet, nothing leaks into the user's real cache dir.
+    # Tests that must observe a (re)build use the function-scoped ``fresh_cache`` fixture.
+    shared = tmp_path_factory.mktemp("result_cache")
+    original = cache.cache_dir
+    cache.cache_dir = lambda: str(shared)
+    yield
+    cache.cache_dir = original
+
+
+@pytest.fixture
+def fresh_cache(tmp_path, monkeypatch):
+    # A private, empty cache dir for tests that need the layer to actually be (re)built.
+    cache_dir = tmp_path / "fresh_cache"
+    cache_dir.mkdir()
+    monkeypatch.setattr(cache, "cache_dir", lambda: str(cache_dir))
+    return cache_dir
 
 
 @pytest.fixture
@@ -256,7 +283,9 @@ def _fake_executor(raise_init=None, raise_map=None):
     return _F
 
 
-def test_engine_parallel_decode_runs_and_matches_serial(helsinki_pbf, monkeypatch):
+def test_engine_parallel_decode_runs_and_matches_serial(
+    helsinki_pbf, monkeypatch, fresh_cache
+):
     # The parallel branch (map over per-worker tasks, then flatten the shard paths) yields
     # the same result as the single-process path.
     monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor())
@@ -265,7 +294,9 @@ def test_engine_parallel_decode_runs_and_matches_serial(helsinki_pbf, monkeypatc
 
 
 @pytest.mark.parametrize("where", ["construction", "run"])
-def test_engine_parallel_decode_falls_back_to_serial(where, helsinki_pbf, monkeypatch):
+def test_engine_parallel_decode_falls_back_to_serial(
+    where, helsinki_pbf, monkeypatch, fresh_cache
+):
     # A process pool that cannot start (OSError, e.g. a restricted environment) or whose
     # workers die (BrokenProcessPool, e.g. an unguarded __main__) must fall back to a single
     # process with a warning, not hang or error, and still produce the correct result.
@@ -666,6 +697,70 @@ def test_engine_custom_criteria_keep_flags_parity(helsinki_pbf, flags):
         assert mine is None
         return
     _assert_full_parity(mine, ref)
+
+
+def _count_decodes(monkeypatch):
+    # Count how many times the engine decodes the PBF, to assert a cached read does not re-decode.
+    import pyrosm.engine.readers as readers_mod
+
+    calls = []
+    real = readers_mod._decode_and_run
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(readers_mod, "_decode_and_run", spy)
+    return calls
+
+
+def test_engine_cache_reuse_skips_decode(helsinki_pbf, monkeypatch, fresh_cache):
+    # The first read assembles + caches the layer; an identical second read reads the cached
+    # GeoParquet back without decoding the PBF again, and returns the same data.
+    decodes = _count_decodes(monkeypatch)
+    first = get_buildings(helsinki_pbf)
+    second = get_buildings(helsinki_pbf)
+    assert sum(decodes) == 1
+    _assert_full_parity(
+        second, first.sort_values(["osm_type", "id"]).reset_index(drop=True)
+    )
+
+
+def test_engine_cache_distinct_params_distinct_file(helsinki_pbf):
+    # A different read parameter keys a different cache file.
+    base = cache.result_path(helsinki_pbf, {"keep_metadata": True})
+    assert base != cache.result_path(helsinki_pbf, {"keep_metadata": False})
+    assert base != cache.result_path(helsinki_pbf, {"keep_metadata": True, "x": 1})
+
+
+def test_engine_cache_empty_result_is_marked(test_pbf, monkeypatch, fresh_cache):
+    # A filter that matches nothing returns None and records an empty marker, so an identical
+    # later read returns None without decoding the file again.
+    flt = {"amenity": ["definitely_not_a_real_value_xyz"]}
+    assert get_data_by_custom_criteria(test_pbf, custom_filter=flt) is None
+    assert glob.glob(os.path.join(cache.cache_dir(), "*.empty"))
+    decodes = _count_decodes(monkeypatch)
+    assert get_data_by_custom_criteria(test_pbf, custom_filter=flt) is None
+    assert sum(decodes) == 0
+
+
+def test_engine_cache_pyarrow_absent_falls_back(helsinki_pbf, monkeypatch, fresh_cache):
+    # With pyarrow unavailable the engine returns the in-memory frame and writes no cache file.
+    from pyrosm.utils import _compat
+
+    monkeypatch.setattr(_compat, "HAS_PYARROW", False)
+    mine = get_buildings(helsinki_pbf)
+    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
+    assert glob.glob(os.path.join(cache.cache_dir(), "*.parquet")) == []
+
+
+def test_cache_dir_builds_and_creates_tempdir_path(monkeypatch, tmp_path):
+    # cache_dir() roots the result cache at <tempdir>/pyrosm/cache and creates it on demand. The
+    # fixtures stub the module attribute, so exercise the real implementation captured at import.
+    monkeypatch.setattr(cache.tempfile, "gettempdir", lambda: str(tmp_path))
+    result = _real_cache_dir()
+    assert result == os.path.join(str(tmp_path), "pyrosm", "cache")
+    assert os.path.isdir(result)
 
 
 def test_engine_boundaries_parity(helsinki_region_pbf):
