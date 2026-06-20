@@ -11,7 +11,6 @@ no cache.
 """
 
 import hashlib
-import importlib.util
 import json
 import os
 import tempfile
@@ -34,12 +33,6 @@ def _stable(obj):
     if hasattr(obj, "wkt"):
         return {"__wkt__": obj.wkt}
     return obj
-
-
-def pyarrow_available():
-    """Whether ``pyarrow`` is importable (the GeoParquet dependency). When it is not, the engine
-    returns the in-memory frame and writes no cache instead of erroring."""
-    return importlib.util.find_spec("pyarrow") is not None
 
 
 def result_path(filepath, key_params):

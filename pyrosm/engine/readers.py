@@ -7,7 +7,7 @@ import os
 import tempfile
 
 from pyrosm.data_manager import parse_custom_filter
-from pyrosm.utils._compat import require_pyarrow
+from pyrosm.utils import _compat
 from pyrosm.engine.pool import _decode_and_run
 from pyrosm.engine.bounding_box import _bbox_bounds, _normalize_bounding_box
 from pyrosm.engine.assemble import _assemble_layer, _assemble_network
@@ -46,7 +46,7 @@ def _get_layer(
     (otherwise it falls back to one process with a warning) -- see the package docstring.
     """
     if output is not None:
-        require_pyarrow()
+        _compat.require_pyarrow()
     data_filter, derived_keys = parse_custom_filter(custom_filter)
     if osm_keys is None:
         osm_keys = derived_keys
@@ -60,7 +60,7 @@ def _get_layer(
     # result to a deterministic GeoParquet keyed by the read, and reuse that file on any identical
     # later read instead of re-decoding the PBF. Each layer is cached separately, so memory stays
     # bounded by one layer. With pyarrow absent the engine returns the in-memory frame (no cache).
-    if output is None and cache.pyarrow_available():
+    if output is None and _compat.HAS_PYARROW:
         key_params = {
             "filter_spec": filter_spec,
             "tags_as_columns": tags_as_columns,

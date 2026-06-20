@@ -24,6 +24,10 @@ from pyrosm.engine import (
 from pyrosm.engine import pool, geoparquet, cache
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
 
+# Captured before the autouse fixture below stubs the module attribute, so a test can exercise
+# the real cache_dir() implementation.
+_real_cache_dir = cache.cache_dir
+
 
 @pytest.fixture(autouse=True, scope="session")
 def _shared_cache_dir(tmp_path_factory):
@@ -742,10 +746,21 @@ def test_engine_cache_empty_result_is_marked(test_pbf, monkeypatch, fresh_cache)
 
 def test_engine_cache_pyarrow_absent_falls_back(helsinki_pbf, monkeypatch, fresh_cache):
     # With pyarrow unavailable the engine returns the in-memory frame and writes no cache file.
-    monkeypatch.setattr(cache, "pyarrow_available", lambda: False)
+    from pyrosm.utils import _compat
+
+    monkeypatch.setattr(_compat, "HAS_PYARROW", False)
     mine = get_buildings(helsinki_pbf)
     _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
     assert glob.glob(os.path.join(cache.cache_dir(), "*.parquet")) == []
+
+
+def test_cache_dir_builds_and_creates_tempdir_path(monkeypatch, tmp_path):
+    # cache_dir() roots the result cache at <tempdir>/pyrosm/cache and creates it on demand. The
+    # fixtures stub the module attribute, so exercise the real implementation captured at import.
+    monkeypatch.setattr(cache.tempfile, "gettempdir", lambda: str(tmp_path))
+    result = _real_cache_dir()
+    assert result == os.path.join(str(tmp_path), "pyrosm", "cache")
+    assert os.path.isdir(result)
 
 
 def test_engine_boundaries_parity(helsinki_region_pbf):
