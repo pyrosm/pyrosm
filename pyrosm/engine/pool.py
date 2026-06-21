@@ -6,6 +6,7 @@ import tempfile
 import warnings
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+from pathlib import Path
 
 from pyrosm.engine.blobs import _index_blobs
 from pyrosm.engine.decode import _init_worker, _decode_batch
@@ -19,7 +20,7 @@ def _auto_workers(filepath, n_blobs):
     """Pick a worker count for ``filepath``: single-core below the size threshold (where
     the process-spawn overhead dominates), otherwise a worker per CPU, capped at the blob
     count."""
-    if os.path.getsize(filepath) < _PARALLEL_MIN_FILE_BYTES:
+    if Path(filepath).stat().st_size < _PARALLEL_MIN_FILE_BYTES:
         return 1
     return max(1, min(os.cpu_count() or 1, n_blobs))
 

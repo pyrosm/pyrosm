@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from pyrosm import get_data
@@ -43,9 +45,9 @@ def default_filter():
 
 @pytest.fixture
 def test_output_dir():
-    import os, tempfile
+    import tempfile
 
-    return os.path.join(tempfile.gettempdir(), "pyrosm_test_results")
+    return str(Path(tempfile.gettempdir()) / "pyrosm_test_results")
 
 
 def test_get_data_by_custom_criteria_custom_filter(california_highway_motorway_pbf):

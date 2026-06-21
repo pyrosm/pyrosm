@@ -8,11 +8,11 @@ snapshot with ``scripts/update_geofabrik_index.py``.
 
 import gzip
 import json
-import os
 import ssl
 import tempfile
 import urllib.request
 import warnings
+from pathlib import Path
 
 import certifi
 import geopandas as gpd
@@ -20,7 +20,7 @@ import numpy as np
 from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 
-_INDEX_PATH = os.path.join(os.path.dirname(__file__), "geofabrik_index.geojson.gz")
+_INDEX_PATH = Path(__file__).parent / "geofabrik_index.geojson.gz"
 _INDEX_URL = "https://download.geofabrik.de/index-v1.json"
 
 # Rank covering extents by true size in an equal-area projection; lon/lat degree
@@ -137,8 +137,8 @@ def _bbox_filename(bounds):
 
 def _default_target_dir(directory):
     if directory is not None:
-        return directory
-    return os.path.join(tempfile.gettempdir(), "pyrosm")
+        return Path(directory)
+    return Path(tempfile.gettempdir()) / "pyrosm"
 
 
 def _download_optionally_crop(
@@ -156,14 +156,14 @@ def _download_optionally_crop(
     # Aliased so the ``download`` flag does not shadow the download function.
     from pyrosm.utils.download import download as _download_file
 
-    full_path = _download_file(url, os.path.basename(url), update, directory)
+    full_path = _download_file(url, Path(url).name, update, directory)
     if not crop:
         return full_path
 
     from pyrosm import OSM
 
-    target = output_path or os.path.join(_default_target_dir(directory), cropped_name)
-    os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
+    target = output_path or str(_default_target_dir(directory) / cropped_name)
+    Path(target).resolve().parent.mkdir(parents=True, exist_ok=True)
     return OSM(full_path, bounding_box=geom).to_pbf(output_path=target)
 
 

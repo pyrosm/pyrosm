@@ -7,6 +7,7 @@ from google.protobuf.message import DecodeError
 import zlib
 from struct import unpack
 import os
+from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 import warnings
@@ -146,7 +147,7 @@ def validate_input_file(filepath):
             f"Input data should be in Protobuf format (*.osm.pbf). "
             f"Found: {filepath.split('.')[-1]}"
         )
-    if not os.path.exists(filepath):
+    if not Path(filepath).exists():
         raise ValueError(f"File does not exist: " f"Found: {filepath}")
     return filepath
 

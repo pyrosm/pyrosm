@@ -1,6 +1,7 @@
 """Regression tests guarding against specific bugs reappearing."""
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -899,7 +900,6 @@ def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):
     ssl.SSLError [ASN1: NOT_ENOUGH_DATA] (a CPython bug on a malformed store
     entry), which aborted every download-backed test on the windows runners."""
     import io
-    import os
     import ssl
 
     import certifi
@@ -931,7 +931,7 @@ def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):
     # The CA bundle came from certifi, and that context was handed to urlopen.
     assert captured["cafile"] == certifi.where()
     assert isinstance(captured["context"], ssl.SSLContext)
-    assert os.path.exists(out)
+    assert Path(out).exists()
 
 
 def test_tags_to_keep_restricts_tag_columns():
@@ -1202,7 +1202,6 @@ def test_get_data_dispatch_and_lazy_attrs(monkeypatch):
     the name-normalisation variants (spaces, underscores, dashes) and the
     not-available error -- plus the deprecated get_path alias and the lazy
     pyrosm.data attribute loader."""
-    import os
     import pyrosm.data as data
 
     # Non-string input is rejected up front.
@@ -1214,7 +1213,7 @@ def test_get_data_dispatch_and_lazy_attrs(monkeypatch):
         data.get_data("not_a_real_place_xyz")
 
     # Bundled data is returned as a local path, no download.
-    assert os.path.exists(data.get_data("test_pbf"))
+    assert Path(data.get_data("test_pbf")).exists()
 
     # Stub the network so the retrieve-backed branches (and retrieve itself) run
     # offline; capture the resolved filename for each.
@@ -1247,7 +1246,7 @@ def test_get_data_dispatch_and_lazy_attrs(monkeypatch):
 
     # get_path is the deprecated alias for get_data.
     with pytest.warns(DeprecationWarning, match="get_path"):
-        assert os.path.exists(data.get_path("test_pbf"))
+        assert Path(data.get_path("test_pbf")).exists()
 
     # The optional geo helpers are exposed lazily via module __getattr__.
     assert callable(data.get_data_by_bbox)

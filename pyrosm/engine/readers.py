@@ -3,7 +3,7 @@ into per-worker shards selecting the layer's elements (and, for point layers, th
 nodes), then collects and assembles (or streams to GeoParquet) the requested layer. A
 ``bounding_box`` restricts the read to that area."""
 
-import os
+from pathlib import Path
 
 from rapidjson import dumps, loads
 
@@ -482,9 +482,10 @@ def _write_network_dir(result, dirpath):
     node_gdf, edges = result
     if edges is None:
         return None
-    os.makedirs(dirpath, exist_ok=True)
-    edges.to_parquet(os.path.join(dirpath, "edges.parquet"))
-    _write_nodes_parquet(node_gdf, os.path.join(dirpath, "nodes.parquet"))
+    out = Path(dirpath)
+    out.mkdir(parents=True, exist_ok=True)
+    edges.to_parquet(out / "edges.parquet")
+    _write_nodes_parquet(node_gdf, out / "nodes.parquet")
     return dirpath
 
 

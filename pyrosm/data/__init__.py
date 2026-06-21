@@ -1,4 +1,5 @@
-import os
+from pathlib import Path
+
 from pyrosm.utils.download import download
 from pyrosm.data.geofabrik import (
     Africa,
@@ -34,7 +35,7 @@ __all__ = [
     "get_data_by_geocoding",
     "get_path",
 ]
-_module_path = os.path.dirname(__file__)
+_module_path = Path(__file__).parent
 _package_files = {"test_pbf": "test.osm.pbf", "helsinki_pbf": "Helsinki.osm.pbf"}
 
 # Static test data
@@ -236,7 +237,7 @@ def get_data(dataset, update=False, directory=None):
     dataset = dataset.lower().strip()
 
     if dataset in _package_files:
-        return os.path.abspath(os.path.join(_module_path, _package_files[dataset]))
+        return str((_module_path / _package_files[dataset]).resolve())
 
     elif dataset == "helsinki_region_pbf":
         return retrieve(_helsinki_region_pbf, update, directory)

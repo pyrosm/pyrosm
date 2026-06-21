@@ -3,25 +3,23 @@
 from __future__ import absolute_import
 from __future__ import print_function
 import io
-from os.path import dirname
-from os.path import join
-from os import path
+import os
+from pathlib import Path
 from setuptools import find_packages
 from setuptools import setup
-import os
 from Cython.Build import cythonize
 
 
 def read(*names, **kwargs):
     with io.open(
-        join(dirname(__file__), *names), encoding=kwargs.get("encoding", "utf8")
+        Path(__file__).parent.joinpath(*names), encoding=kwargs.get("encoding", "utf8")
     ) as fh:
         return fh.read()
 
 
 def read_long_description():
-    this_directory = path.abspath(path.dirname(__file__))
-    with open(path.join(this_directory, "README.md"), encoding="utf-8") as f:
+    this_directory = Path(__file__).resolve().parent
+    with open(this_directory / "README.md", encoding="utf-8") as f:
         long_description = f.read()
     return long_description
 
@@ -49,7 +47,7 @@ if _linetrace:
     _directives["linetrace"] = True
     _directives["profile"] = True
 _ext_modules = cythonize(
-    os.path.join("pyrosm", "*.pyx"),
+    str(Path("pyrosm") / "*.pyx"),
     annotate=False,
     compiler_directives=_directives,
     force=_linetrace,
