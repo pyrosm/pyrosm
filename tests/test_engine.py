@@ -952,6 +952,116 @@ def test_engine_network_nodes_keep_metadata_false_parity(helsinki_pbf):
     _assert_full_parity(a, b)
 
 
+def test_engine_network_cache_reuse_skips_decode(
+    helsinki_pbf, monkeypatch, fresh_cache
+):
+    # The first network read assembles + caches the edges; an identical second read reads the
+    # cached GeoParquet back without decoding the PBF again, returning the same data.
+    decodes = _count_decodes(monkeypatch)
+    first = get_network(helsinki_pbf, network_type="driving")
+    second = get_network(helsinki_pbf, network_type="driving")
+    assert sum(decodes) == 1
+    _assert_full_parity(first, second)
+
+
+def test_engine_network_nodes_cache_reuse_skips_decode(
+    helsinki_pbf, monkeypatch, fresh_cache
+):
+    # nodes=True caches the (nodes, edges) tuple as two files; an identical second read returns
+    # the tuple from those files without decoding the PBF again.
+    decodes = _count_decodes(monkeypatch)
+    n1, e1 = get_network(helsinki_pbf, network_type="driving", nodes=True)
+    n2, e2 = get_network(helsinki_pbf, network_type="driving", nodes=True)
+    assert sum(decodes) == 1
+    assert len(glob.glob(os.path.join(cache.cache_dir(), "*.parquet"))) == 2
+    _assert_full_parity(e1, e2)
+    _assert_full_parity(n1.assign(osm_type="node"), n2.assign(osm_type="node"))
+
+
+def test_engine_network_output_path_writes_edges(helsinki_pbf, tmp_path):
+    # output= writes the edges to that GeoParquet and returns the path; the file matches the
+    # in-memory network edges.
+    out = str(tmp_path / "network.parquet")
+    ret = get_network(helsinki_pbf, network_type="driving", output=out)
+    assert ret == out and os.path.exists(out)
+    written = cache.read_result(out)
+    ref = OSM(helsinki_pbf).get_network(network_type="driving")
+    _assert_full_parity(written, ref)
+
+
+def test_engine_network_output_dir_with_nodes(helsinki_pbf, tmp_path):
+    # output= + nodes=True writes edges.parquet + nodes.parquet into the directory and returns
+    # it; the two files reload equal to the in-memory (nodes, edges) tuple.
+    from pyrosm.engine import readers
+
+    out = str(tmp_path / "net_dir")
+    ret = get_network(helsinki_pbf, network_type="driving", nodes=True, output=out)
+    assert ret == out
+    assert os.path.exists(os.path.join(out, "edges.parquet"))
+    assert os.path.exists(os.path.join(out, "nodes.parquet"))
+    ref_nodes, ref_edges = OSM(helsinki_pbf).get_network(
+        network_type="driving", nodes=True
+    )
+    _assert_full_parity(
+        cache.read_result(os.path.join(out, "edges.parquet")), ref_edges
+    )
+    written_nodes = readers._read_nodes_parquet(os.path.join(out, "nodes.parquet"))
+    a = written_nodes.sort_values("id").reset_index(drop=True).assign(osm_type="node")
+    b = ref_nodes.sort_values("id").reset_index(drop=True).assign(osm_type="node")
+    _assert_full_parity(a, b)
+
+
+def test_engine_network_output_dir_empty_returns_none(test_pbf, tmp_path):
+    # An empty nodes=True read with output= writes nothing and returns None.
+    out = str(tmp_path / "empty_dir")
+    flt = {"highway": ["definitely_not_a_real_highway_xyz"]}
+    ret = get_network(
+        test_pbf, custom_filter=flt, filter_type="keep", nodes=True, output=out
+    )
+    assert ret is None
+    assert not os.path.exists(out)
+
+
+def test_engine_network_pyarrow_absent_falls_back(
+    helsinki_pbf, monkeypatch, fresh_cache
+):
+    # With pyarrow unavailable the network read returns the in-memory edges and writes no cache.
+    from pyrosm.utils import _compat
+
+    monkeypatch.setattr(_compat, "HAS_PYARROW", False)
+    mine = get_network(helsinki_pbf, network_type="driving")
+    _assert_full_parity(mine, OSM(helsinki_pbf).get_network(network_type="driving"))
+    assert glob.glob(os.path.join(cache.cache_dir(), "*.parquet")) == []
+
+
+def test_engine_network_empty_result_is_marked(test_pbf, monkeypatch, fresh_cache):
+    # A network filter that matches no highway returns None, records an empty marker, and an
+    # identical later read returns None without decoding the file again.
+    flt = {"highway": ["definitely_not_a_real_highway_xyz"]}
+    assert get_network(test_pbf, custom_filter=flt, filter_type="keep") is None
+    assert glob.glob(os.path.join(cache.cache_dir(), "*.empty"))
+    decodes = _count_decodes(monkeypatch)
+    assert get_network(test_pbf, custom_filter=flt, filter_type="keep") is None
+    assert sum(decodes) == 0
+
+
+def test_engine_network_nodes_empty_result_is_marked(
+    test_pbf, monkeypatch, fresh_cache
+):
+    # nodes=True with a no-match filter returns (None, None), records an empty marker, and an
+    # identical later read returns (None, None) without decoding again.
+    flt = {"highway": ["definitely_not_a_real_highway_xyz"]}
+    nodes, edges = get_network(
+        test_pbf, custom_filter=flt, filter_type="keep", nodes=True
+    )
+    assert nodes is None and edges is None
+    assert glob.glob(os.path.join(cache.cache_dir(), "*.empty"))
+    decodes = _count_decodes(monkeypatch)
+    again = get_network(test_pbf, custom_filter=flt, filter_type="keep", nodes=True)
+    assert again == (None, None)
+    assert sum(decodes) == 0
+
+
 def test_engine_node_records_by_id_edge_cases():
     from pyrosm.engine.decode import _node_records_by_id
 

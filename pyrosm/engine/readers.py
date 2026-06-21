@@ -4,7 +4,8 @@ nodes), then collects and assembles (or streams to GeoParquet) the requested lay
 ``bounding_box`` restricts the read to that area."""
 
 import os
-import tempfile
+
+from rapidjson import dumps, loads
 
 from pyrosm.data_manager import parse_custom_filter
 from pyrosm.utils import _compat
@@ -72,50 +73,29 @@ def _get_layer(
             "complete_relations": complete_relations,
         }
         cache_path = cache.result_path(filepath, key_params)
-        # An empty result is recorded with a side marker, so an identical later read returns None
-        # without re-decoding the whole file.
-        empty_marker = cache_path + ".empty"
-        if os.path.exists(empty_marker):
-            return None
-        if not os.path.exists(cache_path):
-            # Stream to a unique temp file in the cache dir, then atomically move it into place,
-            # so concurrent identical first-reads never share a temp file or see a half-written
-            # cache. The temp file is removed unless it was moved into place.
-            fd, tmp_path = tempfile.mkstemp(
-                dir=os.path.dirname(cache_path),
-                prefix=os.path.basename(cache_path) + ".",
-                suffix=".tmp",
+        return cache.materialize(
+            cache_path,
+            lambda tmp_path: _decode_and_run(
+                filepath,
+                osm_key_bytes,
+                include_nodes,
+                workers,
+                lambda shard_paths: geoparquet._stream_layer_to_parquet(
+                    shard_paths,
+                    tmp_path,
+                    geoparquet._OUTPUT_CHUNK_SIZE,
+                    tags_as_columns,
+                    keep_metadata,
+                    filter_spec,
+                    keep_ways,
+                    keep_relations,
+                    bounding_box,
+                    complete_relations,
+                ),
+                bbox_bounds=bounds,
             )
-            os.close(fd)
-            try:
-                written = _decode_and_run(
-                    filepath,
-                    osm_key_bytes,
-                    include_nodes,
-                    workers,
-                    lambda shard_paths: geoparquet._stream_layer_to_parquet(
-                        shard_paths,
-                        tmp_path,
-                        geoparquet._OUTPUT_CHUNK_SIZE,
-                        tags_as_columns,
-                        keep_metadata,
-                        filter_spec,
-                        keep_ways,
-                        keep_relations,
-                        bounding_box,
-                        complete_relations,
-                    ),
-                    bbox_bounds=bounds,
-                )
-                if written is None:
-                    with open(empty_marker, "w"):
-                        pass
-                    return None
-                os.replace(tmp_path, cache_path)
-            finally:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-        return cache.read_result(cache_path)
+            is not None,
+        )
 
     def run(shard_paths):
         if output is None:
@@ -454,6 +434,60 @@ def _network_filter(network_type):
     return None  # "all" and "driving_psv" -> every highway
 
 
+def _write_parquet(gdf, path):
+    """Write an assembled frame to ``path`` (a result-cache temp file or an ``output=`` path);
+    a ``None`` (empty read) writes nothing and reports the empty result."""
+    if gdf is None:
+        return False
+    gdf.to_parquet(path)
+    return True
+
+
+def _write_nodes_parquet(node_gdf, path):
+    """Write the graph-export node frame to ``path``, serialising its ``tags`` dict column to
+    JSON strings first -- a column of heterogeneous dicts has no faithful GeoParquet schema
+    (pyarrow infers a struct and drops keys), whereas JSON strings round-trip exactly.
+    """
+    node_gdf = node_gdf.copy()
+    node_gdf["tags"] = node_gdf["tags"].map(
+        lambda t: dumps(t) if isinstance(t, dict) else None
+    )
+    node_gdf.to_parquet(path)
+
+
+def _read_nodes_parquet(path):
+    """Read a cached node frame back, parsing the JSON ``tags`` column written by
+    :func:`_write_nodes_parquet` back into dicts (``None`` for missing), matching the in-memory
+    reader's representation."""
+    gdf = cache.read_result(path)
+    gdf["tags"] = gdf["tags"].map(lambda s: loads(s) if isinstance(s, str) else None)
+    return gdf
+
+
+def _write_network_pair(result, edges_path, nodes_path):
+    """Write ``get_network(nodes=True)``'s ``(nodes, edges)`` tuple to the two cache files; a
+    ``(None, None)`` (empty read) writes nothing and reports the empty result."""
+    node_gdf, edges = result
+    if edges is None:
+        return False
+    edges.to_parquet(edges_path)
+    _write_nodes_parquet(node_gdf, nodes_path)
+    return True
+
+
+def _write_network_dir(result, dirpath):
+    """Write ``get_network(nodes=True, output=dirpath)``'s ``(nodes, edges)`` tuple into
+    ``dirpath`` as ``edges.parquet`` + ``nodes.parquet`` and return ``dirpath``; an empty read
+    writes nothing and returns ``None``."""
+    node_gdf, edges = result
+    if edges is None:
+        return None
+    os.makedirs(dirpath, exist_ok=True)
+    edges.to_parquet(os.path.join(dirpath, "edges.parquet"))
+    _write_nodes_parquet(node_gdf, os.path.join(dirpath, "nodes.parquet"))
+    return dirpath
+
+
 def get_network(
     filepath,
     network_type="walking",
@@ -464,6 +498,7 @@ def get_network(
     tags_to_keep=None,
     bounding_box=None,
     workers=None,
+    output=None,
     keep_metadata=True,
 ):
     """Read a street network (``highway=*`` ways as LineString edges + a ``length`` column)
@@ -476,7 +511,15 @@ def get_network(
 
     ``nodes=True`` returns ``(nodes, edges)``: the ways are sliced into per-segment edges
     and the graph-export node frame is built (its node tags + metadata are gathered with a
-    second pass over the file), matching ``OSM(...).get_network(nodes=True)``."""
+    second pass over the file), matching ``OSM(...).get_network(nodes=True)``.
+
+    With ``output=None`` (default) the result is cached to a deterministic GeoParquet under a
+    temp dir and reused on identical later reads, like the area/point layers; ``nodes=True``
+    caches the ``(nodes, edges)`` tuple as two files. ``output="path"`` writes the edges to that
+    GeoParquet and returns the path; with ``nodes=True`` it writes ``edges.parquet`` +
+    ``nodes.parquet`` into the ``path`` directory and returns the directory (both require
+    ``pyarrow``). With ``pyarrow`` absent the default read returns the in-memory result with no
+    cache."""
     from pyrosm.config import Conf
     from pyrosm.utils import validate_custom_filter, validate_tags_as_columns
 
@@ -512,7 +555,10 @@ def get_network(
     bounding_box = _normalize_bounding_box(bounding_box)
     bounds = _bbox_bounds(bounding_box)
 
-    def run(shard_paths):
+    if output is not None:
+        _compat.require_pyarrow()
+
+    def assemble(shard_paths):
         edges, node_gdf = _assemble_network(
             shard_paths,
             tags_as_columns,
@@ -524,6 +570,44 @@ def get_network(
         )
         return (node_gdf, edges) if nodes else edges
 
-    return _decode_and_run(
-        filepath, [b"highway"], False, workers, run, bbox_bounds=bounds
+    def decode():
+        return _decode_and_run(
+            filepath, [b"highway"], False, workers, assemble, bbox_bounds=bounds
+        )
+
+    # A user-supplied output writes the result there and returns it: a GeoParquet file for the
+    # edges (nodes=False), or a directory holding edges.parquet + nodes.parquet (nodes=True).
+    if output is not None:
+        if nodes:
+            return _write_network_dir(decode(), output)
+        return output if _write_parquet(decode(), output) else None
+
+    # With pyarrow absent there is nowhere to cache, so return the direct in-memory result (the
+    # edges frame, or the (nodes, edges) tuple for nodes=True).
+    if not _compat.HAS_PYARROW:
+        return decode()
+
+    # Cache the result to / serve it from a per-read GeoParquet, keyed apart from the area/point
+    # layers via "network". nodes=True is a (nodes, edges) tuple, cached as two files.
+    key_params = {
+        "network": True,
+        "nodes": nodes,
+        "filter_spec": filter_spec,
+        "tags_as_columns": tags_as_columns,
+        "keep_metadata": keep_metadata,
+        "bounding_box": bounding_box,
+    }
+    if nodes:
+        edges_path = cache.result_path(filepath, {**key_params, "part": "edges"})
+        nodes_path = cache.result_path(filepath, {**key_params, "part": "nodes"})
+        return cache.materialize_pair(
+            edges_path,
+            nodes_path,
+            lambda e_tmp, n_tmp: _write_network_pair(decode(), e_tmp, n_tmp),
+            read_nodes=_read_nodes_parquet,
+        )
+
+    cache_path = cache.result_path(filepath, key_params)
+    return cache.materialize(
+        cache_path, lambda tmp_path: _write_parquet(decode(), tmp_path)
     )

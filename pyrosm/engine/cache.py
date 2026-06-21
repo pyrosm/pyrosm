@@ -11,9 +11,10 @@ no cache.
 """
 
 import hashlib
-import json
 import os
 import tempfile
+
+from rapidjson import dumps
 
 
 def cache_dir():
@@ -47,7 +48,7 @@ def result_path(filepath, key_params):
         "params": _stable(key_params),
     }
     digest = hashlib.sha1(
-        json.dumps(key, sort_keys=True, default=str).encode("utf-8")
+        dumps(key, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:16]
     return os.path.join(cache_dir(), "result_%s.parquet" % digest)
 
@@ -66,3 +67,66 @@ def read_result(cache_path):
         if gdf[col].dtype == object:
             gdf[col] = gdf[col].where(gdf[col].notna(), np.nan)
     return gdf
+
+
+def _temp_in(cache_path):
+    """A closed, unique temp-file path in ``cache_path``'s directory, for a build-then-atomic-
+    replace so concurrent identical first-reads never share a temp file or observe a half-written
+    cache."""
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(cache_path),
+        prefix=os.path.basename(cache_path) + ".",
+        suffix=".tmp",
+    )
+    os.close(fd)
+    return tmp_path
+
+
+def materialize(cache_path, build):
+    """Populate ``cache_path`` by running ``build(tmp_path)`` -- which writes the result to a
+    unique temp file and returns whether it wrote a non-empty result -- then atomically move it
+    into place. An empty result is recorded with a ``.empty`` marker so an identical later read
+    skips the rebuild. Returns the cached frame read back, or ``None`` for an empty (or
+    already-marked-empty) result."""
+    empty_marker = cache_path + ".empty"
+    if os.path.exists(empty_marker):
+        return None
+    if not os.path.exists(cache_path):
+        tmp_path = _temp_in(cache_path)
+        try:
+            if not build(tmp_path):
+                with open(empty_marker, "w"):
+                    pass
+                return None
+            os.replace(tmp_path, cache_path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+    return read_result(cache_path)
+
+
+def materialize_pair(edges_path, nodes_path, build, read_nodes=read_result):
+    """Two-file variant of :func:`materialize` for ``get_network(nodes=True)``'s ``(nodes, edges)``
+    tuple: ``build(edges_tmp, nodes_tmp)`` writes both temp files and returns whether the read was
+    non-empty; on success both are atomically moved into place, and an empty read records a
+    ``.empty`` marker beside ``edges_path``. The node frame is read back with ``read_nodes`` (the
+    edge frame with :func:`read_result`). Returns ``(nodes, edges)``, or ``(None, None)`` for an
+    empty (or already-marked-empty) result."""
+    empty_marker = edges_path + ".empty"
+    if os.path.exists(empty_marker):
+        return None, None
+    if not (os.path.exists(edges_path) and os.path.exists(nodes_path)):
+        edges_tmp = _temp_in(edges_path)
+        nodes_tmp = _temp_in(nodes_path)
+        try:
+            if not build(edges_tmp, nodes_tmp):
+                with open(empty_marker, "w"):
+                    pass
+                return None, None
+            os.replace(edges_tmp, edges_path)
+            os.replace(nodes_tmp, nodes_path)
+        finally:
+            for tmp in (edges_tmp, nodes_tmp):
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+    return read_nodes(nodes_path), read_result(edges_path)
