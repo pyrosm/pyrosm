@@ -37,10 +37,18 @@ def _stable(obj):
     return obj
 
 
+def _source_digest(filepath):
+    """Digest of a source PBF's resolved path. It depends only on the path, so every cache file
+    for one source file shares this prefix and they can be cleared together."""
+    return hashlib.sha1(str(Path(filepath).resolve()).encode("utf-8")).hexdigest()[:16]
+
+
 def result_path(filepath, key_params):
     """Deterministic per-layer result-cache path, keyed on the source file (path + modification
     time + size) and the read's parameters (the filter, tag columns, metadata/bbox/element-kind
-    options). Identical reads share one cache file; any difference keys a new one."""
+    options). Identical reads share one cache file; any difference keys a new one. The filename is
+    ``result_<source>_<read>.parquet``, where ``<source>`` depends only on the source path so all
+    of one file's cache files can be matched by that prefix (see :func:`clear`)."""
     fp = Path(filepath)
     st = fp.stat()
     key = {
@@ -52,7 +60,33 @@ def result_path(filepath, key_params):
     digest = hashlib.sha1(
         dumps(key, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:16]
-    return cache_dir() / ("result_%s.parquet" % digest)
+    return cache_dir() / ("result_%s_%s.parquet" % (_source_digest(filepath), digest))
+
+
+def list_files(filepath=None):
+    """List the cached layer GeoParquet files. With no ``filepath`` every cached file is listed;
+    with a ``filepath`` only the cached layers for that source PBF. Returns a sorted list of
+    string paths."""
+    directory = cache_dir()
+    if filepath is None:
+        pattern = "*.parquet"
+    else:
+        pattern = "result_%s_*.parquet" % _source_digest(filepath)
+    return sorted(str(p) for p in directory.glob(pattern) if p.is_file())
+
+
+def clear(filepath=None):
+    """Remove out-of-core result-cache files. With no ``filepath`` the whole cache directory is
+    emptied; with a ``filepath`` only the cached layers for that source PBF are removed. Returns
+    the number of files removed."""
+    directory = cache_dir()
+    pattern = "*" if filepath is None else "result_%s_*" % _source_digest(filepath)
+    removed = 0
+    for entry in directory.glob(pattern):
+        if entry.is_file():
+            entry.unlink()
+            removed += 1
+    return removed
 
 
 def read_result(cache_path):

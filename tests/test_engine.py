@@ -705,6 +705,78 @@ def test_engine_cache_reuse_skips_decode(helsinki_pbf, monkeypatch, fresh_cache)
     )
 
 
+def test_osm_list_and_clear_cache_per_file_and_all(test_pbf, helsinki_pbf, fresh_cache):
+    # OSM.list_cache reflects what each out-of-core read cached; OSM.clear_cache(filepath)
+    # removes only that source file's entries and OSM.clear_cache() removes everything.
+    assert OSM.list_cache() == []
+    OSM(test_pbf, engine="out_of_core").get_buildings()
+    OSM(helsinki_pbf, engine="out_of_core").get_buildings()
+
+    assert len(OSM.list_cache()) == 2
+    assert len(OSM.list_cache(test_pbf)) == 1
+    assert OSM.list_cache(test_pbf)[0].endswith(".parquet")
+
+    assert OSM.clear_cache(test_pbf) == 1
+    assert len(OSM.list_cache()) == 1  # helsinki's entry survives
+
+    assert OSM.clear_cache() == 1
+    assert OSM.list_cache() == []
+    assert OSM.clear_cache() == 0
+
+
+def test_osm_clear_cache_forces_redecode(helsinki_pbf, monkeypatch, fresh_cache):
+    # After clearing, an identical read decodes the PBF again instead of reusing the cache.
+    decodes = _count_decodes(monkeypatch)
+    OSM(helsinki_pbf, engine="out_of_core").get_buildings()
+    OSM(helsinki_pbf, engine="out_of_core").get_buildings()
+    assert sum(decodes) == 1
+    OSM.clear_cache(helsinki_pbf)
+    OSM(helsinki_pbf, engine="out_of_core").get_buildings()
+    assert sum(decodes) == 2
+
+
+def test_osm_list_and_clear_downloads_specific_and_all(tmp_path, monkeypatch):
+    # OSM.list_downloads lists downloaded *.pbf; OSM.clear_downloads removes them (a filepath
+    # targets one, None removes all). The out-of-core cache subdirectory is left untouched.
+    import pyrosm.utils.download as dl
+
+    ddir = tmp_path / "pyrosm"
+    ddir.mkdir()
+    (ddir / "cache").mkdir()
+    monkeypatch.setattr(dl, "download_dir", lambda: ddir)
+    names = ("finland-latest.osm.pbf", "estonia-latest.osm.pbf")
+    for name in names:
+        (ddir / name).write_bytes(b"x")
+
+    assert OSM.list_downloads() == sorted(str(ddir / n) for n in names)
+
+    assert OSM.clear_downloads("finland-latest.osm.pbf") == 1
+    assert OSM.list_downloads() == [str(ddir / "estonia-latest.osm.pbf")]
+
+    assert OSM.clear_downloads() == 1
+    assert OSM.list_downloads() == []
+    assert (ddir / "cache").is_dir()
+    assert OSM.clear_downloads() == 0
+
+
+def test_clear_cache_skips_non_file_entries(fresh_cache):
+    # clear() ignores non-file entries (e.g. a stray subdirectory) in the cache directory.
+    cdir = cache.cache_dir()
+    (cdir / "subdir").mkdir()
+    (cdir / "result_x_y.parquet").write_bytes(b"")
+    assert OSM.clear_cache() == 1  # only the file is counted and removed
+    assert (cdir / "subdir").is_dir()
+
+
+def test_list_and_clear_downloads_missing_dir(tmp_path, monkeypatch):
+    # With no download directory, listing returns [] and clearing returns 0.
+    import pyrosm.utils.download as dl
+
+    monkeypatch.setattr(dl, "download_dir", lambda: tmp_path / "absent")
+    assert OSM.list_downloads() == []
+    assert OSM.clear_downloads() == 0
+
+
 def test_engine_cache_distinct_params_distinct_file(helsinki_pbf):
     # A different read parameter keys a different cache file.
     base = cache.result_path(helsinki_pbf, {"keep_metadata": True})
