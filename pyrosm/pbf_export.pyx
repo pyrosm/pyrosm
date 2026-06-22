@@ -17,6 +17,7 @@ import os
 import shutil
 import tempfile
 import zlib
+from pathlib import Path
 from struct import pack, unpack
 
 import numpy as np
@@ -691,7 +692,7 @@ def _w_get_set(name):
     """Lazily load + cache the broadcast id set `name` from the temp dir."""
     s = _W_CACHE.get(name)
     if s is None:
-        arr = np.load(os.path.join(_W_TMPDIR, name + ".npy"))
+        arr = np.load(Path(_W_TMPDIR) / (name + ".npy"))
         s = _to_set(arr)
         _W_CACHE[name] = s
     return s
@@ -785,7 +786,7 @@ def _w_write(payload):
 
 cdef _broadcast(tmpdir, name, arr):
     """Write a kept-id array to the temp dir for the persistent workers to load."""
-    np.save(os.path.join(tmpdir, name + ".npy"), np.ascontiguousarray(arr, dtype=np.int64))
+    np.save(Path(tmpdir) / (name + ".npy"), np.ascontiguousarray(arr, dtype=np.int64))
 
 
 cdef _crop_pbf_parallel(source_path, output_path, bounds, keep_relations, workers,

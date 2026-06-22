@@ -8,9 +8,9 @@ union (by name) of every chunk's columns, so a tag column that first appears in 
 chunk is not dropped. Needs the optional pyarrow dependency.
 """
 
-import os
 import shutil
 import tempfile
+from pathlib import Path
 
 from pyrosm.engine.collect import _collect_layer
 from pyrosm.engine.assemble import _assemble_chunk
@@ -119,7 +119,7 @@ def _stream_layer_to_parquet(
         # Spill each chunk to its own parquet file (heterogeneous columns allowed).
         part_paths = []
         for table in chunk_tables():
-            part_path = os.path.join(part_dir, "part_%d.parquet" % len(part_paths))
+            part_path = Path(part_dir) / ("part_%d.parquet" % len(part_paths))
             pq.write_table(table, part_path)
             part_paths.append(part_path)
         if not part_paths:

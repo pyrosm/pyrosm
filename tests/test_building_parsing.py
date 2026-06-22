@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from pyrosm import get_data
 
@@ -22,9 +24,9 @@ def helsinki_history_pbf():
 
 @pytest.fixture
 def test_output_dir():
-    import os, tempfile
+    import tempfile
 
-    return os.path.join(tempfile.gettempdir(), "pyrosm_test_results")
+    return str(Path(tempfile.gettempdir()) / "pyrosm_test_results")
 
 
 def test_parsing_building_elements(test_pbf):
@@ -127,15 +129,14 @@ def test_parse_buildings_with_bbox(test_pbf):
 
 
 def test_saving_buildings_to_geopackage(test_pbf, test_output_dir):
-    import os
     from pyrosm import OSM
     import geopandas as gpd
     import shutil
 
-    if not os.path.exists(test_output_dir):
-        os.makedirs(test_output_dir)
+    if not Path(test_output_dir).exists():
+        Path(test_output_dir).mkdir(parents=True)
 
-    temp_path = os.path.join(test_output_dir, "pyrosm_test.gpkg")
+    temp_path = str(Path(test_output_dir) / "pyrosm_test.gpkg")
     osm = OSM(filepath=test_pbf)
     gdf = osm.get_buildings()
     gdf.to_file(temp_path, driver="GPKG")

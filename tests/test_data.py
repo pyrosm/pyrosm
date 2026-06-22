@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from pyrosm import get_data
 import sys
@@ -62,13 +64,12 @@ def bbbike_urls():
 @pytest.fixture
 def directory():
     import tempfile
-    import os
     import shutil
 
     temp_dir = tempfile.gettempdir()
-    target_dir = os.path.join(temp_dir, "pyrosm_dir")
-    if not os.path.exists(target_dir):
-        os.makedirs(target_dir)
+    target_dir = str(Path(temp_dir) / "pyrosm_dir")
+    if not Path(target_dir).exists():
+        Path(target_dir).mkdir(parents=True)
     yield target_dir
     # Remove after testing
     shutil.rmtree(target_dir)
@@ -93,54 +94,48 @@ def test_not_available():
 
 
 def test_test_data():
-    import os
-
     fp1 = get_data("test_pbf")
     fp2 = get_data("helsinki_pbf")
     fp3 = get_data("helsinki_region_pbf")
     fp4 = get_data("helsinki_history_pbf")
     fp5 = get_data("helsinki_test_history_pbf")
-    assert os.path.exists(fp1)
-    assert os.path.exists(fp2)
-    assert os.path.exists(fp3)
-    assert os.path.exists(fp4)
-    assert os.path.exists(fp5)
+    assert Path(fp1).exists()
+    assert Path(fp2).exists()
+    assert Path(fp3).exists()
+    assert Path(fp4).exists()
+    assert Path(fp5).exists()
 
 
 @run_downloads_only_once
 def test_geofabrik_download_to_temp():
     from pyrosm import get_data
-    import os
 
     fp = get_data("monaco", update=True)
-    assert os.path.exists(fp)
+    assert Path(fp).exists()
 
 
 @run_downloads_only_once
 def test_bbbike_download_to_temp():
     from pyrosm import get_data
-    import os
 
     fp = get_data("UlanBator", update=True)
-    assert os.path.exists(fp)
+    assert Path(fp).exists()
 
 
 @run_downloads_only_once
 def test_geofabrik_download_to_directory(directory):
     from pyrosm import get_data
-    import os
 
     fp = get_data("monaco", update=True, directory=directory)
-    assert os.path.exists(fp)
+    assert Path(fp).exists()
 
 
 @run_downloads_only_once
 def test_bbbike_download_to_directory(directory):
     from pyrosm import get_data
-    import os
 
     fp = get_data("UlanBator", update=True, directory=directory)
-    assert os.path.exists(fp)
+    assert Path(fp).exists()
 
 
 @pytest.mark.skipif("sys.version_info > (3,6)")

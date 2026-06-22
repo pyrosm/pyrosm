@@ -13,14 +13,15 @@ no cache.
 import hashlib
 import os
 import tempfile
+from pathlib import Path
 
 from rapidjson import dumps
 
 
 def cache_dir():
     """The persistent result-cache directory (created on demand): ``<tempdir>/pyrosm/cache``."""
-    path = os.path.join(tempfile.gettempdir(), "pyrosm", "cache")
-    os.makedirs(path, exist_ok=True)
+    path = Path(tempfile.gettempdir()) / "pyrosm" / "cache"
+    path.mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -40,9 +41,10 @@ def result_path(filepath, key_params):
     """Deterministic per-layer result-cache path, keyed on the source file (path + modification
     time + size) and the read's parameters (the filter, tag columns, metadata/bbox/element-kind
     options). Identical reads share one cache file; any difference keys a new one."""
-    st = os.stat(filepath)
+    fp = Path(filepath)
+    st = fp.stat()
     key = {
-        "filepath": os.path.abspath(filepath),
+        "filepath": str(fp.resolve()),
         "mtime_ns": st.st_mtime_ns,
         "size": st.st_size,
         "params": _stable(key_params),
@@ -50,7 +52,7 @@ def result_path(filepath, key_params):
     digest = hashlib.sha1(
         dumps(key, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:16]
-    return os.path.join(cache_dir(), "result_%s.parquet" % digest)
+    return cache_dir() / ("result_%s.parquet" % digest)
 
 
 def read_result(cache_path):
@@ -74,12 +76,12 @@ def _temp_in(cache_path):
     replace so concurrent identical first-reads never share a temp file or observe a half-written
     cache."""
     fd, tmp_path = tempfile.mkstemp(
-        dir=os.path.dirname(cache_path),
-        prefix=os.path.basename(cache_path) + ".",
+        dir=cache_path.parent,
+        prefix=cache_path.name + ".",
         suffix=".tmp",
     )
     os.close(fd)
-    return tmp_path
+    return Path(tmp_path)
 
 
 def materialize(cache_path, build):
@@ -88,20 +90,19 @@ def materialize(cache_path, build):
     into place. An empty result is recorded with a ``.empty`` marker so an identical later read
     skips the rebuild. Returns the cached frame read back, or ``None`` for an empty (or
     already-marked-empty) result."""
-    empty_marker = cache_path + ".empty"
-    if os.path.exists(empty_marker):
+    empty_marker = cache_path.with_name(cache_path.name + ".empty")
+    if empty_marker.exists():
         return None
-    if not os.path.exists(cache_path):
+    if not cache_path.exists():
         tmp_path = _temp_in(cache_path)
         try:
             if not build(tmp_path):
-                with open(empty_marker, "w"):
-                    pass
+                empty_marker.touch()
                 return None
-            os.replace(tmp_path, cache_path)
+            tmp_path.replace(cache_path)
         finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+            if tmp_path.exists():
+                tmp_path.unlink()
     return read_result(cache_path)
 
 
@@ -112,21 +113,20 @@ def materialize_pair(edges_path, nodes_path, build, read_nodes=read_result):
     ``.empty`` marker beside ``edges_path``. The node frame is read back with ``read_nodes`` (the
     edge frame with :func:`read_result`). Returns ``(nodes, edges)``, or ``(None, None)`` for an
     empty (or already-marked-empty) result."""
-    empty_marker = edges_path + ".empty"
-    if os.path.exists(empty_marker):
+    empty_marker = edges_path.with_name(edges_path.name + ".empty")
+    if empty_marker.exists():
         return None, None
-    if not (os.path.exists(edges_path) and os.path.exists(nodes_path)):
+    if not (edges_path.exists() and nodes_path.exists()):
         edges_tmp = _temp_in(edges_path)
         nodes_tmp = _temp_in(nodes_path)
         try:
             if not build(edges_tmp, nodes_tmp):
-                with open(empty_marker, "w"):
-                    pass
+                empty_marker.touch()
                 return None, None
-            os.replace(edges_tmp, edges_path)
-            os.replace(nodes_tmp, nodes_path)
+            edges_tmp.replace(edges_path)
+            nodes_tmp.replace(nodes_path)
         finally:
             for tmp in (edges_tmp, nodes_tmp):
-                if os.path.exists(tmp):
-                    os.remove(tmp)
+                if tmp.exists():
+                    tmp.unlink()
     return read_nodes(nodes_path), read_result(edges_path)

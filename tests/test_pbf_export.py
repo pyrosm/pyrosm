@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -76,7 +76,7 @@ def test_to_pbf_roundtrip_readable(helsinki_pbf):
     osm = OSM(helsinki_pbf, bounding_box=CROP_BBOX)
     out = osm.to_pbf()
     try:
-        assert os.path.exists(out)
+        assert Path(out).exists()
 
         cropped = OSM(out)
         net = cropped.get_network()
@@ -90,7 +90,7 @@ def test_to_pbf_roundtrip_readable(helsinki_pbf):
         ref = OSM(helsinki_pbf, bounding_box=CROP_BBOX).get_network()
         assert len(net) == len(ref)
     finally:
-        os.remove(out)
+        Path(out).unlink()
 
 
 def test_to_pbf_exact_selection_contract(helsinki_pbf):
@@ -110,7 +110,7 @@ def test_to_pbf_exact_selection_contract(helsinki_pbf):
         # Every in-bbox node is retained.
         assert nodes_in <= node_ids
     finally:
-        os.remove(out)
+        Path(out).unlink()
 
 
 def test_to_pbf_relation_selection(helsinki_pbf):
@@ -128,8 +128,8 @@ def test_to_pbf_relation_selection(helsinki_pbf):
         assert nodes_k == nodes_d
         assert ways_k == ways_d
     finally:
-        os.remove(out_keep)
-        os.remove(out_drop)
+        Path(out_keep).unlink()
+        Path(out_drop).unlink()
 
 
 def test_to_pbf_coordinate_fidelity(helsinki_pbf):
@@ -146,7 +146,7 @@ def test_to_pbf_coordinate_fidelity(helsinki_pbf):
         # allow ~1 cm just in case the grid offset/granularity differs per block.
         assert max_err < 1e-7
     finally:
-        os.remove(out)
+        Path(out).unlink()
 
 
 def test_to_pbf_given_path(helsinki_pbf, tmp_path):
@@ -154,7 +154,7 @@ def test_to_pbf_given_path(helsinki_pbf, tmp_path):
     osm = OSM(helsinki_pbf, bounding_box=CROP_BBOX)
     out = osm.to_pbf(target)
     assert out == target
-    assert os.path.exists(target)
+    assert Path(target).exists()
     assert OSM(out).get_network() is not None
 
 
@@ -175,8 +175,8 @@ def test_to_pbf_parallel_equals_sequential(helsinki_pbf):
             par_bytes = f.read()
         assert seq_bytes == par_bytes
     finally:
-        os.remove(out_seq)
-        os.remove(out_par)
+        Path(out_seq).unlink()
+        Path(out_par).unlink()
 
 
 def _write_multiblock_pbf(src_path, dst_path, replicas):
@@ -251,8 +251,8 @@ def test_to_pbf_parallel_multiblock(helsinki_pbf, tmp_path):
         net = OSM(out_par).get_network()
         assert net is not None and len(net) > 0
     finally:
-        os.remove(out_seq)
-        os.remove(out_par)
+        Path(out_seq).unlink()
+        Path(out_par).unlink()
 
 
 def test_to_pbf_osmium_cross_check(helsinki_pbf):
@@ -281,7 +281,7 @@ def test_to_pbf_osmium_cross_check(helsinki_pbf):
         assert counter.nodes == len(expected_nodes)
         assert counter.ways == len(expected_ways)
     finally:
-        os.remove(out)
+        Path(out).unlink()
 
 
 # ---------------------------------------------------------------------------
@@ -306,8 +306,8 @@ def test_to_pbf_compact_defaults_to_unchanged_output(helsinki_pbf):
             false_bytes = f.read()
         assert default_bytes == false_bytes
     finally:
-        os.remove(out_default)
-        os.remove(out_false)
+        Path(out_default).unlink()
+        Path(out_false).unlink()
 
 
 def test_to_pbf_default_copies_source_string_tables(helsinki_pbf):
@@ -321,7 +321,7 @@ def test_to_pbf_default_copies_source_string_tables(helsinki_pbf):
         for table in _block_string_tables(out):
             assert tuple(table) in source_tables
     finally:
-        os.remove(out)
+        Path(out).unlink()
 
 
 def test_to_pbf_compact_data_is_identical(helsinki_pbf):
@@ -349,8 +349,8 @@ def test_to_pbf_compact_data_is_identical(helsinki_pbf):
                 right = b[col].astype(object).where(b[col].notna(), None).tolist()
                 assert left == right, col
     finally:
-        os.remove(out_false)
-        os.remove(out_true)
+        Path(out_false).unlink()
+        Path(out_true).unlink()
 
 
 def test_to_pbf_compact_shrinks_string_tables(helsinki_pbf):
@@ -369,10 +369,10 @@ def test_to_pbf_compact_shrinks_string_tables(helsinki_pbf):
             total_false += len(default_table)
             total_true += len(compact_table)
         assert total_true < total_false
-        assert os.path.getsize(out_true) < os.path.getsize(out_false)
+        assert Path(out_true).stat().st_size < Path(out_false).stat().st_size
     finally:
-        os.remove(out_false)
-        os.remove(out_true)
+        Path(out_false).unlink()
+        Path(out_true).unlink()
 
 
 def test_to_pbf_compact_parallel_multiblock(helsinki_pbf, tmp_path):
@@ -391,8 +391,8 @@ def test_to_pbf_compact_parallel_multiblock(helsinki_pbf, tmp_path):
         assert seq_bytes == par_bytes
         assert OSM(out_par).get_network() is not None
     finally:
-        os.remove(out_seq)
-        os.remove(out_par)
+        Path(out_seq).unlink()
+        Path(out_par).unlink()
 
 
 def test_to_pbf_compact_preserves_user_metadata(tmp_path):
@@ -457,7 +457,9 @@ def test_to_pbf_compact_preserves_user_metadata(tmp_path):
         return result
 
     meta_false, meta_true = meta(out_false), meta(out_true)
-    assert os.path.getsize(out_true) < os.path.getsize(out_false)  # compaction ran
+    assert (
+        Path(out_true).stat().st_size < Path(out_false).stat().st_size
+    )  # compaction ran
     assert meta_false == meta_true  # user/uid/version identical, incl. user names
     assert meta_true[("w", 1)][0] == "way_mapper"
     assert meta_true[("n", 1)][0] == "inside_mapper"
@@ -554,8 +556,8 @@ def test_to_pbf_repack_defaults_to_unchanged_output(helsinki_pbf):
             b = f.read()
         assert a == b
     finally:
-        os.remove(out_default)
-        os.remove(out_false)
+        Path(out_default).unlink()
+        Path(out_false).unlink()
 
 
 def test_to_pbf_repack_data_is_identical(helsinki_pbf):
@@ -582,8 +584,8 @@ def test_to_pbf_repack_data_is_identical(helsinki_pbf):
                 right = b[col].astype(object).where(b[col].notna(), None).tolist()
                 assert left == right, col
     finally:
-        os.remove(out_off)
-        os.remove(out_on)
+        Path(out_off).unlink()
+        Path(out_on).unlink()
 
 
 def test_to_pbf_repack_is_smaller_and_denser(helsinki_pbf):
@@ -592,7 +594,7 @@ def test_to_pbf_repack_is_smaller_and_denser(helsinki_pbf):
     out_off = osm.to_pbf(repack=False)
     out_on = osm.to_pbf(repack=True)
     try:
-        assert os.path.getsize(out_on) < os.path.getsize(out_off)
+        assert Path(out_on).stat().st_size < Path(out_off).stat().st_size
         nb_off, nn_off = _block_fill(out_off)
         nb_on, nn_on = _block_fill(out_on)
         assert nn_off == nn_on  # same node count
@@ -608,8 +610,8 @@ def test_to_pbf_repack_is_smaller_and_denser(helsinki_pbf):
         _H().apply_file(out_on)  # re-readable by osmium
         assert counter[0] > 0
     finally:
-        os.remove(out_off)
-        os.remove(out_on)
+        Path(out_off).unlink()
+        Path(out_on).unlink()
 
 
 def test_to_pbf_repack_coordinates_exact(helsinki_pbf):
@@ -624,7 +626,7 @@ def test_to_pbf_repack_coordinates_exact(helsinki_pbf):
             max_err = max(max_err, abs(ox - x), abs(oy - y))
         assert max_err < 1e-7
     finally:
-        os.remove(out)
+        Path(out).unlink()
 
 
 def test_to_pbf_repack_preserves_metadata(tmp_path):
@@ -655,7 +657,9 @@ def test_to_pbf_repack_preserves_metadata(tmp_path):
         return result
 
     m_off, m_on = meta(out_off), meta(out_on)
-    assert os.path.getsize(out_on) < os.path.getsize(out_off)  # re-pack actually ran
+    assert (
+        Path(out_on).stat().st_size < Path(out_off).stat().st_size
+    )  # re-pack actually ran
     assert m_off == m_on
     assert m_on[("w", 1)][0] == "way_mapper"
     assert m_on[("n", 1)][0] == "inside_mapper"
@@ -703,9 +707,9 @@ def test_to_pbf_repack_deterministic_and_overrides_compact(helsinki_pbf):
         assert ab == bb  # deterministic across runs
         assert ab == cb  # compact ignored when repack=True
     finally:
-        os.remove(a)
-        os.remove(b)
-        os.remove(c)
+        Path(a).unlink()
+        Path(b).unlink()
+        Path(c).unlink()
 
 
 def _frame_pbf_blob(out, btype, msg):
@@ -1012,7 +1016,7 @@ def test_write_pbf_api(helsinki_pbf, tmp_path):
     edges = osm.get_network()
     single = str(tmp_path / "single.osm.pbf")
     assert osm.write_pbf(edges, single) == single
-    assert os.path.exists(single)
+    assert Path(single).exists()
 
     as_list = str(tmp_path / "list.osm.pbf")
     osm.write_pbf([edges], as_list)

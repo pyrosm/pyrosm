@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 
 import pytest
 from shapely.geometry import box
@@ -161,8 +162,8 @@ def test_get_data_by_geocoding_crop_default_names_by_place(monkeypatch):
         lambda url, filename, update, directory: helsinki,
     )
     out = pyrosm.get_data_by_geocoding("Brighton and Hove, UK")
-    assert os.path.basename(out) == "brighton-and-hove-uk.osm.pbf"
-    assert os.path.getsize(out) < os.path.getsize(helsinki)
+    assert Path(out).name == "brighton-and-hove-uk.osm.pbf"
+    assert Path(out).stat().st_size < Path(helsinki).stat().st_size
     assert pyrosm.OSM(out).get_buildings() is not None
 
 

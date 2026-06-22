@@ -1,9 +1,9 @@
 import urllib.request
 import tempfile
-import os
 import enum
 import shutil
 import ssl
+from pathlib import Path
 from urllib.error import HTTPError
 
 import certifi
@@ -28,30 +28,30 @@ def convert_unit(size_in_bytes, unit):
 
 
 def get_file_size(file_name, size_type=UNIT.MB):
-    size = os.path.getsize(file_name)
+    size = Path(file_name).stat().st_size
     return round(convert_unit(size, size_type), 2)
 
 
 def download(url, filename, update, target_dir):
     if target_dir is None:
-        temp_dir = tempfile.gettempdir()
-        target_dir = os.path.join(temp_dir, "pyrosm")
+        target_dir = Path(tempfile.gettempdir()) / "pyrosm"
     else:
-        if not os.path.isdir(target_dir):
+        target_dir = Path(target_dir)
+        if not target_dir.is_dir():
             raise ValueError(f"The provided directory does not exist: " f"{target_dir}")
 
-    filepath = os.path.abspath(os.path.join(target_dir, os.path.basename(filename)))
+    filepath = (target_dir / Path(filename).name).resolve()
 
-    if not os.path.exists(target_dir):
-        os.makedirs(target_dir)
+    if not target_dir.exists():
+        target_dir.mkdir(parents=True)
 
     # Check if file exists
     file_exists = False
-    if os.path.exists(filepath):
+    if filepath.exists():
         file_exists = True
 
     if update and file_exists:
-        os.remove(filepath)
+        filepath.unlink()
 
     # Download data to temp if it does not exist or if update is requested
     if update or file_exists is False:
@@ -80,7 +80,7 @@ def download(url, filename, update, target_dir):
                 "This is likely a temporary issue, try again later."
             )
         print(
-            f"Downloaded Protobuf data '{os.path.basename(filepath)}' "
+            f"Downloaded Protobuf data '{filepath.name}' "
             f"({filesize} MB) to:\n'{filepath}'"
         )
-    return filepath
+    return str(filepath)

@@ -6,7 +6,7 @@ coordinates, the matching layer features (ways, point nodes and relations -- sel
 filter-key presence) and *every* way (id + refs, for relation-member lookup).
 """
 
-import os
+from pathlib import Path
 
 import numpy as np
 
@@ -384,7 +384,7 @@ def _decode_batch(task):
         for seq, (offset, size) in enumerate(blobs):
             data = _read_block(f, offset, size)
             arrays = _decode_one_block(*decode_primitive_block(data))
-            path = os.path.join(_SHARD_DIR, "shard_%d_%d.npz" % (worker_id, seq))
+            path = Path(_SHARD_DIR) / ("shard_%d_%d.npz" % (worker_id, seq))
             np.savez(path, **arrays)
             paths.append(path)
     return paths

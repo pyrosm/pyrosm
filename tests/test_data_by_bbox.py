@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 
 import geopandas as gpd
 import pytest
@@ -81,8 +82,8 @@ def test_accepts_bbox_input_forms(bbox):
 
 def test_crop_default_writes_bbox_named_file(mock_download):
     out = get_data_by_bbox(HELSINKI)  # crop=True, download=True (defaults)
-    assert os.path.basename(out) == "bbox_24.93_60.16_24.96_60.18.osm.pbf"
-    assert os.path.getsize(out) < os.path.getsize(mock_download)
+    assert Path(out).name == "bbox_24.93_60.16_24.96_60.18.osm.pbf"
+    assert Path(out).stat().st_size < Path(mock_download).stat().st_size
     assert pyrosm.OSM(out).get_buildings() is not None
 
 
@@ -94,13 +95,13 @@ def test_output_path_overrides_name(mock_download, tmp_path):
     target = str(tmp_path / "myclip.osm.pbf")
     out = get_data_by_bbox(HELSINKI, output_path=target)
     assert out == target
-    assert os.path.exists(target)
+    assert Path(target).exists()
 
 
 def test_directory_controls_output_location(mock_download, tmp_path):
     out = get_data_by_bbox(HELSINKI, directory=str(tmp_path))
-    assert os.path.dirname(out) == str(tmp_path)
-    assert os.path.basename(out) == "bbox_24.93_60.16_24.96_60.18.osm.pbf"
+    assert str(Path(out).parent) == str(tmp_path)
+    assert Path(out).name == "bbox_24.93_60.16_24.96_60.18.osm.pbf"
 
 
 def test_bbox_filename_format():

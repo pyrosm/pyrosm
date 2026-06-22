@@ -1,8 +1,6 @@
 """Out-of-core engine buildings reader: parity vs the in-memory OSM(fp).get_buildings()
 way and relation rows, plus the output= GeoParquet path and the worker-count policy."""
 
-import glob
-import os
 import zlib
 from struct import pack, unpack
 
@@ -36,7 +34,7 @@ def _shared_cache_dir(tmp_path_factory):
     # Tests that must observe a (re)build use the function-scoped ``fresh_cache`` fixture.
     shared = tmp_path_factory.mktemp("result_cache")
     original = cache.cache_dir
-    cache.cache_dir = lambda: str(shared)
+    cache.cache_dir = lambda: shared
     yield
     cache.cache_dir = original
 
@@ -46,7 +44,7 @@ def fresh_cache(tmp_path, monkeypatch):
     # A private, empty cache dir for tests that need the layer to actually be (re)built.
     cache_dir = tmp_path / "fresh_cache"
     cache_dir.mkdir()
-    monkeypatch.setattr(cache, "cache_dir", lambda: str(cache_dir))
+    monkeypatch.setattr(cache, "cache_dir", lambda: cache_dir)
     return cache_dir
 
 
@@ -738,7 +736,7 @@ def test_engine_cache_empty_result_is_marked(test_pbf, monkeypatch, fresh_cache)
     # later read returns None without decoding the file again.
     flt = {"amenity": ["definitely_not_a_real_value_xyz"]}
     assert get_data_by_custom_criteria(test_pbf, custom_filter=flt) is None
-    assert glob.glob(os.path.join(cache.cache_dir(), "*.empty"))
+    assert list(cache.cache_dir().glob("*.empty"))
     decodes = _count_decodes(monkeypatch)
     assert get_data_by_custom_criteria(test_pbf, custom_filter=flt) is None
     assert sum(decodes) == 0
@@ -751,7 +749,7 @@ def test_engine_cache_pyarrow_absent_falls_back(helsinki_pbf, monkeypatch, fresh
     monkeypatch.setattr(_compat, "HAS_PYARROW", False)
     mine = get_buildings(helsinki_pbf)
     _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
-    assert glob.glob(os.path.join(cache.cache_dir(), "*.parquet")) == []
+    assert list(cache.cache_dir().glob("*.parquet")) == []
 
 
 def test_cache_dir_builds_and_creates_tempdir_path(monkeypatch, tmp_path):
@@ -759,8 +757,8 @@ def test_cache_dir_builds_and_creates_tempdir_path(monkeypatch, tmp_path):
     # fixtures stub the module attribute, so exercise the real implementation captured at import.
     monkeypatch.setattr(cache.tempfile, "gettempdir", lambda: str(tmp_path))
     result = _real_cache_dir()
-    assert result == os.path.join(str(tmp_path), "pyrosm", "cache")
-    assert os.path.isdir(result)
+    assert result == tmp_path / "pyrosm" / "cache"
+    assert result.is_dir()
 
 
 def test_engine_boundaries_parity(helsinki_region_pbf):
@@ -973,7 +971,7 @@ def test_engine_network_nodes_cache_reuse_skips_decode(
     n1, e1 = get_network(helsinki_pbf, network_type="driving", nodes=True)
     n2, e2 = get_network(helsinki_pbf, network_type="driving", nodes=True)
     assert sum(decodes) == 1
-    assert len(glob.glob(os.path.join(cache.cache_dir(), "*.parquet"))) == 2
+    assert len(list(cache.cache_dir().glob("*.parquet"))) == 2
     _assert_full_parity(e1, e2)
     _assert_full_parity(n1.assign(osm_type="node"), n2.assign(osm_type="node"))
 
@@ -981,9 +979,9 @@ def test_engine_network_nodes_cache_reuse_skips_decode(
 def test_engine_network_output_path_writes_edges(helsinki_pbf, tmp_path):
     # output= writes the edges to that GeoParquet and returns the path; the file matches the
     # in-memory network edges.
-    out = str(tmp_path / "network.parquet")
+    out = tmp_path / "network.parquet"
     ret = get_network(helsinki_pbf, network_type="driving", output=out)
-    assert ret == out and os.path.exists(out)
+    assert ret == out and out.exists()
     written = cache.read_result(out)
     ref = OSM(helsinki_pbf).get_network(network_type="driving")
     _assert_full_parity(written, ref)
@@ -994,18 +992,16 @@ def test_engine_network_output_dir_with_nodes(helsinki_pbf, tmp_path):
     # it; the two files reload equal to the in-memory (nodes, edges) tuple.
     from pyrosm.engine import readers
 
-    out = str(tmp_path / "net_dir")
+    out = tmp_path / "net_dir"
     ret = get_network(helsinki_pbf, network_type="driving", nodes=True, output=out)
     assert ret == out
-    assert os.path.exists(os.path.join(out, "edges.parquet"))
-    assert os.path.exists(os.path.join(out, "nodes.parquet"))
+    assert (out / "edges.parquet").exists()
+    assert (out / "nodes.parquet").exists()
     ref_nodes, ref_edges = OSM(helsinki_pbf).get_network(
         network_type="driving", nodes=True
     )
-    _assert_full_parity(
-        cache.read_result(os.path.join(out, "edges.parquet")), ref_edges
-    )
-    written_nodes = readers._read_nodes_parquet(os.path.join(out, "nodes.parquet"))
+    _assert_full_parity(cache.read_result(out / "edges.parquet"), ref_edges)
+    written_nodes = readers._read_nodes_parquet(out / "nodes.parquet")
     a = written_nodes.sort_values("id").reset_index(drop=True).assign(osm_type="node")
     b = ref_nodes.sort_values("id").reset_index(drop=True).assign(osm_type="node")
     _assert_full_parity(a, b)
@@ -1013,13 +1009,13 @@ def test_engine_network_output_dir_with_nodes(helsinki_pbf, tmp_path):
 
 def test_engine_network_output_dir_empty_returns_none(test_pbf, tmp_path):
     # An empty nodes=True read with output= writes nothing and returns None.
-    out = str(tmp_path / "empty_dir")
+    out = tmp_path / "empty_dir"
     flt = {"highway": ["definitely_not_a_real_highway_xyz"]}
     ret = get_network(
         test_pbf, custom_filter=flt, filter_type="keep", nodes=True, output=out
     )
     assert ret is None
-    assert not os.path.exists(out)
+    assert not out.exists()
 
 
 def test_engine_network_pyarrow_absent_falls_back(
@@ -1031,7 +1027,7 @@ def test_engine_network_pyarrow_absent_falls_back(
     monkeypatch.setattr(_compat, "HAS_PYARROW", False)
     mine = get_network(helsinki_pbf, network_type="driving")
     _assert_full_parity(mine, OSM(helsinki_pbf).get_network(network_type="driving"))
-    assert glob.glob(os.path.join(cache.cache_dir(), "*.parquet")) == []
+    assert list(cache.cache_dir().glob("*.parquet")) == []
 
 
 def test_engine_network_empty_result_is_marked(test_pbf, monkeypatch, fresh_cache):
@@ -1039,7 +1035,7 @@ def test_engine_network_empty_result_is_marked(test_pbf, monkeypatch, fresh_cach
     # identical later read returns None without decoding the file again.
     flt = {"highway": ["definitely_not_a_real_highway_xyz"]}
     assert get_network(test_pbf, custom_filter=flt, filter_type="keep") is None
-    assert glob.glob(os.path.join(cache.cache_dir(), "*.empty"))
+    assert list(cache.cache_dir().glob("*.empty"))
     decodes = _count_decodes(monkeypatch)
     assert get_network(test_pbf, custom_filter=flt, filter_type="keep") is None
     assert sum(decodes) == 0
@@ -1055,7 +1051,7 @@ def test_engine_network_nodes_empty_result_is_marked(
         test_pbf, custom_filter=flt, filter_type="keep", nodes=True
     )
     assert nodes is None and edges is None
-    assert glob.glob(os.path.join(cache.cache_dir(), "*.empty"))
+    assert list(cache.cache_dir().glob("*.empty"))
     decodes = _count_decodes(monkeypatch)
     again = get_network(test_pbf, custom_filter=flt, filter_type="keep", nodes=True)
     assert again == (None, None)
