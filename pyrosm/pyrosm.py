@@ -13,9 +13,12 @@ from pyrosm.utils import (
     validate_bounding_box,
     validate_input_file,
     validate_graph_type,
+    validate_engine,
+    validate_workers,
     get_bounding_box,
     get_unix_time,
     warn_about_timestamp_not_set,
+    warn_about_single_core,
 )
 from pyrosm.utils.download import get_file_size
 from shapely.geometry import (
@@ -33,6 +36,10 @@ from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
 from pyrosm.graphs import to_networkx, to_igraph, to_pandana, to_pandarm
+
+# Aliased so the module does not collide with the ``engine`` constructor
+# parameter / ``self.engine`` attribute of the same name.
+from pyrosm import engine as engine_backend
 
 
 class OSM:
@@ -75,18 +82,19 @@ class OSM:
         file into memory. `'out_of_core'` decodes the file in a single streaming
         pass with bounded peak memory, spilling intermediate data to disk.
 
-        The out-of-core backend reads large files (above ~70 MB) using parallel
-        worker processes. On macOS and Windows those workers start with `spawn`,
-        which re-imports the program's entry point, so to read in parallel the
-        `OSM(...)` read must run under an `if __name__ == "__main__":` guard::
+        The out-of-core backend reads on a single core by default. To decode in
+        parallel pass `workers="auto"` (or an explicit `workers=N`); see below. The
+        worker processes start with `spawn` on macOS and Windows, which re-imports
+        the program's entry point, so a parallel `OSM(...)` read must run under an
+        `if __name__ == "__main__":` guard::
 
             if __name__ == "__main__":
-                osm = OSM(fp, engine="out_of_core")
+                osm = OSM(fp, engine="out_of_core", workers="auto")
                 buildings = osm.get_buildings()
 
-        Without the guard the read still completes -- it falls back to a single
-        process and warns -- but it is not parallel. On Linux (`fork`) no guard is
-        needed.
+        Without the guard a parallel read still completes -- it falls back to a
+        single process and warns -- but it is not parallel. On Linux (`fork`) no
+        guard is needed, and the default single-core read needs no guard anywhere.
 
         History reads -- an `.osh.pbf` file, or any feature call with a
         `timestamp` -- are served by the in-memory reader even when
@@ -94,6 +102,18 @@ class OSM:
         at/before the timestamp uses pyrosm's `get_latest_version`, which pandas
         evaluates eagerly over the whole multi-version frame, so history is read
         in memory.
+
+    workers : int | str (default: None)
+        Number of worker processes the `'out_of_core'` engine uses to decode the
+        file. By default (`None`) the engine reads on a single core, and the first
+        out-of-core read reports how many CPU cores are available and how to opt
+        into parallelism. Pass `workers="auto"` to let pyrosm choose the count
+        automatically -- a single core for small files and one worker per CPU core
+        for larger files -- or `workers=N` for an explicit count (a count above the
+        available CPU cores is reduced to the core count, with a warning). Parallel
+        reads need the `if __name__ == "__main__":` guard on macOS/Windows; pass
+        `workers=1` to read on a single core silently. Has no effect on the
+        `'in_memory'` engine.
     """
 
     allowed_bbox_types = [
@@ -111,6 +131,7 @@ class OSM:
         keep_metadata=True,
         complete_relations=False,
         engine="in_memory",
+        workers=None,
     ):
         # Check input file
         self.filepath = validate_input_file(filepath)
@@ -123,9 +144,9 @@ class OSM:
             raise ValueError("'complete_relations' should be a boolean.")
         self.complete_relations = complete_relations
 
-        if engine not in ("in_memory", "out_of_core"):
-            raise ValueError("'engine' should be either 'in_memory' or 'out_of_core'.")
-        self.engine = engine
+        self.engine = validate_engine(engine)
+        self.workers = validate_workers(workers)
+        self._single_core_notice_emitted = False
 
         # Check if file contains history
         self._osh_file = False
@@ -191,19 +212,22 @@ class OSM:
         return self.engine == "out_of_core" and timestamp is None and not self._osh_file
 
     def _read_engine(self, reader, with_relations=True, **kwargs):
-        """Route a feature read to the out-of-core engine reader of the given name, threading
-        the constructor-level ``bounding_box`` / ``keep_metadata`` (and ``complete_relations``
-        for the layer readers). Only non-history reads reach here; history reads use the
-        in-memory path (see :meth:`_use_engine`)."""
-        # Import the package qualified so the 'engine' name does not shadow the constructor
-        # parameter of the same name.
-        from pyrosm import engine as engine_backend
-
+        """Route a feature read to the given out-of-core engine reader, threading the
+        constructor-level ``bounding_box`` / ``keep_metadata`` / ``workers`` (and
+        ``complete_relations`` for the layer readers). Only non-history reads reach here;
+        history reads use the in-memory path (see :meth:`_use_engine`)."""
+        workers = self.workers
+        if workers is None:
+            workers = 1
+            if not self._single_core_notice_emitted:
+                self._single_core_notice_emitted = True
+                warn_about_single_core()
         kwargs["bounding_box"] = self.bounding_box
         kwargs["keep_metadata"] = self.keep_metadata
+        kwargs["workers"] = workers
         if with_relations:
             kwargs["complete_relations"] = self.complete_relations
-        return getattr(engine_backend, reader)(self.filepath, **kwargs)
+        return reader(self.filepath, **kwargs)
 
     def _get_pbf_elements(self, bounding_box):
         (
@@ -374,7 +398,7 @@ class OSM:
         """
         if self._use_engine(timestamp):
             return self._read_engine(
-                "get_network",
+                engine_backend.get_network,
                 with_relations=False,
                 network_type=network_type,
                 extra_attributes=extra_attributes,
@@ -500,7 +524,7 @@ class OSM:
         """
         if self._use_engine(timestamp):
             return self._read_engine(
-                "get_buildings",
+                engine_backend.get_buildings,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
@@ -589,7 +613,7 @@ class OSM:
 
         if self._use_engine(timestamp):
             return self._read_engine(
-                "get_landuse",
+                engine_backend.get_landuse,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
@@ -679,7 +703,7 @@ class OSM:
 
         if self._use_engine(timestamp):
             return self._read_engine(
-                "get_natural",
+                engine_backend.get_natural,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
@@ -783,7 +807,7 @@ class OSM:
 
         if self._use_engine(timestamp):
             return self._read_engine(
-                "get_boundaries",
+                engine_backend.get_boundaries,
                 boundary_type=boundary_type,
                 name=name,
                 custom_filter=custom_filter,
@@ -911,7 +935,7 @@ class OSM:
         """
         if self._use_engine(timestamp):
             return self._read_engine(
-                "get_pois",
+                engine_backend.get_pois,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
@@ -1038,7 +1062,7 @@ class OSM:
                     "custom_filter."
                 )
             return self._read_engine(
-                "get_data_by_custom_criteria",
+                engine_backend.get_data_by_custom_criteria,
                 custom_filter=custom_filter,
                 osm_keys_to_keep=osm_keys_to_keep,
                 filter_type=filter_type,

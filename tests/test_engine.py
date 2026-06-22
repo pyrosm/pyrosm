@@ -236,25 +236,6 @@ def test_engine_output_requires_pyarrow(helsinki_pbf, tmp_path, monkeypatch):
         get_buildings(helsinki_pbf, output=str(tmp_path / "x.parquet"))
 
 
-def test_auto_workers_decides_on_file_size_not_blob_count(tmp_path):
-    # The default worker count is chosen by file size: parallelising only pays off above
-    # ~70 MB, and blob count must not force a pool for a small file (sparse files give a
-    # size without occupying disk).
-    import os
-
-    small = tmp_path / "small.osm.pbf"
-    small.touch()
-    os.truncate(small, pool._PARALLEL_MIN_FILE_BYTES - 1)
-    assert pool._auto_workers(str(small), 10_000) == 1
-
-    big = tmp_path / "big.osm.pbf"
-    big.touch()
-    os.truncate(big, pool._PARALLEL_MIN_FILE_BYTES + 1)
-    cpus = os.cpu_count() or 1
-    assert pool._auto_workers(str(big), 10_000) == cpus
-    assert pool._auto_workers(str(big), 2) == min(cpus, 2)
-
-
 def _fake_executor(raise_init=None, raise_map=None):
     """A ProcessPoolExecutor stand-in that runs map() in-process, optionally raising at
     construction or at map() to exercise the parallel branch and its fallback without real
@@ -1436,6 +1417,165 @@ def test_osm_engine_validation_and_unsupported_combos(helsinki_pbf):
         ooc.get_buildings(timestamp="2021-01-01 00:00:00")
     with pytest.raises(NotImplementedError):
         ooc.get_data_by_custom_criteria(custom_filter=None)
+
+
+def test_osm_workers_validation(test_pbf):
+    # The constructor-level worker count must be a positive integer, "auto", or None.
+    for bad in (0, -1, 1.5, True, "2", "bogus"):
+        with pytest.raises(ValueError, match="workers"):
+            OSM(test_pbf, workers=bad)
+    assert OSM(test_pbf).workers is None
+    assert OSM(test_pbf, workers=2).workers == 2
+    assert OSM(test_pbf, workers="auto").workers == "auto"
+    assert OSM(test_pbf, workers="AUTO").workers == "auto"  # normalized
+
+
+def test_osm_out_of_core_default_single_core_notice_and_workers(
+    helsinki_pbf, monkeypatch, fresh_cache
+):
+    # Without an explicit workers count the read uses a single worker and warns once,
+    # reporting the available CPU count; the result still matches the in-memory reader.
+    import warnings as _warnings
+    from pyrosm import utils as utils_mod
+    import pyrosm.engine.readers as readers_mod
+
+    monkeypatch.setattr(utils_mod.os, "cpu_count", lambda: 4)
+    captured = []
+    real = readers_mod._decode_and_run
+
+    def spy(filepath, osm_key_bytes, include_nodes, workers, run, **kwargs):
+        captured.append(workers)
+        return real(filepath, osm_key_bytes, include_nodes, workers, run, **kwargs)
+
+    monkeypatch.setattr(readers_mod, "_decode_and_run", spy)
+    osm = OSM(helsinki_pbf, engine="out_of_core")
+    with pytest.warns(UserWarning, match="single core") as record:
+        mine = osm.get_buildings()
+    assert captured == [1]
+    msg = str(record[0].message)
+    assert "4 CPU cores" in msg and "workers='auto'" in msg
+    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
+    # The notice is emitted only once per reader.
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        osm.get_buildings()
+    assert not [w for w in caught if "single core" in str(w.message)]
+
+
+def test_osm_out_of_core_explicit_workers_threaded_and_silent(
+    helsinki_pbf, monkeypatch, fresh_cache
+):
+    # An explicit workers count reaches the engine decode unchanged and suppresses the
+    # single-core notice; the read still matches the in-memory reader.
+    import warnings as _warnings
+    from pyrosm import utils as utils_mod
+    import pyrosm.engine.readers as readers_mod
+
+    monkeypatch.setattr(utils_mod.os, "cpu_count", lambda: 4)
+    captured = []
+    real = readers_mod._decode_and_run
+
+    def spy(filepath, osm_key_bytes, include_nodes, workers, run, **kwargs):
+        captured.append(workers)
+        return real(filepath, osm_key_bytes, include_nodes, workers, run, **kwargs)
+
+    monkeypatch.setattr(readers_mod, "_decode_and_run", spy)
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        mine = OSM(helsinki_pbf, engine="out_of_core", workers=1).get_buildings()
+    assert captured == [1]
+    assert not [w for w in caught if "single core" in str(w.message)]
+    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
+
+
+def test_osm_out_of_core_auto_workers_threaded_and_silent(
+    helsinki_pbf, monkeypatch, fresh_cache
+):
+    # workers="auto" reaches the engine unchanged (resolved there) and emits no single-core
+    # notice; the read still matches the in-memory reader. The bundled file is below the size
+    # threshold, so "auto" resolves to a single core (no worker processes are spawned).
+    import warnings as _warnings
+    import pyrosm.engine.readers as readers_mod
+
+    captured = []
+    real = readers_mod._decode_and_run
+
+    def spy(filepath, osm_key_bytes, include_nodes, workers, run, **kwargs):
+        captured.append(workers)
+        return real(filepath, osm_key_bytes, include_nodes, workers, run, **kwargs)
+
+    monkeypatch.setattr(readers_mod, "_decode_and_run", spy)
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        mine = OSM(helsinki_pbf, engine="out_of_core", workers="auto").get_buildings()
+    assert captured == ["auto"]
+    assert not [w for w in caught if "single core" in str(w.message)]
+    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
+
+
+def test_auto_workers_picks_single_core_for_small_files(tmp_path, monkeypatch):
+    # "auto" reads small files on a single core; above the size threshold it uses one worker
+    # per CPU core, capped at the data-blob count.
+    import os
+
+    monkeypatch.setattr(pool.os, "cpu_count", lambda: 8)
+    small = tmp_path / "small.osm.pbf"
+    small.touch()
+    os.truncate(small, pool._PARALLEL_MIN_FILE_BYTES - 1)
+    assert pool._auto_workers(str(small), 10_000) == 1
+
+    big = tmp_path / "big.osm.pbf"
+    big.touch()
+    os.truncate(big, pool._PARALLEL_MIN_FILE_BYTES + 1)
+    assert pool._auto_workers(str(big), 10_000) == 8  # cpu-bound
+    assert pool._auto_workers(str(big), 3) == 3  # blob-bound
+
+
+def test_cap_workers_reduces_above_cpu_count(monkeypatch):
+    # More workers than CPU cores is reduced to the core count with a warning; counts at or
+    # below the core count pass through unchanged and silently.
+    import warnings as _warnings
+
+    monkeypatch.setattr(pool.os, "cpu_count", lambda: 4)
+    with pytest.warns(UserWarning, match="exceeds the 4 CPU cores"):
+        assert pool._cap_workers(10) == 4
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        assert pool._cap_workers(4) == 4
+        assert pool._cap_workers(1) == 1
+
+
+def test_osm_out_of_core_single_core_host_no_notice(
+    helsinki_pbf, monkeypatch, fresh_cache
+):
+    # On a single-core host there is nothing to parallelize, so no notice is emitted.
+    import warnings as _warnings
+    from pyrosm import utils as utils_mod
+
+    monkeypatch.setattr(utils_mod.os, "cpu_count", lambda: 1)
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        OSM(helsinki_pbf, engine="out_of_core").get_buildings()
+    assert not [w for w in caught if "single core" in str(w.message)]
+
+
+def test_osm_out_of_core_excess_workers_capped(helsinki_pbf, monkeypatch, fresh_cache):
+    # An explicit worker count above the CPU-core count is reduced to the core count, with a
+    # warning; the read still matches the in-memory reader.
+    monkeypatch.setattr(pool.os, "cpu_count", lambda: 2)
+    monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor())
+    captured = []
+    real = pool._decode_all
+
+    def spy(filepath, blobs, workers, *args, **kwargs):
+        captured.append(workers)
+        return real(filepath, blobs, workers, *args, **kwargs)
+
+    monkeypatch.setattr(pool, "_decode_all", spy)
+    with pytest.warns(UserWarning, match="exceeds the 2 CPU cores"):
+        mine = OSM(helsinki_pbf, engine="out_of_core", workers=50).get_buildings()
+    assert captured == [2]
+    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
 
 
 def test_osm_out_of_core_network_nodes_parity(helsinki_pbf):

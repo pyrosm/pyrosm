@@ -164,6 +164,24 @@ def validate_graph_type(graph_type):
     return graph_type
 
 
+def validate_engine(engine):
+    if engine not in ("in_memory", "out_of_core"):
+        raise ValueError("'engine' should be either 'in_memory' or 'out_of_core'.")
+    return engine
+
+
+def validate_workers(workers):
+    if isinstance(workers, str):
+        if workers.lower() != "auto":
+            raise ValueError("'workers' should be a positive integer, 'auto', or None.")
+        return "auto"
+    if workers is not None and (
+        not isinstance(workers, int) or isinstance(workers, bool) or workers < 1
+    ):
+        raise ValueError("'workers' should be a positive integer, 'auto', or None.")
+    return workers
+
+
 def validate_node_gdf(nodes):
     if not isinstance(nodes, gpd.GeoDataFrame):
         raise ValueError(f"'nodes' should be a GeoDataFrame, got '{type(nodes)}'.")
@@ -302,4 +320,24 @@ def warn_about_timestamp_not_set(unix_time):
         f"Reading OSH.PBF file without user-defined timestamp. Using the current UTC"
         f" time as timestamp: {unix_time_to_datetime(unix_time)}",
         UserWarning,
+    )
+
+
+def warn_about_single_core():
+    """Warn that the out-of-core engine is reading on a single core and how to opt into
+    parallelism; reports the available CPU count and is a no-op on a single-core host.
+    """
+    n_cores = os.cpu_count() or 1
+    if n_cores <= 1:
+        return
+    warnings.warn(
+        "The out-of-core engine is reading on a single core. This machine has "
+        f"{n_cores} CPU cores available; pass workers='auto' to "
+        "OSM(..., engine='out_of_core') to let pyrosm choose automatically whether the "
+        "file benefits from multiple cores or a single one, or set workers=N for an "
+        "explicit count. Parallel reads spawn worker processes on macOS/Windows, so run "
+        'them under an `if __name__ == "__main__":` guard. Pass workers=1 to silence '
+        "this message.",
+        UserWarning,
+        stacklevel=4,
     )
