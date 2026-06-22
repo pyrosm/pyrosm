@@ -32,9 +32,44 @@ def get_file_size(file_name, size_type=UNIT.MB):
     return round(convert_unit(size, size_type), 2)
 
 
+def download_dir():
+    """The default directory ``get_data`` downloads PBF extracts into: ``<tempdir>/pyrosm``."""
+    return Path(tempfile.gettempdir()) / "pyrosm"
+
+
+def list_downloads():
+    """List the PBF files downloaded by ``get_data`` in the default download directory
+    (``<tempdir>/pyrosm``). Returns a sorted list of string paths."""
+    directory = download_dir()
+    if not directory.is_dir():
+        return []
+    return sorted(str(p) for p in directory.glob("*.pbf") if p.is_file())
+
+
+def clear_downloads(filepath=None):
+    """Remove PBF files downloaded by ``get_data`` from the default download directory
+    (``<tempdir>/pyrosm``). With no ``filepath`` every downloaded ``*.pbf`` there is removed; with
+    a ``filepath`` (a path or a bare filename) only that file is removed. The out-of-core ``cache``
+    subdirectory and the bundled package data are left untouched. Returns the number of files
+    removed."""
+    directory = download_dir()
+    if not directory.is_dir():
+        return 0
+    if filepath is None:
+        targets = sorted(p for p in directory.glob("*.pbf") if p.is_file())
+    else:
+        target = directory / Path(filepath).name
+        targets = [target] if target.is_file() else []
+    removed = 0
+    for path in targets:
+        path.unlink()
+        removed += 1
+    return removed
+
+
 def download(url, filename, update, target_dir):
     if target_dir is None:
-        target_dir = Path(tempfile.gettempdir()) / "pyrosm"
+        target_dir = download_dir()
     else:
         target_dir = Path(target_dir)
         if not target_dir.is_dir():

@@ -1453,6 +1453,84 @@ class OSM:
                 pandana_weights,
             )
 
+    @staticmethod
+    def list_cache(filepath=None):
+        """List the out-of-core engine's cached layer files -- the GeoParquet files that
+        ``engine="out_of_core"`` reads write under ``<tempdir>/pyrosm/cache``.
+
+        Parameters
+        ----------
+
+        filepath : str | os.PathLike (optional)
+            When given, only the cached layers for that source PBF are listed; when ``None``
+            (default) every cached file is listed.
+
+        Returns
+        -------
+        list of str
+            The cached files' paths.
+        """
+        from pyrosm.engine import cache
+
+        return cache.list_files(filepath)
+
+    @staticmethod
+    def list_downloads():
+        """List the PBF files downloaded by ``get_data`` in the default download directory
+        (``<tempdir>/pyrosm``).
+
+        Returns
+        -------
+        list of str
+            The downloaded files' paths.
+        """
+        from pyrosm.utils.download import list_downloads
+
+        return list_downloads()
+
+    @staticmethod
+    def clear_cache(filepath=None):
+        """Remove the out-of-core engine's result cache -- the GeoParquet files that
+        ``engine="out_of_core"`` reads write under ``<tempdir>/pyrosm/cache``.
+
+        Parameters
+        ----------
+
+        filepath : str | os.PathLike (optional)
+            When given, only the cached layers for that source PBF are removed; when ``None``
+            (default) the whole cache is cleared.
+
+        Returns
+        -------
+        int
+            The number of cache files removed.
+        """
+        from pyrosm.engine import cache
+
+        return cache.clear(filepath)
+
+    @staticmethod
+    def clear_downloads(filepath=None):
+        """Remove PBF files downloaded by ``get_data`` from the default download directory
+        (``<tempdir>/pyrosm``). The result cache and the bundled package datasets are left
+        untouched.
+
+        Parameters
+        ----------
+
+        filepath : str | os.PathLike (optional)
+            A downloaded file's path or bare filename to remove just that file; when ``None``
+            (default) every downloaded ``*.pbf`` in the directory is removed.
+
+        Returns
+        -------
+        int
+            The number of files removed.
+        """
+        from pyrosm.utils.download import clear_downloads
+
+        return clear_downloads(filepath)
+
     def __getattribute__(self, name):
         # If node-gdf is requested convert to gdf before returning
         if name == "_nodes_gdf":
