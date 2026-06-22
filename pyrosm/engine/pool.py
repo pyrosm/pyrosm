@@ -1,4 +1,4 @@
-"""Worker-count policy and parallel-decode orchestration for decoding blobs."""
+"""Worker-count resolution and parallel-decode orchestration for decoding blobs."""
 
 import os
 import shutil
@@ -11,18 +11,31 @@ from pathlib import Path
 from pyrosm.engine.blobs import _index_blobs
 from pyrosm.engine.decode import _init_worker, _decode_batch
 
-# Parallelising the decode only pays off above this file size; smaller files decode in a
-# single process, where the process-spawn overhead would otherwise dominate.
+# ``workers="auto"`` decodes in parallel only for files at or above this size.
 _PARALLEL_MIN_FILE_BYTES = 70_000_000  # ~70 MB
 
 
 def _auto_workers(filepath, n_blobs):
-    """Pick a worker count for ``filepath``: single-core below the size threshold (where
-    the process-spawn overhead dominates), otherwise a worker per CPU, capped at the blob
-    count."""
+    """Worker count for ``workers="auto"``: a single core for files below ~70 MB, otherwise
+    one worker per available CPU core, capped at the number of data blobs."""
     if Path(filepath).stat().st_size < _PARALLEL_MIN_FILE_BYTES:
         return 1
     return max(1, min(os.cpu_count() or 1, n_blobs))
+
+
+def _cap_workers(workers):
+    """Cap an explicit worker count at the host's CPU-core count, warning when it exceeds
+    them."""
+    n_cores = os.cpu_count() or 1
+    if workers > n_cores:
+        warnings.warn(
+            f"workers={workers} exceeds the {n_cores} CPU cores available on this "
+            f"machine; reading with {n_cores} workers instead.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return n_cores
+    return workers
 
 
 def _decode_serial(tasks, init_args):
@@ -82,7 +95,11 @@ def _decode_and_run(
         if blob_type == "OSMData"
     ]
     if workers is None:
+        workers = 1
+    elif isinstance(workers, str) and workers.lower() == "auto":
         workers = _auto_workers(filepath, len(data_blobs))
+    else:
+        workers = _cap_workers(workers)
     shard_dir = tempfile.mkdtemp(prefix="pyrosm_ooc_")
     try:
         shard_paths = _decode_all(

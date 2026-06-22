@@ -10,13 +10,15 @@ set rather than the whole file.
 The public ``get_*`` readers re-exported here mirror the in-memory reader's output
 column-for-column.
 
-Parallel reading and the ``__main__`` guard: files above ~70 MB are decoded in parallel
-worker processes. On macOS and Windows the workers start with ``spawn`` and re-import the
-program's entry point, so a read that runs at import time must be placed under an
-``if __name__ == "__main__":`` guard to decode in parallel. Without the guard the read
-still completes -- it falls back to a single process and emits a warning -- but it is not
-parallel. On Linux (``fork``) no guard is needed. Pass ``workers=1`` to read in a single
-process unconditionally.
+Parallel reading and the ``__main__`` guard: the engine reads on a single core by default.
+Pass ``workers="auto"`` to choose the count automatically (a single core for small files,
+one per CPU core for larger files), or ``workers=N`` for an explicit count (reduced to the
+CPU-core count, with a warning, if it exceeds it). On macOS and
+Windows those workers start with ``spawn`` and re-import the program's entry point, so a
+parallel read that runs at import time must be placed under an ``if __name__ == "__main__":``
+guard. Without the guard a parallel read still completes -- it falls back to a single process
+and emits a warning -- but it is not parallel. On Linux (``fork``) no guard is needed; the
+default single-core read needs none anywhere.
 """
 
 from pyrosm.engine.readers import (

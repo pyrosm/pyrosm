@@ -42,9 +42,10 @@ def _get_layer(
 
     Returns an in-memory GeoDataFrame, or -- when ``output`` is a path -- streams the layer
     to a chunked GeoParquet there and returns the path (needs the optional ``pyarrow``).
-    ``workers`` defaults to one for small files and otherwise to a worker per CPU; on
-    macOS/Windows a parallel read must run under an ``if __name__ == "__main__":`` guard
-    (otherwise it falls back to one process with a warning) -- see the package docstring.
+    ``workers`` defaults to a single process; pass ``workers=N`` for N processes or
+    ``workers="auto"`` to choose automatically by file size (on macOS/Windows a parallel read
+    must run under an ``if __name__ == "__main__":`` guard, otherwise it falls back to one
+    process with a warning) -- see the package docstring.
     """
     if output is not None:
         _compat.require_pyarrow()
