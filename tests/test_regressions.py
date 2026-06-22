@@ -934,6 +934,38 @@ def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):
     assert Path(out).exists()
 
 
+def test_download_rejects_nonexistent_target_dir(tmp_path):
+    """download(target_dir=...) raises when the given directory does not exist."""
+    from pyrosm.utils import download as dl
+
+    missing = tmp_path / "does_not_exist"
+    with pytest.raises(ValueError, match="does not exist"):
+        dl.download(
+            "https://example.invalid/x.osm.pbf", "x.osm.pbf", False, str(missing)
+        )
+
+
+def test_download_update_removes_existing_file(tmp_path, monkeypatch):
+    """download(update=True) unlinks the cached file before re-fetching."""
+    import io
+
+    from pyrosm.utils import download as dl
+
+    target = tmp_path / "x.osm.pbf"
+    target.write_bytes(b"old")
+    fresh = b"x" * 50000  # large enough that download's empty-file guard passes
+
+    monkeypatch.setattr(dl.ssl, "create_default_context", lambda *a, **k: None)
+    monkeypatch.setattr(
+        dl.urllib.request, "urlopen", lambda url, context=None: io.BytesIO(fresh)
+    )
+
+    out = dl.download(
+        "https://example.invalid/x.osm.pbf", "x.osm.pbf", True, str(tmp_path)
+    )
+    assert Path(out).read_bytes() == fresh
+
+
 def test_tags_to_keep_restricts_tag_columns():
     """#87 — get_*(tags_to_keep=[...]) materializes only the requested OSM tag
     keys as columns (replacing the default tag-column set), leaving rows,
