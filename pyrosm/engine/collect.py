@@ -319,7 +319,12 @@ def _ways_arrays(records, tags_as_columns, keep_metadata):
 
 def _needed_node_ids(kept, relation_ways):
     """The unique node ids referenced by the kept standalone ways and the relation
-    member ways -- the only coordinates the gather has to pull off disk."""
+    member ways -- the only coordinates the gather has to pull off disk. Returned sorted
+    (the node gather's searchsorted lookup needs it ordered); the unique set is built with
+    pandas' hashtable rather than ``np.unique``'s sort, which is markedly faster on the
+    tens of millions of refs a country-scale read produces."""
+    import pandas as pd
+
     refs = []
     if kept is not None:
         refs.extend(r["nodes"] for r in kept)
@@ -327,7 +332,9 @@ def _needed_node_ids(kept, relation_ways):
         refs.extend(relation_ways["nodes"])
     if not refs:
         return np.empty(0, np.int64)
-    return np.unique(np.concatenate(refs))
+    unique = pd.unique(np.concatenate(refs))
+    unique.sort()
+    return unique
 
 
 def _collect_layer(
