@@ -678,6 +678,77 @@ def test_engine_custom_criteria_keep_flags_parity(helsinki_pbf, flags):
     _assert_full_parity(mine, ref)
 
 
+def test_engine_custom_criteria_keep_other_tags_false_minimal(helsinki_pbf):
+    # keep_other_tags=False returns the same elements but only the requested column(s) -- the
+    # JSON 'tags' column of leftover tags is dropped, and the rest is identical.
+    flt = {"building": True}
+    full = get_data_by_custom_criteria(
+        helsinki_pbf, custom_filter=flt, tags_as_columns=["building"], keep_other_tags=True
+    )
+    minimal = get_data_by_custom_criteria(
+        helsinki_pbf, custom_filter=flt, tags_as_columns=["building"], keep_other_tags=False
+    )
+    assert full is not None and minimal is not None
+    assert "tags" in full.columns and "tags" not in minimal.columns
+    # Same columns apart from the dropped 'tags' column, and the same elements in order.
+    assert set(full.columns) - {"tags"} == set(minimal.columns)
+    assert minimal["id"].tolist() == full["id"].tolist()
+    assert minimal["building"].fillna("").tolist() == full["building"].fillna("").tolist()
+    assert minimal.geometry.geom_type.tolist() == full.geometry.geom_type.tolist()
+
+
+def test_engine_custom_criteria_keep_other_tags_false_value_filter(helsinki_pbf):
+    # A value filter whose key is NOT a requested column still filters correctly: the filter
+    # key is resolved so the value filter works, then dropped (no 'tags' and no filter-key
+    # column in the result).
+    flt = {"amenity": ["restaurant", "cafe", "pub"]}
+    minimal = get_data_by_custom_criteria(
+        helsinki_pbf, custom_filter=flt, tags_as_columns=["name"], keep_other_tags=False
+    )
+    ref = get_data_by_custom_criteria(helsinki_pbf, custom_filter=flt)
+    assert minimal is not None and len(minimal) > 0
+    assert set(minimal["id"]) == set(ref["id"])  # the value filter still selects the same rows
+    assert "tags" not in minimal.columns
+    assert "amenity" not in minimal.columns
+    assert "name" in minimal.columns
+
+
+def test_engine_custom_criteria_keep_other_tags_default_unchanged(helsinki_pbf):
+    # The default (keep_other_tags=True) is identical to not passing it at all.
+    flt = {"building": True}
+    default = get_data_by_custom_criteria(helsinki_pbf, custom_filter=flt)
+    explicit = get_data_by_custom_criteria(
+        helsinki_pbf, custom_filter=flt, keep_other_tags=True
+    )
+    _assert_full_parity(default, explicit)
+
+
+def test_osm_custom_criteria_keep_other_tags_in_memory_rejected(helsinki_pbf):
+    # The in-memory reader caches all tags for reuse across layers, so it cannot honour the
+    # minimal-tags mode and rejects it.
+    osm = OSM(helsinki_pbf)
+    with pytest.raises(ValueError, match="only supported by the out-of-core engine"):
+        osm.get_data_by_custom_criteria({"building": True}, keep_other_tags=False)
+    # The default value leaves the in-memory path working.
+    assert (
+        osm.get_data_by_custom_criteria({"building": True}, keep_other_tags=True) is not None
+    )
+
+
+def test_engine_custom_criteria_keep_other_tags_cache_isolation(helsinki_pbf, fresh_cache):
+    # keep_other_tags is part of the result-cache key, so a minimal read does not serve (or get
+    # served by) a full-tags cached result.
+    flt = {"building": True}
+    full = get_data_by_custom_criteria(
+        helsinki_pbf, custom_filter=flt, tags_as_columns=["building"], keep_other_tags=True
+    )
+    minimal = get_data_by_custom_criteria(
+        helsinki_pbf, custom_filter=flt, tags_as_columns=["building"], keep_other_tags=False
+    )
+    assert "tags" in full.columns
+    assert "tags" not in minimal.columns
+
+
 def _count_decodes(monkeypatch):
     # Count how many times the engine decodes the PBF, to assert a cached read does not re-decode.
     import pyrosm.engine.readers as readers_mod

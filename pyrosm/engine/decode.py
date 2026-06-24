@@ -23,15 +23,22 @@ _SHARD_DIR = None
 _OSM_KEYS = None
 _INCLUDE_NODES = True
 _BBOX_BOUNDS = None
+# When not None, the only tag keys (utf-8 bytes) to resolve into the element tag dicts
+# (the ``keep_other_tags=False`` minimal-tags mode); None resolves every tag.
+_REQUESTED_TAG_KEYS = None
 
 
-def _init_worker(filepath, shard_dir, osm_keys, include_nodes, bbox_bounds):
+def _init_worker(
+    filepath, shard_dir, osm_keys, include_nodes, bbox_bounds, requested_tag_keys=None
+):
     global _FILEPATH, _SHARD_DIR, _OSM_KEYS, _INCLUDE_NODES, _BBOX_BOUNDS
+    global _REQUESTED_TAG_KEYS
     _FILEPATH = filepath
     _SHARD_DIR = shard_dir
     _OSM_KEYS = osm_keys
     _INCLUDE_NODES = include_nodes
     _BBOX_BOUNDS = bbox_bounds
+    _REQUESTED_TAG_KEYS = requested_tag_keys
 
 
 def _key_indices(string_table, osm_keys):
@@ -40,15 +47,27 @@ def _key_indices(string_table, osm_keys):
     return [string_table.index(k) for k in osm_keys if k in string_table]
 
 
-def _resolve_tags(string_table, keys, vals, start, end):
+def _resolve_tags(string_table, keys, vals, start, end, keep_indices=None):
     """The ``{key: value}`` tag dict for one element, resolved through the string table
-    (decoded to str, as pyrosm's protobuf path produces)."""
+    (decoded to str, as pyrosm's protobuf path produces). When ``keep_indices`` is given,
+    only the pairs whose key is one of those string-table indices are resolved -- the
+    ``keep_other_tags=False`` minimal-tags mode that skips the unwanted tags entirely.
+    """
     return {
         string_table[keys[p]]
         .decode("utf-8", "replace"): string_table[vals[p]]
         .decode("utf-8", "replace")
         for p in range(start, end)
+        if keep_indices is None or keys[p] in keep_indices
     }
+
+
+def _requested_keep_indices(string_table):
+    """The string-table indices for ``_REQUESTED_TAG_KEYS`` (the minimal-tags keep set) in
+    this block, or ``None`` when every tag should be resolved."""
+    if _REQUESTED_TAG_KEYS is None:
+        return None
+    return set(_key_indices(string_table, _REQUESTED_TAG_KEYS))
 
 
 def _matching_ways(string_table, ways, osm_keys):
@@ -69,11 +88,14 @@ def _matching_ways(string_table, ways, osm_keys):
     # a way may carry several filter keys, so de-duplicate.
     way_index = np.unique(np.searchsorted(tags_off, key_positions, side="right") - 1)
     refs, refs_off = ways["refs"], ways["refs_off"]
+    keep_indices = _requested_keep_indices(string_table)
     return {
         "id": ways["id"][way_index],
         "refs": [refs[refs_off[i] : refs_off[i + 1]] for i in way_index],
         "tags": [
-            _resolve_tags(string_table, keys, vals, tags_off[i], tags_off[i + 1])
+            _resolve_tags(
+                string_table, keys, vals, tags_off[i], tags_off[i + 1], keep_indices
+            )
             for i in way_index
         ],
         "version": ways["version"][way_index],
@@ -94,6 +116,7 @@ def _matching_nodes(string_table, nodes, osm_keys, node_lon, node_lat):
     keys_vals = nodes["keys_vals"]
     if not key_indices or len(keys_vals) == 0:
         return None
+    keep_indices = _requested_keep_indices(string_table)
     ids = nodes["id"]
     idx, tags = [], []
     p, end = 0, len(keys_vals)
@@ -115,6 +138,7 @@ def _matching_nodes(string_table, nodes, osm_keys, node_lon, node_lat):
                     .decode("utf-8", "replace"): string_table[v]
                     .decode("utf-8", "replace")
                     for k, v in pairs
+                    if keep_indices is None or k in keep_indices
                 }
             )
     if not idx:
@@ -223,13 +247,16 @@ def _layer_relations(string_table, relations, osm_keys):
         relations["roles"],
         relations["members_off"],
     )
+    keep_indices = _requested_keep_indices(string_table)
     for i in rel_index:
         s, e = moff[i], moff[i + 1]
         member_role = np.array(
             [string_table[r].decode("utf-8", "replace") for r in roles[s:e]],
             dtype=object,
         )
-        tags = _resolve_tags(string_table, keys, vals, tags_off[i], tags_off[i + 1])
+        tags = _resolve_tags(
+            string_table, keys, vals, tags_off[i], tags_off[i + 1], keep_indices
+        )
         yield {
             "id": ids[i],
             "memid": memids[s:e],
