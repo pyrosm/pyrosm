@@ -12,7 +12,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from pyrosm.engine.collect import _collect_layer
+from pyrosm.engine.collect import _collect_layer, _num_ways, _slice_way_columns
 from pyrosm.engine.assemble import _assemble_chunk
 
 # Assemble and write this many ways per chunk, so the output frame is never fully
@@ -62,11 +62,12 @@ def _stream_layer_to_parquet(
     bounding_box=None,
     complete_relations=False,
     keep_other_tags=True,
+    workers=1,
 ):
     """Stream the layer (point nodes, then ways in chunks, then relations) to a GeoParquet
     at ``output``, spilling each chunk to its own temporary parquet file and then combining
     the files under the union of their schemas. Returns the path, or ``None`` if there was
-    nothing to write."""
+    nothing to write. ``workers > 1`` runs the collect phase across a process pool."""
     import pyarrow.parquet as pq
     from geopandas.io.arrow import _geopandas_to_arrow
 
@@ -79,6 +80,7 @@ def _stream_layer_to_parquet(
         keep_relations,
         bounding_box,
         complete_relations,
+        workers=workers,
     )
     if collected is None:
         return None
@@ -107,8 +109,10 @@ def _stream_layer_to_parquet(
             if table is not None:
                 yield table
         if kept is not None:
-            for start in range(0, len(kept), chunk_size):
-                table = to_table(way_records=kept[start : start + chunk_size])
+            for start in range(0, _num_ways(kept), chunk_size):
+                table = to_table(
+                    way_records=_slice_way_columns(kept, start, start + chunk_size)
+                )
                 if table is not None:
                     yield table
         if relations is not None:

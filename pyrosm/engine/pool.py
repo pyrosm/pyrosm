@@ -38,11 +38,40 @@ def _cap_workers(workers):
     return workers
 
 
-def _decode_serial(tasks, init_args):
-    """Decode every task in this process (the single-process path and the parallel
-    fallback). Returns the flat list of shard paths."""
-    _init_worker(*init_args)
-    return [path for task in tasks for path in _decode_batch(task)]
+def _run_pool(func, tasks, workers, initializer, initargs, fallback_warning=None):
+    """Map ``func`` over ``tasks`` across a process pool of ``workers`` (each worker process
+    initialised with ``initializer(*initargs)``); return ``(results, pool_ok)`` -- the
+    per-task results in task order, and whether the pool actually ran.
+
+    ``workers == 1`` runs every task in this process (no pool, ``pool_ok`` False). A pool that
+    cannot start (``OSError`` in an environment that forbids pools) or whose workers die on
+    start (``BrokenProcessPool`` -- e.g. a read not guarded by ``if __name__ == "__main__":``,
+    so each spawned worker re-imports and re-runs the entry point) falls back to a single
+    process and reports ``pool_ok`` False, so a later phase can stay serial instead of
+    re-attempting a pool that cannot start. ``fallback_warning`` (when given) is emitted on
+    that fallback; passing ``None`` keeps a downstream phase from warning a second time after
+    the decode already did."""
+    if workers == 1:
+        initializer(*initargs)
+        return [func(task) for task in tasks], False
+    try:
+        with ProcessPoolExecutor(
+            max_workers=workers, initializer=initializer, initargs=initargs
+        ) as pool:
+            return list(pool.map(func, tasks)), True
+    except (BrokenProcessPool, OSError):
+        if fallback_warning is not None:
+            warnings.warn(fallback_warning, RuntimeWarning, stacklevel=2)
+        initializer(*initargs)
+        return [func(task) for task in tasks], False
+
+
+_DECODE_FALLBACK_WARNING = (
+    "Parallel decoding could not start and fell back to a single process. This happens when "
+    'the read is not inside an `if __name__ == "__main__":` block (the worker processes '
+    "cannot re-import the entry point), or in environments that forbid process pools. Guard "
+    "the entry point, or pass workers=1 to silence this."
+)
 
 
 def _decode_all(
@@ -55,15 +84,10 @@ def _decode_all(
     bbox_bounds=None,
     requested_tag_keys=None,
 ):
-    """Decode every data blob into per-block shards (each worker spills one shard per block
-    as it is decoded); return the flat list of shard paths.
-
-    Parallel decoding uses a process pool. ``ProcessPoolExecutor`` reports a broken pool
-    instead of endlessly respawning dead workers (which would hang), so two failure modes
-    fall back to a single process with a warning rather than hanging or erroring: the read
-    running in a module not guarded by ``if __name__ == "__main__":`` (each spawned worker
-    re-imports and re-runs it, so the workers die on start), and environments that forbid
-    creating a process pool at all."""
+    """Decode every data blob into per-block shards (each worker spills one shard per block as
+    it is decoded). Returns ``(shard_paths, pool_ok)`` -- the flat list of shard paths and
+    whether the decode pool ran (so the collect phase can mirror it instead of re-attempting a
+    pool that could not start)."""
     n = len(blobs)
     per = (n + workers - 1) // workers
     tasks = [
@@ -79,23 +103,10 @@ def _decode_all(
         bbox_bounds,
         requested_tag_keys,
     )
-    if workers == 1:
-        return _decode_serial(tasks, init_args)
-    try:
-        with ProcessPoolExecutor(
-            max_workers=workers, initializer=_init_worker, initargs=init_args
-        ) as pool:
-            return [path for paths in pool.map(_decode_batch, tasks) for path in paths]
-    except (BrokenProcessPool, OSError):
-        warnings.warn(
-            "Parallel decoding could not start and fell back to a single process. This "
-            'happens when the read is not inside an `if __name__ == "__main__":` block (the '
-            "worker processes cannot re-import the entry point), or in environments that "
-            "forbid process pools. Guard the entry point, or pass workers=1 to silence this.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return _decode_serial(tasks, init_args)
+    results, pool_ok = _run_pool(
+        _decode_batch, tasks, workers, _init_worker, init_args, _DECODE_FALLBACK_WARNING
+    )
+    return [path for paths in results for path in paths], pool_ok
 
 
 def _decode_and_run(
@@ -107,8 +118,12 @@ def _decode_and_run(
     bbox_bounds=None,
     requested_tag_keys=None,
 ):
-    """Index + parallel-decode ``filepath`` into a temp shard dir, call ``run(shard_paths)``
-    and clean up. The shared front half of every public read."""
+    """Index + parallel-decode ``filepath`` into a temp shard dir, call
+    ``run(shard_paths, collect_workers)`` and clean up. The shared front half of every public
+    read. ``collect_workers`` is the worker count the collect phase should use: the resolved
+    decode worker count when the decode pool ran, otherwise 1 -- so after a decode fallback
+    (unguarded entry point or a pool-forbidden environment) the collect phase stays serial
+    instead of re-attempting a pool that cannot start (and warning a second time)."""
     data_blobs = [
         (offset, size)
         for (blob_type, offset, size) in _index_blobs(filepath)
@@ -122,7 +137,7 @@ def _decode_and_run(
         workers = _cap_workers(workers)
     shard_dir = tempfile.mkdtemp(prefix="pyrosm_ooc_")
     try:
-        shard_paths = _decode_all(
+        shard_paths, pool_ok = _decode_all(
             filepath,
             data_blobs,
             workers,
@@ -132,6 +147,7 @@ def _decode_and_run(
             bbox_bounds,
             requested_tag_keys,
         )
-        return run(shard_paths)
+        collect_workers = workers if pool_ok else 1
+        return run(shard_paths, collect_workers)
     finally:
         shutil.rmtree(shard_dir, ignore_errors=True)

@@ -291,6 +291,97 @@ def test_engine_parallel_decode_falls_back_to_serial(
     _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
 
 
+def _make_way_partition(ids):
+    # A standalone-way column dict (as _collect_kept_ways returns) for `ids`, one node ref each.
+    nodes = np.empty(len(ids), dtype=object)
+    for i, wid in enumerate(ids):
+        nodes[i] = np.array([wid * 10], np.int64)
+    return {
+        "id": np.array(ids, np.int64),
+        "nodes": nodes,
+        "tags": np.array([{} for _ in ids], dtype=object),
+        "version": np.array([1] * len(ids), np.int64),
+        "timestamp": np.array([1] * len(ids), np.int64),
+        "visible": np.array([True] * len(ids)),
+    }
+
+
+def test_engine_concat_way_columns_preserves_order_and_skips_none():
+    # The parallel way read concatenates contiguous per-worker partitions; the combine must
+    # keep them in worker order (= serial shard order) and skip empty (None) partitions.
+    from pyrosm.engine.collect import _concat_way_columns
+
+    p1 = _make_way_partition([1, 2])
+    p2 = _make_way_partition([3, 4])
+    out = _concat_way_columns([p1, None, p2])
+    assert list(out["id"]) == [1, 2, 3, 4]
+    assert [n.tolist() for n in out["nodes"]] == [[10], [20], [30], [40]]
+    assert _concat_way_columns([None, None]) is None
+    assert _concat_way_columns([p1]) is p1  # single partition returned as-is
+
+
+def test_engine_scatter_node_coords_combines_partitions():
+    # The pooled node gather returns per-partition (pos, lon, lat) into `needed`; the scatter
+    # must place each hit at its needed position and drop ids no partition held.
+    from pyrosm.engine.collect import _scatter_node_coords
+
+    needed = np.array([10, 20, 30, 40], np.int64)
+    part_a = (np.array([0, 2]), np.array([1.0, 3.0]), np.array([1.5, 3.5]))
+    part_b = (np.array([1]), np.array([2.0]), np.array([2.5]))
+    nc = _scatter_node_coords([part_a, part_b], needed)
+    idx, lon, lat = nc.gather(needed)
+    # id 40 (position 3) was in no partition -> absent.
+    assert (idx >= 0).tolist() == [True, True, True, False]
+    assert lon[:3].tolist() == [1.0, 2.0, 3.0]
+    assert lat[:3].tolist() == [1.5, 2.5, 3.5]
+
+
+@pytest.mark.parametrize("read", ["buildings", "pois", "network"])
+def test_engine_parallel_collect_matches_serial(read, helsinki_pbf, monkeypatch):
+    # The parallel collect path (contiguous way-shard ranges concatenated in order + the pooled
+    # node-coordinate gather) must yield exactly the serial result -- same rows in the same
+    # order -- and match the in-memory reader. HAS_PYARROW=False bypasses the result cache so
+    # both reads actually run; the fake executor runs the pools in-process.
+    from pyrosm.utils import _compat
+
+    monkeypatch.setattr(_compat, "HAS_PYARROW", False)
+    monkeypatch.setattr(pool.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor())
+
+    fn = {"buildings": get_buildings, "pois": get_pois, "network": get_network}[read]
+    ref = {
+        "buildings": lambda: OSM(helsinki_pbf).get_buildings(),
+        "pois": lambda: OSM(helsinki_pbf).get_pois(),
+        "network": lambda: OSM(helsinki_pbf).get_network(),
+    }[read]()
+
+    parallel = fn(helsinki_pbf, workers=3)
+    serial = fn(helsinki_pbf, workers=1)
+    # Identical rows in identical order (the ordering contract), not just the same set.
+    assert list(parallel["id"]) == list(serial["id"])
+    assert parallel.geometry.geom_equals_exact(serial.geometry, tolerance=0).all()
+    _assert_full_parity(parallel, ref)
+
+
+def test_engine_collect_stays_serial_after_decode_fallback(
+    helsinki_pbf, monkeypatch, fresh_cache
+):
+    # When the decode pool cannot start, the collect phase must run serial too (not re-attempt
+    # a pool that cannot start) and emit no second fallback warning -- exactly one warning, the
+    # decode's, and the result still matches the in-memory reader. fresh_cache forces the read
+    # to decode rather than serve a cached result.
+    import warnings as _warnings
+
+    monkeypatch.setattr(pool.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor(raise_init=OSError))
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        mine = get_buildings(helsinki_pbf, workers=3)
+    fallbacks = [w for w in caught if "single process" in str(w.message)]
+    assert len(fallbacks) == 1
+    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
+
+
 def test_engine_unguarded_module_read_does_not_hang(test_pbf, tmp_path):
     # A read at module level (no `if __name__ == "__main__":` guard) must not hang: the
     # spawned workers cannot re-import the entry point, so the decode falls back to a single
@@ -432,7 +523,7 @@ def test_engine_matching_ways_early_returns():
 
 def test_engine_collect_empty_and_edge_shards(tmp_path):
     from pyrosm.engine.collect import (
-        _collect_matching_ways,
+        _read_way_columns,
         _collect_kept_ways,
         _collect_node_features,
         _node_lookup,
@@ -450,7 +541,7 @@ def test_engine_collect_empty_and_edge_shards(tmp_path):
 
     empty = str(tmp_path / "empty.npz")
     _write_shard(empty)
-    assert _collect_matching_ways([empty]) == []
+    assert _read_way_columns([empty]) is None
     assert _collect_kept_ways([empty], np.empty(0, np.int64), keep_all) is None
     assert _collect_node_features([empty], [], True, keep_all) is None
     assert _node_lookup([empty], np.array([1, 2], np.int64)) is not None
@@ -519,7 +610,7 @@ def test_engine_stream_parquet_chunk_table_branches(
     data_blobs = [(o, s) for (t, o, s) in _index_blobs(helsinki_pbf) if t == "OSMData"]
     shard_dir = tempfile.mkdtemp()
     try:
-        shards = _decode_all(
+        shards, _ = _decode_all(
             helsinki_pbf, data_blobs, 1, shard_dir, [b"building"], False
         )
         node_features, kept, relations, relation_ways, nc = _collect_layer(
@@ -545,16 +636,16 @@ def test_engine_stream_parquet_chunk_table_branches(
         # ways only (no relations): relation branch skipped.
         assert write((None, kept, None, None, nc)) is not None
         # a way referencing an absent node assembles empty -> no parts -> None.
-        absent = [
-            {
-                "id": -1,
-                "version": 1,
-                "timestamp": 1,
-                "visible": True,
-                "nodes": [10**18],
-                "tags": {"building": "yes"},
-            }
-        ]
+        absent_nodes = np.empty(1, dtype=object)
+        absent_nodes[0] = np.array([10**18], np.int64)
+        absent = {
+            "id": np.array([-1], np.int64),
+            "nodes": absent_nodes,
+            "tags": np.array([{"building": "yes"}], dtype=object),
+            "version": np.array([1], np.int64),
+            "timestamp": np.array([1], np.int64),
+            "visible": np.array([True]),
+        }
         assert write((None, absent, None, None, nc)) is None
         # a relation whose member ways are all absent assembles empty -> chunk skipped.
         empty_ways = {"id": np.empty(0, np.int64), "nodes": np.empty(0, dtype=object)}

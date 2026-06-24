@@ -4,7 +4,6 @@ tag and geometry pipeline, so the output matches the in-memory reader column-for
 
 import numpy as np
 
-from pyrosm.data_filter import element_should_be_kept
 from pyrosm.engine.bounding_box import _in_box_nodes
 from pyrosm.engine.collect import (
     _ways_arrays,
@@ -70,8 +69,10 @@ def _assemble_layer(
     bounding_box=None,
     complete_relations=False,
     keep_other_tags=True,
+    workers=1,
 ):
-    """Assemble all matching nodes, ways and relations into one in-memory GeoDataFrame."""
+    """Assemble all matching nodes, ways and relations into one in-memory GeoDataFrame.
+    ``workers > 1`` runs the collect phase across a process pool."""
     collected = _collect_layer(
         shard_paths,
         tags_as_columns,
@@ -81,6 +82,7 @@ def _assemble_layer(
         keep_relations,
         bounding_box,
         complete_relations,
+        workers=workers,
     )
     if collected is None:
         return None
@@ -107,6 +109,7 @@ def _assemble_network(
     segments,
     bounding_box,
     filepath=None,
+    workers=1,
 ):
     """Assemble the matching highway ways as a network (LineString edges + a ``length``
     column) through pyrosm's ``parse_network`` path. Returns ``(edges, nodes)``; ``nodes``
@@ -114,25 +117,29 @@ def _assemble_network(
     (``get_network(nodes=True)``), which needs the node tags + metadata, so the coordinate
     store is gathered with a second pass over ``filepath`` rather than the lean shard lookup.
     A ``None`` ``data_filter`` (network types ``all`` / ``driving_psv``) keeps every highway
-    way."""
+    way. ``workers > 1`` runs the way read and (when ``segments`` is False) the node gather
+    across a process pool."""
     from pyrosm.frames import prepare_geodataframe
+    from pyrosm.engine.collect import _keep_fn
 
-    osm_keys, data_filter, filter_type = filter_spec
-
-    def keep(tag):
-        return data_filter is None or element_should_be_kept(
-            tag, osm_keys, data_filter, filter_type
-        )
+    keep = _keep_fn(filter_spec)
 
     in_box = _in_box_nodes(shard_paths) if bounding_box is not None else None
-    kept = _collect_kept_ways(shard_paths, np.empty(0, np.int64), keep, in_box)
+    kept = _collect_kept_ways(
+        shard_paths,
+        np.empty(0, np.int64),
+        keep,
+        in_box,
+        workers=workers,
+        filter_spec=filter_spec,
+    )
     if kept is None:
         return None, None
     needed = _needed_node_ids(kept, None)
     if segments:
         node_coordinates = _gather_node_records(filepath, needed, keep_metadata)
     else:
-        node_coordinates = _node_lookup(shard_paths, needed)
+        node_coordinates = _node_lookup(shard_paths, needed, workers)
     ways = _ways_arrays(kept, tags_as_columns, keep_metadata)
     edges, node_gdf = prepare_geodataframe(
         None,

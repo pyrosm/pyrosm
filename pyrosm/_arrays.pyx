@@ -105,6 +105,14 @@ cdef convert_to_arrays_and_drop_empty(data):
 
     return arrays
 
+cpdef columns_to_arrays(data):
+    """Python entry to convert a ``{column: value-list}`` dict into the harmonized numpy
+    arrays (dropping all-None columns, applying the per-key dtypes) used to build a
+    GeoDataFrame -- the same conversion ``way_records_to_arrays`` runs, exposed so an
+    alternative reader can feed pre-split columns directly instead of rebuilding per-element
+    records first."""
+    return convert_to_arrays_and_drop_empty(data)
+
 cpdef concatenate_dicts_of_arrays(dict_list_of_arrays):
     cdef str k
 
