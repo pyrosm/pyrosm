@@ -26,6 +26,7 @@ def _assemble_chunk(
     nodes=None,
     bounding_box=None,
     complete_relations=False,
+    keep_other_tags=True,
 ):
     """Build one GeoDataFrame from node, way and/or relation elements using pyrosm's own
     tag + geometry pipeline (full columns, missing-node handling, polygon/linestring
@@ -51,6 +52,11 @@ def _assemble_chunk(
     )
     if gdf is not None and "nodes" in gdf.columns:
         gdf = gdf.drop(columns=["nodes"])
+    # keep_other_tags=False (minimal-tags mode): drop the JSON 'tags' column of leftover tags
+    # so the result holds only the requested tags_as_columns. Usually a no-op -- the decode
+    # resolved only the requested keys, so no leftover column was built.
+    if not keep_other_tags and gdf is not None and "tags" in gdf.columns:
+        gdf = gdf.drop(columns=["tags"])
     return gdf
 
 
@@ -63,6 +69,7 @@ def _assemble_layer(
     keep_relations=True,
     bounding_box=None,
     complete_relations=False,
+    keep_other_tags=True,
 ):
     """Assemble all matching nodes, ways and relations into one in-memory GeoDataFrame."""
     collected = _collect_layer(
@@ -88,6 +95,7 @@ def _assemble_layer(
         nodes=node_features,
         bounding_box=bounding_box,
         complete_relations=complete_relations,
+        keep_other_tags=keep_other_tags,
     )
 
 

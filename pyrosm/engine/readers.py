@@ -14,6 +14,12 @@ from pyrosm.engine.bounding_box import _bbox_bounds, _normalize_bounding_box
 from pyrosm.engine.assemble import _assemble_layer, _assemble_network
 from pyrosm.engine import cache, geoparquet
 
+# Tags the geometry assembly reads straight from an element's tag dict (not from the exploded
+# columns): ``relations.pyx`` consults ``type`` (multipolygon/boundary) and ``area`` to decide
+# how to build a relation's geometry. They are always resolved under ``keep_other_tags=False`` so
+# relation geometries match the full read, then dropped with the other leftovers.
+_GEOMETRY_TAG_KEYS = ("type", "area")
+
 
 def _get_layer(
     filepath,
@@ -29,6 +35,7 @@ def _get_layer(
     osm_keys=None,
     bounding_box=None,
     complete_relations=False,
+    keep_other_tags=True,
 ):
     """Read a layer: decode the file in parallel selecting the elements that carry any of
     the filter keys (``osm_keys`` if given, else ``custom_filter``'s keys; and, when
@@ -54,6 +61,13 @@ def _get_layer(
         osm_keys = derived_keys
     filter_spec = (osm_keys, data_filter, filter_type)
     osm_key_bytes = [k.encode("utf-8") for k in osm_keys]
+    # keep_other_tags=False: the workers resolve only the requested tag keys -- the output
+    # columns (tags_as_columns) plus the filter keys (so the value filter still has what it
+    # checks). None lets them resolve every tag (the default).
+    requested_tag_keys = None
+    if not keep_other_tags:
+        wanted = list(tags_as_columns) + list(osm_keys) + list(_GEOMETRY_TAG_KEYS)
+        requested_tag_keys = [k.encode("utf-8") for k in dict.fromkeys(wanted)]
     bounding_box = _normalize_bounding_box(bounding_box)
     bounds = _bbox_bounds(bounding_box)
 
@@ -72,6 +86,7 @@ def _get_layer(
             "keep_relations": keep_relations,
             "bounding_box": bounding_box,
             "complete_relations": complete_relations,
+            "keep_other_tags": keep_other_tags,
         }
         cache_path = cache.result_path(filepath, key_params)
         return cache.materialize(
@@ -92,8 +107,10 @@ def _get_layer(
                     keep_relations,
                     bounding_box,
                     complete_relations,
+                    keep_other_tags=keep_other_tags,
                 ),
                 bbox_bounds=bounds,
+                requested_tag_keys=requested_tag_keys,
             )
             is not None,
         )
@@ -109,6 +126,7 @@ def _get_layer(
                 keep_relations,
                 bounding_box,
                 complete_relations,
+                keep_other_tags=keep_other_tags,
             )
         return geoparquet._stream_layer_to_parquet(
             shard_paths,
@@ -121,10 +139,17 @@ def _get_layer(
             keep_relations,
             bounding_box,
             complete_relations,
+            keep_other_tags=keep_other_tags,
         )
 
     return _decode_and_run(
-        filepath, osm_key_bytes, include_nodes, workers, run, bbox_bounds=bounds
+        filepath,
+        osm_key_bytes,
+        include_nodes,
+        workers,
+        run,
+        bbox_bounds=bounds,
+        requested_tag_keys=requested_tag_keys,
     )
 
 
@@ -361,13 +386,16 @@ def get_data_by_custom_criteria(
     workers=None,
     output=None,
     keep_metadata=True,
+    keep_other_tags=True,
 ):
     """Read OSM elements matching an arbitrary ``custom_filter`` from ``filepath`` with the
     out-of-core engine, with the same columns as
     ``OSM(...).get_data_by_custom_criteria(...)``. ``osm_keys_to_keep`` (if given) is the
     set of keys filtered on; ``keep_nodes`` / ``keep_ways`` / ``keep_relations`` select
-    which element kinds are returned; ``extra_attributes`` adds further tag columns. See
-    :func:`_get_layer` for the other keyword arguments."""
+    which element kinds are returned; ``extra_attributes`` adds further tag columns.
+    ``keep_other_tags=False`` resolves only the requested tags (``tags_as_columns`` plus the
+    filter keys) and drops the JSON ``tags`` column of leftovers, so the read does minimal
+    tag work. See :func:`_get_layer` for the other keyword arguments."""
     from pyrosm.config import Conf
     from pyrosm.utils import (
         validate_custom_filter,
@@ -409,6 +437,7 @@ def get_data_by_custom_criteria(
         osm_keys=osm_keys_to_keep,
         bounding_box=bounding_box,
         complete_relations=complete_relations,
+        keep_other_tags=keep_other_tags,
     )
 
 

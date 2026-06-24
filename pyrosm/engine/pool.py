@@ -46,7 +46,14 @@ def _decode_serial(tasks, init_args):
 
 
 def _decode_all(
-    filepath, blobs, workers, shard_dir, osm_keys, include_nodes, bbox_bounds=None
+    filepath,
+    blobs,
+    workers,
+    shard_dir,
+    osm_keys,
+    include_nodes,
+    bbox_bounds=None,
+    requested_tag_keys=None,
 ):
     """Decode every data blob into per-block shards (each worker spills one shard per block
     as it is decoded); return the flat list of shard paths.
@@ -64,7 +71,14 @@ def _decode_all(
         for i in range(workers)
         if blobs[i * per : (i + 1) * per]
     ]
-    init_args = (filepath, shard_dir, osm_keys, include_nodes, bbox_bounds)
+    init_args = (
+        filepath,
+        shard_dir,
+        osm_keys,
+        include_nodes,
+        bbox_bounds,
+        requested_tag_keys,
+    )
     if workers == 1:
         return _decode_serial(tasks, init_args)
     try:
@@ -85,7 +99,13 @@ def _decode_all(
 
 
 def _decode_and_run(
-    filepath, osm_key_bytes, include_nodes, workers, run, bbox_bounds=None
+    filepath,
+    osm_key_bytes,
+    include_nodes,
+    workers,
+    run,
+    bbox_bounds=None,
+    requested_tag_keys=None,
 ):
     """Index + parallel-decode ``filepath`` into a temp shard dir, call ``run(shard_paths)``
     and clean up. The shared front half of every public read."""
@@ -110,6 +130,7 @@ def _decode_and_run(
             osm_key_bytes,
             include_nodes,
             bbox_bounds,
+            requested_tag_keys,
         )
         return run(shard_paths)
     finally:

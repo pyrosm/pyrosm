@@ -1003,6 +1003,7 @@ class OSM:
         keep_ways=True,
         keep_relations=True,
         extra_attributes=None,
+        keep_other_tags=True,
         timestamp=None,
     ):
         """
@@ -1042,6 +1043,14 @@ class OSM:
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
 
+        keep_other_tags : bool
+            By default (``True``) every tag is parsed: ``tags_as_columns`` become their own
+            columns and the rest are kept in a JSON ``tags`` column. ``False`` resolves only
+            the requested tags (``tags_as_columns`` plus the filter keys) and drops the JSON
+            ``tags`` column, so the read does minimal tag work (a stray tag literally keyed
+            ``id`` is not surfaced as ``id_tag`` in this mode). Only supported by the
+            out-of-core engine (``OSM(..., engine='out_of_core')``).
+
         timestamp: str | datetime | int
             If provided, the data from given moment of time will be returned. The time should be provided in UTC.
             Note: This functionality only works with OSH.PBF files that can be downloaded manually e.g. from Geofabrik
@@ -1071,6 +1080,16 @@ class OSM:
                 keep_ways=keep_ways,
                 keep_relations=keep_relations,
                 extra_attributes=extra_attributes,
+                keep_other_tags=keep_other_tags,
+            )
+
+        # keep_other_tags=False only skips tag work in the out-of-core decode; the in-memory
+        # reader resolves every tag once and caches it for reuse across layers, so it cannot
+        # honour the minimal-tags mode.
+        if keep_other_tags is False:
+            raise ValueError(
+                "keep_other_tags=False is only supported by the out-of-core engine; "
+                "construct OSM(..., engine='out_of_core')."
             )
 
         # custom_filter=None means "return everything": keep every tagged element
