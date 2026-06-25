@@ -484,7 +484,7 @@ def _restrict_relations_to_box(relations, present_ids):
     return kept, member_ids
 
 
-def _ways_arrays(cols, tags_as_columns, keep_metadata):
+def _ways_arrays(cols, tags_as_columns, keep_metadata, keep_other_tags=True):
     """Convert the standalone way columns (from :func:`_collect_kept_ways`) into the
     ``way_elements`` dict (all occurring tag columns + the JSON ``tags`` column + metadata)
     pyrosm's assembly expects, matching the in-memory reader column for column.
@@ -497,7 +497,12 @@ def _ways_arrays(cols, tags_as_columns, keep_metadata):
     columns plus that JSON column run through pyrosm's own ``columns_to_arrays`` (per-key
     dtypes, all-None drop), so they are byte-identical to the in-memory reader; ``id`` and the
     kept metadata go through the same conversion, and ``nodes`` is attached directly as the
-    per-way node-ref arrays (it only feeds geometry and is dropped before output)."""
+    per-way node-ref arrays (it only feeds geometry and is dropped before output).
+
+    With ``keep_other_tags=False`` the leftover JSON ``tags`` column is dropped by the caller,
+    so it is not built at all here -- only the requested tag columns are filled. This skips a
+    per-way ``rapidjson.dumps`` (the metadata/leftover serialisation) that would otherwise be
+    discarded, which is a noticeable saving on country-scale minimal-tags reads."""
     ids, nodes, tags = cols["id"], cols["nodes"], cols["tags"]
     version, timestamp, visible = cols["version"], cols["timestamp"], cols["visible"]
     n = len(ids)
@@ -512,25 +517,27 @@ def _ways_arrays(cols, tags_as_columns, keep_metadata):
     timestamp_col = "timestamp" in column_set
     visible_col = "visible" in column_set
 
-    # One pass over the tag dicts: fill the requested tag columns (None where absent) and the
-    # leftover JSON, replicating explode_way_tags + way_records_to_arrays field ordering.
+    # One pass over the tag dicts: fill the requested tag columns (None where absent) and --
+    # only when the leftover JSON is kept -- the ``tags`` column, replicating explode_way_tags
+    # + way_records_to_arrays field ordering. ``other is None`` is the skip-leftovers sentinel.
     col_lists = {k: [None] * n for k in tag_cols}
     leftover = [None] * n
     has_leftover = False
     for i in range(n):
         tag = tags[i]
-        other = {}
-        if not version_col:
-            other["version"] = int(version[i])
-        if not timestamp_col:
-            other["timestamp"] = int(timestamp[i])
-        if not visible_col:
-            other["visible"] = bool(visible[i])
+        other = {} if keep_other_tags else None
+        if other is not None:
+            if not version_col:
+                other["version"] = int(version[i])
+            if not timestamp_col:
+                other["timestamp"] = int(timestamp[i])
+            if not visible_col:
+                other["visible"] = bool(visible[i])
         for k, v in tag.items():
             key = "id_tag" if k == "id" else k
             if key in tag_col_set:
                 col_lists[key][i] = v
-            else:
+            elif other is not None:
                 other[key] = v
         if other:
             leftover[i] = dumps(other)

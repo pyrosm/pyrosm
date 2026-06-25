@@ -34,7 +34,7 @@ def _assemble_chunk(
     from pyrosm.frames import prepare_geodataframe
 
     ways = (
-        _ways_arrays(way_records, tags_as_columns, keep_metadata)
+        _ways_arrays(way_records, tags_as_columns, keep_metadata, keep_other_tags)
         if way_records
         else None
     )
@@ -52,8 +52,8 @@ def _assemble_chunk(
     if gdf is not None and "nodes" in gdf.columns:
         gdf = gdf.drop(columns=["nodes"])
     # keep_other_tags=False (minimal-tags mode): drop the JSON 'tags' column of leftover tags
-    # so the result holds only the requested tags_as_columns. Usually a no-op -- the decode
-    # resolved only the requested keys, so no leftover column was built.
+    # so the result holds only the requested tags_as_columns. _ways_arrays already skips
+    # building it for ways; this also covers a 'tags' column that a relation chunk produced.
     if not keep_other_tags and gdf is not None and "tags" in gdf.columns:
         gdf = gdf.drop(columns=["tags"])
     return gdf
