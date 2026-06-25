@@ -83,3 +83,17 @@ def test_search_source_resolves_known_names(name, fragment):
 def test_search_source_unknown_name_raises():
     with pytest.raises((ValueError, KeyError)):
         search_source("not_a_real_place_xyz")
+
+
+@pytest.mark.parametrize("continent", CONTINENTS)
+def test_continent_whole_extract_resolves(continent):
+    # The continent name itself resolves to the whole-continent Geofabrik extract
+    # (e.g. 'south_america' -> south-america-latest.osm.pbf), so get_data(continent)
+    # downloads the entire continent rather than raising. The name is also reachable
+    # through get_data's resolution (present in the source index).
+    from pyrosm.data import sources as _sources
+
+    rec = search_source(continent)
+    assert isinstance(rec, dict)
+    assert rec["url"].endswith(continent.replace("_", "-") + "-latest.osm.pbf")
+    assert continent in _sources._all_sources
