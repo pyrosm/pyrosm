@@ -1,9 +1,12 @@
 """Worker-side decode and spill.
 
-A worker decodes a contiguous run of blobs and spills each block to its own shard as it is
-decoded (so only one block's arrays are held in memory at a time). Each shard holds the node
-coordinates, the matching layer features (ways, point nodes and relations -- selected by
-filter-key presence) and *every* way (id + refs, for relation-member lookup).
+A worker decodes a contiguous run of blobs and accumulates the decoded blocks into a shard,
+spilling it once it reaches ``_SHARD_TARGET_BYTES`` (so a country file produces a few hundred
+shards rather than one per ~8k-element block -- far less per-file open/read overhead when
+collect re-reads them -- while peak memory stays bounded by one shard's worth of blocks).
+Each shard holds the node coordinates, the matching layer features (ways, point nodes and
+relations -- selected by filter-key presence) and *every* way (id + refs, for relation-member
+lookup).
 """
 
 from pathlib import Path
@@ -13,6 +16,16 @@ import numpy as np
 from pyrosm.primitive_block_decoder import decode_primitive_block
 from pyrosm.engine.blobs import _read_block
 from pyrosm.engine.bounding_box import _in_box_mask, _filter_features_to_box
+
+# Accumulate decoded blocks into a shard until it reaches roughly this many bytes, then spill.
+# Coarser shards amortise the per-file open/read overhead collect pays across thousands of
+# tiny per-block files; ~8 MB keeps the spill near the point past which that overhead stops
+# shrinking, while bounding a worker's in-flight memory to about one shard.
+_SHARD_TARGET_BYTES = 8_000_000
+
+# The CSR offset arrays in a shard dict: when several blocks' shard dicts are merged into one,
+# these are rebuilt from the concatenated per-row lengths (the flat arrays just concatenate).
+_OFFSET_KEYS = ("refs_off", "all_refs_off", "rel_memoff")
 
 # Per-worker globals, set by the pool initializer (or directly for the in-process path).
 # ``_OSM_KEYS`` holds the layer's filter keys (utf-8 bytes) used to pre-select elements;
@@ -401,17 +414,50 @@ def _decode_one_block(string_table, header, nodes, ways, relations):
     }
 
 
+def _merge_shards(blocks):
+    """Merge a batch of per-block shard dicts into the single shard dict a shard spanning those
+    blocks would hold: flat arrays concatenate; the CSR offset arrays are rebuilt from the
+    concatenated per-row lengths so the combined offsets stay correct. A single-block batch is
+    returned unchanged."""
+    if len(blocks) == 1:
+        return blocks[0]
+    merged = {}
+    for key in blocks[0]:
+        if key in _OFFSET_KEYS:
+            lengths = np.concatenate([np.diff(b[key]) for b in blocks])
+            merged[key] = _offsets_from_lengths(lengths.tolist())
+        else:
+            merged[key] = np.concatenate([b[key] for b in blocks])
+    return merged
+
+
 def _decode_batch(task):
-    """Worker: decode a contiguous run of blobs, spilling each block to its own shard as it
-    is decoded (so only one block's arrays are held in memory at a time, rather than the
-    whole batch), and return the list of shard paths."""
+    """Worker: decode a contiguous run of blobs, accumulating decoded blocks into a shard and
+    spilling it once it reaches ``_SHARD_TARGET_BYTES`` (so peak memory stays bounded by about
+    one shard's worth of blocks rather than the whole batch, while the file count -- and the
+    per-file overhead collect pays re-reading them -- drops by one to two orders of magnitude).
+    Returns the list of shard paths."""
     worker_id, blobs = task
     paths = []
+    pending = []
+    pending_bytes = 0
+
+    def flush():
+        nonlocal pending, pending_bytes
+        if not pending:
+            return
+        path = Path(_SHARD_DIR) / ("shard_%d_%d.npz" % (worker_id, len(paths)))
+        np.savez(path, **_merge_shards(pending))
+        paths.append(path)
+        pending, pending_bytes = [], 0
+
     with open(_FILEPATH, "rb") as f:
-        for seq, (offset, size) in enumerate(blobs):
+        for offset, size in blobs:
             data = _read_block(f, offset, size)
             arrays = _decode_one_block(*decode_primitive_block(data))
-            path = Path(_SHARD_DIR) / ("shard_%d_%d.npz" % (worker_id, seq))
-            np.savez(path, **arrays)
-            paths.append(path)
+            pending.append(arrays)
+            pending_bytes += sum(v.nbytes for v in arrays.values())
+            if pending_bytes >= _SHARD_TARGET_BYTES:
+                flush()
+    flush()
     return paths

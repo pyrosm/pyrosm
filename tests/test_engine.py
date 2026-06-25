@@ -401,6 +401,18 @@ def test_engine_run_pool_silent_fallback_without_warning(monkeypatch):
     assert [w for w in caught if issubclass(w.category, RuntimeWarning)] == []
 
 
+@pytest.mark.parametrize("target", [1, 8_000_000])
+def test_engine_decode_shard_target_parity(helsinki_pbf, monkeypatch, fresh_cache, target):
+    # The decode spill accumulates blocks into a shard until it reaches the byte target. A tiny
+    # target spills one shard per block (and exercises the empty final-flush guard); the normal
+    # target batches many blocks per shard. Either way the read matches the in-memory reader.
+    # fresh_cache forces a real decode rather than a cached result.
+    from pyrosm.engine import decode
+
+    monkeypatch.setattr(decode, "_SHARD_TARGET_BYTES", target)
+    _assert_full_parity(get_buildings(helsinki_pbf), OSM(helsinki_pbf).get_buildings())
+
+
 def test_engine_unguarded_module_read_does_not_hang(test_pbf, tmp_path):
     # A read at module level (no `if __name__ == "__main__":` guard) must not hang: the
     # spawned workers cannot re-import the entry point, so the decode falls back to a single
