@@ -382,6 +382,25 @@ def test_engine_collect_stays_serial_after_decode_fallback(
     _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
 
 
+def test_engine_run_pool_silent_fallback_without_warning(monkeypatch):
+    # _run_pool with no fallback_warning (the collect phase's call) must fall back to a single
+    # process *silently* when the pool cannot start -- the decode already warned, so a later
+    # phase does not warn a second time. Still runs every task and reports pool_ok=False.
+    import warnings as _warnings
+
+    monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor(raise_init=OSError))
+    inits = []
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        results, pool_ok = pool._run_pool(
+            lambda t: t * 2, [1, 2, 3], 3, lambda: inits.append(1), ()
+        )
+    assert results == [2, 4, 6]
+    assert pool_ok is False
+    assert inits == [1]  # initializer ran once for the serial fallback
+    assert [w for w in caught if issubclass(w.category, RuntimeWarning)] == []
+
+
 def test_engine_unguarded_module_read_does_not_hang(test_pbf, tmp_path):
     # A read at module level (no `if __name__ == "__main__":` guard) must not hang: the
     # spawned workers cannot re-import the entry point, so the decode falls back to a single
