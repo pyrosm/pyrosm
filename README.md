@@ -41,7 +41,7 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
 ## Current features
 
 - download PBF data easily from any location in the world
-- find and download the right extract for a bounding box or a place name
+- find and download the right extract for a bounding box or a place name (NEW in v0.9.0)
 - read street networks (separately for driving, cycling, walking and all-combined)
 - read buildings from PBF
 - read Points of Interest (POI) from PBF
@@ -49,10 +49,10 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
 - read "natural" from PBF
 - read boundaries from PBF (such as administrative borders)
 - read any other data from PBF by using a custom user-defined filter
+- read large PBF extracts (country level, even some continents) with bounded memory using the opt-in out-of-core ("streaming") engine (`engine="out_of_core"`), with parallel decoding and automatic result caching (NEW in v0.10.0)
 - filter data based on bounding box
 - control which OSM tags are parsed into columns
-- crop a PBF to a smaller area and write modified OSM data back to PBF
-- read even **whole-country and whole-continent** extracts with bounded memory using the opt-in out-of-core ("streaming") engine (`engine="out_of_core"`), with parallel decoding and automatic result caching
+- crop a PBF to a smaller area and write modified OSM data back to PBF (NEW in v0.9.0)
 - export networks as a directed graph to `igraph`, `networkx` and `pandarm`
  
 ## Install
@@ -132,24 +132,4 @@ The OSM data is downloaded from two sources:
 Data &copy; [Geofabrik GmbH](http://www.geofabrik.de/), [BBBike](https://download.bbbike.org/) and [OpenStreetMap Contributors](http://www.openstreetmap.org/) 
 
 All data from the [OpenStreetMap](https://www.openstreetmap.org) is licensed under the [OpenStreetMap License](https://www.openstreetmap.org/copyright). 
-
-## Reading large files
-
-Reading whole-country or whole-continent extracts no longer requires any external pre-filtering step. Select the opt-in
-out-of-core ("streaming") engine with `OSM(filepath, engine="out_of_core")` and pyrosm decodes the file in a single streaming
-pass with bounded memory and parallel decoding/collection, so even massive datasets read quickly without running out of
-memory — for example, reading the buildings (geometries + tags) of the whole of South America fits comfortably in ~24 GB of RAM.
-
-```python
-from pyrosm import OSM, get_data
-
-# Download the whole-continent extract and read it with the out-of-core engine
-fp = get_data("south_america")
-osm = OSM(fp, engine="out_of_core", workers="auto")
-buildings = osm.get_buildings()
-```
-
-If you only need a smaller area, you can also crop a PBF natively with `OSM(filepath, bounding_box=...).to_pbf(...)` — no
-external tools (such as Osmosis) are needed.
-
 
