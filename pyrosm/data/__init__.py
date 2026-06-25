@@ -165,6 +165,12 @@ def _find_sources(name):
     """
     found = []
     for source, available in sources.available.items():
+        # Continent-level whole-extract download: the source key itself names the
+        # extract (e.g. 'south_america' -> south-america-latest.osm.pbf), so a
+        # whole continent can be downloaded, not just its sub-regions. The 'cities'
+        # and 'subregions' groupings carry no continent file and are skipped.
+        if name == source and source not in ("cities", "subregions"):
+            found.append((source, sources.__dict__[source].continent))
         # Cities are kept as CamelCase, so need to make lower
         if source == "cities":
             if name in [src.lower() for src in available]:
