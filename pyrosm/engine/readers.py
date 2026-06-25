@@ -96,7 +96,7 @@ def _get_layer(
                 osm_key_bytes,
                 include_nodes,
                 workers,
-                lambda shard_paths: geoparquet._stream_layer_to_parquet(
+                lambda shard_paths, collect_workers: geoparquet._stream_layer_to_parquet(
                     shard_paths,
                     tmp_path,
                     geoparquet._OUTPUT_CHUNK_SIZE,
@@ -108,6 +108,7 @@ def _get_layer(
                     bounding_box,
                     complete_relations,
                     keep_other_tags=keep_other_tags,
+                    workers=collect_workers,
                 ),
                 bbox_bounds=bounds,
                 requested_tag_keys=requested_tag_keys,
@@ -115,7 +116,7 @@ def _get_layer(
             is not None,
         )
 
-    def run(shard_paths):
+    def run(shard_paths, collect_workers):
         if output is None:
             return _assemble_layer(
                 shard_paths,
@@ -127,6 +128,7 @@ def _get_layer(
                 bounding_box,
                 complete_relations,
                 keep_other_tags=keep_other_tags,
+                workers=collect_workers,
             )
         return geoparquet._stream_layer_to_parquet(
             shard_paths,
@@ -140,6 +142,7 @@ def _get_layer(
             bounding_box,
             complete_relations,
             keep_other_tags=keep_other_tags,
+            workers=collect_workers,
         )
 
     return _decode_and_run(
@@ -589,7 +592,7 @@ def get_network(
     if output is not None:
         _compat.require_pyarrow()
 
-    def assemble(shard_paths):
+    def assemble(shard_paths, collect_workers):
         edges, node_gdf = _assemble_network(
             shard_paths,
             tags_as_columns,
@@ -598,6 +601,7 @@ def get_network(
             nodes,
             bounding_box,
             filepath=filepath,
+            workers=collect_workers,
         )
         return (node_gdf, edges) if nodes else edges
 
