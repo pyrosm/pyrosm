@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use pyrosm, please cite it using the metadata below."
+title: "pyrosm: A Python tool to parse OSM data from Protobuf format into GeoDataFrame"
+abstract: "Pyrosm is a Python library for reading OpenStreetMap data from Protocolbuffer Binary Format (PBF) files into GeoPandas GeoDataFrames."
+type: software
+authors:
+  - family-names: Tenkanen
+    given-names: Henrikki
+    email: henrikki.tenkanen@aalto.fi
+    affiliation: "Aalto University"
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.3755057
+    description: "Concept DOI that always resolves to the latest version"
+doi: 10.5281/zenodo.3755057
+version: 0.10.0
+date-released: "2026-06-25"
+license: MIT
+repository-code: "https://github.com/pyrosm/pyrosm"
+url: "https://pyrosm.readthedocs.io/"
+keywords:
+  - OpenStreetMap
+  - OSM
+  - PBF
+  - GeoPandas
+  - GIS
+  - Python
