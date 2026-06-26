@@ -23,14 +23,8 @@ to parse the data from OSM with more specific filters.
  
 **Pyrosm** is easy to use and it provides a somewhat similar user interface as [OSMnx](https://github.com/gboeing/osmnx).
 The main difference between pyrosm and OSMnx is that OSMnx reads the data over internet using OverPass API, whereas pyrosm reads the data from local OSM data dumps
-that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). This makes it possible to read data fast — and, with the
-opt-in out-of-core ("streaming") engine added in **v0.10.0**, to read even whole-country and whole-continent extracts quickly without running out of
-memory (see [Reading large files](#reading-large-files)).
-
-The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) 
-which makes it fast to parse OpenStreetMap data from PBF files.
-Pyrosm decodes the PBF data with [Google's Protocol Buffers](https://protobuf.dev/) library (using its fast `upb` C backend). Protocol Buffers is a commonly used and efficient method to serialize and compress structured data 
-which is also used by OpenStreetMap contributors to distribute the OSM data in PBF format (Protocolbuffer Binary Format). 
+that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) which makes it fast to parse OpenStreetMap data from PBF files. With the opt-in out-of-core ("streaming") engine added in **v0.10.0**, it is possible to read whole-country (or even continent) extracts quickly without running out of
+memory. Pyrosm decodes the PBF data with [Google's Protocol Buffers](https://protobuf.dev/) library (using its fast `upb` C backend). Protocol Buffers is a commonly used and efficient method to serialize and compress structured data which is also used by OpenStreetMap contributors to distribute the OSM data in PBF format (Protocolbuffer Binary Format). 
 
 > **Backend change.** Since **v0.8.0**, the backend used to parse the protocol-buffer messages is [Google's Protobuf](https://protobuf.dev/) (its fast C `upb` backend) instead of the previously used [Pyrobuf](https://github.com/appnexus/pyrobuf). The switch was made for maintainability and installation reliability: Pyrobuf is no longer maintained and its source build fails with modern `setuptools`, which broke `pip install pyrosm`, whereas Google's Protobuf is actively maintained and ships prebuilt wheels and conda-forge packages for Python 3.10–3.14. The change does **not** slow down parsing — see the [backend benchmark](benchmarks/README.md). **v0.7.0 was the last release that used Pyrobuf.**
 
