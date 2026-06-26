@@ -114,6 +114,14 @@ You can run tests with `pytest` by executing:
   `$ pytest . -v` 
   
 
+## Citing pyrosm
+
+If you use pyrosm in your research or other work, please cite it. Pyrosm is archived on [Zenodo](https://doi.org/10.5281/zenodo.3755057), which provides a citable DOI (`10.5281/zenodo.3755057`, always resolving to the latest version). An example citation for the pyrosm version 0.10.0 is as follows:
+
+> Tenkanen, H. (2026). *pyrosm: A Python library for reading and writing OpenStreetMap PBF data with GeoDataFrames*. (v0.10.0) Zenodo. https://doi.org/10.5281/zenodo.3755057
+
+A BibTeX entry and version-specific DOIs are available in the [documentation](https://pyrosm.readthedocs.io/en/latest/citation.html) and on the [Zenodo record](https://doi.org/10.5281/zenodo.3755057).
+
 ## License and copyright
 
 Pyrosm is licensed under MIT (see [license](LICENSE)). 

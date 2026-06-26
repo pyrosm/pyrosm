@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use pyrosm, please cite it using the metadata below."
+title: "pyrosm: A Python library for reading and writing OpenStreetMap PBF data with GeoDataFrames"
+abstract: "Pyrosm is a Python library for reading OpenStreetMap data from Protocolbuffer Binary Format (PBF) files into GeoPandas GeoDataFrames. It is fast and memory-efficient and can extract street networks, buildings, points of interest, landuse, natural features, and administrative boundaries -- or any custom-filtered data -- from local PBF dumps. In addition, pyrosm can download extracts, crop them to a smaller area, write and modify PBF files, as well as export street networks to igraph, NetworkX, or Pandarm graphs."
+type: software
+authors:
+  - family-names: Tenkanen
+    given-names: Henrikki
+    email: henrikki.tenkanen@aalto.fi
+    affiliation: "GIST Lab, Department of Built Environment, Aalto University"
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.3755057
+    description: "Concept DOI that always resolves to the latest version"
+doi: 10.5281/zenodo.3755057
+version: 0.10.0
+date-released: "2026-06-26"
+license: MIT
+repository-code: "https://github.com/pyrosm/pyrosm"
+url: "https://pyrosm.readthedocs.io/"
+keywords:
+  - OpenStreetMap
+  - OSM
+  - PBF
+  - GeoPandas
+  - GIS
+  - Python

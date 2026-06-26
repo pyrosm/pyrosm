@@ -54,6 +54,17 @@ Pyrosm is licensed under MIT (see `license <https://github.com/HTenkanen/pyrosm/
 Data © `Geofabrik GmbH <http://www.geofabrik.de/>`__, `BBBike <https://download.bbbike.org>`__ and `OpenStreetMap Contributors <http://www.openstreetmap.org>`__.
 All data from the `OpenStreetMap <https://www.openstreetmap.org>`__ is licensed under the `OpenStreetMap License <https://www.openstreetmap.org/copyright>`__.
 
+Citation
+--------
+
+If you use pyrosm in your work, please cite it. Pyrosm is archived on
+`Zenodo <https://doi.org/10.5281/zenodo.3755057>`__ with a citable DOI:
+
+    Tenkanen, H. (2026). *pyrosm: A Python library for reading and writing OpenStreetMap PBF data
+    with GeoDataFrames*. (v0.10.0) Zenodo. https://doi.org/10.5281/zenodo.3755057
+
+See :doc:`How to cite pyrosm <citation>` for the full reference and a BibTeX entry.
+
 Getting started
 ---------------
 
@@ -76,6 +87,7 @@ Getting started
     :caption: Reference Guide
 
     Reference to All Attributes and Methods <reference>
+    How to cite <citation>
     Changelog <changelog>
 
 Indices and tables
