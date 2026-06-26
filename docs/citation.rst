@@ -16,8 +16,8 @@ permanent, citable DOI.
 Recommended citation
 --------------------
 
-   Tenkanen, H. (2026). *pyrosm: A Python tool to parse OSM data from Protobuf format into
-   GeoDataFrame* (version 0.10.0). Zenodo. https://doi.org/10.5281/zenodo.3755057
+   Tenkanen, H. (2026). *pyrosm: A Python library for reading and writing OpenStreetMap PBF data
+   with GeoDataFrames*. (v0.10.0) Zenodo. https://doi.org/10.5281/zenodo.3755057
 
 BibTeX
 ------
@@ -26,7 +26,7 @@ BibTeX
 
    @software{tenkanen_pyrosm,
      author    = {Tenkanen, Henrikki},
-     title     = {{pyrosm: A Python tool to parse OSM data from Protobuf format into GeoDataFrame}},
+     title     = {{pyrosm: A Python library for reading and writing OpenStreetMap PBF data with GeoDataFrames}},
      year      = {2026},
      version   = {0.10.0},
      publisher = {Zenodo},
