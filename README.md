@@ -28,9 +28,9 @@ memory. Pyrosm decodes the PBF data with [Google's Protocol Buffers](https://pro
 
 > **Backend change.** Since **v0.8.0**, the backend used to parse the protocol-buffer messages is [Google's Protobuf](https://protobuf.dev/) (its fast C `upb` backend) instead of the previously used [Pyrobuf](https://github.com/appnexus/pyrobuf). The switch was made for maintainability and installation reliability: Pyrobuf is no longer maintained and its source build fails with modern `setuptools`, which broke `pip install pyrosm`, whereas Google's Protobuf is actively maintained and ships prebuilt wheels and conda-forge packages for Python 3.10–3.14. The change does **not** slow down parsing — see the [backend benchmark](benchmarks/README.md). **v0.7.0 was the last release that used Pyrobuf.**
 
-> **Out-of-core ("streaming") engine (v0.10.0).** Pyrosm now ships an opt-in out-of-core reading engine, selected with `OSM(filepath, engine="out_of_core")`, that decodes large PBF files in a **single streaming pass with bounded memory** — the decode, the node-coordinate gather and the standalone-way read all run **in parallel** across a worker pool, and each layer's result is cached automatically. It reads whole-country and even **whole-continent** extracts (e.g. all of South America) quickly on modest machines without running out of memory, returning GeoDataFrames identical to the default in-memory reader (which is unchanged). See [Reading large files](#reading-large-files).
+> **Out-of-core ("streaming") engine (v0.10.0).** Pyrosm now ships an opt-in out-of-core reading engine, selected with `OSM(filepath, engine="out_of_core")`, that decodes large PBF files in a **single streaming pass with bounded memory** — the decode, the node-coordinate gather and the standalone-way read all run **in parallel** across a worker pool, and each layer's result is cached automatically. It reads whole-country and even **whole-continent** extracts (e.g. all of South America) quickly on modest machines without running out of memory, returning GeoDataFrames identical to the default in-memory reader (which is unchanged). 
 
-**Documentation** is available at [https://pyrosm.readthedocs.io](https://pyrosm.readthedocs.io/en/latest/).
+**Documentation** is available at [https://pyrosm.readthedocs.io](https://pyrosm.readthedocs.io/en/stable/).
 
 ## Current features
 
