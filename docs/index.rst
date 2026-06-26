@@ -17,6 +17,25 @@ This makes it possible to parse OSM data faster and make it more feasible to ext
 
 .. figure:: img/NY_roads_and_buildings.PNG
 
+Explore a live example below -- building footprints for Lower Manhattan to Midtown, parsed from an
+OpenStreetMap PBF with pyrosm and coloured by their construction year (grey = year unknown):
+
+.. raw:: html
+
+   <iframe src="https://pyrosm.github.io/pyrosm/ny_buildings.html"
+           title="New York City buildings by construction year, parsed with pyrosm"
+           width="100%" height="520" loading="lazy"
+           style="border:0; border-radius:8px; margin:0.5em 0;"></iframe>
+   <p style="font-size:0.85em; color:#888; margin:0.2em 0 1em;">
+     Interactive map built with <a href="https://developmentseed.org/lonboard/">lonboard</a>
+     (deck.gl) &mdash; drag to pan, scroll to zoom, hover a building for its details.
+   </p>
+
+.. dropdown:: Show the code that builds this map
+
+   .. literalinclude:: generate_ny_buildings_map.py
+      :language: python
+
 Current features
 ----------------
 
