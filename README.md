@@ -23,22 +23,19 @@ to parse the data from OSM with more specific filters.
  
 **Pyrosm** is easy to use and it provides a somewhat similar user interface as [OSMnx](https://github.com/gboeing/osmnx).
 The main difference between pyrosm and OSMnx is that OSMnx reads the data over internet using OverPass API, whereas pyrosm reads the data from local OSM data dumps
-that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). This makes it possible to read data faster thus 
-allowing e.g. parsing street networks for the whole country fairly efficiently (however, see [caveats](#caveats)).
-
-The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) 
-which makes it fast to parse OpenStreetMap data from PBF files.
-Pyrosm decodes the PBF data with [Google's Protocol Buffers](https://protobuf.dev/) library (using its fast `upb` C backend). Protocol Buffers is a commonly used and efficient method to serialize and compress structured data 
-which is also used by OpenStreetMap contributors to distribute the OSM data in PBF format (Protocolbuffer Binary Format). 
+that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) which makes it fast to parse OpenStreetMap data from PBF files. With the opt-in out-of-core ("streaming") engine added in **v0.10.0**, it is possible to read whole-country (or even continent) extracts quickly without running out of
+memory. Pyrosm decodes the PBF data with [Google's Protocol Buffers](https://protobuf.dev/) library (using its fast `upb` C backend). Protocol Buffers is a commonly used and efficient method to serialize and compress structured data which is also used by OpenStreetMap contributors to distribute the OSM data in PBF format (Protocolbuffer Binary Format). 
 
 > **Backend change.** Since **v0.8.0**, the backend used to parse the protocol-buffer messages is [Google's Protobuf](https://protobuf.dev/) (its fast C `upb` backend) instead of the previously used [Pyrobuf](https://github.com/appnexus/pyrobuf). The switch was made for maintainability and installation reliability: Pyrobuf is no longer maintained and its source build fails with modern `setuptools`, which broke `pip install pyrosm`, whereas Google's Protobuf is actively maintained and ships prebuilt wheels and conda-forge packages for Python 3.10–3.14. The change does **not** slow down parsing — see the [backend benchmark](benchmarks/README.md). **v0.7.0 was the last release that used Pyrobuf.**
+
+> **Out-of-core ("streaming") engine (v0.10.0).** Pyrosm now ships an opt-in out-of-core reading engine, selected with `OSM(filepath, engine="out_of_core")`, that decodes large PBF files in a **single streaming pass with bounded memory** — the decode, the node-coordinate gather and the standalone-way read all run **in parallel** across a worker pool, and each layer's result is cached automatically. It reads whole-country and even **whole-continent** extracts (e.g. all of South America) quickly on modest machines without running out of memory, returning GeoDataFrames identical to the default in-memory reader (which is unchanged). See [Reading large files](#reading-large-files).
 
 **Documentation** is available at [https://pyrosm.readthedocs.io](https://pyrosm.readthedocs.io/en/latest/).
 
 ## Current features
 
 - download PBF data easily from any location in the world
-- find and download the right extract for a bounding box or a place name
+- find and download the right extract for a bounding box or a place name (NEW in v0.9.0)
 - read street networks (separately for driving, cycling, walking and all-combined)
 - read buildings from PBF
 - read Points of Interest (POI) from PBF
@@ -46,9 +43,10 @@ which is also used by OpenStreetMap contributors to distribute the OSM data in P
 - read "natural" from PBF
 - read boundaries from PBF (such as administrative borders)
 - read any other data from PBF by using a custom user-defined filter
+- read large PBF extracts (country level, even some continents) with bounded memory using the opt-in out-of-core ("streaming") engine (`engine="out_of_core"`), with parallel decoding and automatic result caching (NEW in v0.10.0)
 - filter data based on bounding box
 - control which OSM tags are parsed into columns
-- crop a PBF to a smaller area and write modified OSM data back to PBF
+- crop a PBF to a smaller area and write modified OSM data back to PBF (NEW in v0.9.0)
 - export networks as a directed graph to `igraph`, `networkx` and `pandarm`
  
 ## Install
@@ -128,18 +126,4 @@ The OSM data is downloaded from two sources:
 Data &copy; [Geofabrik GmbH](http://www.geofabrik.de/), [BBBike](https://download.bbbike.org/) and [OpenStreetMap Contributors](http://www.openstreetmap.org/) 
 
 All data from the [OpenStreetMap](https://www.openstreetmap.org) is licensed under the [OpenStreetMap License](https://www.openstreetmap.org/copyright). 
-
-## Caveats
-
-### Filtering large files by bounding box 
-
-Although `pyrosm` provides possibility to filter even larger data files based on bounding box, 
-this process can slow down the reading process significantly (1.5-3x longer) due to necessary lookups when parsing the data. 
-This might not be an issue with smaller files (up to ~100MB) but with larger data dumps this can take longer than necessary.
-
-Hence, a recommended approach with large data files is to **first** filter the protobuf file based on bounding box into a 
-smaller subset by using a dedicated open source Java tool called [Osmosis](https://wiki.openstreetmap.org/wiki/Osmosis) 
-which is available for all operating systems. Detailed installation instructions are [here](https://wiki.openstreetmap.org/wiki/Osmosis/Installation), 
-and instructions how to filter data based on bounding box are [here](https://wiki.openstreetmap.org/wiki/Osmosis/Examples#Extract_administrative_Boundaries_from_a_PBF_Extract).
-
 
