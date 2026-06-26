@@ -100,13 +100,13 @@ Getting started
     saving_and_cropping.ipynb
     graphs.ipynb
     benchmarks/benchmarks_scaling.ipynb
-    contributions
 
 .. toctree::
     :caption: Reference Guide
 
     Reference to All Attributes and Methods <reference>
     How to cite <citation>
+    contributions
     Changelog <changelog>
 
 Indices and tables
