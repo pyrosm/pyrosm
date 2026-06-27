@@ -1334,6 +1334,8 @@ class OSM:
         retain_all=False,
         osmnx_compatible=True,
         pandana_weights=["length"],
+        simplify=False,
+        simplify_kwargs=None,
     ):
         """
         `
@@ -1422,6 +1424,8 @@ class OSM:
                 force_bidirectional,
                 network_type,
                 retain_all,
+                simplify=simplify,
+                simplify_kwargs=simplify_kwargs,
             )
         elif graph_type == "networkx":
             return to_networkx(
@@ -1436,6 +1440,8 @@ class OSM:
                 network_type,
                 retain_all,
                 osmnx_compatible,
+                simplify=simplify,
+                simplify_kwargs=simplify_kwargs,
             )
         elif graph_type == "pandarm":
             return to_pandarm(
@@ -1449,6 +1455,8 @@ class OSM:
                 network_type,
                 retain_all,
                 pandana_weights,
+                simplify=simplify,
+                simplify_kwargs=simplify_kwargs,
             )
         elif graph_type == "pandana":
             warnings.warn(
@@ -1470,6 +1478,8 @@ class OSM:
                 network_type,
                 retain_all,
                 pandana_weights,
+                simplify=simplify,
+                simplify_kwargs=simplify_kwargs,
             )
 
     @staticmethod

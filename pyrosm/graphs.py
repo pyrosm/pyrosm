@@ -6,9 +6,31 @@ from pyrosm.graph_export import (
     generate_directed_edges,
 )
 from pyrosm.graph_connectivity import get_connected_edges
+from pyrosm.graph_simplify import simplify_graph
 from pyrosm.utils import validate_edge_gdf, validate_node_gdf
 from pyrosm.config import Conf
 import warnings
+
+
+def _maybe_simplify(
+    simplify, nodes, edges, from_id_col, to_id_col, node_id_col, simplify_kwargs=None
+):
+    """Collapse interstitial nodes on the directed edges, if requested.
+
+    ``simplify_kwargs`` forwards the optional ``simplify_graph`` parameters
+    (``edge_attrs_differ``, ``node_attrs_include``, ``remove_rings``,
+    ``track_merged``, ``length_cols``) so they are reachable through ``to_graph``.
+    """
+    if not simplify:
+        return nodes, edges
+    return simplify_graph(
+        nodes,
+        edges,
+        from_id_col=from_id_col,
+        to_id_col=to_id_col,
+        node_id_col=node_id_col,
+        **(simplify_kwargs or {}),
+    )
 
 
 def get_directed_edges(
@@ -120,6 +142,8 @@ def to_networkx(
     network_type=None,
     retain_all=False,
     osmnx_compatible=True,
+    simplify=False,
+    simplify_kwargs=None,
 ):
     """
     Creates a NetworkX.MultiDiGraph from given OSM GeoDataFrame.
@@ -188,6 +212,10 @@ def to_networkx(
         network_type,
     )
 
+    nodes, edges = _maybe_simplify(
+        simplify, nodes, edges, from_id_col, to_id_col, node_id_col, simplify_kwargs
+    )
+
     # Keep only strongly connected component if not specifically requested otherwise
     if not retain_all:
         nodes, edges = get_connected_edges(
@@ -219,6 +247,8 @@ def to_igraph(
     force_bidirectional=False,
     network_type=None,
     retain_all=False,
+    simplify=False,
+    simplify_kwargs=None,
 ):
     """
     Creates an iGraph from given OSM GeoDataFrame.
@@ -282,6 +312,10 @@ def to_igraph(
         network_type,
     )
 
+    nodes, edges = _maybe_simplify(
+        simplify, nodes, edges, from_id_col, to_id_col, node_id_col, simplify_kwargs
+    )
+
     # Keep only strongly connected component if not specifically requested otherwise
     if not retain_all:
         nodes, edges = get_connected_edges(
@@ -302,6 +336,8 @@ def to_pandana(
     network_type=None,
     retain_all=False,
     weight_cols=["length"],
+    simplify=False,
+    simplify_kwargs=None,
 ):
     # Prepare the data
     nodes, edges = get_directed_edges(
@@ -313,6 +349,10 @@ def to_pandana(
         node_id_col,
         force_bidirectional,
         network_type,
+    )
+
+    nodes, edges = _maybe_simplify(
+        simplify, nodes, edges, from_id_col, to_id_col, node_id_col, simplify_kwargs
     )
 
     # Keep only strongly connected component if not specifically requested otherwise
@@ -339,6 +379,8 @@ def to_pandarm(
     network_type=None,
     retain_all=False,
     weight_cols=["length"],
+    simplify=False,
+    simplify_kwargs=None,
 ):
     # Prepare the data
     nodes, edges = get_directed_edges(
@@ -350,6 +392,10 @@ def to_pandarm(
         node_id_col,
         force_bidirectional,
         network_type,
+    )
+
+    nodes, edges = _maybe_simplify(
+        simplify, nodes, edges, from_id_col, to_id_col, node_id_col, simplify_kwargs
     )
 
     # Keep only strongly connected component if not specifically requested otherwise
