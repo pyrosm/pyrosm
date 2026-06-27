@@ -50,7 +50,7 @@ class OSM:
     ----------
 
     filepath : str
-        Filepath to input OSM dataset ( *.osm.pbf )
+        Filepath to input OSM dataset (``*.osm.pbf``)
 
     bounding_box : list | shapely geometry
         Filtering OSM data spatially is allowed by passing a
@@ -330,6 +330,7 @@ class OSM:
         network_type : str
             What kind of network to parse.
             Possible values are:
+
               - `'walking'`
               - `'cycling'`
               - `'driving'`
@@ -493,8 +494,9 @@ class OSM:
 
             You can opt-in specific elements by using 'custom_filter'.
             To keep only specific buildings such as 'residential' and 'retail', you can apply
-            a custom filter which is a Python dictionary with following format:
-              - `custom_filter={'building': ['residential', 'retail']}`
+            a custom filter which is a Python dictionary with the following format::
+
+                custom_filter={'building': ['residential', 'retail']}
 
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
@@ -581,8 +583,9 @@ class OSM:
 
             You can opt-in specific elements by using 'custom_filter'.
             To keep only specific landuse such as 'construction' and 'industrial', you can apply
-            a custom filter which is a Python dictionary with following format:
-              `custom_filter={'landuse': ['construction', 'industrial']}`
+            a custom filter which is a Python dictionary with the following format::
+
+                custom_filter={'landuse': ['construction', 'industrial']}
 
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
@@ -671,8 +674,9 @@ class OSM:
 
             You can opt-in specific elements by using 'custom_filter'.
             To keep only specific natural such as 'wood' and 'tree', you can apply
-            a custom filter which is a Python dictionary with following format:
-              `custom_filter={'natural': ['wood', 'tree']}`
+            a custom filter which is a Python dictionary with the following format::
+
+                custom_filter={'natural': ['wood', 'tree']}
 
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
@@ -898,19 +902,22 @@ class OSM:
 
         By default, Pyrosm will parse all OSM elements (points, lines and polygons)
         that are associated with following keys:
-          - amenity
-          - shop
-          - tourism
+
+        - amenity
+        - shop
+        - tourism
 
         You can opt-out / opt-in specific elements by using 'custom_filter'.
         To parse elements associated with only specific tags, such as amenities,
-        you can specify:
-          `custom_filter={"amenity": True}`
+        you can specify::
+
+            custom_filter={"amenity": True}
 
         You can also combine multiple filters at the same time.
         For instance, you can parse all 'amenity' elements AND specific 'shop' elements,
-        such as supermarkets and book stores by specifying:
-          `custom_filter={"amenity": True, "shop": ["supermarket", "books"]}`
+        such as supermarkets and book stores by specifying::
+
+            custom_filter={"amenity": True, "shop": ["supermarket", "books"]}
 
         See Also
         --------
@@ -1336,8 +1343,8 @@ class OSM:
         pandana_weights=["length"],
     ):
         """
-        `
         Export OSM network to routable graph. Supported output graph types are:
+
           - "igraph" (default),
           - "networkx",
           - "pandarm",
