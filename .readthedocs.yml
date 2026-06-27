@@ -8,6 +8,12 @@ build:
 python:
     install:
         - requirements: docs/requirements.txt
+        # Install (and compile) pyrosm itself so autodoc imports the real
+        # package -- its compiled Cython extensions and runtime deps -- instead
+        # of relying on mocks. Build deps come from pyproject.toml's
+        # build-system requires.
+        - method: pip
+          path: .
 
 sphinx:
     configuration: docs/conf.py
