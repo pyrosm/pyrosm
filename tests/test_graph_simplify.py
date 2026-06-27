@@ -420,3 +420,109 @@ def test_to_graph_simplify_integration():
     )
     assert simp.vcount() < full.vcount()
     assert simp.ecount() < full.ecount()
+
+
+def test_reference_walk_fallback_matches_cython(monkeypatch):
+    """With the Cython kernel disabled, simplify_graph falls back to the pure-Python
+    reference walk and must produce identical topology. Exercises the fallback path and
+    the reference walk's ring / one-way / endpoint-return branches."""
+    import pyrosm.graph_simplify as gs
+
+    fixtures = [
+        # two-way chain A<->X<->B
+        _graph(
+            {1: (0, 0), 2: (1, 0), 3: (2, 0)},
+            [
+                (1, 2, [(0, 0), (1, 0)]),
+                (2, 1, [(0, 0), (1, 0)]),
+                (2, 3, [(1, 0), (2, 0)]),
+                (3, 2, [(1, 0), (2, 0)]),
+            ],
+        )
+        + ({"remove_rings": True},),
+        # one-way ring kept as a self-loop (reference ring loop)
+        _graph(
+            {1: (0, 0), 2: (1, 0), 3: (0.5, 1)},
+            [
+                (1, 2, [(0, 0), (1, 0)]),
+                (2, 3, [(1, 0), (0.5, 1)]),
+                (3, 1, [(0.5, 1), (0, 0)]),
+            ],
+        )
+        + ({"remove_rings": False},),
+        # one-way loop back to an endpoint (D->E->A->B->E)
+        _graph(
+            {1: (0, 0), 2: (1, 0), 3: (1, 1), 4: (-1, 0)},
+            [
+                (4, 1, [(-1, 0), (0, 0)]),
+                (1, 2, [(0, 0), (1, 0)]),
+                (2, 3, [(1, 0), (1, 1)]),
+                (3, 1, [(1, 1), (0, 0)]),
+            ],
+        )
+        + ({"remove_rings": True},),
+    ]
+
+    def _topo(nodes, edges, kw):
+        _, se = gs.simplify_graph(nodes, edges, **kw)
+        return sorted((int(u), int(v)) for u, v in zip(se["u"], se["v"]))
+
+    cy = [_topo(n, e, kw) for n, e, kw in fixtures]
+    monkeypatch.setattr(gs, "_cython_walk_chains", None)
+    ref = [_topo(n, e, kw) for n, e, kw in fixtures]
+    assert cy == ref
+
+
+def test_track_merged_column():
+    from pyrosm.graph_simplify import simplify_graph
+
+    nodes, edges = _graph(
+        {1: (0, 0), 2: (1, 0), 3: (2, 0)},
+        [(1, 2, [(0, 0), (1, 0)]), (2, 3, [(1, 0), (2, 0)])],
+    )
+    # a length_cols entry that is absent from the edges is simply skipped
+    _, se = simplify_graph(
+        nodes, edges, track_merged=True, length_cols=("length", "travel_time")
+    )
+    assert "merged_edges" in se.columns
+    assert se.iloc[0]["merged_edges"] == [(1, 2), (2, 3)]
+
+
+def test_empty_edges_returns_empty():
+    from pyrosm.graph_simplify import simplify_graph
+
+    nodes, edges = _graph({1: (0, 0), 2: (1, 0)}, [(1, 2, [(0, 0), (1, 0)])])
+    sn, se = simplify_graph(nodes, edges.iloc[:0])
+    assert len(se) == 0 and len(sn) == 2
+
+
+def test_node_attrs_include_forces_endpoint():
+    from pyrosm.graph_simplify import simplify_graph
+
+    # two-way chain A<->X<->B; X (node 2) is normally removed as interstitial
+    nodes, edges = _graph(
+        {1: (0, 0), 2: (1, 0), 3: (2, 0)},
+        [
+            (1, 2, [(0, 0), (1, 0)]),
+            (2, 1, [(0, 0), (1, 0)]),
+            (2, 3, [(1, 0), (2, 0)]),
+            (3, 2, [(1, 0), (2, 0)]),
+        ],
+    )
+    nodes["traffic_signals"] = [None, "yes", None]  # mark node 2 (X)
+    _, plain = simplify_graph(nodes, edges)
+    _, kept = simplify_graph(nodes, edges, node_attrs_include=["traffic_signals"])
+    assert len(plain) < len(kept)  # X retained as endpoint -> chain not collapsed
+    assert 2 in (set(kept["u"]) | set(kept["v"]))
+
+
+def test_stitch_geometries_empty():
+    from pyrosm.graph_simplify import _stitch_geometries
+
+    res = _stitch_geometries(
+        np.array([], dtype=object),
+        np.array([], dtype=bool),
+        np.array([], dtype=np.int64),
+        np.array([0], dtype=np.int64),
+    )
+    assert len(res) == 0
