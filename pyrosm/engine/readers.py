@@ -184,15 +184,13 @@ def _resolve_tags_as_columns(base_tags, extra_attributes, tags_to_keep):
 
 def _ensure_layer_key(custom_filter, key):
     """A ``None`` ``custom_filter`` becomes ``{key: [True]}``; otherwise the layer key is
-    ensured present -- mirroring the in-memory ``get_<layer>_data`` default merge."""
-    from pyrosm.utils import validate_custom_filter
+    ensured present (an OR term) -- mirroring the in-memory ``get_<layer>_data`` default merge.
+    Handles both a plain dict and an advanced (compiled) filter."""
+    from pyrosm.utils import validate_custom_filter, ensure_filter_key
 
     if custom_filter is None:
         return {key: [True]}
-    custom_filter = dict(validate_custom_filter(custom_filter))
-    if key not in custom_filter:
-        custom_filter[key] = [True]
-    return custom_filter
+    return ensure_filter_key(validate_custom_filter(custom_filter), key)
 
 
 def get_buildings(
@@ -309,6 +307,8 @@ def get_pois(
 
     if custom_filter is None:
         custom_filter = {"amenity": True, "shop": True, "tourism": True}
+    # Validate / compile (also accepts advanced regex & bracket forms) before reading keys.
+    custom_filter = validate_custom_filter(custom_filter)
     # Per-key tag columns, exactly as OSM.get_pois builds them (Conf.tags.<key>, or the
     # basic tags for keys without a dedicated column set).
     base_tags = []
@@ -316,7 +316,7 @@ def get_pois(
         base_tags += getattr(Conf.tags, k, list(Conf.tags._basic_tags))
     return _get_layer(
         filepath,
-        validate_custom_filter(custom_filter),
+        custom_filter,
         "keep",
         _resolve_tags_as_columns(base_tags, extra_attributes, tags_to_keep),
         workers,
@@ -346,7 +346,11 @@ def get_boundaries(
     contains that text; ``extra_attributes`` / ``tags_to_keep`` adjust the tag columns. See
     :func:`_get_layer` for the other keyword arguments."""
     from pyrosm.config import Conf
-    from pyrosm.utils import validate_custom_filter, validate_boundary_type
+    from pyrosm.utils import (
+        validate_custom_filter,
+        validate_boundary_type,
+        ensure_filter_key,
+    )
 
     boundary_type = validate_boundary_type(boundary_type)
     if name is not None and output is not None:
@@ -358,11 +362,13 @@ def get_boundaries(
     value = True if boundary_type == "all" else [boundary_type]
     if custom_filter is None:
         custom_filter = {"boundary": value}
-    if "boundary" not in custom_filter:
-        custom_filter["boundary"] = True
+    # Validate / normalize (normalizes True -> [True]; compiles advanced forms), then ensure
+    # the "boundary" key is present (an OR term) so boundaries are always included.
+    custom_filter = validate_custom_filter(custom_filter)
+    custom_filter = ensure_filter_key(custom_filter, "boundary")
     gdf = _get_layer(
         filepath,
-        validate_custom_filter(custom_filter),
+        custom_filter,
         "keep",
         _resolve_tags_as_columns(Conf.tags.boundary, extra_attributes, tags_to_keep),
         workers,
@@ -539,7 +545,7 @@ def get_network(
     extra_attributes=None,
     nodes=False,
     custom_filter=None,
-    filter_type="exclude",
+    filter_type=None,
     tags_to_keep=None,
     bounding_box=None,
     workers=None,
@@ -567,23 +573,34 @@ def get_network(
     cache."""
     from pyrosm.config import Conf
     from pyrosm.utils import validate_custom_filter, validate_tags_as_columns
+    from pyrosm.filter_compiler import CompiledFilter
 
     tags_as_columns = list(Conf.tags.highway)
     if tags_to_keep is not None:
         validate_tags_as_columns(tags_to_keep)
         tags_as_columns = list(tags_to_keep)
+    # Predefined networks select 'highway' ways; an advanced custom filter selects ways by its
+    # own positive keys (so railway/cycleway networks work).
+    network_keys = ["highway"]
     if custom_filter is not None:
         custom_filter = validate_custom_filter(custom_filter)
-        filter_type = filter_type.lower()
-        if filter_type not in ("keep", "exclude"):
-            raise ValueError(
-                "'filter_type' -parameter should be either 'keep' or 'exclude'."
-            )
+        advanced_filter = isinstance(custom_filter, CompiledFilter)
+        # Advanced filters default to 'keep' (Overpass union); plain-dict filters to 'exclude'.
+        if filter_type is None:
+            filter_type = "keep" if advanced_filter else "exclude"
+        else:
+            filter_type = filter_type.lower()
+            if filter_type not in ("keep", "exclude"):
+                raise ValueError(
+                    "'filter_type' -parameter should be either 'keep' or 'exclude'."
+                )
         network_filter = custom_filter
         # Expose the filter keys as columns too (e.g. 'bicycle', 'service').
         for key in custom_filter.keys():
             if key not in tags_as_columns:
                 tags_as_columns.append(key)
+        if advanced_filter:
+            network_keys = list(custom_filter.positive_keys)
     else:
         network_filter = _network_filter(network_type)
         # Predefined networks are always exclude filters keyed on 'highway'.
@@ -595,8 +612,7 @@ def get_network(
     data_filter = (
         None if network_filter is None else parse_custom_filter(network_filter)[0]
     )
-    # Networks always select highway ways (the filter values may reference other keys).
-    filter_spec = (["highway"], data_filter, filter_type)
+    filter_spec = (network_keys, data_filter, filter_type)
     bounding_box = _normalize_bounding_box(bounding_box)
     bounds = _bbox_bounds(bounding_box)
 
@@ -616,9 +632,11 @@ def get_network(
         )
         return (node_gdf, edges) if nodes else edges
 
+    decode_keys = [k.encode("utf-8") for k in network_keys]
+
     def decode():
         return _decode_and_run(
-            filepath, [b"highway"], False, workers, assemble, bbox_bounds=bounds
+            filepath, decode_keys, False, workers, assemble, bbox_bounds=bounds
         )
 
     # A user-supplied output writes the result there and returns it: a GeoParquet file for the

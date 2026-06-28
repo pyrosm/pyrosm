@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from cykhash.khashsets cimport any_int64_from_iter, isin_int64, Int64Set_from_buffer
 from cpython cimport array
+from pyrosm.filter_compiler import CompiledFilter
 
 
 # Structural fields the parser attaches to every (flattened) way record; any other
@@ -99,14 +100,18 @@ cdef filter_osm_records(data_records,
     solver = Solver(filter_type)
     filtered_data = []
 
+    # An advanced (compiled) filter is evaluated as a predicate; the dict normalization and
+    # the per-key OR loop below are skipped for it.
+    cdef bint use_predicate = isinstance(data_filter, CompiledFilter)
+
     if not isinstance(osm_data_type, list):
         osm_data_type = [osm_data_type]
 
-    if data_filter is not None:
+    if data_filter is not None and not use_predicate:
         if len(data_filter) == 0:
             data_filter = None
 
-    if data_filter is not None:
+    if data_filter is not None and not use_predicate:
         # A bare True value ({osm_key: True}) means "match any value for this
         # key". Normalize it to [True] so the membership checks below and the
         # Solver can treat every filter value as an iterable, rather than
@@ -140,6 +145,16 @@ cdef filter_osm_records(data_records,
             if len(set(record_keys) - WAY_STRUCTURAL_KEYS) == 0:
                 continue
         elif not has_osm_data_type(osm_data_type, record_keys):
+            continue
+
+        # Advanced filter: the key gate above already restricted candidacy to the filter's
+        # positive keys; keep/exclude the record by the predicate (issues #116, #341).
+        if use_predicate:
+            if data_filter.matches(record):
+                if filter_type == "keep":
+                    filtered_data.append(record)
+            elif filter_type == "exclude":
+                filtered_data.append(record)
             continue
 
         # Check if should be filtered based on given data_filter.
@@ -224,6 +239,19 @@ cdef record_should_be_kept(tag, osm_keys, data_filter, filter_type, bint keep_al
         return len(tag) > 0
 
     cdef str k, osm_key
+
+    # Advanced (compiled) filter: gate on the candidate keys (the element must carry at least
+    # one positive key), then keep/exclude by the predicate (issues #116, #341).
+    if isinstance(data_filter, CompiledFilter):
+        for osm_key in osm_keys:
+            if osm_key in tag:
+                break
+        else:
+            return False
+        if filter_type == "keep":
+            return data_filter.matches(tag)
+        return not data_filter.matches(tag)
+
     filter_keys = list(data_filter.keys())
     tag_keys = list(tag.keys())
 
@@ -275,8 +303,10 @@ cdef filter_relation_indices(relations, osm_keys, data_filter, filter_type, bint
     cdef int i, n = len(relations.get("tags", []))
     indices = []
 
-    # Ensure keys
-    if len(data_filter) == 0:
+    # Ensure keys (an advanced compiled filter is passed straight through to the predicate).
+    if isinstance(data_filter, CompiledFilter):
+        relation_filter = data_filter
+    elif len(data_filter) == 0:
         relation_filter = {}
     else:
         relation_filter = {key: value for key, value in data_filter.items()}
@@ -292,7 +322,9 @@ cdef filter_node_indices(node_arrays, osm_keys, data_filter, filter_type, bint k
     cdef int i, n = len(node_arrays["tags"])
     indices = []
 
-    if len(data_filter) == 0:
+    if isinstance(data_filter, CompiledFilter):
+        node_filter = data_filter
+    elif len(data_filter) == 0:
         node_filter = {}
     else:
         node_filter = {key: value for key, value in data_filter.items()}
