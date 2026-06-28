@@ -210,9 +210,12 @@ cdef _assemble_multipolygon(lines):
         ring = create_linear_ring(coords)
         if ring is None:
             continue
-        poly = polygons(ring)
-        if not poly.is_valid:
-            poly = poly.buffer(0)
+        try:
+            poly = polygons(ring)
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+        except GEOSException:
+            continue
         if poly.is_empty:
             continue
         ring_polys.append(poly)
@@ -220,9 +223,14 @@ cdef _assemble_multipolygon(lines):
     if len(ring_polys) == 0:
         return None
 
-    geom = ring_polys[0]
-    for i in range(1, len(ring_polys)):
-        geom = symmetric_difference(geom, ring_polys[i])
+    # Even-odd overlay. GEOS can raise on pathological/self-touching source rings; rather
+    # than abort the whole parse, drop this one relation (its rings are unassemblable).
+    try:
+        geom = ring_polys[0]
+        for i in range(1, len(ring_polys)):
+            geom = symmetric_difference(geom, ring_polys[i])
+    except GEOSException:
+        return None
 
     geom = _polygonal_only(geom)
     if geom is None:
