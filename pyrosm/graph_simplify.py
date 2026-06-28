@@ -145,18 +145,17 @@ def _reference_walk(indptr, indices, edge_id, is_endpoint, src, remove_rings):
             chain.append(int(edge_id[nxt]))
             prev = cur
             cur = int(indices[nxt])
-            if len(chain) > m:  # safety against pathological cycles
-                break
         chain_edge_ids.extend(chain)
         chain_ptr.append(len(chain_edge_ids))
 
     # Chains that start at an endpoint (interstitial chains + endpoint->endpoint edges).
+    # A walk halts at endpoints, so an endpoint's out-edge is never consumed mid-chain;
+    # each is walked exactly once as a start, so no visited-check is needed here.
     for e in range(n_nodes):
         if not is_endpoint[e]:
             continue
         for p in range(indptr[e], indptr[e + 1]):
-            if not visited[p]:
-                _walk_from(p, e)
+            _walk_from(p, e)
 
     # Remaining unvisited edges belong to endpoint-free rings.
     if not remove_rings:
