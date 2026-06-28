@@ -192,7 +192,9 @@ def test_reading_buildings_with_relations(helsinki_pbf):
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], Polygon)
-    assert gdf.shape == (490, 35)
+    # #21: relations osmium cannot assemble are no longer force-closed into spurious
+    # polygons, so 4 fewer rows than before the multipolygon-algorithm fix.
+    assert gdf.shape == (486, 35)
 
     required_cols = ["building", "id", "timestamp", "version", "tags", "geometry"]
 

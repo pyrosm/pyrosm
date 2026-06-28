@@ -15,10 +15,21 @@ from pyrosm.engine.assemble import _assemble_layer, _assemble_network
 from pyrosm.engine import cache, geoparquet
 
 # Tags the geometry assembly reads straight from an element's tag dict (not from the exploded
-# columns): ``relations.pyx`` consults ``type`` (multipolygon/boundary) and ``area`` to decide
-# how to build a relation's geometry. They are always resolved under ``keep_other_tags=False`` so
-# relation geometries match the full read, then dropped with the other leftovers.
-_GEOMETRY_TAG_KEYS = ("type", "area")
+# columns): ``relations.pyx`` consults ``type`` and ``area`` plus the linestring keys
+# (``barrier``/``route``/``railway``/``highway``/``waterway``) to decide whether a relation is an
+# area or a LineString. All must be resolved under ``keep_other_tags=False`` so relation
+# geometries match the full read (e.g. a ``type=route`` relation stays a LineString and is not
+# dropped, #355), then they are dropped with the other leftovers. Keep in sync with
+# ``relations.pyx`` ``linestring_keys``.
+_GEOMETRY_TAG_KEYS = (
+    "type",
+    "area",
+    "barrier",
+    "route",
+    "railway",
+    "highway",
+    "waterway",
+)
 
 
 def _get_layer(

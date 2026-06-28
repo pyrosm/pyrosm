@@ -387,7 +387,9 @@ def test_reading_with_custom_filters_selecting_specific_osm_element(helsinki_pbf
     # Now should only have 'relation' osm_type
     assert len(filtered["osm_type"].unique()) == 1
     assert filtered["osm_type"].unique()[0] == "relation"
-    assert len(filtered) == 67
+    # #21: relations osmium cannot assemble are no longer force-closed into spurious
+    # polygons, so 4 fewer than before the multipolygon-algorithm fix.
+    assert len(filtered) == 63
 
     # Test getting only ways
     # ---------------------------
@@ -435,7 +437,9 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
         filter_type="keep",
     )
     assert isinstance(filtered, GeoDataFrame)
-    assert len(filtered) == 5542
+    # #21: 6 fewer than before -- relations osmium cannot assemble are no longer
+    # force-closed into spurious polygons by the multipolygon-algorithm fix.
+    assert len(filtered) == 5536
 
     # Combining a True ("any value") filter with an explicit-value filter
     # should keep all buildings AND railway=station features (issue #224).

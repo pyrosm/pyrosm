@@ -23,7 +23,9 @@ def test_reading_points_of_interest_with_defaults(helsinki_pbf):
     gdf = osm.get_pois()
 
     assert isinstance(gdf, GeoDataFrame)
-    assert len(gdf) == 1712
+    assert (
+        len(gdf) == 1711
+    )  # -1: a relation osmium cannot assemble is no longer force-closed (#21)
     assert gdf.crs == pyproj.CRS.from_epsg(4326)
 
     gdf_cols = gdf.columns.to_list()

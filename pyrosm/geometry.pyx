@@ -1,6 +1,7 @@
 import numpy as np
 from shapely import linestrings, polygons, points, linearrings, \
-    multilinestrings, multipolygons, get_geometry
+    multilinestrings, multipolygons, get_geometry, symmetric_difference, \
+    is_valid
 from shapely import Geometry
 from shapely import GEOSException
 from shapely.linear import line_merge
@@ -153,143 +154,130 @@ cdef bint _is_closed_ring(coords):
     return coords[0, 0] == coords[-1, 0] and coords[0, 1] == coords[-1, 1]
 
 
+cdef _line_components(merged_lines):
+    # The LineString components of a (Multi)LineString returned by line_merge.
+    if merged_lines is None:
+        return []
+    geom_type = merged_lines.geom_type
+    if geom_type == "LineString":
+        return [merged_lines]
+    if geom_type == "MultiLineString" or geom_type == "GeometryCollection":
+        return [part for part in merged_lines.geoms if part.geom_type == "LineString"]
+    return []
+
+
+cdef _polygonal_only(geometry):
+    # Reduce an even-odd overlay result to a Polygon/MultiPolygon, dropping any
+    # non-areal artifacts (stray lines/points from coincident boundaries). Returns
+    # None when no polygonal area remains.
+    if geometry is None or geometry.is_empty:
+        return None
+    geom_type = geometry.geom_type
+    if geom_type == "Polygon" or geom_type == "MultiPolygon":
+        return geometry
+    if geom_type == "GeometryCollection":
+        polygon_parts = []
+        for part in geometry.geoms:
+            if part.is_empty:
+                continue
+            if part.geom_type == "Polygon":
+                polygon_parts.append(part)
+            elif part.geom_type == "MultiPolygon":
+                polygon_parts.extend([sub for sub in part.geoms if not sub.is_empty])
+        if len(polygon_parts) == 0:
+            return None
+        if len(polygon_parts) == 1:
+            return polygon_parts[0]
+        return MultiPolygon(polygon_parts)
+    return None
+
+
+cdef _assemble_multipolygon(member_lines):
+    # OSM multipolygon assembly by geometry, not member role (#21):
+    #   1. line_merge all member ways into maximal lines and keep the closed rings
+    #      (open/incomplete rings are dropped, not force-closed with a spurious edge);
+    #   2. one simple polygon per ring;
+    #   3. even-odd overlay (reduce symmetric_difference): a point is inside iff it is
+    #      covered by an odd number of rings. This yields outers, holes and
+    #      islands-in-holes independent of roles and matches osmium for valid data.
+    cdef int i
+    merged_lines = line_merge(multilinestrings(member_lines))
+    ring_polygons = []
+    for line in _line_components(merged_lines):
+        coords = get_coordinates(line)
+        if not _is_closed_ring(coords):
+            continue
+        ring = create_linear_ring(coords)
+        if ring is None:
+            continue
+        try:
+            ring_polygon = polygons(ring)
+            if not ring_polygon.is_valid:
+                ring_polygon = ring_polygon.buffer(0)
+        except GEOSException:
+            continue
+        if ring_polygon.is_empty:
+            continue
+        ring_polygons.append(ring_polygon)
+
+    if len(ring_polygons) == 0:
+        return None
+
+    # Even-odd overlay. GEOS can raise on pathological/self-touching source rings; rather
+    # than abort the whole parse, drop this one relation (its rings are unassemblable).
+    try:
+        area = ring_polygons[0]
+        for i in range(1, len(ring_polygons)):
+            area = symmetric_difference(area, ring_polygons[i])
+    except GEOSException:
+        return None
+
+    area = _polygonal_only(area)
+    if area is None:
+        return None
+    if not is_valid(area):
+        area = _polygonal_only(fix_geometry(area))
+    return area
+
+
 cdef create_relation_geometry(node_coordinates, ways,
                               member_roles, force_linestring,
                               make_multipolygon,
                               bint drop_if_open=False):
-    cdef int i, m_cnt
-    cdef str role
+    cdef int i, n_members
     # Get coordinates for relation
     coordinates = get_way_coordinates_for_polygon(node_coordinates, ways)
 
-    shell = []
-    holes = []
-    m_cnt = len(member_roles)
-
-    for i in range(0, m_cnt):
-        role = member_roles[i]
+    # One LineString per member way. Member roles are deliberately NOT used to
+    # classify outer/inner here: the OSM multipolygon algorithm decides that by
+    # geometry (#21). Two-point segments are kept -- line_merge stitches them into
+    # rings; ``make_multipolygon`` and ``drop_if_open`` no longer affect assembly.
+    member_lines = []
+    n_members = len(member_roles)
+    for i in range(0, n_members):
         coords = coordinates[i]
-
-        # Points are skipped
         if len(coords) < 2:
             continue
+        line = create_linestring(coords)
+        if line is not None:
+            member_lines.append(line)
 
-        # In case element should constitute a multipolygon,
-        # geometries having less than 3 coordinates should be
-        # skipped as it is not possible to create a polygon
-        if make_multipolygon:
-            if len(coords) < 3:
-                continue
+    if len(member_lines) == 0:
+        return None
 
-        geometry = create_linestring(coords)
-
-        if geometry is None:
-            continue
-
-        if role == "inner":
-            holes.append(geometry)
-        else:
-            shell.append(geometry)
-
-    if len(shell) == 0:
-        if len(holes) == 0:
-            return None
-        # If shell wasn't found at all, but holes were,
-        # use the holes to construct the geometry
-        # (might happen sometimes with incorrect tagging)
-        else:
-            shell = holes
-            holes = []
-
-    # Check if should build a LineString
-    # e.g. routes should be linestrings
+    # Routes and similar are linestrings, not areas.
     if force_linestring:
-        geoms = shell + holes
+        if len(member_lines) == 1:
+            return member_lines
+        merged = line_merge(multilinestrings(member_lines))
+        if isinstance(merged, np.ndarray):
+            return merged.tolist()
+        return [merged]
 
-        if len(geoms) == 1:
-            return geoms
-        else:
-            geom = line_merge(multilinestrings(geoms))
-
-            if isinstance(geom, np.ndarray):
-                return geom.tolist()
-            else:
-                return [geom]
-
-    if len(holes) == 0:
-        holes = None
-
-    # Ensure holes are valid LinearRings
-    else:
-        # Parse rings
-        rings = []
-        for hole in holes:
-            # In some cases, there are insufficient number
-            # of coordinates for constructing LinearRing
-            ring = create_linear_ring(get_coordinates(hole))
-            if ring is not None:
-                rings.append(ring)
-        holes = rings
-        if len(holes) == 0:
-            holes = None
-
-    if len(shell) > 1:
-        if not make_multipolygon:
-            coords = get_coordinates(line_merge(multilinestrings(shell)))
-            # An administrative boundary whose member ways run off the PBF extent
-            # cannot form a closed ring. Rather than force-close it with a spurious
-            # straight edge across the map (#154), drop it -- matching how osmium
-            # and GDAL skip areas they cannot assemble. Scoped to boundaries
-            # (drop_if_open); other relations keep the existing behaviour.
-            if drop_if_open and not _is_closed_ring(coords):
-                return None
-            ring = create_linear_ring(coords)
-            if ring is None:
-                return None
-            geom = polygons(ring, holes)
-        else:
-            # Parse rings
-            rings = []
-            for part in shell:
-                # In some cases, there are insufficient number
-                # of coordinates for constructing LinearRing
-                ring = create_linear_ring(get_coordinates(part))
-                if ring is not None:
-                    rings.append(ring)
-
-            if len(rings) == 0:
-                return None
-
-            if len(rings) > 1:
-                geom = multipolygons(polygons(rings, holes))
-            else:
-                geom = polygons(rings, holes)
-
-    else:
-        coords = get_coordinates(shell)
-        # A single, non-closed boundary member way cannot form a polygon; drop it
-        # rather than force-closing it into a ring with a spurious edge (#154).
-        if drop_if_open and not _is_closed_ring(coords):
-            return None
-        ring = create_linear_ring(coords)
-        if ring is None:
-            return None
-
-        geom = polygons(ring,
-                        holes)
-
-    if isinstance(geom, np.ndarray):
-        return geom.tolist()
-    elif is_geometry(geom):
-        return [geom]
-    else:
-        # TODO: Remove this if no errors arise
-        raise NotImplementedError(
-            "'create_relation_geometry': "
-            "not a geometry or ndarray.\n"
-            "Raise an issue at: "
-            "https://github.com/HTenkanen/pyrosm/issues"
-        )
+    area = _assemble_multipolygon(member_lines)
+    if area is None:
+        return None
+    return [area]
 
 
 cpdef create_point_geometries(xarray, yarray):
