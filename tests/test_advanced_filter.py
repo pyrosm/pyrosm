@@ -96,11 +96,12 @@ def test_all_operators():
 
 def test_regex_dict_mixes_true_str_and_regex():
     # a dict routed to the advanced path lowers every value the same way a plain dict does:
-    # True -> exists, list items str -> eq / pattern -> regex, all OR'd.
+    # bare True or True-in-a-list -> exists, list items str -> eq / pattern -> regex, all OR'd.
     f = compile_custom_filter(
-        {"building": True, "name": ["Foo"], "ref": [re.compile("A1")]}
+        {"building": True, "shop": [True], "name": ["Foo"], "ref": [re.compile("A1")]}
     )
     assert f.matches({"building": "yes"})
+    assert f.matches({"shop": "kiosk"})
     assert f.matches({"name": "Foo"})
     assert f.matches({"ref": "A1 road"})
     assert not f.matches({"highway": "primary"})
@@ -170,6 +171,8 @@ def test_or_require_appends_only_when_absent():
         "[! ]",  # negated existence with blank key
         '[""="x"]',  # empty key
         '[!""]',  # empty key (negated existence)
+        "",  # empty filter string (no brackets)
+        {"ref": [re.compile("x")], "name": "Foo"},  # bare-string value in a regex dict
         ["building"],  # a bare key, not bracket syntax
         [123],  # non-string entry in a bracket list
         123,  # unsupported type
@@ -212,6 +215,15 @@ def test_condition_value_object():
     c = Condition("highway", "regex", "^foo", re.IGNORECASE)
     assert c.is_positive
     assert Condition("a", "ne").is_positive is False
+
+
+def test_read_quoted_unterminated():
+    # a defensive guard in the quote reader (the bracket splitter normally guarantees balanced
+    # quotes before this is reached)
+    from pyrosm.filter_compiler import _read_quoted
+
+    with pytest.raises(ValueError, match="unterminated"):
+        _read_quoted('"abc')
 
 
 def test_regex_dict_preserves_pattern_flags():
@@ -372,6 +384,17 @@ def test_engine_parity_pois(helsinki_pbf):
         custom_filter=advanced
     )
     assert ids(engine) == ids(in_memory)
+
+
+def test_engine_get_network_resolves_default_filter_type(helsinki_pbf):
+    # the OSM API resolves filter_type before calling the engine, so exercise the engine reader
+    # directly to cover its own default: filter_type=None -> keep for an advanced filter.
+    import pyrosm.engine as engine_backend
+
+    advanced = '["highway"~"footway|cycleway"]'
+    direct = engine_backend.get_network(helsinki_pbf, custom_filter=advanced, workers=1)
+    in_memory = OSM(helsinki_pbf).get_network(custom_filter=advanced, filter_type="keep")
+    assert ids(direct) == ids(in_memory)
 
 
 def test_engine_parity_landuse_injection(helsinki_pbf):
