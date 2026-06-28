@@ -4,20 +4,6 @@
 # list see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
-# -- Path setup --------------------------------------------------------------
-
-# If extensions (or modules to document with autodoc) are in another directory,
-# add these directories to sys.path here. If the directory is relative to the
-# documentation root, use os.path.abspath to make it absolute, like shown here.
-
-import os
-import sys
-
-# Make the pyrosm source importable for autodoc without installing/compiling
-# the package. The compiled Cython modules are mocked below, so autodoc reads
-# docstrings straight from the pure-Python wrappers in the repo.
-sys.path.insert(0, os.path.abspath(".."))
-
 # -- Project information -----------------------------------------------------
 from datetime import datetime
 
@@ -44,35 +30,17 @@ extensions = [
     "IPython.sphinxext.ipython_console_highlighting",
     "IPython.sphinxext.ipython_directive",
     "myst_nb",
+    "sphinx_design",
 ]
 
 # Enable MyST's colon-fence syntax (:::{admonition} ... :::) so notebook markdown
 # cells can use admonitions/directives that also render cleanly in the notebook UI.
 myst_enable_extensions = ["colon_fence"]
 
-# pyrosm is not installed for the docs build; mock its compiled Cython
-# extensions, binary deps, and the generated protobuf message modules so autodoc
-# can import the pure-Python wrappers and read their docstrings without compiling
-# anything. The pyrosm.proto.*_pb2 modules build real protobuf descriptors at
-# import time, which fails when google.protobuf is mocked, so they are mocked too
-# (otherwise importing pyrosm.utils -> pyrosm.data/pyrosm.pyrosm fails and the
-# whole API reference renders empty).
-autodoc_mock_imports = [
-    "pyrosm._arrays",
-    "pyrosm.data_filter",
-    "pyrosm.data_manager",
-    "pyrosm.delta_compression",
-    "pyrosm.frames",
-    "pyrosm.geometry",
-    "pyrosm.graph_export",
-    "pyrosm.pbfreader",
-    "pyrosm.relations",
-    "pyrosm.tagparser",
-    "pyrosm.proto.fileformat_pb2",
-    "pyrosm.proto.osmformat_pb2",
-    "google.protobuf",
-    "cykhash",
-]
+# pyrosm is installed (and compiled) by the Read the Docs build via
+# ``.readthedocs.yml`` (``python.install`` runs ``pip install .``), so autodoc
+# imports the real package and reads docstrings straight from it -- no mocking
+# of the compiled Cython extensions or binary deps is needed.
 
 
 # Add any paths that contain templates here, relative to this directory.

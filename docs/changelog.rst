@@ -1,7 +1,7 @@
 Changelog
 =========
 
-v0.10.0 (Jun 25, 2026)
+v0.10.0 (Jun 26, 2026)
 ----------------------
 
 This release adds an opt-in out-of-core ("streaming") reading engine that decodes large PBF files in a single streaming pass with bounded memory -- the decode, the node-coordinate gather and the standalone-way read all run in parallel across a worker pool, and each layer's result is cached automatically -- making whole-country and even whole-continent extracts readable quickly on modest machines without running out of memory (tested on Macbook Air with 24 GB of RAM). ``get_data`` can now also download whole-continent extracts. The default in-memory reader is unchanged.

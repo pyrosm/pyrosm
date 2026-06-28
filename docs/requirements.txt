@@ -1,23 +1,19 @@
 # Documentation toolchain for Read the Docs (Sphinx + MyST-NB).
 #
-# Notebooks are rendered from their stored outputs (execution is disabled in
-# conf.py), so the doc build does NOT run pyrosm and does NOT need the compiled
-# package. The only consumer of pyrosm is the autodoc API reference, whose
-# compiled Cython modules are mocked via autodoc_mock_imports in conf.py.
-# Hence pyrosm itself is intentionally NOT installed here (no from-source
-# compilation, no protobuf runtime, no build toolchain required).
+# pyrosm itself is installed (and compiled) by the Read the Docs build via
+# `.readthedocs.yml` (`python.install` runs `pip install .`), so autodoc imports
+# the real package and its runtime dependencies (pandas, geopandas, shapely,
+# numpy, rapidjson, ...) come from that install. Only the Sphinx toolchain is
+# listed here. Notebooks are rendered from their stored outputs (execution is
+# disabled in conf.py).
 
 # Sphinx + MyST-NB Markdown/notebook rendering
 myst-nb>=1.0,<2.0
 sphinx>=7.0,<9.0
 sphinx-book-theme>=1.1,<2.0
+# Collapsible "dropdown" directive used on the landing page
+sphinx-design>=0.5,<1.0
 
 # Provides the ipython_console_highlighting and ipython_directive Sphinx
 # extensions referenced in conf.py.
 ipython>=8.0
-
-# Pure-Python runtime imports pulled in when autodoc imports the pyrosm
-# wrappers (the compiled modules are mocked, these are not).
-pandas
-geopandas
-shapely>=2.0
