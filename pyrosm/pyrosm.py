@@ -2,6 +2,7 @@ import warnings
 
 import pandas as pd
 from pyrosm.config import Conf
+from pyrosm.filter_compiler import CompiledFilter
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm.frames import create_nodes_gdf
 from pyrosm.utils import (
@@ -317,7 +318,7 @@ class OSM:
         nodes=False,
         timestamp=None,
         custom_filter=None,
-        filter_type="exclude",
+        filter_type=None,
         tags_to_keep=None,
     ):
         """
@@ -358,18 +359,26 @@ class OSM:
             `custom_filter` so that custom-filtered networks can also be exported
             to a graph.
 
-        custom_filter : dict (optional)
-            A custom filter for selecting which highway ways to keep, e.g.
-            `{'highway': ['footway', 'residential'], 'bicycle': ['yes']}`. When
-            given, it replaces the predefined `network_type` filter (the two are
-            not combined). Only ways having a `highway` tag are considered; the
-            filter then keeps or excludes among those according to `filter_type`.
-            The filter keys are also added as columns to the result.
+        custom_filter : dict | str | list (optional)
+            A custom filter for selecting which ways to keep. When given, it replaces the
+            predefined `network_type` filter (the two are not combined), and the filter keys
+            are added as columns to the result. Three forms are supported:
 
-        filter_type : str (default: 'exclude')
-            Whether `custom_filter` should `'keep'` or `'exclude'` the matching
-            ways. Only consulted when `custom_filter` is given; the predefined
-            `network_type` filters are always applied as `'exclude'`.
+              - a dict like `{'highway': ['footway', 'residential'], 'bicycle': ['yes']}`
+                (exact values, combined with OR; only ways having a `highway` tag are
+                considered);
+              - a dict with compiled regex values, e.g. `{'ref': [re.compile(r'I[ -]?20')]}`;
+              - an Overpass-style bracket string, or a list of them, e.g.
+                `['["highway"~"cycleway"]', '["highway"~"path"]["bicycle"~"designated"]']`
+                (each string is the AND of its brackets, a list is their OR). These select
+                ways by the filter's own keys, so non-highway networks (e.g. `railway`,
+                `cycleway`) are supported.
+
+        filter_type : str (optional)
+            Whether `custom_filter` should `'keep'` or `'exclude'` the matching ways. Only
+            consulted when `custom_filter` is given. When omitted it defaults to `'keep'` for
+            a regex/bracket (advanced) filter and `'exclude'` for a plain-dict filter; the
+            predefined `network_type` filters are always applied as `'exclude'`.
 
         timestamp: str | datetime | int
             If provided, the data from given moment of time will be returned. The time should be provided in UTC.
@@ -397,6 +406,28 @@ class OSM:
         Take a look at the OSM documentation for further details about the data:
         `https://wiki.openstreetmap.org/wiki/Key:highway <https://wiki.openstreetmap.org/wiki/Key:highway>`__
         """
+        # Resolve the custom filter and filter_type once, so the engine and in-memory paths
+        # agree. An advanced (regex/bracket) filter compiles to a CompiledFilter and defaults
+        # to 'keep' (Overpass union semantics); a plain-dict filter and the predefined
+        # network_type presets default to 'exclude'.
+        advanced_filter = False
+        if custom_filter is not None:
+            custom_filter = validate_custom_filter(custom_filter)
+            advanced_filter = isinstance(custom_filter, CompiledFilter)
+            if filter_type is None:
+                filter_type = "keep" if advanced_filter else "exclude"
+            elif isinstance(filter_type, str) and filter_type.lower() in (
+                "keep",
+                "exclude",
+            ):
+                filter_type = filter_type.lower()
+            else:
+                raise ValueError(
+                    "'filter_type' -parameter should be either 'keep' or 'exclude'. "
+                )
+        else:
+            filter_type = "exclude"
+
         if self._use_engine(timestamp):
             return self._read_engine(
                 engine_backend.get_network,
@@ -413,33 +444,22 @@ class OSM:
         # semantics even when a custom_filter is provided)
         network_filter = self._get_network_filter(network_type)
         tags_as_columns = list(self.conf.tags.highway)
+        # Predefined networks select ways by 'highway'; an advanced custom filter selects by
+        # its own positive keys (so railway/cycleway networks work).
+        network_osm_keys = "highway"
 
         if tags_to_keep is not None:
             validate_tags_as_columns(tags_to_keep)
             tags_as_columns = list(tags_to_keep)
 
-        # A custom_filter replaces the predefined network filter and may use any
-        # 'keep'/'exclude' semantics; the predefined filters are always 'exclude'.
         if custom_filter is not None:
-            custom_filter = validate_custom_filter(custom_filter)
-
-            if not isinstance(filter_type, str) or filter_type.lower() not in [
-                "keep",
-                "exclude",
-            ]:
-                raise ValueError(
-                    "'filter_type' -parameter should be either 'keep' or 'exclude'. "
-                )
-            filter_type = filter_type.lower()
-
             network_filter = custom_filter
             # Expose the filter keys as columns too (e.g. 'bicycle', 'service').
             for key in custom_filter.keys():
                 if key not in tags_as_columns:
                     tags_as_columns.append(key)
-        else:
-            # Predefined networks are always exclude filters.
-            filter_type = "exclude"
+            if advanced_filter:
+                network_osm_keys = list(custom_filter.positive_keys)
 
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
@@ -458,6 +478,7 @@ class OSM:
             slice_to_segments=nodes,
             filter_type=filter_type,
             keep_metadata=self.keep_metadata,
+            osm_keys=network_osm_keys,
         )
 
         if edges is not None:
@@ -951,14 +972,9 @@ class OSM:
         # If custom_filter has not been defined, initialize with default
         if custom_filter is None:
             custom_filter = {"amenity": True, "shop": True, "tourism": True}
-
         else:
-            # Check that the custom filter is in correct format
-            if not isinstance(custom_filter, dict):
-                raise ValueError(
-                    f"'custom_filter' should be a Python dictionary. "
-                    f"Got {custom_filter} with type {type(custom_filter)}."
-                )
+            # Validate / compile the filter (also accepts advanced regex & bracket forms).
+            custom_filter = validate_custom_filter(custom_filter)
 
         self._read_pbf(timestamp)
 

@@ -14,6 +14,14 @@ import warnings
 
 
 def validate_custom_filter(custom_filter):
+    # Opt-in advanced forms (a bracket-filter string, a list of them, or a dict containing
+    # compiled regex values) compile into a CompiledFilter predicate; compilation validates
+    # the syntax. A plain dict keeps the existing exact-value fast path below.
+    from pyrosm.filter_compiler import compile_custom_filter, is_advanced_filter
+
+    if is_advanced_filter(custom_filter):
+        return compile_custom_filter(custom_filter)
+
     # Check that the custom filter is in correct format
     if not isinstance(custom_filter, dict):
         raise ValueError(
@@ -46,6 +54,24 @@ def validate_custom_filter(custom_filter):
                     f"Got {item} of type {type(item)}"
                 )
     return custom_filter
+
+
+def ensure_filter_key(custom_filter, key):
+    """Add a default feature key to a filter as an OR term, regardless of its form.
+
+    Mirrors the dict injection feature modules do (``custom_filter[key] = [True]``), but
+    also handles an advanced (compiled) filter via :meth:`CompiledFilter.or_require`. Never
+    mutates the input: a copy is returned only when the key has to be added.
+    """
+    from pyrosm.filter_compiler import CompiledFilter
+
+    if isinstance(custom_filter, CompiledFilter):
+        return custom_filter.or_require(key)
+    if key in custom_filter:
+        return custom_filter
+    updated = dict(custom_filter)
+    updated[key] = [True]
+    return updated
 
 
 def validate_osm_keys(osm_keys):

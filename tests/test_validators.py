@@ -18,8 +18,17 @@ from pyrosm.utils import (
 )
 
 
-def test_validate_custom_filter_rejects_non_dict():
+def test_validate_custom_filter_rejects_unsupported_type():
+    # Beyond a dict, only bracket-filter strings / lists of them are accepted; other types
+    # (e.g. an int) are rejected.
     with pytest.raises(ValueError, match="dictionary"):
+        validate_custom_filter(123)
+
+
+def test_validate_custom_filter_rejects_bare_key_list():
+    # A list of plain key names (not bracket syntax) is treated as a bracket filter and
+    # fails to parse with a clear message.
+    with pytest.raises(ValueError, match="expected '\\['"):
         validate_custom_filter(["building"])
 
 
