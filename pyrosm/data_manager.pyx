@@ -2,9 +2,16 @@ from pyrosm.data_filter cimport filter_osm_records, filter_node_indices, \
     filter_array_dict_by_indices_or_mask, filter_relation_indices
 from pyrosm._arrays cimport convert_to_arrays_and_drop_empty, convert_way_records_to_lists, concatenate_dicts_of_arrays
 from pyrosm.tagparser cimport explode_tag_array
+from pyrosm.filter_compiler import compile_custom_filter, CompiledFilter
 import numpy as np
 
 cdef get_data_filter_and_osm_keys(custom_filter):
+    # Advanced (opt-in) filters compile to a CompiledFilter predicate; its positive keys are
+    # the candidate-key gate. compile_custom_filter is idempotent and leaves a plain dict as-is.
+    custom_filter = compile_custom_filter(custom_filter)
+    if isinstance(custom_filter, CompiledFilter):
+        return custom_filter, list(custom_filter.positive_keys)
+
     osm_keys = []
     if isinstance(custom_filter, dict):
         data_filter = {}

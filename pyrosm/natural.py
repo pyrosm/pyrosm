@@ -1,6 +1,6 @@
 from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
-from pyrosm.utils import validate_custom_filter
+from pyrosm.utils import validate_custom_filter, ensure_filter_key
 import warnings
 
 
@@ -20,12 +20,10 @@ def get_natural_data(
     if custom_filter is None:
         custom_filter = {"natural": [True]}
     else:
-        # Check that the custom filter is in correct format
+        # Check that the custom filter is in correct format, then ensure the "natural"
+        # key is present (an OR term) so natural elements are always included.
         custom_filter = validate_custom_filter(custom_filter)
-
-        # Ensure that the "landuse" tag exists
-        if "natural" not in custom_filter.keys():
-            custom_filter["natural"] = [True]
+        custom_filter = ensure_filter_key(custom_filter, "natural")
 
     # Call signature for fetching buildings
     nodes, ways, relation_ways, relations = get_osm_data(

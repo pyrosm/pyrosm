@@ -12,13 +12,15 @@ def get_network_data(
     slice_to_segments,
     filter_type="exclude",
     keep_metadata=True,
+    osm_keys="highway",
 ):
     # Structural columns are always kept; element metadata only when requested.
     tags_as_columns += ["id", "nodes"]
     if keep_metadata:
         tags_as_columns += ["timestamp", "changeset", "version"]
 
-    # Call signature for fetching network data
+    # Call signature for fetching network data. Predefined networks keep only ways with a
+    # 'highway' tag; an advanced custom filter selects ways by its own positive keys instead.
     nodes, ways, relation_ways, relations = get_osm_data(
         node_arrays=None,
         way_records=way_records,
@@ -26,8 +28,7 @@ def get_network_data(
         tags_as_columns=tags_as_columns,
         data_filter=network_filter,
         filter_type=filter_type,
-        # Keep only records having 'highway' tag
-        osm_keys="highway",
+        osm_keys=osm_keys,
         keep_metadata=keep_metadata,
     )
 
