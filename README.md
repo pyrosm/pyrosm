@@ -81,19 +81,19 @@ However, `pyrosm` is better suited for situations where you want to fetch data f
 If you are interested to fetch OSM data for smaller areas such as neighborhoods, or search data around a specific location/address,
 we recommend using [OSMnx](https://github.com/gboeing/osmnx) which is more flexible in terms of specifying the area of interest.
 That being said, it is also possible to extract neighborhood level information with pyrosm and filter data based on a bounding box
-(see [docs](https://pyrosm.readthedocs.io/en/latest/basics.html#filtering-data-based-on-bounding-box)).
+(see [docs](https://pyrosm.readthedocs.io/en/stable/reading_osm_data.html#filtering-data-based-on-bounding-box)).
 
 ## How to use?
 
-Using `pyrosm` is straightforward. See [docs](https://pyrosm.readthedocs.io/en/latest/basics.html) 
+Using `pyrosm` is straightforward. See [docs](https://pyrosm.readthedocs.io/en/stable/reading_osm_data.html) 
 for instructions how to use the library.
 
 ## Get in touch + contributions
 
-If you find a bug from the tool, have question, or would like to suggest a new feature to it, you can [make a new issue here](https://github.com/HTenkanen/pyrosm/issues).
+If you find a bug from the tool, have question, or would like to suggest a new feature to it, you can [make a new issue here](https://github.com/pyrosm/pyrosm/issues).
 
 We warmly welcome contributions to `pyrosm` to make it better. If you are interested in contributing to the library,
-please check the [contribution guidelines](https://pyrosm.readthedocs.io/en/latest/contributions.html).
+please check the [contribution guidelines](https://pyrosm.readthedocs.io/en/stable/contributions.html).
 
 ## Development
 
@@ -120,7 +120,7 @@ If you use pyrosm in your research or other work, please cite it. Pyrosm is arch
 
 > Tenkanen, H. (2026). *pyrosm: A Python library for reading and writing OpenStreetMap PBF data with GeoDataFrames*. (v0.10.0) Zenodo. https://doi.org/10.5281/zenodo.3755057
 
-A BibTeX entry and version-specific DOIs are available in the [documentation](https://pyrosm.readthedocs.io/en/latest/citation.html) and on the [Zenodo record](https://doi.org/10.5281/zenodo.3755057).
+A BibTeX entry and version-specific DOIs are available in the [documentation](https://pyrosm.readthedocs.io/en/stable/citation.html) and on the [Zenodo record](https://doi.org/10.5281/zenodo.3755057).
 
 ## License and copyright
 
