@@ -124,6 +124,38 @@ Two things related to filtering that are good to understand:
   ```
 :::
 
+## Networks and graphs
+
+:::{dropdown} How do I find street intersections and their coordinates?
+
+Build a graph with `to_graph(..., simplify=True)`. Simplification reduces the network to its
+topological nodes — every node is a real intersection or a dead-end — and each node carries
+`x`/`y` (longitude/latitude in EPSG:4326), a Point `geometry`, and a `street_count` (how many
+streets meet there). Keep the nodes where three or more streets meet:
+
+```python
+import geopandas as gpd
+from pyrosm import OSM, get_data
+
+osm = OSM(get_data("Helsinki"))
+nodes, edges = osm.get_network(network_type="driving", nodes=True)
+G = osm.to_graph(nodes, edges, graph_type="networkx", simplify=True)
+
+intersections = gpd.GeoDataFrame(
+    [
+        {"osmid": n, "lon": d["x"], "lat": d["y"],
+         "street_count": d["street_count"], "geometry": d["geometry"]}
+        for n, d in G.nodes(data=True)
+        if d["street_count"] >= 3
+    ],
+    crs="EPSG:4326",
+)
+```
+
+`street_count == 1` marks dead-ends. Use `network_type="walking"` or `"cycling"` to count
+crossings for those modes instead.
+:::
+
 ## Installation
 
 :::{dropdown} How should I install pyrosm, and what if installation fails?
