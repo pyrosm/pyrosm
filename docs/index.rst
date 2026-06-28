@@ -99,6 +99,7 @@ Getting started
     tags_and_columns.ipynb
     saving_and_cropping.ipynb
     graphs.ipynb
+    faq.md
     benchmarks/benchmarks_scaling.ipynb
 
 .. toctree::
