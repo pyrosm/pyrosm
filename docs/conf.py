@@ -25,6 +25,9 @@ version = release = "0.10.0"
 extensions = [
     "sphinx.ext.mathjax",
     "sphinx.ext.autodoc",
+    # Generate the API reference as category tables with one-line summaries and a page per
+    # method/function (see reference.rst).
+    "sphinx.ext.autosummary",
     # Support numpy style autodoc
     "sphinx.ext.napoleon",
     "IPython.sphinxext.ipython_console_highlighting",
@@ -33,9 +36,16 @@ extensions = [
     "sphinx_design",
 ]
 
+# Generate the per-object stub pages referenced by the autosummary tables at build time.
+autosummary_generate = True
+
 # Enable MyST's colon-fence syntax (:::{admonition} ... :::) so notebook markdown
 # cells can use admonitions/directives that also render cleanly in the notebook UI.
 myst_enable_extensions = ["colon_fence"]
+
+# Generate GitHub-style anchors for headings up to level 3 so the in-page "Contents"
+# links inside the notebooks (e.g. ``[...](#read-buildings)``) resolve to their sections.
+myst_heading_anchors = 3
 
 # pyrosm is installed (and compiled) by the Read the Docs build via
 # ``.readthedocs.yml`` (``python.install`` runs ``pip install .``), so autodoc
