@@ -1030,7 +1030,6 @@ class OSM:
         timestamp=None,
     ):
         """
-        `
         Parse OSM data based on custom criteria.
 
         Parameters

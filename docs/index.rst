@@ -84,28 +84,36 @@ If you use pyrosm in your work, please cite it. Pyrosm is archived on
 
 See :doc:`How to cite pyrosm <citation>` for the full reference and a BibTeX entry.
 
-Getting started
----------------
-
-
 .. toctree::
-    :caption: Contents
+    :caption: Getting started
 
     installation.ipynb
     quickstart.ipynb
+
+.. toctree::
+    :caption: User guide
+
     downloading_data.ipynb
     reading_osm_data.ipynb
     custom_filter.ipynb
     tags_and_columns.ipynb
     saving_and_cropping.ipynb
     graphs.ipynb
+
+.. toctree::
+    :caption: Additional info
+
     faq.md
     benchmarks/benchmarks_scaling.ipynb
 
 .. toctree::
-    :caption: Reference Guide
+    :caption: API reference
 
-    Reference to All Attributes and Methods <reference>
+    reference
+
+.. toctree::
+    :caption: About
+
     How to cite <citation>
     contributions
     Changelog <changelog>
