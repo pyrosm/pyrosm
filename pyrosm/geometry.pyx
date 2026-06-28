@@ -154,45 +154,45 @@ cdef bint _is_closed_ring(coords):
     return coords[0, 0] == coords[-1, 0] and coords[0, 1] == coords[-1, 1]
 
 
-cdef _line_components(merged):
+cdef _line_components(merged_lines):
     # The LineString components of a (Multi)LineString returned by line_merge.
-    if merged is None:
+    if merged_lines is None:
         return []
-    gt = merged.geom_type
-    if gt == "LineString":
-        return [merged]
-    if gt == "MultiLineString" or gt == "GeometryCollection":
-        return [g for g in merged.geoms if g.geom_type == "LineString"]
+    geom_type = merged_lines.geom_type
+    if geom_type == "LineString":
+        return [merged_lines]
+    if geom_type == "MultiLineString" or geom_type == "GeometryCollection":
+        return [part for part in merged_lines.geoms if part.geom_type == "LineString"]
     return []
 
 
-cdef _polygonal_only(geom):
+cdef _polygonal_only(geometry):
     # Reduce an even-odd overlay result to a Polygon/MultiPolygon, dropping any
     # non-areal artifacts (stray lines/points from coincident boundaries). Returns
     # None when no polygonal area remains.
-    if geom is None or geom.is_empty:
+    if geometry is None or geometry.is_empty:
         return None
-    gt = geom.geom_type
-    if gt == "Polygon" or gt == "MultiPolygon":
-        return geom
-    if gt == "GeometryCollection":
-        polys = []
-        for g in geom.geoms:
-            if g.is_empty:
+    geom_type = geometry.geom_type
+    if geom_type == "Polygon" or geom_type == "MultiPolygon":
+        return geometry
+    if geom_type == "GeometryCollection":
+        polygon_parts = []
+        for part in geometry.geoms:
+            if part.is_empty:
                 continue
-            if g.geom_type == "Polygon":
-                polys.append(g)
-            elif g.geom_type == "MultiPolygon":
-                polys.extend([p for p in g.geoms if not p.is_empty])
-        if len(polys) == 0:
+            if part.geom_type == "Polygon":
+                polygon_parts.append(part)
+            elif part.geom_type == "MultiPolygon":
+                polygon_parts.extend([sub for sub in part.geoms if not sub.is_empty])
+        if len(polygon_parts) == 0:
             return None
-        if len(polys) == 1:
-            return polys[0]
-        return MultiPolygon(polys)
+        if len(polygon_parts) == 1:
+            return polygon_parts[0]
+        return MultiPolygon(polygon_parts)
     return None
 
 
-cdef _assemble_multipolygon(lines):
+cdef _assemble_multipolygon(member_lines):
     # OSM multipolygon assembly by geometry, not member role (#21):
     #   1. line_merge all member ways into maximal lines and keep the closed rings
     #      (open/incomplete rings are dropped, not force-closed with a spurious edge);
@@ -201,50 +201,50 @@ cdef _assemble_multipolygon(lines):
     #      covered by an odd number of rings. This yields outers, holes and
     #      islands-in-holes independent of roles and matches osmium for valid data.
     cdef int i
-    merged = line_merge(multilinestrings(lines))
-    ring_polys = []
-    for comp in _line_components(merged):
-        coords = get_coordinates(comp)
+    merged_lines = line_merge(multilinestrings(member_lines))
+    ring_polygons = []
+    for line in _line_components(merged_lines):
+        coords = get_coordinates(line)
         if not _is_closed_ring(coords):
             continue
         ring = create_linear_ring(coords)
         if ring is None:
             continue
         try:
-            poly = polygons(ring)
-            if not poly.is_valid:
-                poly = poly.buffer(0)
+            ring_polygon = polygons(ring)
+            if not ring_polygon.is_valid:
+                ring_polygon = ring_polygon.buffer(0)
         except GEOSException:
             continue
-        if poly.is_empty:
+        if ring_polygon.is_empty:
             continue
-        ring_polys.append(poly)
+        ring_polygons.append(ring_polygon)
 
-    if len(ring_polys) == 0:
+    if len(ring_polygons) == 0:
         return None
 
     # Even-odd overlay. GEOS can raise on pathological/self-touching source rings; rather
     # than abort the whole parse, drop this one relation (its rings are unassemblable).
     try:
-        geom = ring_polys[0]
-        for i in range(1, len(ring_polys)):
-            geom = symmetric_difference(geom, ring_polys[i])
+        area = ring_polygons[0]
+        for i in range(1, len(ring_polygons)):
+            area = symmetric_difference(area, ring_polygons[i])
     except GEOSException:
         return None
 
-    geom = _polygonal_only(geom)
-    if geom is None:
+    area = _polygonal_only(area)
+    if area is None:
         return None
-    if not is_valid(geom):
-        geom = _polygonal_only(fix_geometry(geom))
-    return geom
+    if not is_valid(area):
+        area = _polygonal_only(fix_geometry(area))
+    return area
 
 
 cdef create_relation_geometry(node_coordinates, ways,
                               member_roles, force_linestring,
                               make_multipolygon,
                               bint drop_if_open=False):
-    cdef int i, m_cnt
+    cdef int i, n_members
     # Get coordinates for relation
     coordinates = get_way_coordinates_for_polygon(node_coordinates, ways)
 
@@ -252,32 +252,32 @@ cdef create_relation_geometry(node_coordinates, ways,
     # classify outer/inner here: the OSM multipolygon algorithm decides that by
     # geometry (#21). Two-point segments are kept -- line_merge stitches them into
     # rings; ``make_multipolygon`` and ``drop_if_open`` no longer affect assembly.
-    lines = []
-    m_cnt = len(member_roles)
-    for i in range(0, m_cnt):
+    member_lines = []
+    n_members = len(member_roles)
+    for i in range(0, n_members):
         coords = coordinates[i]
         if len(coords) < 2:
             continue
-        geometry = create_linestring(coords)
-        if geometry is not None:
-            lines.append(geometry)
+        line = create_linestring(coords)
+        if line is not None:
+            member_lines.append(line)
 
-    if len(lines) == 0:
+    if len(member_lines) == 0:
         return None
 
     # Routes and similar are linestrings, not areas.
     if force_linestring:
-        if len(lines) == 1:
-            return lines
-        geom = line_merge(multilinestrings(lines))
-        if isinstance(geom, np.ndarray):
-            return geom.tolist()
-        return [geom]
+        if len(member_lines) == 1:
+            return member_lines
+        merged = line_merge(multilinestrings(member_lines))
+        if isinstance(merged, np.ndarray):
+            return merged.tolist()
+        return [merged]
 
-    geom = _assemble_multipolygon(lines)
-    if geom is None:
+    area = _assemble_multipolygon(member_lines)
+    if area is None:
         return None
-    return [geom]
+    return [area]
 
 
 cpdef create_point_geometries(xarray, yarray):
