@@ -160,6 +160,22 @@ def _normalize_id(oid):
         return None
 
 
+def _infer_osm_type(geom):
+    """Best-effort OSM type for a row that lacks an ``osm_type`` column.
+
+    Some returned frames omit ``osm_type`` -- notably the node frame from
+    ``get_network(nodes=True)`` -- so without this their existing elements would not
+    match the cache and would be re-synthesized as duplicate new nodes. Inferred from
+    the geometry kind: ``Point`` -> node, ``LineString``/``Polygon`` -> way.
+    """
+    gt = getattr(geom, "geom_type", None)
+    if gt == "Point":
+        return "node"
+    if gt in ("LineString", "Polygon"):
+        return "way"
+    return None
+
+
 def _collect_edits(frames, way_by_id, node_coordinates, rel_ids):
     """Split frame rows into tag edits (matched by osm_type+id) and new rows."""
     node_edits, way_edits, rel_edits = {}, {}, {}
@@ -169,6 +185,8 @@ def _collect_edits(frames, way_by_id, node_coordinates, rel_ids):
         for _, row in gdf.iterrows():
             otype = _normalize_osm_type(row.get("osm_type"))
             oid = _normalize_id(row.get("id"))
+            if otype is None:
+                otype = _infer_osm_type(row[geom_col])
             tags = _row_tags(row, geom_col)
             if oid is not None and otype == "way" and oid in way_by_id:
                 way_edits[oid] = tags
@@ -179,6 +197,55 @@ def _collect_edits(frames, way_by_id, node_coordinates, rel_ids):
             else:
                 new_rows.append((oid, row[geom_col], tags))
     return node_edits, way_edits, rel_edits, new_rows
+
+
+def _subset_keep_sets(node_edits, way_edits, rel_edits, way_by_id, relations):
+    """Closure of the matched elements over the cache, for ``subset_only``.
+
+    Starts from the elements matched in the frame(s) and pulls in their references so
+    the written PBF stays valid: kept relations add their member ways/nodes (recursing
+    into sub-relations), then kept ways add their node refs. Only cache-present members
+    are added (a member absent from the cache has no record to emit); relations are
+    still written with their full original member list by ``_add_base_relations``.
+    Returns ``(keep_nodes, keep_ways, keep_rels)`` as sets of ids.
+    """
+    keep_nodes = set(node_edits)
+    keep_ways = set(way_edits)
+    keep_rels = set(rel_edits)
+
+    members_by_rid = {}
+    if "id" in relations:
+        rid_arr, mem_arr = relations["id"], relations["members"]
+        for i in range(len(rid_arr)):
+            members_by_rid[int(rid_arr[i])] = mem_arr[i]
+
+    # Relations -> members, to a fixed point so super-relations resolve.
+    pending = list(keep_rels)
+    while pending:
+        mem = members_by_rid.get(pending.pop())
+        if mem is None:
+            continue
+        mtypes, mids = mem["member_type"], mem["member_id"]
+        for j in range(len(mids)):
+            mtype = mtypes[j]
+            if isinstance(mtype, (bytes, bytearray)):
+                mtype = mtype.decode()
+            mid = int(mids[j])
+            if mtype == "way":
+                keep_ways.add(mid)
+            elif mtype == "node":
+                keep_nodes.add(mid)
+            elif mtype == "relation" and mid in members_by_rid and mid not in keep_rels:
+                keep_rels.add(mid)
+                pending.append(mid)
+
+    # Ways -> node refs (direct + pulled in via relations).
+    for wid in keep_ways:
+        w = way_by_id.get(wid)
+        if w is not None:
+            keep_nodes.update(int(n) for n in w["nodes"])
+
+    return keep_nodes, keep_ways, keep_rels
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +358,8 @@ class _RecordBuilder:
         }
 
     def bounds(self):
+        if not self.lons:  # empty subset -> degenerate header bbox
+            return (0.0, 0.0, 0.0, 0.0)
         lons = np.asarray(self.lons, dtype=np.float64)
         lats = np.asarray(self.lats, dtype=np.float64)
         return (
@@ -314,9 +383,11 @@ def _node_tag_records(nodes_cache):
     return out
 
 
-def _add_base_nodes(builder, node_coordinates, nodes_cache, node_edits):
+def _add_base_nodes(builder, node_coordinates, nodes_cache, node_edits, keep=None):
     poi_tags = _node_tag_records(nodes_cache)
     for nid, rec in node_coordinates.items():
+        if keep is not None and nid not in keep:
+            continue
         if nid in node_edits:
             tags = node_edits[nid]
         else:
@@ -335,9 +406,11 @@ def _add_base_nodes(builder, node_coordinates, nodes_cache, node_edits):
         )
 
 
-def _add_base_ways(builder, way_records, way_edits):
+def _add_base_ways(builder, way_records, way_edits, keep=None):
     for w in way_records:
         wid = w["id"]
+        if keep is not None and wid not in keep:
+            continue
         builder.ways.append(
             {
                 "id": wid,
@@ -349,11 +422,13 @@ def _add_base_ways(builder, way_records, way_edits):
         )
 
 
-def _add_base_relations(builder, relations, rel_edits):
+def _add_base_relations(builder, relations, rel_edits, keep=None):
     if "id" not in relations:
         return
     for i in range(len(relations["id"])):
         rid = int(relations["id"][i])
+        if keep is not None and rid not in keep:
+            continue
         mem = relations["members"][i]
         members = [
             (mem["member_type"][j], int(mem["member_id"][j]), mem["member_role"][j])
@@ -382,13 +457,24 @@ def _add_base_relations(builder, relations, rel_edits):
 # Public entry point
 # ---------------------------------------------------------------------------
 def write_geodataframe_to_pbf(
-    data, output_path, node_coordinates, way_records, relations, nodes
+    data,
+    output_path,
+    node_coordinates,
+    way_records,
+    relations,
+    nodes,
+    subset_only=False,
 ):
     """Write `data` (+ the cached dataset) to a valid PBF at `output_path`.
 
     `node_coordinates` / `way_records` / `relations` / `nodes` are the caches the
     `OSM` object holds after reading; `data` is a GeoDataFrame or list of them
     whose tag edits are applied by ``osm_type``+``id`` (new rows are synthesized).
+
+    When ``subset_only`` is True, only the elements present in `data` are written
+    (matched by ``osm_type``+``id``), together with the references they need to stay
+    valid -- kept ways pull in their nodes and kept relations pull in their member
+    ways/nodes (the union across all frames). New rows are still synthesized.
     """
     relations = relations or {}
     frames = _reproject_to_wgs84(_as_frames(data))
@@ -400,10 +486,16 @@ def write_geodataframe_to_pbf(
         frames, way_by_id, node_coordinates, rel_ids
     )
 
+    keep_nodes = keep_ways = keep_rels = None
+    if subset_only:
+        keep_nodes, keep_ways, keep_rels = _subset_keep_sets(
+            node_edits, way_edits, rel_edits, way_by_id, relations
+        )
+
     builder = _RecordBuilder()
-    _add_base_nodes(builder, node_coordinates, nodes, node_edits)
-    _add_base_ways(builder, way_records, way_edits)
-    _add_base_relations(builder, relations, rel_edits)
+    _add_base_nodes(builder, node_coordinates, nodes, node_edits, keep_nodes)
+    _add_base_ways(builder, way_records, way_edits, keep_ways)
+    _add_base_relations(builder, relations, rel_edits, keep_rels)
 
     builder.begin_synthesis()
     for oid, geom, tags in new_rows:

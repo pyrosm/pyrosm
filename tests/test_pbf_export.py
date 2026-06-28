@@ -1480,3 +1480,160 @@ def test_pbf_writer_node_tag_records_empty():
     assert _node_tag_records(None) == {}
     assert _node_tag_records({}) == {}
     assert _node_tag_records({"id": [1], "lat": [0.0]}) == {}
+
+
+# ---------------------------------------------------------------------------
+# OSM.write_pbf(subset_only=True) — export only selected layers (issue #348)
+# ---------------------------------------------------------------------------
+def _ids(gdf):
+    return set() if gdf is None else set(int(i) for i in gdf["id"])
+
+
+def test_write_pbf_subset_only_buildings(helsinki_pbf, tmp_path):
+    """subset_only=True writes only the passed layer: buildings survive (same ids,
+    same count -> relation member ways were pulled in), the unrelated road network
+    is absent. Inverse of test_write_pbf_whole_dataset_preserved."""
+    osm = OSM(helsinki_pbf)
+    buildings = osm.get_buildings()
+    out = str(tmp_path / "buildings_only.osm.pbf")
+    osm.write_pbf(buildings, out, subset_only=True)
+
+    back = OSM(out)
+    b2 = back.get_buildings()
+    assert b2 is not None and len(b2) == len(buildings)
+    assert _ids(b2) == _ids(buildings)
+    assert b2.geometry.notna().all()
+    # if the source had multipolygon building relations, they round-trip too
+    if "relation" in set(buildings["osm_type"]):
+        assert "relation" in set(b2["osm_type"])
+    net2 = back.get_network()
+    assert net2 is None or len(net2) == 0
+
+
+def test_write_pbf_subset_only_network_excludes_buildings(helsinki_pbf, tmp_path):
+    osm = OSM(helsinki_pbf)
+    network = osm.get_network()
+    out = str(tmp_path / "network_only.osm.pbf")
+    osm.write_pbf(network, out, subset_only=True)
+
+    back = OSM(out)
+    net2 = back.get_network()
+    assert net2 is not None and len(net2) > 0
+    assert _ids(network) <= _ids(net2)
+    b = back.get_buildings()
+    assert b is None or len(b) == 0
+
+
+def test_write_pbf_subset_only_multilayer(helsinki_pbf, tmp_path):
+    """A list of frames writes the union of their elements; both layers come back
+    and standalone POIs (in neither layer) are not carried along."""
+    osm = OSM(helsinki_pbf)
+    buildings = osm.get_buildings()
+    network = osm.get_network()
+    src_poi_nodes = osm.get_pois()
+    src_poi_nodes = _ids(src_poi_nodes[src_poi_nodes["osm_type"] == "node"])
+
+    out = str(tmp_path / "multi.osm.pbf")
+    osm.write_pbf([buildings, network], out, subset_only=True)
+
+    back = OSM(out)
+    b2, net2 = back.get_buildings(), back.get_network()
+    assert b2 is not None and len(b2) > 0 and _ids(buildings) <= _ids(b2)
+    assert net2 is not None and len(net2) > 0 and _ids(network) <= _ids(net2)
+    # standalone POI nodes were in neither layer -> far fewer remain as tagged nodes
+    out_pois = back.get_pois()
+    out_poi_nodes = (
+        _ids(out_pois[out_pois["osm_type"] == "node"])
+        if out_pois is not None
+        else set()
+    )
+    assert len(out_poi_nodes) < len(src_poi_nodes)
+
+
+def test_write_pbf_subset_only_false_is_whole_dataset(helsinki_pbf, tmp_path):
+    """subset_only=False (default) is unchanged: passing one layer still writes the
+    whole cached dataset, so the network (not passed) survives."""
+    osm = OSM(helsinki_pbf)
+    out = str(tmp_path / "whole.osm.pbf")
+    osm.write_pbf(osm.get_buildings(), out, subset_only=False)
+    assert len(OSM(out).get_network()) > 0
+
+
+def test_write_pbf_subset_only_empty(helsinki_pbf, tmp_path):
+    """An empty subset (no matched elements, no new rows) writes a readable PBF."""
+    osm = OSM(helsinki_pbf)
+    empty = osm.get_buildings().iloc[:0]
+    out = str(tmp_path / "empty.osm.pbf")
+    osm.write_pbf(empty, out, subset_only=True)
+    b = OSM(out).get_buildings()
+    assert b is None or len(b) == 0
+
+
+def test_write_pbf_subset_only_network_with_nodes(helsinki_pbf, tmp_path):
+    """get_network(nodes=True) returns (nodes, edges); subset-exporting that tuple
+    writes the road ways + their (real) nodes and does not synthesize duplicate
+    negative-id nodes from the node frame (which has no osm_type column)."""
+    osm = OSM(helsinki_pbf)
+    nodes, edges = osm.get_network(nodes=True)
+    out = str(tmp_path / "net_nodes.osm.pbf")
+    osm.write_pbf([nodes, edges], out, subset_only=True)
+
+    back = OSM(out)
+    net2 = back.get_network()
+    assert net2 is not None and len(net2) > 0
+    # no synthesized duplicates: every written node id is a real (positive) id
+    node_ids, _, _, _, _ = _read_elements(out)
+    assert node_ids and all(nid > 0 for nid in node_ids)
+
+
+def test_infer_osm_type():
+    from pyrosm.pbf_writer import _infer_osm_type
+
+    assert _infer_osm_type(Point(0, 0)) == "node"
+    assert _infer_osm_type(LineString([(0, 0), (1, 1)])) == "way"
+    assert _infer_osm_type(Polygon([(0, 0), (1, 0), (1, 1)])) == "way"
+    assert _infer_osm_type(MultiPolygon([Polygon([(0, 0), (1, 0), (1, 1)])])) is None
+    assert _infer_osm_type(None) is None
+
+
+def test_subset_keep_sets_closure():
+    """The closure resolves way/node/sub-relation members and way node-refs, and
+    tolerates kept/member ids that are absent from the cache."""
+    from pyrosm.pbf_writer import _subset_keep_sets
+
+    # No relations cache: a kept way pulls in its node refs; nothing else.
+    kn, kw, kr = _subset_keep_sets(
+        {}, {5: {}}, {}, {5: {"id": 5, "nodes": [50, 51]}}, {}
+    )
+    assert kr == set() and kw == {5} and kn == {50, 51}
+
+    # Relation 1 has way/node/sub-relation members (incl. sub-rel 999 absent from the
+    # cache); relation 2 (a sub-relation) has a way. 888 is a kept relation absent
+    # from the cache. way 10 -> [100, 101], way 11 -> [101, 102].
+    relations = {
+        "id": np.array([1, 2], dtype=np.int64),
+        "members": np.array(
+            [
+                {
+                    "member_type": [b"way", b"node", b"relation", b"relation"],
+                    "member_id": np.array([10, 100, 2, 999], dtype=np.int64),
+                    "member_role": [b"outer", b"", b"", b""],
+                },
+                {
+                    # plain str member_type (not bytes) is handled too
+                    "member_type": ["way"],
+                    "member_id": np.array([11], dtype=np.int64),
+                    "member_role": ["outer"],
+                },
+            ],
+            dtype=object,
+        ),
+    }
+    way_by_id = {
+        10: {"id": 10, "nodes": [100, 101]},
+        11: {"id": 11, "nodes": [101, 102]},
+    }
+    kn, kw, kr = _subset_keep_sets({}, {}, {1: {}, 888: {}}, way_by_id, relations)
+    assert kr == {1, 2, 888}  # sub-relation 2 resolved; 888 kept; 999 absent
+    assert kw == {10, 11}  # way members of relations 1 and 2
+    assert kn == {100, 101, 102}  # node member + way node-refs
