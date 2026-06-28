@@ -7,7 +7,8 @@ import numpy as np
 
 cdef get_data_filter_and_osm_keys(custom_filter):
     # Advanced (opt-in) filters compile to a CompiledFilter predicate; its positive keys are
-    # the candidate-key gate. compile_custom_filter is idempotent and leaves a plain dict as-is.
+    # the candidate-key gate. compile_custom_filter leaves a plain dict (or an already-compiled
+    # filter) as-is, so calling it here again is safe.
     custom_filter = compile_custom_filter(custom_filter)
     if isinstance(custom_filter, CompiledFilter):
         return custom_filter, list(custom_filter.positive_keys)

@@ -310,11 +310,12 @@ def is_advanced_filter(custom_filter):
 
 
 def compile_custom_filter(custom_filter):
-    """Normalise any ``custom_filter`` form. Idempotent.
+    """Turn any ``custom_filter`` the user passed into the form the readers expect.
 
     Returns ``None`` for ``None``, a :class:`CompiledFilter` for the opt-in advanced forms
     (bracket string(s) or a regex-bearing dict), and the unchanged dict for a plain dict so
-    the existing fast path is preserved.
+    the existing fast path is preserved. Calling it again on its own result changes nothing,
+    so it is safe to call more than once on the same filter.
     """
     if custom_filter is None or isinstance(custom_filter, CompiledFilter):
         return custom_filter
