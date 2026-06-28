@@ -19,3 +19,8 @@ Reading data
 
 .. autoclass:: pyrosm.pyrosm.OSM
     :members:
+
+Graph simplification
+--------------------
+
+.. autofunction:: pyrosm.graph_simplify.simplify_graph
