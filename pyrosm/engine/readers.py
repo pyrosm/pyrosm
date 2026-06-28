@@ -21,7 +21,15 @@ from pyrosm.engine import cache, geoparquet
 # geometries match the full read (e.g. a ``type=route`` relation stays a LineString and is not
 # dropped, #355), then they are dropped with the other leftovers. Keep in sync with
 # ``relations.pyx`` ``linestring_keys``.
-_GEOMETRY_TAG_KEYS = ("type", "area", "barrier", "route", "railway", "highway", "waterway")
+_GEOMETRY_TAG_KEYS = (
+    "type",
+    "area",
+    "barrier",
+    "route",
+    "railway",
+    "highway",
+    "waterway",
+)
 
 
 def _get_layer(
