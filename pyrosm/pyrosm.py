@@ -1268,7 +1268,7 @@ class OSM:
             repack=repack,
         )
 
-    def write_pbf(self, data, output_path):
+    def write_pbf(self, data, output_path, subset_only=False):
         """
         Write the OSM data this object holds back to a valid, re-readable
         ``*.osm.pbf``, applying attribute/tag edits from a (modified)
@@ -1280,6 +1280,12 @@ class OSM:
         added as new elements synthesized from their geometry (with negative ids).
         Topology and coordinates come from the data pyrosm read, so the output is
         faithful and re-readable (e.g. by pyrosm, osmium, GDAL and r5py/R5).
+
+        Pass ``subset_only=True`` to instead write a PBF containing **only** the
+        elements in ``data`` (matched by ``osm_type`` + ``id``) plus the references
+        they need to stay valid -- e.g. export just the buildings or just the road
+        network to a new file. Multiple layers can be combined by passing a list
+        (``[buildings, network]``); the union of their elements is written.
 
         Typical use is to modify attributes in pandas and save them back::
 
@@ -1302,6 +1308,10 @@ class OSM:
         output_path : str
             Where to write the PBF.
 
+        subset_only : bool (default False)
+            If True, write only the elements present in ``data`` (and the nodes and
+            relation members they reference) instead of the whole cached dataset.
+
         Returns
         -------
         str
@@ -1309,8 +1319,10 @@ class OSM:
 
         Notes
         -----
-        v1 applies edits and additions, not deletions: dropping rows from ``data``
-        does not remove elements (the whole cached dataset is the base set).
+        v1 applies edits and additions, not deletions: with the default
+        ``subset_only=False`` the whole cached dataset is the base set, so dropping
+        rows from ``data`` does not remove elements. Use ``subset_only=True`` to limit
+        the output to the elements in ``data``.
         """
         from pyrosm.pbf_writer import write_geodataframe_to_pbf
 
@@ -1324,6 +1336,7 @@ class OSM:
             way_records=self._way_records,
             relations=self._relations,
             nodes=self._nodes,
+            subset_only=subset_only,
         )
 
     @staticmethod
