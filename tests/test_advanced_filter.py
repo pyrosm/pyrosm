@@ -345,7 +345,7 @@ def test_plain_dict_unchanged(helsinki_pbf):
 
 
 # --------------------------------------------------------------------------------------------
-# Out-of-core engine parity (serial; the sandbox cannot spawn worker pools)
+# Out-of-core engine parity (single worker)
 # --------------------------------------------------------------------------------------------
 
 
@@ -387,8 +387,8 @@ def test_engine_parity_pois(helsinki_pbf):
 
 
 def test_engine_get_network_resolves_default_filter_type(helsinki_pbf):
-    # the OSM API resolves filter_type before calling the engine, so exercise the engine reader
-    # directly to cover its own default: filter_type=None -> keep for an advanced filter.
+    # called directly (not via OSM, which passes a concrete filter_type), the engine reader
+    # resolves an omitted filter_type to keep for an advanced filter.
     import pyrosm.engine as engine_backend
 
     advanced = '["highway"~"footway|cycleway"]'
