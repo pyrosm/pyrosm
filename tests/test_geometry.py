@@ -1,6 +1,7 @@
 """Geometry-focused tests: way/relation geometry creation, polygon-vs-line
 typing, and polygon/multipolygon ring orientation (cross-checked against
 osmium). Consolidated here so geometry-correctness tests live in one place."""
+
 import pytest
 from pyrosm import get_data
 
@@ -251,4 +252,187 @@ def test_synthetic_multipolygon_matches_osmium(tmp_path):
         for hole in part.interiors:
             assert not hole.is_ccw
     err = ref.symmetric_difference(g).area / ref.area
-    assert err < 0.05
+    assert err < 1e-6  # #21: even-odd assembly matches osmium near-exactly (was < 0.05)
+
+
+def test_multipolygon_role_ignored_uses_geometry(tmp_path):
+    """#21: outer/inner is decided by geometry, not member role. A ring tagged
+    role=outer that lies inside another outer is treated as a hole (matches osmium)."""
+    osmium = pytest.importorskip("osmium")
+    import shapely
+    from osmium.osm.mutable import Node, Way, Relation
+    from pyrosm import OSM
+
+    path = str(tmp_path / "mistagged.osm.pbf")
+    w = osmium.SimpleWriter(path)
+
+    def node(i, lon, lat):
+        w.add_node(Node(id=i, location=(lon, lat)))
+
+    # Big outer square (101) with a smaller square (102) fully inside it -- but BOTH
+    # member ways are tagged role=outer (a common mis-tagging).
+    node(1, 25.000, 60.000), node(2, 25.004, 60.000)
+    node(3, 25.004, 60.004), node(4, 25.000, 60.004)
+    node(5, 25.001, 60.001), node(6, 25.003, 60.001)
+    node(7, 25.003, 60.003), node(8, 25.001, 60.003)
+    w.add_way(Way(id=101, nodes=[1, 2, 3, 4, 1]))
+    w.add_way(Way(id=102, nodes=[5, 6, 7, 8, 5]))
+    w.add_relation(
+        Relation(
+            id=2000,
+            members=[("w", 101, "outer"), ("w", 102, "outer")],
+            tags={"type": "multipolygon", "landuse": "forest"},
+        )
+    )
+    w.close()
+
+    ref = _osmium_relation_areas(path)[2000]
+    rel = OSM(path).get_landuse()
+    rel = rel[rel.osm_type == "relation"]
+    assert len(rel) == 1
+    g = rel.geometry.iloc[0]
+    assert g.is_valid
+    parts = g.geoms if g.geom_type == "MultiPolygon" else [g]
+    assert sum(len(p.interiors) for p in parts) == 1  # inner ring became a hole
+    assert shapely.equals(shapely.normalize(g), shapely.normalize(ref))
+
+
+def test_type_multipolygon_with_linear_tag_is_area(tmp_path):
+    """#21: a relation explicitly tagged type=multipolygon is an area even when it
+    also carries a linear tag (waterway/barrier); it must not become a LineString."""
+    osmium = pytest.importorskip("osmium")
+    from osmium.osm.mutable import Node, Way, Relation
+    from pyrosm import OSM
+
+    path = str(tmp_path / "water_mp.osm.pbf")
+    w = osmium.SimpleWriter(path)
+
+    def node(i, lon, lat):
+        w.add_node(Node(id=i, location=(lon, lat)))
+
+    node(1, 25.0, 60.0), node(2, 25.002, 60.0)
+    node(3, 25.002, 60.002), node(4, 25.0, 60.002)
+    w.add_way(Way(id=101, nodes=[1, 2, 3, 4, 1]))
+    w.add_relation(
+        Relation(
+            id=3000,
+            members=[("w", 101, "outer")],
+            tags={"type": "multipolygon", "natural": "water", "waterway": "river"},
+        )
+    )
+    w.close()
+
+    rel = OSM(path).get_natural()
+    rel = rel[rel.osm_type == "relation"]
+    assert len(rel) == 1
+    g = rel.geometry.iloc[0]
+    assert g.geom_type in ("Polygon", "MultiPolygon")
+    assert g.area > 0
+
+
+def test_multipolygon_island_in_hole(tmp_path):
+    """#21 even-odd nesting: outer contains a hole that contains an island; the island
+    is filled (depth-2), matching osmium, regardless of the island member's role."""
+    osmium = pytest.importorskip("osmium")
+    import shapely
+    from osmium.osm.mutable import Node, Way, Relation
+    from pyrosm import OSM
+
+    path = str(tmp_path / "island.osm.pbf")
+    w = osmium.SimpleWriter(path)
+
+    def node(i, lon, lat):
+        w.add_node(Node(id=i, location=(lon, lat)))
+
+    node(1, 25.000, 60.000), node(2, 25.006, 60.000)
+    node(3, 25.006, 60.006), node(4, 25.000, 60.006)
+    node(5, 25.001, 60.001), node(6, 25.005, 60.001)
+    node(7, 25.005, 60.005), node(8, 25.001, 60.005)
+    node(9, 25.002, 60.002), node(10, 25.004, 60.002)
+    node(11, 25.004, 60.004), node(12, 25.002, 60.004)
+    w.add_way(Way(id=101, nodes=[1, 2, 3, 4, 1]))
+    w.add_way(Way(id=102, nodes=[5, 6, 7, 8, 5]))
+    w.add_way(Way(id=103, nodes=[9, 10, 11, 12, 9]))
+    w.add_relation(
+        Relation(
+            id=4000,
+            members=[("w", 101, "outer"), ("w", 102, "inner"), ("w", 103, "inner")],
+            tags={"type": "multipolygon", "natural": "wood"},
+        )
+    )
+    w.close()
+
+    ref = _osmium_relation_areas(path)[4000]
+    g = OSM(path).get_natural()
+    g = g[g.osm_type == "relation"].geometry.iloc[0]
+    assert g.is_valid
+    assert shapely.equals(shapely.normalize(g), shapely.normalize(ref))
+
+
+def test_multipolygon_touching_inner_ring(tmp_path):
+    """#21: an inner ring that touches the outer ring at a single shared node
+    assembles correctly -- line_merge does not merge across the degree-4 junction,
+    so the rings stay separate and the even-odd combine matches osmium."""
+    osmium = pytest.importorskip("osmium")
+    import shapely
+    from osmium.osm.mutable import Node, Way, Relation
+    from pyrosm import OSM
+
+    path = str(tmp_path / "touch.osm.pbf")
+    w = osmium.SimpleWriter(path)
+
+    def node(i, lon, lat):
+        w.add_node(Node(id=i, location=(lon, lat)))
+
+    node(1, 25.000, 60.000), node(2, 25.004, 60.000)
+    node(3, 25.004, 60.004), node(4, 25.000, 60.004)
+    node(5, 25.002, 60.001), node(6, 25.001, 60.002)
+    w.add_way(Way(id=101, nodes=[1, 2, 3, 4, 1]))  # outer square
+    w.add_way(Way(id=102, nodes=[1, 5, 6, 1]))  # inner ring sharing corner node 1
+    w.add_relation(
+        Relation(
+            id=6000,
+            members=[("w", 101, "outer"), ("w", 102, "inner")],
+            tags={"type": "multipolygon", "landuse": "forest"},
+        )
+    )
+    w.close()
+
+    ref = _osmium_relation_areas(path)[6000]
+    g = OSM(path).get_landuse()
+    g = g[g.osm_type == "relation"].geometry.iloc[0]
+    assert g.is_valid
+    assert shapely.symmetric_difference(g, ref).area / ref.area < 1e-6
+
+
+def test_multipolygon_relations_match_osmium_bundled():
+    """#21: every multipolygon relation pyrosm assembles matches osmium within a tight
+    tolerance on the bundled extract (the previously-diverging relation is fixed)."""
+    pytest.importorskip("osmium")
+    import shapely
+    from pyrosm import OSM, get_data
+
+    fp = get_data("helsinki_pbf")
+    ref = _osmium_relation_areas(fp)
+    osm = OSM(fp)
+    pyr = {}
+    for getter in ("get_natural", "get_landuse", "get_buildings", "get_boundaries"):
+        g = getattr(osm, getter)()
+        if g is None:
+            continue
+        g = g[g.osm_type == "relation"]
+        for _, row in g.iterrows():
+            geom = row.geometry
+            if geom is not None and not geom.is_empty:
+                pyr[int(row["id"])] = geom
+
+    common = set(ref) & set(pyr)
+    assert len(common) > 20  # we actually compared a meaningful set
+    bad = []
+    for rid in common:
+        a, b = ref[rid], pyr[rid]
+        if a is None or a.is_empty or a.area == 0:
+            continue
+        if shapely.symmetric_difference(a, b).area / a.area > 1e-6:
+            bad.append(rid)
+    assert bad == [], f"relations diverging from osmium: {bad}"

@@ -117,6 +117,12 @@ cdef get_relations(relations, relation_ways, node_coordinates, bint keep_metadat
             if tag["area"] == "no":
                 force_linestring = True
 
+        # A relation explicitly tagged type=multipolygon (or boundary) is an area by
+        # definition; linear member tags (waterway/barrier/...) must not turn it into
+        # a LineString (#21).
+        if "type" in tag_keys and tag["type"] in ["multipolygon", "boundary"]:
+            force_linestring = False
+
         # =========================================================
         # Determine if element should be made as MultiPolygon
         # Notice: If 'force_linestring = True', this doesn't apply
