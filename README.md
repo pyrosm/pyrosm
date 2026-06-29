@@ -42,12 +42,12 @@ memory. Pyrosm decodes the PBF data with [Google's Protocol Buffers](https://pro
 - read landuse from PBF
 - read "natural" from PBF
 - read boundaries from PBF (such as administrative borders)
-- read any other data from PBF by using a custom user-defined filter
+- read any other data from PBF by using a custom user-defined filter, including regular-expression values and Overpass-style filters (NEW in v0.11.0)
 - read large PBF extracts (country level, even some continents) with bounded memory using the opt-in out-of-core ("streaming") engine (`engine="out_of_core"`), with parallel decoding and automatic result caching (NEW in v0.10.0)
 - filter data based on bounding box
 - control which OSM tags are parsed into columns
-- crop a PBF to a smaller area and write modified OSM data back to PBF (NEW in v0.9.0)
-- export networks as a directed graph to `igraph`, `networkx` and `pandarm`
+- crop a PBF to a smaller area and write modified OSM data back to PBF (NEW in v0.9.0), or export only selected layers (NEW in v0.11.0)
+- export networks as a directed graph to `igraph`, `networkx` and `pandarm`, optionally with topological simplification (NEW in v0.11.0)
  
 ## Install
 
