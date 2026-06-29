@@ -249,12 +249,51 @@ def simplify_graph(
     remove_rings=True,
     track_merged=False,
 ):
-    """Simplify pyrosm's *directed* graph-export edges (see module docstring).
+    """Topologically simplify pyrosm's *directed* graph-export edges.
+
+    Removes interstitial nodes (degree-2 nodes that only carry geometry) and collapses
+    each chain of them into a single edge that keeps the full original geometry, matching
+    the semantics of ``osmnx.simplification.simplify_graph``. Operates on the *directed*
+    representation pyrosm builds in ``get_directed_edges`` (two reciprocal rows per two-way
+    street), before the data is handed to an exporter.
+
+    The implementation is graph-library free: it uses only numpy/pandas/shapely plus one
+    Cython kernel (``pyrosm._simplify_walk``) for the inherently sequential chain walk. A
+    pure Python reference walk (``_reference_walk``) is kept as a correctness oracle and as
+    a fallback when the compiled kernel is unavailable.
+
+    The endpoint-detection and chain-collapsing rules follow OSMnx
+    (``osmnx.simplification.simplify_graph``) and the topological simplification method
+    described in:
+
+        Boeing, G. (2025). Topological Graph Simplification Solutions to the Street
+        Intersection Miscount Problem. Transactions in GIS, 29: e70037.
+        https://doi.org/10.1111/tgis.70037
 
     ``directed_edges`` must be the directed representation (two reciprocal rows per
-    two-way street), e.g. the output of ``pyrosm.graphs.get_directed_edges`` -- NOT
-    the single-row ``OSM.get_network(nodes=True)`` edges. Returns
+    two-way street), e.g. the output of ``pyrosm.graphs.get_directed_edges`` -- NOT the
+    single-row ``OSM.get_network(nodes=True)`` edges. Returns
     ``(simplified_nodes, simplified_edges)`` in the same schema the exporters consume.
+
+    Examples
+    --------
+    Most users simplify as part of graph export (``OSM.to_graph(..., simplify=True)``)::
+
+        from pyrosm import OSM, get_data
+
+        osm = OSM(get_data("helsinki_pbf"))
+        nodes, edges = osm.get_network(network_type="walking", nodes=True)
+        graph = osm.to_graph(nodes, edges, graph_type="networkx", simplify=True)
+
+    To run it directly on the directed edges and get GeoDataFrames back::
+
+        from pyrosm.graphs import get_directed_edges
+        from pyrosm.graph_simplify import simplify_graph
+
+        directed_nodes, directed_edges = get_directed_edges(
+            nodes, edges, network_type="walking"
+        )
+        simple_nodes, simple_edges = simplify_graph(directed_nodes, directed_edges)
     """
     edges = directed_edges.reset_index(drop=True)
     m = len(edges)
