@@ -1,6 +1,23 @@
 Changelog
 =========
 
+v0.11.0
+-------
+
+This release adds topological graph simplification for network exports, opt-in regular-expression and Overpass-style custom filters, and selective-layer PBF export, and rewrites multipolygon relation assembly to follow the OSM even-odd algorithm so relation geometries match osmium. It also reorganizes the documentation with a GeoPandas-style API reference. The default in-memory and out-of-core readers are otherwise unchanged.
+
+- NEW: Add topological graph simplification to `OSM.to_graph` via `simplify=True` (off by default). It removes interstitial (degree-two) nodes and merges each chain of edges between true intersections and dead-ends into a single edge — consolidating their geometry and length — so the exported graph matches the topology produced by OSMnx's `simplify_graph`. Pass `simplify_kwargs` to forward options, and the kept nodes carry an OSMnx-compatible `street_count`. It is implemented vectorised with a single Cython chain-walk kernel and needs no `networkx`/`igraph` in the path ([#89](https://github.com/pyrosm/pyrosm/issues/89), [#351](https://github.com/pyrosm/pyrosm/pull/351), [#352](https://github.com/pyrosm/pyrosm/pull/352))
+- NEW: `custom_filter` accepts two opt-in advanced forms in addition to the exact-value dict, on every reading method: a compiled regular expression (`re.compile(...)`) as a value, matched against the tag value with `re.search`; and Overpass-style bracket-filter strings — a single string or a list of them, the syntax OSMnx users already know — where each string is the AND of its brackets and a list is their OR, supporting `=`, `!=`, `~`, `!~`, key-present and key-absent operators and a case-insensitive flag. Advanced network filters select ways by the keys they reference, so `get_network` can now build non-`highway` networks (e.g. `railway` or `cycleway`). A plain-dict filter behaves exactly as before ([#116](https://github.com/pyrosm/pyrosm/issues/116), [#341](https://github.com/pyrosm/pyrosm/issues/341), [#357](https://github.com/pyrosm/pyrosm/pull/357), [#359](https://github.com/pyrosm/pyrosm/pull/359))
+- NEW: Add a `subset_only` parameter to `OSM.write_pbf` for exporting only selected layers to a PBF. With `subset_only=True` the writer keeps only the elements in the supplied GeoDataFrame(s) and the nodes/ways they reference, rather than the whole source file, so e.g. just the buildings and the network can be written to a new `*.osm.pbf` ([#348](https://github.com/pyrosm/pyrosm/issues/348), [#353](https://github.com/pyrosm/pyrosm/pull/353))
+- FIXED: Assemble multipolygon and boundary relations with the OSM even-odd rule — a point is inside the area when an odd number of the relation's rings enclose it — instead of the previous role-based outer/inner classification. This matches osmium and GDAL and corrects relation geometries with islands-in-holes, touching inner rings, or mis-tagged member roles, and drops spurious force-closed artifacts. It also fixes the out-of-core engine returning fewer elements under `keep_other_tags=False`, which had omitted the relation linestring-decision tag keys ([#21](https://github.com/pyrosm/pyrosm/issues/21), [#354](https://github.com/pyrosm/pyrosm/pull/354), [#355](https://github.com/pyrosm/pyrosm/issues/355))
+- DOCS: Reorganize the documentation with a grouped table of contents and a new GeoPandas-style API reference (category tables with a one-line summary per method and a page per object); add a Frequently Asked Questions page (including how to find street intersections and their coordinates); document graph simplification and the advanced custom filters; render the API reference correctly on Read the Docs; and fix broken documentation links in the README ([#93](https://github.com/pyrosm/pyrosm/issues/93), [#177](https://github.com/pyrosm/pyrosm/issues/177), [#347](https://github.com/pyrosm/pyrosm/issues/347), [#349](https://github.com/pyrosm/pyrosm/pull/349), [#350](https://github.com/pyrosm/pyrosm/pull/350), [#356](https://github.com/pyrosm/pyrosm/pull/356), [#358](https://github.com/pyrosm/pyrosm/pull/358), [#360](https://github.com/pyrosm/pyrosm/pull/360))
+
+Thanks for all the contributors who helped to improve the library either via PRs, or by raising or participating in an issue:
+
+- phildias ([#116](https://github.com/pyrosm/pyrosm/issues/116))
+- mszell ([#341](https://github.com/pyrosm/pyrosm/issues/341))
+- teawithoney ([#177](https://github.com/pyrosm/pyrosm/issues/177))
+
 v0.10.0
 -------
 
