@@ -13,8 +13,8 @@ identifiers:
     value: 10.5281/zenodo.3755057
     description: "Concept DOI that always resolves to the latest version"
 doi: 10.5281/zenodo.3755057
-version: 0.10.0
-date-released: "2026-06-26"
+version: 0.11.0
+date-released: "2026-07-01"
 license: MIT
 repository-code: "https://github.com/pyrosm/pyrosm"
 url: "https://pyrosm.readthedocs.io/"
