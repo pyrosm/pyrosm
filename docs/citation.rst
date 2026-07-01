@@ -17,7 +17,7 @@ Recommended citation
 --------------------
 
    Tenkanen, H. (2026). *pyrosm: A Python library for reading and writing OpenStreetMap PBF data
-   with GeoDataFrames*. (v0.10.0) Zenodo. https://doi.org/10.5281/zenodo.3755057
+   with GeoDataFrames*. (v0.11.0) Zenodo. https://doi.org/10.5281/zenodo.3755057
 
 BibTeX
 ------
@@ -28,7 +28,7 @@ BibTeX
      author    = {Tenkanen, Henrikki},
      title     = {{pyrosm: A Python library for reading and writing OpenStreetMap PBF data with GeoDataFrames}},
      year      = {2026},
-     version   = {0.10.0},
+     version   = {0.11.0},
      publisher = {Zenodo},
      doi       = {10.5281/zenodo.3755057},
      url       = {https://doi.org/10.5281/zenodo.3755057}

@@ -1,8 +1,8 @@
 Changelog
 =========
 
-v0.11.0 (Jun 29, 2026)
-----------------------
+v0.11.0 (Jul 1, 2026)
+---------------------
 
 This release adds topological graph simplification for network exports, opt-in regular-expression and Overpass-style custom filters, and selective-layer PBF export, and rewrites multipolygon relation assembly to follow the OSM even-odd algorithm so relation geometries match osmium. It also reorganizes the documentation with a GeoPandas-style API reference. The default in-memory and out-of-core readers are otherwise unchanged.
 

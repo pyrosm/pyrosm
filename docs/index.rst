@@ -80,7 +80,7 @@ If you use pyrosm in your work, please cite it. Pyrosm is archived on
 `Zenodo <https://doi.org/10.5281/zenodo.3755057>`__ with a citable DOI:
 
     Tenkanen, H. (2026). *pyrosm: A Python library for reading and writing OpenStreetMap PBF data
-    with GeoDataFrames*. (v0.10.0) Zenodo. https://doi.org/10.5281/zenodo.3755057
+    with GeoDataFrames*. (v0.11.0) Zenodo. https://doi.org/10.5281/zenodo.3755057
 
 See :doc:`How to cite pyrosm <citation>` for the full reference and a BibTeX entry.
 
