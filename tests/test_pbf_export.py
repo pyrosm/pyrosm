@@ -1059,7 +1059,11 @@ def test_write_pbf_osmium_cross_check(helsinki_pbf, tmp_path):
 def test_write_pbf_r5py_routable(helsinki_pbf, tmp_path):
     r5py = pytest.importorskip("r5py")
 
-    modes = [("driving", r5py.TransportMode.CAR), ("walking", r5py.TransportMode.WALK)]
+    modes = [
+        ("driving", r5py.TransportMode.CAR),
+        ("walking", r5py.TransportMode.WALK),
+        ("cycling", r5py.TransportMode.BICYCLE),
+    ]
     for mode_name, transport_mode in modes:
         osm = OSM(helsinki_pbf)
         edges = osm.get_network(mode_name).copy()
@@ -1466,11 +1470,12 @@ def test_write_pbf_edit_node_and_relation(helsinki_pbf, tmp_path):
 
 
 def test_pbf_writer_no_relations():
-    from pyrosm.pbf_writer import _RecordBuilder, _add_base_relations
+    from pyrosm.pbf_writer import _RecordBuilder, _add_base_relations, _plan_relations
 
     builder = _RecordBuilder()
     _add_base_relations(builder, {}, {})  # relations cache without "id" -> no-op
     assert builder.rels == []
+    _plan_relations(None, {}, set(), set(), "drop")  # likewise, nothing to plan
 
 
 def test_pbf_writer_node_tag_records_empty():
@@ -1602,9 +1607,7 @@ def test_subset_keep_sets_closure():
     from pyrosm.pbf_writer import _subset_keep_sets
 
     # No relations cache: a kept way pulls in its node refs; nothing else.
-    kn, kw, kr = _subset_keep_sets(
-        {}, {5: {}}, {}, {5: {"id": 5, "nodes": [50, 51]}}, {}
-    )
+    kn, kw, kr = _subset_keep_sets({}, {5: {}}, {}, {5: [50, 51]}, {})
     assert kr == set() and kw == {5} and kn == {50, 51}
 
     # Relation 1 has way/node/sub-relation members (incl. sub-rel 999 absent from the
@@ -1629,11 +1632,593 @@ def test_subset_keep_sets_closure():
             dtype=object,
         ),
     }
-    way_by_id = {
-        10: {"id": 10, "nodes": [100, 101]},
-        11: {"id": 11, "nodes": [101, 102]},
-    }
-    kn, kw, kr = _subset_keep_sets({}, {}, {1: {}, 888: {}}, way_by_id, relations)
+    way_refs = {10: [100, 101], 11: [101, 102]}
+    kn, kw, kr = _subset_keep_sets({}, {}, {1: {}, 888: {}}, way_refs, relations)
     assert kr == {1, 2, 888}  # sub-relation 2 resolved; 888 kept; 999 absent
     assert kw == {10, 11}  # way members of relations 1 and 2
     assert kn == {100, 101, 102}  # node member + way node-refs
+
+
+# ---------------------------------------------------------------------------
+# OSM.write_pbf geometry editing: move / delete / reshape
+# ---------------------------------------------------------------------------
+# A small, reference-complete fixture: ways 10 [1,2,3], 11 [3,4,5] and 12 [5,6,7]
+# chained through the shared nodes 3 and 5, a standalone POI node 20, and relation
+# 30 holding way 10 and node 20.
+_TINY_NODES = {
+    1: (24.940, 60.170),
+    2: (24.941, 60.171),
+    3: (24.942, 60.172),
+    4: (24.943, 60.173),
+    5: (24.944, 60.174),
+    6: (24.945, 60.175),
+    7: (24.946, 60.176),
+    20: (24.9405, 60.1705),
+}
+_TINY_WAYS = {10: [1, 2, 3], 11: [3, 4, 5], 12: [5, 6, 7]}
+_TINY_TIMESTAMP = 1600000000
+
+
+@pytest.fixture
+def tiny_pbf(tmp_path):
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    ids = sorted(_TINY_NODES)
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([_TINY_NODES[i][0] for i in ids]),
+        "lat": np.array([_TINY_NODES[i][1] for i in ids]),
+        "version": np.ones(len(ids), dtype=np.int64),
+        "timestamp": np.full(len(ids), _TINY_TIMESTAMP, dtype=np.int64),
+        "changeset": np.zeros(len(ids), dtype=np.int64),
+        "tags": [{"amenity": "cafe"} if i == 20 else None for i in ids],
+    }
+    ways = [
+        {
+            "id": wid,
+            "refs": refs,
+            "version": 1,
+            "timestamp": _TINY_TIMESTAMP,
+            "tags": {"highway": "residential", "name": "way-%d" % wid},
+        }
+        for wid, refs in _TINY_WAYS.items()
+    ]
+    relations = [
+        {
+            "id": 30,
+            "members": [("way", 10, "outer"), ("node", 20, "label")],
+            "version": 1,
+            "timestamp": _TINY_TIMESTAMP,
+            "changeset": 0,
+            "tags": {"type": "route", "route": "bus"},
+        }
+    ]
+    return write_pbf_from_records(
+        nodes,
+        ways,
+        relations,
+        str(tmp_path / "tiny.osm.pbf"),
+        (24.940, 60.170, 24.946, 60.176),
+    )
+
+
+def _relation_members(path):
+    """Map relation id -> [(member type, id, role)] read straight from a PBF."""
+    from pyrosm.pbf_export import _iter_primitive_blocks
+
+    kinds = {0: "node", 1: "way", 2: "relation"}
+    out = {}
+    for pblock in _iter_primitive_blocks(path):
+        st = [s.decode("utf-8", "replace") for s in pblock.stringtable.s]
+        for grp in pblock.primitivegroup:
+            for rel in grp.relations:
+                memids = np.cumsum(np.array(list(rel.memids), dtype=np.int64))
+                out[rel.id] = [
+                    (kinds[t], int(mid), st[role])
+                    for t, mid, role in zip(rel.types, memids, rel.roles_sid)
+                ]
+    return out
+
+
+def _vertices(geom):
+    """Every (x, y) vertex of a LineString or MultiLineString."""
+    if geom.geom_type == "MultiLineString":
+        return [c for part in geom.geoms for c in part.coords]
+    return list(geom.coords)
+
+
+def _has_vertex(geom, xy):
+    return any(
+        abs(x - xy[0]) < 1e-6 and abs(y - xy[1]) < 1e-6 for x, y in _vertices(geom)
+    )
+
+
+def _set_way_nodes(edges, wid, refs):
+    """Set way `wid`'s member ids on every row of an edge frame."""
+    return edges.assign(
+        nodes=edges.apply(
+            lambda r: list(refs) if r["id"] == wid else r["nodes"], axis=1
+        )
+    )
+
+
+def test_write_pbf_move_shared_node(tiny_pbf, tmp_path):
+    """Moving a node moves every way through it, and adds no new element."""
+    osm = OSM(tiny_pbf)
+    nodes, edges = osm.get_network(nodes=True)
+    moved = (24.9425, 60.1725)
+    nodes.loc[nodes["id"] == 3, "geometry"] = Point(*moved)
+
+    out = str(tmp_path / "moved.osm.pbf")
+    osm.write_pbf([nodes, edges], out, apply_geometry=True)
+
+    node_ids, way_ids, rel_ids, coords, way_refs = _read_elements(out)
+    assert node_ids == set(_TINY_NODES) and way_ids == set(_TINY_WAYS)
+    assert way_refs == _TINY_WAYS  # topology untouched: same ids, same order
+    assert coords[3] == pytest.approx(moved, abs=1e-7)
+    assert coords[2] == pytest.approx(_TINY_NODES[2], abs=1e-7)
+
+    re_edges = OSM(out).get_network()
+    for wid in (10, 11):
+        geom = re_edges.loc[re_edges["id"] == wid, "geometry"].iloc[0]
+        assert _has_vertex(geom, moved)
+
+
+def test_write_pbf_move_needs_apply_geometry(tiny_pbf, tmp_path):
+    """Without apply_geometry a moved geometry is ignored, byte for byte."""
+    osm = OSM(tiny_pbf)
+    nodes, edges = osm.get_network(nodes=True)
+    baseline = str(tmp_path / "baseline.osm.pbf")
+    osm.write_pbf([nodes, edges], baseline)
+
+    nodes.loc[nodes["id"] == 3, "geometry"] = Point(24.99, 60.99)
+    out = str(tmp_path / "ignored.osm.pbf")
+    osm.write_pbf([nodes, edges], out)
+
+    assert Path(out).read_bytes() == Path(baseline).read_bytes()
+
+
+def test_write_pbf_delete_way_drops_its_exclusive_nodes(tiny_pbf, tmp_path):
+    """Deleting a way removes only the nodes no kept way still references."""
+    osm = OSM(tiny_pbf)
+    out = str(tmp_path / "del_way.osm.pbf")
+    osm.write_pbf(osm.get_network(), out, delete=[("way", 12)])
+
+    node_ids, way_ids, _, _, way_refs = _read_elements(out)
+    assert way_ids == {10, 11}
+    assert node_ids == set(_TINY_NODES) - {6, 7}  # node 5 is shared with way 11
+    assert way_refs[11] == [3, 4, 5]
+
+
+@pytest.mark.parametrize("policy,removed", [("remove", {6, 7}), ("keep", set())])
+def test_write_pbf_orphan_node_policies(tiny_pbf, tmp_path, policy, removed):
+    osm = OSM(tiny_pbf)
+    out = str(tmp_path / ("orphan_%s.osm.pbf" % policy))
+    osm.write_pbf(osm.get_network(), out, delete=[("way", 12)], on_orphan_node=policy)
+    node_ids, _, _, _, _ = _read_elements(out)
+    assert node_ids == set(_TINY_NODES) - removed
+
+
+def test_write_pbf_orphan_node_error(tiny_pbf, tmp_path):
+    osm = OSM(tiny_pbf)
+    with pytest.raises(ValueError, match="unreferenced"):
+        osm.write_pbf(
+            osm.get_network(),
+            str(tmp_path / "boom.osm.pbf"),
+            delete=[("way", 12)],
+            on_orphan_node="error",
+        )
+
+
+def test_write_pbf_delete_node_mid_way(tiny_pbf, tmp_path):
+    """A deleted node leaves the ways through it valid, minus that member."""
+    osm = OSM(tiny_pbf)
+    out = str(tmp_path / "del_node.osm.pbf")
+    osm.write_pbf(osm.get_network(), out, delete=[("node", 2)])
+
+    node_ids, way_ids, _, _, way_refs = _read_elements(out)
+    assert 2 not in node_ids and way_ids == set(_TINY_WAYS)
+    assert way_refs[10] == [1, 3]
+    assert way_refs[11] == [3, 4, 5] and way_refs[12] == [5, 6, 7]
+
+    geom = OSM(out).get_network().set_index("id").loc[10, "geometry"]
+    assert not _has_vertex(geom, _TINY_NODES[2])
+
+
+def test_write_pbf_delete_node_member_error(tiny_pbf, tmp_path):
+    osm = OSM(tiny_pbf)
+    with pytest.raises(ValueError, match="deleted node"):
+        osm.write_pbf(
+            osm.get_network(),
+            str(tmp_path / "boom.osm.pbf"),
+            delete=[("node", 2)],
+            on_deleted_member="error",
+        )
+
+
+def test_write_pbf_delete_leaves_way_degenerate(tiny_pbf, tmp_path):
+    """A way left with a single member is dropped, with a warning."""
+    osm = OSM(tiny_pbf)
+    out = str(tmp_path / "degenerate.osm.pbf")
+    with pytest.warns(UserWarning, match="fewer than two member nodes"):
+        osm.write_pbf(osm.get_network(), out, delete=[("node", 1), ("node", 2)])
+
+    node_ids, way_ids, _, _, _ = _read_elements(out)
+    assert way_ids == {11, 12}
+    assert 3 in node_ids  # way 11 still references it, so it is not an orphan
+
+
+def test_write_pbf_delete_standalone_node(tiny_pbf, tmp_path):
+    """Deleting an unreferenced node drops it and detaches it from its relation."""
+    osm = OSM(tiny_pbf)
+    out = str(tmp_path / "del_poi.osm.pbf")
+    osm.write_pbf(osm.get_network(), out, delete=[("node", 20)])
+
+    node_ids, way_ids, rel_ids, _, _ = _read_elements(out)
+    assert 20 not in node_ids and way_ids == set(_TINY_WAYS) and rel_ids == {30}
+    assert _relation_members(out)[30] == [("way", 10, "outer")]
+
+
+def test_write_pbf_delete_way_detaches_it_from_relations(tiny_pbf, tmp_path):
+    osm = OSM(tiny_pbf)
+    out = str(tmp_path / "del_member.osm.pbf")
+    osm.write_pbf(osm.get_network(), out, delete=[("way", 10)])
+    assert _relation_members(out)[30] == [("node", 20, "label")]
+
+    with pytest.raises(ValueError, match="removed member"):
+        osm.write_pbf(
+            osm.get_network(),
+            str(tmp_path / "boom.osm.pbf"),
+            delete=[("way", 10)],
+            on_deleted_member="error",
+        )
+
+
+def test_write_pbf_delete_relation_keeps_its_members(tiny_pbf, tmp_path):
+    osm = OSM(tiny_pbf)
+    out = str(tmp_path / "del_rel.osm.pbf")
+    osm.write_pbf(osm.get_network(), out, delete=[("relation", 30)])
+
+    node_ids, way_ids, rel_ids, _, _ = _read_elements(out)
+    assert rel_ids == set()
+    assert way_ids == set(_TINY_WAYS) and node_ids == set(_TINY_NODES)
+
+
+def test_write_pbf_insert_vertex(tiny_pbf, tmp_path):
+    """A new node with a caller-chosen id can be spliced into a way's member list."""
+    osm = OSM(tiny_pbf, keep_node_info=True)
+    edges = _set_way_nodes(osm.get_network(), 10, [1, -1, 2, 3])
+    inserted = (24.9405, 60.1705)
+    new_node = gpd.GeoDataFrame(
+        {"id": [-1], "osm_type": ["node"]},
+        geometry=[Point(*inserted)],
+        crs="EPSG:4326",
+    )
+
+    out = str(tmp_path / "insert.osm.pbf")
+    osm.write_pbf([edges, new_node], out, apply_geometry=True)
+
+    node_ids, way_ids, _, coords, way_refs = _read_elements(out)
+    assert way_refs[10] == [1, -1, 2, 3]
+    assert node_ids == set(_TINY_NODES) | {-1}
+    assert coords[-1] == pytest.approx(inserted, abs=1e-7)
+
+    geom = OSM(out).get_network().set_index("id").loc[10, "geometry"]
+    assert _has_vertex(geom, inserted)
+
+
+def test_write_pbf_remove_and_reorder_vertices(tiny_pbf, tmp_path):
+    """Reshaping reorders/drops members; a dropped vertex's node survives."""
+    osm = OSM(tiny_pbf, keep_node_info=True)
+    edges = _set_way_nodes(osm.get_network(), 10, [1, 3])
+    edges = _set_way_nodes(edges, 11, [5, 4, 3])
+
+    out = str(tmp_path / "reshape.osm.pbf")
+    osm.write_pbf(edges, out, apply_geometry=True)
+
+    node_ids, _, _, _, way_refs = _read_elements(out)
+    assert way_refs[10] == [1, 3] and way_refs[11] == [5, 4, 3]
+    assert node_ids == set(_TINY_NODES)  # node 2 is only unlinked, not deleted
+
+
+def test_write_pbf_new_way_over_existing_nodes(tiny_pbf, tmp_path):
+    osm = OSM(tiny_pbf, keep_node_info=True)
+    new_way = gpd.GeoDataFrame(
+        {"id": [-5], "osm_type": ["way"], "highway": ["path"], "nodes": [[1, 7]]},
+        geometry=[LineString([_TINY_NODES[1], _TINY_NODES[7]])],
+        crs="EPSG:4326",
+    )
+
+    out = str(tmp_path / "new_way.osm.pbf")
+    osm.write_pbf([osm.get_network(), new_way], out, apply_geometry=True)
+
+    node_ids, way_ids, _, _, way_refs = _read_elements(out)
+    assert way_ids == set(_TINY_WAYS) | {-5}
+    assert way_refs[-5] == [1, 7]
+    assert node_ids == set(_TINY_NODES)  # no vertices synthesized
+    assert _way_tags(out)[-5] == {"highway": "path"}
+
+
+def test_write_pbf_mixed_edit_add_delete_untouched(tiny_pbf, tmp_path):
+    """One frame carrying an edited, a moved, an added, a deleted and an untouched row."""
+    osm = OSM(tiny_pbf, keep_node_info=True)
+    nodes, _ = osm.get_network(nodes=True)
+    edges = osm.get_network()
+    edges.loc[edges["id"] == 11, "maxspeed"] = "30"  # retag
+    edges = _set_way_nodes(edges, 10, [1, -1, 2, 3])  # reshape
+    moved = (24.9435, 60.1735)
+    nodes.loc[nodes["id"] == 4, "geometry"] = Point(*moved)  # move
+    new_node = gpd.GeoDataFrame(
+        {"id": [-1], "osm_type": ["node"], "barrier": ["gate"]},
+        geometry=[Point(24.9405, 60.1705)],
+        crs="EPSG:4326",
+    )
+
+    out = str(tmp_path / "mixed.osm.pbf")
+    osm.write_pbf(
+        [nodes, edges, new_node], out, apply_geometry=True, delete=[("way", 12)]
+    )
+
+    node_ids, way_ids, rel_ids, coords, way_refs = _read_elements(out)
+    assert way_ids == {10, 11}
+    assert way_refs[10] == [1, -1, 2, 3]
+    assert way_refs[11] == [3, 4, 5]  # untouched topology
+    assert coords[4] == pytest.approx(moved, abs=1e-7)
+    assert node_ids == (set(_TINY_NODES) | {-1}) - {6, 7}
+    assert rel_ids == {30}
+
+    tags = _way_tags(out)
+    assert tags[11]["maxspeed"] == "30"
+    assert tags[10]["name"] == "way-10"  # untouched way keeps its tags
+
+
+def test_write_pbf_edited_file_is_reference_complete(tiny_pbf, tmp_path):
+    """pyosmium reads the edited file and finds no reference to a missing element."""
+    osmium = pytest.importorskip("osmium")
+    osm = OSM(tiny_pbf, keep_node_info=True)
+    nodes, _ = osm.get_network(nodes=True)
+    nodes.loc[nodes["id"] == 3, "geometry"] = Point(24.9425, 60.1725)
+    edges = _set_way_nodes(osm.get_network(), 11, [3, 5])
+
+    out = str(tmp_path / "complete.osm.pbf")
+    osm.write_pbf(
+        [nodes, edges], out, apply_geometry=True, delete=[("way", 12), ("node", 2)]
+    )
+
+    class Collector(osmium.SimpleHandler):
+        def __init__(self):
+            super().__init__()
+            self.nodes, self.ways = set(), set()
+            self.node_refs, self.way_refs = set(), set()
+
+        def node(self, n):
+            self.nodes.add(n.id)
+
+        def way(self, w):
+            self.ways.add(w.id)
+            self.node_refs.update(n.ref for n in w.nodes)
+
+        def relation(self, r):
+            for m in r.members:
+                (self.node_refs if m.type == "n" else self.way_refs).add(m.ref)
+
+    seen = Collector()
+    seen.apply_file(out)
+    assert seen.node_refs <= seen.nodes
+    assert seen.way_refs <= seen.ways
+
+
+def test_write_pbf_edits_are_deterministic(tiny_pbf, tmp_path):
+    osm = OSM(tiny_pbf, keep_node_info=True)
+    nodes, _ = osm.get_network(nodes=True)
+    nodes.loc[nodes["id"] == 3, "geometry"] = Point(24.9425, 60.1725)
+    edges = _set_way_nodes(osm.get_network(), 10, [3, 2, 1])
+
+    written = []
+    for i in range(2):
+        out = str(tmp_path / ("det_%d.osm.pbf" % i))
+        osm.write_pbf([nodes, edges], out, apply_geometry=True, delete=[("way", 12)])
+        written.append(Path(out).read_bytes())
+    assert written[0] == written[1]
+
+
+def test_write_pbf_subset_only_follows_reshape(tiny_pbf, tmp_path):
+    """A subset export pulls in the vertices the reshaped member list references."""
+    osm = OSM(tiny_pbf, keep_node_info=True)
+    edges = osm.get_network()
+    edges = _set_way_nodes(edges[edges["id"] == 10], 10, [1, -1, 3])
+    new_node = gpd.GeoDataFrame(
+        {"id": [-1], "osm_type": ["node"]},
+        geometry=[Point(24.9405, 60.1705)],
+        crs="EPSG:4326",
+    )
+
+    out = str(tmp_path / "subset.osm.pbf")
+    osm.write_pbf([edges, new_node], out, subset_only=True, apply_geometry=True)
+
+    node_ids, way_ids, _, _, way_refs = _read_elements(out)
+    assert way_ids == {10} and way_refs[10] == [1, -1, 3]
+    assert node_ids == {1, -1, 3}
+
+
+def test_write_pbf_reshape_to_unknown_node_raises(tiny_pbf, tmp_path):
+    osm = OSM(tiny_pbf, keep_node_info=True)
+    edges = _set_way_nodes(osm.get_network(), 10, [1, 999999, 3])
+    with pytest.raises(ValueError, match="neither in the source data"):
+        osm.write_pbf(edges, str(tmp_path / "boom.osm.pbf"), apply_geometry=True)
+
+
+def test_write_pbf_conflicting_geometry_edits_raise(tiny_pbf, tmp_path):
+    osm = OSM(tiny_pbf, keep_node_info=True)
+    nodes, _ = osm.get_network(nodes=True)
+    other = nodes[nodes["id"] == 3].copy()
+    other.loc[:, "geometry"] = Point(24.99, 60.99)
+    with pytest.raises(ValueError, match="conflicting coordinates"):
+        osm.write_pbf(
+            [nodes, other], str(tmp_path / "boom.osm.pbf"), apply_geometry=True
+        )
+
+    edges = osm.get_network()
+    conflicting = _set_way_nodes(edges[edges["id"] == 10].copy(), 10, [3, 2, 1])
+    with pytest.raises(ValueError, match="conflicting member node ids"):
+        osm.write_pbf(
+            [edges, conflicting], str(tmp_path / "boom2.osm.pbf"), apply_geometry=True
+        )
+
+
+def test_write_pbf_duplicate_new_id_raises(tiny_pbf, tmp_path):
+    osm = OSM(tiny_pbf)
+    new_nodes = gpd.GeoDataFrame(
+        {"id": [-1, -1], "osm_type": ["node", "node"]},
+        geometry=[Point(24.9401, 60.1701), Point(24.9402, 60.1702)],
+        crs="EPSG:4326",
+    )
+    with pytest.raises(ValueError, match="appears more than once"):
+        osm.write_pbf(new_nodes, str(tmp_path / "boom.osm.pbf"), apply_geometry=True)
+
+
+@pytest.mark.parametrize(
+    "entry,message",
+    [
+        (("way", 999999), "no such element"),
+        (("banana", 10), "no such element"),
+        (("way",), "should be \\(osm_type, id\\) pairs"),
+    ],
+)
+def test_write_pbf_invalid_deletion_raises(tiny_pbf, tmp_path, entry, message):
+    osm = OSM(tiny_pbf)
+    with pytest.raises(ValueError, match=message):
+        osm.write_pbf(osm.get_network(), str(tmp_path / "boom.osm.pbf"), delete=[entry])
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"on_orphan_node": "nope"}, {"on_deleted_member": "nope"}]
+)
+def test_write_pbf_invalid_policy_raises(tiny_pbf, tmp_path, kwargs):
+    osm = OSM(tiny_pbf)
+    with pytest.raises(ValueError, match="should be one of"):
+        osm.write_pbf(osm.get_network(), str(tmp_path / "boom.osm.pbf"), **kwargs)
+
+
+def test_write_pbf_geometry_edits_on_real_data(helsinki_pbf, tmp_path):
+    """Move, reshape and delete on the bundled extract, without new dangling refs."""
+    osm = OSM(helsinki_pbf, keep_node_info=True)
+    nodes, _ = osm.get_network("driving", nodes=True)
+    edges = osm.get_network("driving")
+
+    target = int(edges.loc[edges["nodes"].apply(len) >= 4, "id"].iloc[0])
+    original = list(edges.set_index("id").loc[target, "nodes"])
+    deleted_way = int(edges.loc[edges["id"] != target, "id"].iloc[0])
+
+    node_id = original[0]
+    before = nodes.loc[nodes["id"] == node_id, "geometry"].iloc[0]
+    moved = (before.x + 0.0001, before.y + 0.0001)
+    nodes.loc[nodes["id"] == node_id, "geometry"] = Point(*moved)
+    edges = _set_way_nodes(edges, target, original[:1] + original[2:])
+
+    out = str(tmp_path / "real_edit.osm.pbf")
+    osm.write_pbf(
+        [nodes, edges], out, apply_geometry=True, delete=[("way", deleted_way)]
+    )
+
+    node_ids, way_ids, _, coords, way_refs = _read_elements(out)
+    assert coords[node_id] == pytest.approx(moved, abs=1e-7)
+    assert way_refs[target] == original[:1] + original[2:]
+    assert deleted_way not in way_ids
+
+    # The edits introduce no reference the source did not already have.
+    source_dangling = {
+        int(n)
+        for w in osm._way_records
+        for n in w["nodes"]
+        if int(n) not in osm._node_coordinates
+    }
+    written_dangling = {n for refs in way_refs.values() for n in refs} - node_ids
+    assert written_dangling <= source_dangling
+
+    re_osm = OSM(out)
+    re_edges = re_osm.get_network("driving")
+    assert deleted_way not in set(re_edges["id"])
+    assert _has_vertex(re_edges.set_index("id").loc[target, "geometry"], moved)
+
+
+def test_write_pbf_new_line_keeps_chosen_id(tiny_pbf, tmp_path):
+    """A chosen id survives vertex synthesis, and generated ids stay clear of it."""
+    osm = OSM(tiny_pbf)
+    line = LineString([(24.950, 60.180), (24.951, 60.181)])
+    added = gpd.GeoDataFrame(
+        {"id": [-7, None], "osm_type": ["way", "way"], "highway": ["path", "track"]},
+        geometry=[line, LineString([(24.952, 60.182), (24.953, 60.183)])],
+        crs="EPSG:4326",
+    )
+
+    out = str(tmp_path / "chosen_id.osm.pbf")
+    osm.write_pbf([osm.get_network(), added], out, apply_geometry=True)
+
+    node_ids, way_ids, _, _, way_refs = _read_elements(out)
+    assert -7 in way_ids
+    assert _way_tags(out)[-7] == {"highway": "path"}
+    # The generated way got an id below the chosen one, not a colliding -1.
+    generated = way_ids - set(_TINY_WAYS) - {-7}
+    assert len(generated) == 1 and max(generated) < -7
+    # Both lines' vertices were synthesized as new nodes.
+    assert set(way_refs[-7]) <= node_ids - set(_TINY_NODES)
+
+
+def test_write_pbf_empty_member_list_is_no_reshape(tiny_pbf, tmp_path):
+    osm = OSM(tiny_pbf, keep_node_info=True)
+    edges = _set_way_nodes(osm.get_network(), 10, [])
+
+    out = str(tmp_path / "empty_nodes.osm.pbf")
+    osm.write_pbf(edges, out, apply_geometry=True)
+    assert _read_elements(out)[4] == _TINY_WAYS
+
+
+def test_write_pbf_new_node_needs_a_point(tiny_pbf, tmp_path):
+    osm = OSM(tiny_pbf)
+    bad = gpd.GeoDataFrame(
+        {"id": [-1], "osm_type": ["node"]},
+        geometry=[LineString([(24.95, 60.18), (24.96, 60.19)])],
+        crs="EPSG:4326",
+    )
+    with pytest.raises(ValueError, match="needs a Point geometry"):
+        osm.write_pbf(bad, str(tmp_path / "boom.osm.pbf"), apply_geometry=True)
+
+
+def test_write_pbf_new_way_needs_two_members(tiny_pbf, tmp_path):
+    osm = OSM(tiny_pbf)
+    bad = gpd.GeoDataFrame(
+        {"id": [-5], "osm_type": ["way"], "nodes": [[1]]},
+        geometry=[LineString([_TINY_NODES[1], _TINY_NODES[2]])],
+        crs="EPSG:4326",
+    )
+    with pytest.raises(ValueError, match="at least two member nodes"):
+        osm.write_pbf(bad, str(tmp_path / "boom.osm.pbf"), apply_geometry=True)
+
+
+def test_keep_node_info_parameter(tiny_pbf):
+    """The constructor keyword keeps the way member-id column reshaping needs."""
+    assert "nodes" not in OSM(tiny_pbf).get_network().columns
+    edges = OSM(tiny_pbf, keep_node_info=True).get_network()
+    assert list(edges.set_index("id").loc[10, "nodes"]) == _TINY_WAYS[10]
+
+    with pytest.raises(ValueError, match="keep_node_info"):
+        OSM(tiny_pbf, keep_node_info="yes")
+
+
+def test_write_pbf_new_ids_are_per_element_type(tiny_pbf, tmp_path):
+    """A new node and a new way may share an id, as they are separate namespaces."""
+    osm = OSM(tiny_pbf)
+    added = gpd.GeoDataFrame(
+        {"id": [-1, -1], "osm_type": ["node", "way"], "nodes": [None, [1, 7]]},
+        geometry=[Point(24.95, 60.18), LineString([_TINY_NODES[1], _TINY_NODES[7]])],
+        crs="EPSG:4326",
+    )
+
+    out = str(tmp_path / "namespaces.osm.pbf")
+    osm.write_pbf([osm.get_network(), added], out, apply_geometry=True)
+
+    node_ids, way_ids, _, coords, way_refs = _read_elements(out)
+    assert -1 in node_ids and -1 in way_ids
+    assert way_refs[-1] == [1, 7]
+    assert coords[-1] == pytest.approx((24.95, 60.18), abs=1e-7)

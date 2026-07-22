@@ -1,6 +1,12 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- NEW: `OSM.write_pbf` can edit geometry, not just tags. Pass `apply_geometry=True` to move an existing node (a node row's `Point` sets its coordinates, and every way and relation referencing it follows), to reshape an existing way through its `nodes` member-id column (inserting, removing and reordering vertices), and to add a new element under a caller-chosen negative id so a way's `nodes` list can reference a vertex added in the same call. The new `delete` parameter takes `(osm_type, id)` pairs to omit elements from the output, with `on_orphan_node` (`'remove'`/`'keep'`/`'error'`) and `on_deleted_member` (`'drop'`/`'error'`) deciding what happens to the references a removal breaks. Defaults are unchanged: without `apply_geometry`/`delete`, `write_pbf` writes exactly what it wrote before
+- NEW: Add a `keep_node_info` parameter to `OSM(...)`, which keeps the `nodes` column of each way's ordered member node ids in the returned GeoDataFrames. It was previously only reachable by setting the attribute after construction, and it is what `write_pbf(..., apply_geometry=True)` reshapes a way through
+
 v0.11.0
 -------
 

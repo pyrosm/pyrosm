@@ -104,6 +104,13 @@ class OSM:
         evaluates eagerly over the whole multi-version frame, so history is read
         in memory.
 
+    keep_node_info : bool (default: False)
+        Whether to keep the `nodes` column -- the ordered member node ids of each
+        way -- in the returned GeoDataFrames. It is dropped by default because a
+        list-valued column cannot be written to most file formats. Set to `True`
+        to reshape ways with `write_pbf(..., apply_geometry=True)`, which takes a
+        way's topology from this column.
+
     workers : int | str (default: None)
         Number of worker processes the `'out_of_core'` engine uses to decode the
         file. By default (`None`) the engine reads on a single core, and the first
@@ -131,6 +138,7 @@ class OSM:
         bounding_box=None,
         keep_metadata=True,
         complete_relations=False,
+        keep_node_info=False,
         engine="in_memory",
         workers=None,
     ):
@@ -144,6 +152,9 @@ class OSM:
         if not isinstance(complete_relations, bool):
             raise ValueError("'complete_relations' should be a boolean.")
         self.complete_relations = complete_relations
+
+        if not isinstance(keep_node_info, bool):
+            raise ValueError("'keep_node_info' should be a boolean.")
 
         self.engine = validate_engine(engine)
         self.workers = validate_workers(workers)
@@ -182,7 +193,7 @@ class OSM:
             )
 
         self.conf = Conf
-        self.keep_node_info = False
+        self.keep_node_info = keep_node_info
 
         # Update file size
         self.file_size = get_file_size(self.filepath)
@@ -1283,7 +1294,17 @@ class OSM:
             repack=repack,
         )
 
-    def write_pbf(self, data, output_path, subset_only=False):
+    def write_pbf(
+        self,
+        data,
+        output_path,
+        subset_only=False,
+        *,
+        apply_geometry=False,
+        delete=None,
+        on_orphan_node="remove",
+        on_deleted_member="drop",
+    ):
         """
         Write the OSM data this object holds back to a valid, re-readable
         ``*.osm.pbf``, applying attribute/tag edits from a (modified)
@@ -1310,6 +1331,31 @@ class OSM:
             edges["travel_time"] = edges["length"] / (edges["maxspeed"] / 3.6)
             osm.write_pbf(edges, "modified.osm.pbf")
 
+        Pass ``apply_geometry=True`` and/or ``delete=`` to edit the geometry itself.
+        Geometry follows the OSM model: coordinates live on nodes, and a way is an
+        ordered list of member node ids. So moving a node moves every way that
+        references it, and an existing way is reshaped through its ``nodes`` column
+        (construct the ``OSM`` object with ``keep_node_info=True`` to get it) rather
+        than through its LineString, which is derived::
+
+            osm = OSM("data.osm.pbf", keep_node_info=True)
+            nodes, edges = osm.get_network("driving", nodes=True)
+            # Move an existing node; the ways through it follow.
+            nodes.loc[nodes["id"] == 12345, "geometry"] = Point(24.94, 60.17)
+            # Insert a new vertex into a way, referencing a node added in the same call.
+            new_node = gpd.GeoDataFrame(
+                {"id": [-1], "osm_type": ["node"]},
+                geometry=[Point(24.95, 60.18)], crs="EPSG:4326",
+            )
+            row = edges["id"] == 4732994
+            edges.loc[row, "nodes"] = edges.loc[row, "nodes"].apply(
+                lambda ids: ids[:2] + [-1] + ids[2:]
+            )
+            osm.write_pbf(
+                [nodes, edges, new_node], "edited.osm.pbf",
+                apply_geometry=True, delete=[("way", 4732995)],
+            )
+
         Parameters
         ----------
 
@@ -1327,6 +1373,44 @@ class OSM:
             If True, write only the elements present in ``data`` (and the nodes and
             relation members they reference) instead of the whole cached dataset.
 
+        apply_geometry : bool (default False)
+            If True, also apply the rows' geometry to the elements that already exist
+            in the source, and honour caller-chosen ids for new ones:
+
+            - a node row's ``Point`` moves that node to those coordinates;
+            - a way row's ``nodes`` column replaces that way's member node ids, which
+              covers inserting, removing and reordering vertices (the way's own
+              LineString is ignored -- it is derived from the nodes, and under
+              ``get_network(nodes=True)`` it is a single segment of the way);
+            - a row with a **negative** id that is not in the source is added under
+              exactly that id, instead of a generated one, so a way's ``nodes`` list
+              can reference a vertex added in the same call.
+
+            Removing a vertex from a way's ``nodes`` does not delete the node itself;
+            use ``delete`` for that. When False (default), rows only edit tags and add
+            new elements, exactly as before.
+
+        delete : iterable of (osm_type, id), optional
+            Elements to omit from the output, e.g.
+            ``[("way", 4732994), ("node", 277446336)]``. An id that is not in the
+            source raises ``ValueError``; an element that is both deleted and present
+            as a row in ``data`` is deleted. Deleting a relation drops only the
+            relation -- its members are independent elements and survive.
+
+        on_orphan_node : {'remove', 'keep', 'error'} (default 'remove')
+            What to do with a node that was a member of a dropped way and is left
+            referenced by no kept way or relation: ``'remove'`` drops it too (tagged
+            nodes included), ``'keep'`` writes it as a bare node, ``'error'`` raises.
+            Nodes that no dropped way referenced -- standalone POIs, for instance --
+            are never touched.
+
+        on_deleted_member : {'drop', 'error'} (default 'drop')
+            What to do when a kept way or relation still references a deleted element:
+            ``'drop'`` removes it from that member list, ``'error'`` raises. A way left
+            with fewer than two members cannot form a geometry, so it is not written
+            either (with a ``UserWarning``) and its own members go through
+            ``on_orphan_node``; a relation left with no members is still written.
+
         Returns
         -------
         str
@@ -1334,10 +1418,11 @@ class OSM:
 
         Notes
         -----
-        v1 applies edits and additions, not deletions: with the default
-        ``subset_only=False`` the whole cached dataset is the base set, so dropping
-        rows from ``data`` does not remove elements. Use ``subset_only=True`` to limit
-        the output to the elements in ``data``.
+        Elements not present in ``data`` keep their ids, tags, coordinates and member
+        order, so the output re-reads identically in pyrosm, osmium/pyosmium, GDAL and
+        r5py/R5. Edits never introduce a reference to a node that is not in the output;
+        a source way whose members already point outside a clipped extract is re-emitted
+        as it was read.
         """
         from pyrosm.pbf_writer import write_geodataframe_to_pbf
 
@@ -1352,6 +1437,10 @@ class OSM:
             relations=self._relations,
             nodes=self._nodes,
             subset_only=subset_only,
+            apply_geometry=apply_geometry,
+            delete=delete,
+            on_orphan_node=on_orphan_node,
+            on_deleted_member=on_deleted_member,
         )
 
     @staticmethod
