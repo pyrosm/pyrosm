@@ -52,6 +52,7 @@ Current features
 - filter data based on bounding box
 - control which OSM tags are parsed into columns
 - crop a PBF to a smaller area and write modified OSM data back to PBF (NEW in v0.9.0), or export only selected layers (NEW in v0.11.0)
+- edit the geometry of an OSM network -- move nodes, reshape ways, delete elements -- and write it back to PBF (NEW in v0.12.0)
 - export networks as a directed graph to ``igraph``, ``networkx`` and ``pandarm``, optionally with topological simplification (NEW in v0.11.0)
 
 When should I use Pyrosm?
@@ -80,7 +81,7 @@ If you use pyrosm in your work, please cite it. Pyrosm is archived on
 `Zenodo <https://doi.org/10.5281/zenodo.3755057>`__ with a citable DOI:
 
     Tenkanen, H. (2026). *pyrosm: A Python library for reading and writing OpenStreetMap PBF data
-    with GeoDataFrames*. (v0.11.0) Zenodo. https://doi.org/10.5281/zenodo.3755057
+    with GeoDataFrames*. (v0.12.0) Zenodo. https://doi.org/10.5281/zenodo.3755057
 
 See :doc:`How to cite pyrosm <citation>` for the full reference and a BibTeX entry.
 
