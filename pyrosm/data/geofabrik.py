@@ -34,6 +34,7 @@ class USA:
         "alaska",
         "arizona",
         "arkansas",
+        "california",
         "colorado",
         "connecticut",
         "delaware",
