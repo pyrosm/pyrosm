@@ -298,16 +298,19 @@ cpdef generate_directed_edges(edges,
     else:
         oneway_mask = effective_direction.isin(oneway_values)
 
+    # Edges that are allowed only to the opposite direction (per effective direction).
+    # The masks are applied positionally, as the index of the input frame may hold
+    # duplicate labels (e.g. after concatenating edge frames).
+    oneway_mask = oneway_mask.to_numpy()
+    against_mask = effective_direction.isin(["-1", "T"]).to_numpy()
+
     edge_cnt = len(edges)
-    oneway_edges = edges.loc[oneway_mask].copy()
     twoway_edges = edges.loc[~oneway_mask].copy()
     twoway_edges_dir2 = twoway_edges.copy(deep=True).rename(columns={to_id_col: from_id_col, from_id_col: to_id_col})
     twoway_edges_dir2.index = np.arange(edge_cnt, edge_cnt + len(twoway_edges))
 
-    # Select edges that are allowed only to opposite direction (per effective direction)
-    against_mask = effective_direction.loc[oneway_edges.index].isin(["-1", "T"])
-    against_edges = oneway_edges.loc[against_mask].copy()
-    along_edges = oneway_edges.loc[~against_mask].copy()  # Nothing needs to be done for these
+    against_edges = edges.loc[oneway_mask & against_mask].copy()
+    along_edges = edges.loc[oneway_mask & ~against_mask].copy()  # Nothing needs to be done for these
 
     # Flip the from/to ids for against edges
     against_edges = against_edges.rename(columns={from_id_col: to_id_col, to_id_col: from_id_col})

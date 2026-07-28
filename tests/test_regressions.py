@@ -1329,12 +1329,27 @@ def test_networkx_export_survives_osmnx_round_trip(tmp_path):
         assert not any(isinstance(tags, dict) for tags in node_tags)
         assert any(isinstance(tags, str) for tags in node_tags)
 
-        # The OSMnx calls that failed in the issue.
+        # The OSMnx entry points a user runs on an exported graph.
+        projected = osmnx.projection.project_graph(graph)
         osmnx.convert.to_undirected(graph)
+        osmnx.convert.graph_to_gdfs(graph)
         osmnx.io.save_graph_geopackage(graph, tmp_path / f"graph_{simplify}.gpkg")
-        osmnx.simplification.consolidate_intersections(
-            osmnx.projection.project_graph(graph), tolerance=10
+        osmnx.simplification.consolidate_intersections(projected, tolerance=10)
+        osmnx.stats.basic_stats(graph)
+        osmnx.distance.nearest_nodes(graph, 26.94, 60.52)
+        osmnx.routing.shortest_path(
+            graph, list(graph.nodes)[0], list(graph.nodes)[-1], weight="length"
         )
+        osmnx.truncate.truncate_graph_bbox(graph, (26.9, 60.5, 27.0, 60.6))
+
+        if simplify:
+            # A pyrosm-simplified graph reports itself as simplified, so OSMnx
+            # refuses to simplify it again instead of failing on the merged
+            # list-valued attributes.
+            with pytest.raises(osmnx._errors.GraphSimplificationError):
+                osmnx.simplification.simplify_graph(graph)
+        else:
+            osmnx.simplification.simplify_graph(graph)
 
 
 def test_networkx_export_keeps_parallel_edges():
@@ -1394,6 +1409,42 @@ def test_networkx_export_accepts_edges_with_gaps_in_index():
     )
     # Walking edges are bidirectional, so each row gives an edge to both directions.
     assert graph.number_of_edges() == 2 * len(subset)
+
+
+def test_directed_edges_handle_duplicate_index_labels():
+    """#370 — the one-way masks are applied positionally. Selecting them by index
+    label raised 'IndexError: indices are out-of-bounds' on an edges GeoDataFrame
+    with duplicate labels (e.g. two edge frames concatenated)."""
+    pytest.importorskip("networkx")
+    import pandas as pd
+    from pyrosm import OSM, get_data
+    from pyrosm.graphs import get_directed_edges
+
+    osm = OSM(get_data("test_pbf"))
+    nodes, edges = osm.get_network(network_type="driving", nodes=True)
+
+    # Include an edge that is only allowed to the opposite direction.
+    edges = edges.copy()
+    edges.loc[edges.index[0], "oneway"] = "-1"
+    against_u = edges["u"].iloc[0]
+    against_v = edges["v"].iloc[0]
+
+    duplicated = pd.concat([edges, edges])
+    assert duplicated.index.has_duplicates
+
+    _, directed = get_directed_edges(nodes, duplicated, network_type="driving")
+    graph = osm.to_graph(
+        nodes,
+        duplicated,
+        graph_type="networkx",
+        network_type="driving",
+        retain_all=True,
+    )
+    assert graph.number_of_edges() == len(directed)
+
+    # The against-direction edge travels from v to u, not from u to v.
+    assert graph.has_edge(against_v, against_u)
+    assert not graph.has_edge(against_u, against_v)
 
 
 def test_networkx_export_renames_edge_tag_named_key():

@@ -196,7 +196,8 @@ def to_networkx(
         (allows utilizing all OSMnx functionalities): the node/edge id is renamed to
         ``osmid``, node ``lat``/``lon`` to ``y``/``x``, and node ``tags`` are stored as a
         JSON string. The node ``osmid`` is the key of the node in the graph and is not
-        repeated as a node attribute.
+        repeated as a node attribute. No ``key`` edge attribute is added; an edge column
+        named ``key`` is renamed to ``key_tag``.
 
     Returns
     -------
