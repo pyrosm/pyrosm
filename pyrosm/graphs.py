@@ -9,6 +9,7 @@ from pyrosm.graph_connectivity import get_connected_edges
 from pyrosm.graph_simplify import simplify_graph
 from pyrosm.utils import validate_edge_gdf, validate_node_gdf
 from pyrosm.config import Conf
+from rapidjson import dumps
 import warnings
 
 
@@ -192,7 +193,11 @@ def to_networkx(
 
     osmnx_compatible : bool (default True)
         if True, modifies the edge and node-attribute naming to be compatible with OSMnx
-        (allows utilizing all OSMnx functionalities).
+        (allows utilizing all OSMnx functionalities): the node/edge id is renamed to
+        ``osmid``, node ``lat``/``lon`` to ``y``/``x``, and node ``tags`` are stored as a
+        JSON string. The node ``osmid`` is the key of the node in the graph and is not
+        repeated as a node attribute. No ``key`` edge attribute is added; an edge column
+        named ``key`` is renamed to ``key_tag``.
 
     Returns
     -------
@@ -223,18 +228,37 @@ def to_networkx(
         )
 
     if osmnx_compatible:
-        # add 'key' attribute which is needed by OSMnx
-        if "key" not in edges.columns:
-            edges["key"] = 0
+        # OSMnx carries the parallel-edge key in the graph structure, not as an
+        # edge attribute, and an attribute named 'key' collides with it. Surface
+        # a tag with that name as 'key_tag' instead (as is done for 'id').
+        if "key" in edges.columns:
+            edges = edges.rename(columns={"key": "key_tag"})
 
         # Follow the naming convention of OSMnx
         nodes = nodes.rename(columns={node_id_col: "osmid", "lat": "y", "lon": "x"})
         edges = edges.rename(columns={edge_id_col: "osmid"})
         node_id_col = "osmid"
 
+        # OSMnx handles node attributes as scalars, so store the free-form tags
+        # as a JSON string like the edge tags already are.
+        if "tags" in nodes.columns:
+            nodes["tags"] = [
+                dumps(tags) if isinstance(tags, dict) else tags
+                for tags in nodes["tags"]
+            ]
+
     # Create NetworkX graph (nodes are keyed by node_id_col internally, so the
     # input frame's index does not need to be set to the node id).
-    return _create_nxgraph(nodes, edges, from_id_col, to_id_col, node_id_col)
+    graph = _create_nxgraph(
+        nodes,
+        edges,
+        from_id_col,
+        to_id_col,
+        node_id_col,
+        drop_node_id_attribute=osmnx_compatible,
+    )
+    graph.graph["simplified"] = bool(simplify)
+    return graph
 
 
 def to_igraph(
