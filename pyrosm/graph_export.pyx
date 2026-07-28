@@ -112,10 +112,14 @@ cpdef _create_nxgraph(nodes,
                       edges,
                       from_id_col,
                       to_id_col,
-                      node_id_col):
+                      node_id_col,
+                      drop_node_id_attribute=False):
     """
     Creates a NetworkX graph from directed edges and nodes.
     NOTE: Assumes that the input edges GeoDataFrame is directed.
+
+    With 'drop_node_id_attribute' the node id is used only as the key of the
+    node and is not repeated as a node attribute.
     """
     if not HAS_NETWORKX:
         raise ImportError("'networkx' needs to be installed "
@@ -131,17 +135,27 @@ cpdef _create_nxgraph(nodes,
     n_edges = len(edges)
     edge_list = []
 
-    # Convert edges to dict
-    edge_attributes = edges.to_dict(orient="index")
+    # Convert edges to dict. Read positionally ('records'), as the index of the
+    # input frame may have gaps or duplicates (e.g. after filtering the edges).
+    edge_attributes = edges.to_dict(orient="records")
 
     # Prepare node dictionary for fast lookups
     node_ids = nodes[node_id_col].to_list()
     node_dict = {k: None for k in node_ids}
 
+    if drop_node_id_attribute:
+        node_records = nodes.drop(columns=[node_id_col]).to_dict(orient="records")
+    else:
+        node_records = nodes.to_dict(orient="records")
+
     # Node attributes keyed by the node id (node_id_col), not the DataFrame
     # index, so the nodes match the edge endpoints regardless of the index of
     # the input frame (avoids duplicate "phantom" index-keyed nodes).
-    node_attributes = list(zip(node_ids, nodes.to_dict(orient="records")))
+    node_attributes = list(zip(node_ids, node_records))
+
+    # Running key per node-pair. Parallel edges between the same pair of nodes
+    # need distinct keys, otherwise they replace each other in the MultiDiGraph.
+    edge_keys = {}
 
     # Generate edge dictionary
     for i in range(0, n_edges):
@@ -173,9 +187,12 @@ cpdef _create_nxgraph(nodes,
 
         # Create edges
         # ------------
-        edge_list.append([from_node_id, to_node_id, 0, edge_attributes[i]])
+        edge_key = edge_keys.get((from_node_id, to_node_id), 0)
+        edge_keys[(from_node_id, to_node_id)] = edge_key + 1
+        edge_list.append([from_node_id, to_node_id, edge_key, edge_attributes[i]])
 
     del node_dict
+    del edge_keys
 
     # Create directed graph
     graph = nx.MultiDiGraph()

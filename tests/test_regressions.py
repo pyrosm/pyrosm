@@ -1303,3 +1303,113 @@ def test_engine_collect_relation_ways_handles_no_way_members(tmp_path):
         all_refs_off=np.array([0, 1, 2, 3], dtype=np.int64),
     )
     assert _collect_relation_ways([shard], np.empty(0, np.int64)) is None
+
+
+def test_networkx_export_survives_osmnx_round_trip(tmp_path):
+    """#370 — an 'osmnx_compatible' graph must work with OSMnx. 'key' must not be
+    an edge attribute (it collides with the parallel-edge key of add_edge) and
+    'osmid' must not be repeated as a node attribute (it is the key of the node)."""
+    pytest.importorskip("networkx")
+    osmnx = pytest.importorskip("osmnx")
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    nodes, edges = osm.get_network(nodes=True)
+
+    for simplify in [False, True]:
+        graph = osm.to_graph(nodes, edges, graph_type="networkx", simplify=simplify)
+
+        assert all("key" not in attr for *_, attr in graph.edges(data=True))
+        assert all("osmid" not in attr for _, attr in graph.nodes(data=True))
+        assert graph.graph["simplified"] is simplify
+
+        # Node tags are stored as a JSON string, like the edge tags, as OSMnx
+        # cannot handle a dict as a node attribute.
+        node_tags = [attr["tags"] for _, attr in graph.nodes(data=True)]
+        assert not any(isinstance(tags, dict) for tags in node_tags)
+        assert any(isinstance(tags, str) for tags in node_tags)
+
+        # The OSMnx calls that failed in the issue.
+        osmnx.convert.to_undirected(graph)
+        osmnx.io.save_graph_geopackage(graph, tmp_path / f"graph_{simplify}.gpkg")
+        osmnx.simplification.consolidate_intersections(
+            osmnx.projection.project_graph(graph), tolerance=10
+        )
+
+
+def test_networkx_export_keeps_parallel_edges():
+    """#370 — parallel edges between the same pair of nodes must get separate keys.
+    They were all written with key 0, so all but the last one were dropped."""
+    pytest.importorskip("networkx")
+    from pyrosm import OSM, get_data
+    from pyrosm.graph_connectivity import get_connected_edges
+    from pyrosm.graph_simplify import simplify_graph
+    from pyrosm.graphs import get_directed_edges
+
+    osm = OSM(get_data("test_pbf"))
+    nodes, edges = osm.get_network(nodes=True)
+
+    # The steps to_graph(simplify=True) runs before building the graph.
+    directed_nodes, directed_edges = get_directed_edges(nodes, edges)
+    directed_nodes, directed_edges = simplify_graph(
+        directed_nodes,
+        directed_edges,
+        from_id_col="u",
+        to_id_col="v",
+        node_id_col="id",
+    )
+    directed_nodes, directed_edges = get_connected_edges(directed_nodes, directed_edges)
+    assert directed_edges.duplicated(subset=["u", "v"], keep=False).any()
+
+    graph = osm.to_graph(nodes, edges, graph_type="networkx", simplify=True)
+    assert graph.number_of_edges() == len(directed_edges)
+
+    # Within each pair of nodes the keys run 0, 1, ...
+    parallel_pairs = [
+        (u, v) for u, v in graph.edges() if graph.number_of_edges(u, v) > 1
+    ]
+    assert parallel_pairs
+    for u, v in parallel_pairs:
+        assert sorted(graph[u][v]) == list(range(graph.number_of_edges(u, v)))
+
+
+def test_networkx_export_accepts_edges_with_gaps_in_index():
+    """#370 — the edge attributes are read positionally: a filtered edges
+    GeoDataFrame has gaps in its index, which the label-based read could not handle."""
+    pytest.importorskip("networkx")
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    nodes, edges = osm.get_network(nodes=True)
+
+    subset = edges[edges["highway"] == "footway"]
+    assert subset.index.max() > len(subset)
+
+    graph = osm.to_graph(
+        nodes,
+        subset,
+        graph_type="networkx",
+        network_type="walking",
+        retain_all=True,
+    )
+    # Walking edges are bidirectional, so each row gives an edge to both directions.
+    assert graph.number_of_edges() == 2 * len(subset)
+
+
+def test_networkx_export_renames_edge_tag_named_key():
+    """#370 — an edge attribute named 'key' collides with the parallel-edge key of
+    the graph, so a tag with that name is surfaced as 'key_tag'."""
+    pytest.importorskip("networkx")
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    nodes, edges = osm.get_network(nodes=True)
+    edges["key"] = "value of a tag named key"
+
+    graph = osm.to_graph(nodes, edges, graph_type="networkx")
+    edge_attributes = [attr for *_, attr in graph.edges(data=True)]
+    assert edge_attributes
+    assert all("key" not in attr for attr in edge_attributes)
+    assert all(
+        attr["key_tag"] == "value of a tag named key" for attr in edge_attributes
+    )
