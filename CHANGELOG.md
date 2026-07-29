@@ -1,6 +1,23 @@
 Changelog
 =========
 
+v0.13.0
+-------
+
+This release aligns the street-network reading and the `networkx` graph export with OSMnx: the predefined `network_type` filters now match the OSMnx way filters one-to-one, and an exported graph works with the OSMnx functions. The other readers are unchanged.
+
+- CHANGED: The predefined network types match the way filters of OSMnx one-to-one, so the same query returns the same streets in both libraries. `driving` is OSMnx's `drive` and no longer includes service roads (use `driving+service`, which is OSMnx's `drive_service`, to keep them), `all` is filtered rather than returning every way, and the new `all_public` leaves out the privately accessible ways. Every mode-specific network now leaves out `access=private` ways, `walking` leaves out ways whose sidewalk is mapped separately, and the lifecycle and service-area highway values are excluded throughout. The OSMnx names `drive`, `drive_service`, `walk` and `bike` are accepted as network types as well ([#369](https://github.com/pyrosm/pyrosm/issues/369), [#372](https://github.com/pyrosm/pyrosm/pull/372))
+- CHANGED: `driving` no longer excludes ways tagged `psv=yes`. The tag means public service vehicles are allowed rather than others banned, so the exclusion dropped ordinary drivable streets carrying a bus route. `driving+service` used to resolve to that filter, which added public service vehicle ways instead of service roads ([#369](https://github.com/pyrosm/pyrosm/issues/369), [#372](https://github.com/pyrosm/pyrosm/pull/372))
+- FIXED: A `networkx` graph exported with `osmnx_compatible=True` works with OSMnx. `key` is no longer an edge attribute, where it collided with the parallel-edge key of `add_edge`, and `osmid` is the key of a node rather than also a node attribute, where it collided with the node index when writing the nodes. Node `tags` are stored as a JSON string like the edge tags, and the graph carries `simplified` ([#370](https://github.com/pyrosm/pyrosm/issues/370), [#371](https://github.com/pyrosm/pyrosm/pull/371))
+- FIXED: Parallel edges between the same pair of nodes survive the `networkx` export. Every edge was written with the multi-edge key `0`, so all but the last one were dropped from the graph ([#370](https://github.com/pyrosm/pyrosm/issues/370), [#371](https://github.com/pyrosm/pyrosm/pull/371))
+- FIXED: An edges GeoDataFrame with gaps or duplicate labels in its index exports to a graph. The edge attributes were read by index label, and the one-way masks were selected by label, which raised for a filtered or concatenated frame ([#370](https://github.com/pyrosm/pyrosm/issues/370), [#371](https://github.com/pyrosm/pyrosm/pull/371))
+- FIXED: An unknown `network_type` raises a `ValueError` in every reader. `network_type="driving_psv"` was accepted but unhandled, and returned the whole unfiltered network ([#369](https://github.com/pyrosm/pyrosm/issues/369), [#372](https://github.com/pyrosm/pyrosm/pull/372))
+- FIXED: A tag holding several values (`access=private;delivery`) is matched by the predefined network filters, as the OSMnx filters match it. A `custom_filter` is unaffected and keeps matching values exactly ([#369](https://github.com/pyrosm/pyrosm/issues/369), [#372](https://github.com/pyrosm/pyrosm/pull/372))
+
+Thanks for all the contributors who helped to improve the library either via PRs, or by raising or participating in an issue:
+
+- mszell ([#369](https://github.com/pyrosm/pyrosm/issues/369), [#370](https://github.com/pyrosm/pyrosm/issues/370))
+
 v0.12.0
 -------
 
