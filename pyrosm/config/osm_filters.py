@@ -1,136 +1,197 @@
+"""Predefined network filters, following the way filters of OSMnx.
+
+Each filter is an "exclude" dict of ``{osm_key: [values]}``: a way is dropped when it
+carries one of the listed values for that key. The filters mirror
+``osmnx._overpass._get_network_filter``, with the OSMnx regular expressions written out
+as the OSM values they match (``"motor"`` matches ``motor``, ``motorway`` and
+``motorway_link``).
+"""
+
+
+class MultiValue(list):
+    """Filter values that match a multi-value tag as well.
+
+    An OSM tag can hold several values separated by a semicolon
+    (``access=private;delivery``). OSMnx matches its filters against the raw tag value
+    with a regular expression, so such a tag matches when any of its values is listed.
+    These values do the same, which keeps the predefined networks equal to the OSMnx
+    ones. A ``custom_filter`` is unaffected and keeps matching values exactly; use a
+    compiled regular expression there to match a multi-value tag.
+    """
+
+    def __contains__(self, value):
+        if list.__contains__(self, value):
+            return True
+        if isinstance(value, str) and ";" in value:
+            return any(
+                list.__contains__(self, part.strip()) for part in value.split(";")
+            )
+        return False
+
+
+# Excluded by every network type: areas are not routable ways, and these highway values
+# are either not a physical way yet (or anymore) or not part of the street network.
+_ALWAYS_EXCLUDED_HIGHWAY = [
+    "abandoned",
+    "construction",
+    "no",
+    "planned",
+    "platform",
+    "proposed",
+    "raceway",
+    "razed",
+    "rest_area",
+    "services",
+]
+
+# Motorized ways, as matched by the "motor" expression of OSMnx.
+_MOTOR_HIGHWAY = ["motor", "motorway", "motorway_link"]
+
+# OSMnx spellings accepted for the pyrosm network types.
+NETWORK_TYPE_ALIASES = {
+    "drive": "driving",
+    "drive_service": "driving+service",
+    "walk": "walking",
+    "bike": "cycling",
+}
+
+
+def normalize_network_type(network_type):
+    """Lower-case a network type and resolve an OSMnx alias to the pyrosm name."""
+    if not isinstance(network_type, str):
+        raise ValueError(_UNKNOWN_NETWORK_TYPE)
+    net_type = network_type.lower().strip()
+    return NETWORK_TYPE_ALIASES.get(net_type, net_type)
+
+
 def get_osm_filter(network_type):
+    """Get the OSM filter for a network type.
+
+    Accepts the pyrosm names ('driving', 'driving+service', 'walking', 'cycling',
+    'all', 'all_public') and their OSMnx aliases ('drive', 'drive_service', 'walk',
+    'bike'), and raises a ValueError for anything else.
     """
-    Get OSM filter for different kinds of network types: 'driving', 'walking', 'cycling'.
+    try:
+        builder = _NETWORK_FILTERS[normalize_network_type(network_type)]
+    except KeyError:
+        raise ValueError(_UNKNOWN_NETWORK_TYPE) from None
+    return builder()
 
-    Applies same filters as in OSMnx,
-    see: https://github.com/gboeing/osmnx/blob/master/osmnx/downloader.py#L19
 
+def driving_filter(include_service_roads=False):
+    """Drivable ways, as in OSMnx for 'drive'.
+
+    Filters out un-drivable ways, private ways, anything specifying motor=no, and
+    service roads. With 'include_service_roads' service roads are kept except those
+    providing parking, private or emergency access, as in OSMnx for 'drive_service'.
     """
-    if network_type == "driving":
-        return driving_filter()
-    elif network_type == "walking":
-        return walking_filter()
-    elif network_type == "cycling":
-        return cycling_filter()
-    elif network_type == "driving+psv":
-        return driving_filter(exclude_public_service_vehicle_paths=False)
+    excluded_highway = _ALWAYS_EXCLUDED_HIGHWAY + [
+        "bridleway",
+        "bus_guideway",
+        "corridor",
+        "cycleway",
+        "elevator",
+        "escalator",
+        "footway",
+        "path",
+        "pedestrian",
+        "steps",
+        "track",
+    ]
+    excluded_service = ["emergency_access", "parking", "parking_aisle", "private"]
 
+    if not include_service_roads:
+        excluded_highway.append("service")
+        excluded_service += ["alley", "driveway"]
 
-def driving_filter(exclude_public_service_vehicle_paths=True):
-    """
-    Driving filters for different tags (almost) as in OSMnx for 'drive+service'.
-
-    Filter out un-drivable roads, private ways, and
-    anything specifying motor=no. also filter out any non-service roads that
-    are tagged as providing parking, private, or emergency-access
-    services.
-
-    If 'exclude_public_service_vehicle_paths' == False, also paths that are only accessible
-    for public transport vehicles are included.
-
-    Applied filters:
-        '["area"!~"yes"]["highway"!~"cycleway|footway|path|pedestrian|steps|track|corridor|'
-        'elevator|escalator|proposed|construction|bridleway|abandoned|platform|raceway"]'
-        '["motor_vehicle"!~"no"]["motorcar"!~"no"]{}'
-        '["service"!~"parking|parking_aisle|private|emergency_access"]'
-
-    """
-    drive_filter = dict(
-        area=["yes"],
-        highway=[
-            "cycleway",
-            "footway",
-            "path",
-            "pedestrian",
-            "steps",
-            "track",
-            "corridor",
-            "elevator",
-            "escalator",
-            "proposed",
-            "construction",
-            "bridleway",
-            "abandoned",
-            "platform",
-            "raceway",
-        ],
-        motor_vehicle=["no"],
-        motorcar=["no"],
-        service=["parking", "parking_aisle", "private", "emergency_access"],
+    return dict(
+        area=MultiValue(["yes"]),
+        access=MultiValue(["private"]),
+        highway=MultiValue(excluded_highway),
+        motor_vehicle=MultiValue(["no"]),
+        motorcar=MultiValue(["no"]),
+        service=MultiValue(excluded_service),
     )
-
-    if exclude_public_service_vehicle_paths:
-        drive_filter["psv"] = ["yes"]
-
-    return drive_filter
 
 
 def walking_filter():
-    """
-    Walking filters for different tags as in OSMnx for 'walk'.
+    """Walkable ways, as in OSMnx for 'walk'.
 
-    Filter out cycle ways, motor ways, private ways, and anything
-    specifying foot=no. allow service roads, permitting things like parking
-    lot lanes, alleys, etc that you *can* walk on even if they're not exactly
-    pleasant walks. some cycleways may allow pedestrians, but this filter ignores
-    such cycleways.
-
-    Applied filters:
-    '["area"!~"yes"]["highway"!~"cycleway|motor|proposed|construction|abandoned|
-      platform|raceway|motorway|motorway_link"]'
-
-    '["foot"!~"no"]["service"!~"private"]'
-
-
+    Filters out cycle ways, motor ways, private ways, and anything specifying foot=no.
+    Service roads are kept, permitting things like parking lot lanes and alleys that you
+    *can* walk on even if they are not exactly pleasant walks. Ways whose sidewalk is
+    mapped as a separate way are excluded, so that the sidewalk is not counted twice.
     """
     return dict(
-        area=["yes"],
-        highway=[
-            "cycleway",
-            "motor",
-            "proposed",
-            "construction",
-            "abandoned",
-            "platform",
-            "raceway",
-            "motorway",
-            "motorway_link",
-        ],
-        foot=["no"],
-        service=["private"],
+        area=MultiValue(["yes"]),
+        access=MultiValue(["private"]),
+        highway=MultiValue(
+            _ALWAYS_EXCLUDED_HIGHWAY + ["bus_guideway", "cycleway"] + _MOTOR_HIGHWAY
+        ),
+        foot=MultiValue(["no"]),
+        service=MultiValue(["private"]),
+        sidewalk=MultiValue(["separate"]),
+        **{
+            "sidewalk:both": MultiValue(["separate"]),
+            "sidewalk:left": MultiValue(["separate"]),
+            "sidewalk:right": MultiValue(["separate"]),
+        },
     )
 
 
 def cycling_filter():
-    """
-    Cycling filters for different tags as in OSMnx for 'bike'.
+    """Cyclable ways, as in OSMnx for 'bike'.
 
-    Filter out foot ways, motor ways, private ways, and anything
-    specifying biking=no.
-
-    Applied filters:
-        '["area"!~"yes"]["highway"!~"footway|steps|corridor|elevator|escalator|motor|proposed|'
-        'construction|abandoned|platform|raceway"]'
-        '["bicycle"!~"no"]["service"!~"private"
-
+    Filters out foot ways, motor ways, private ways, and anything specifying
+    bicycle=no.
     """
     return dict(
-        area=["yes"],
-        highway=[
-            "footway",
-            "steps",
-            "corridor",
-            "elevator",
-            "escalator",
-            "motor",
-            "proposed",
-            "construction",
-            "abandoned",
-            "platform",
-            "raceway",
-            "motorway",
-            "motorway_link",
-        ],
-        bicycle=["no"],
-        service=["private"],
+        area=MultiValue(["yes"]),
+        access=MultiValue(["private"]),
+        highway=MultiValue(
+            _ALWAYS_EXCLUDED_HIGHWAY
+            + [
+                "bus_guideway",
+                "corridor",
+                "elevator",
+                "escalator",
+                "footway",
+                "steps",
+            ]
+            + _MOTOR_HIGHWAY
+        ),
+        bicycle=MultiValue(["no"]),
+        service=MultiValue(["private"]),
     )
+
+
+def all_filter(public_only=False):
+    """Every way of the street network, as in OSMnx for 'all'.
+
+    No mode-specific restrictions are applied. With 'public_only' the privately
+    accessible ways are left out as well, as in OSMnx for 'all_public'.
+    """
+    network_filter = dict(
+        area=MultiValue(["yes"]), highway=MultiValue(_ALWAYS_EXCLUDED_HIGHWAY)
+    )
+    if public_only:
+        network_filter["access"] = MultiValue(["private"])
+        network_filter["service"] = MultiValue(["private"])
+    return network_filter
+
+
+_NETWORK_FILTERS = {
+    "driving": driving_filter,
+    "driving+service": lambda: driving_filter(include_service_roads=True),
+    "walking": walking_filter,
+    "cycling": cycling_filter,
+    "all": all_filter,
+    "all_public": lambda: all_filter(public_only=True),
+}
+
+# Every network type accepted by the reading methods, aliases included.
+NETWORK_TYPES = list(_NETWORK_FILTERS) + list(NETWORK_TYPE_ALIASES)
+
+_UNKNOWN_NETWORK_TYPE = "'network_type' should be one of the following: " + ", ".join(
+    NETWORK_TYPES
+)

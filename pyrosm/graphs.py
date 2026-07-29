@@ -9,6 +9,7 @@ from pyrosm.graph_connectivity import get_connected_edges
 from pyrosm.graph_simplify import simplify_graph
 from pyrosm.utils import validate_edge_gdf, validate_node_gdf
 from pyrosm.config import Conf
+from pyrosm.config.osm_filters import normalize_network_type
 from rapidjson import dumps
 import warnings
 
@@ -97,6 +98,10 @@ def get_directed_edges(
                 "Possible network types are: " + txt
             )
 
+    # An OSMnx alias ('drive', 'walk', ...) refers to the same network as the
+    # pyrosm name, so the direction rules below need to see the pyrosm name.
+    net_type = normalize_network_type(net_type)
+
     # Cycling honours bicycle-specific direction tags (oneway:bicycle) so that
     # contraflow cycling on one-way streets is modelled correctly.
     if direction_suffix is None and net_type == "cycling":
@@ -106,10 +111,10 @@ def get_directed_edges(
     nodes = nodes.copy()
 
     # Generate directed edges.
-    # Walking and "all" are bidirectional by default; driving and cycling are
-    # directed (they honour oneway, and cycling additionally honours
+    # Walking and the unrestricted networks are bidirectional by default; driving and
+    # cycling are directed (they honour oneway, and cycling additionally honours
     # oneway:bicycle). force_bidirectional overrides this for any type.
-    if force_bidirectional or net_type in ["walking", "all"]:
+    if force_bidirectional or net_type in ["walking", "all", "all_public"]:
         edges = generate_directed_edges(
             edges,
             direction,
@@ -156,11 +161,14 @@ def to_networkx(
 
     network_type : str
         The type of the network. Possible values:
-              - `'walking'`
-              - `'cycling'`
-              - `'driving'`
-              - `'driving+service'`
-              - `'all'`.
+              - `'walking'` (OSMnx `'walk'`)
+              - `'cycling'` (OSMnx `'bike'`)
+              - `'driving'` (OSMnx `'drive'`)
+              - `'driving+service'` (OSMnx `'drive_service'`)
+              - `'all'`
+              - `'all_public'`.
+
+            The OSMnx name of a network type is accepted as well.
 
     direction : str
         Name for the column containing information about the allowed driving directions
@@ -185,7 +193,9 @@ def to_networkx(
         By default, a bidirectional graph is created for walking and all, and a
         directed graph for driving and cycling (oneway streets are taken into
         account; cycling additionally honours oneway:bicycle for contraflow).
-        Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'.
+        Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'
+        and 'all_public', plus the OSMnx names 'walk', 'bike', 'drive' and
+        'drive_service'.
 
     retain_all : bool
         if True, return the entire graph even if it is not connected.
@@ -284,11 +294,14 @@ def to_igraph(
 
     network_type : str
         The type of the network. Possible values:
-              - `'walking'`
-              - `'cycling'`
-              - `'driving'`
-              - `'driving+service'`
-              - `'all'`.
+              - `'walking'` (OSMnx `'walk'`)
+              - `'cycling'` (OSMnx `'bike'`)
+              - `'driving'` (OSMnx `'drive'`)
+              - `'driving+service'` (OSMnx `'drive_service'`)
+              - `'all'`
+              - `'all_public'`.
+
+            The OSMnx name of a network type is accepted as well.
 
     direction : str
         Name for the column containing information about the allowed driving directions
@@ -313,7 +326,9 @@ def to_igraph(
         By default, a bidirectional graph is created for walking and all, and a
         directed graph for driving and cycling (oneway streets are taken into
         account; cycling additionally honours oneway:bicycle for contraflow).
-        Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'.
+        Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'
+        and 'all_public', plus the OSMnx names 'walk', 'bike', 'drive' and
+        'drive_service'.
 
     retain_all : bool
         if True, return the entire graph even if it is not connected.

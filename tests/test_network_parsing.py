@@ -41,10 +41,9 @@ def test_filter_network_by_walking(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (238, 19)
+    assert gdf.shape == (237, 18)
 
     required_cols = [
-        "access",
         "bridge",
         "foot",
         "highway",
@@ -81,20 +80,17 @@ def test_filter_network_by_driving(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (200, 19)
+    assert gdf.shape == (171, 16)
 
     required_cols = [
-        "access",
         "bridge",
         "highway",
         "int_ref",
         "lanes",
-        "lit",
         "maxspeed",
         "name",
         "oneway",
         "ref",
-        "service",
         "surface",
         "id",
         "geometry",
@@ -122,10 +118,9 @@ def test_filter_network_by_driving_with_service_roads(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (200, 19)
+    assert gdf.shape == (199, 18)
 
     required_cols = [
-        "access",
         "bridge",
         "highway",
         "int_ref",
@@ -163,10 +158,9 @@ def test_filter_network_by_cycling(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (290, 21)
+    assert gdf.shape == (289, 20)
 
     required_cols = [
-        "access",
         "bicycle",
         "bridge",
         "foot",
@@ -283,10 +277,9 @@ def test_parse_network_with_bbox(test_pbf):
 
     # Test shape (#236: edges crossing the bbox edge are now returned complete
     # rather than cut, so boundary-crossing edges are included)
-    assert gdf.shape == (72, 19)
+    assert gdf.shape == (71, 18)
 
     required_cols = [
-        "access",
         "bridge",
         "foot",
         "highway",
@@ -333,10 +326,9 @@ def test_parse_network_with_shapely_bbox(test_pbf):
 
     # Test shape (#236: edges crossing the bbox edge are now returned complete
     # rather than cut, so boundary-crossing edges are included)
-    assert gdf.shape == (72, 19)
+    assert gdf.shape == (71, 18)
 
     required_cols = [
-        "access",
         "bridge",
         "foot",
         "highway",
@@ -461,8 +453,8 @@ def test_getting_nodes_and_edges(test_pbf):
     assert isinstance(nodes.loc[0, "geometry"], Point)
 
     # Test shape
-    assert edges.shape == (1038, 21)
-    assert nodes.shape == (989, 9)
+    assert edges.shape == (1025, 20)
+    assert nodes.shape == (977, 9)
 
     # Edges should have "u" and "v" columns
     required = ["u", "v", "length"]
@@ -500,8 +492,8 @@ def test_getting_nodes_and_edges_with_bbox(test_pbf):
     # #199: the nodes frame now retains every endpoint referenced by the kept
     # edges, including boundary endpoints just outside the box, so the
     # nodes/edges pair stays consistent for graph export.)
-    assert edges.shape == (291, 21)
-    assert nodes.shape == (293, 9)
+    assert edges.shape == (278, 20)
+    assert nodes.shape == (281, 9)
 
     # Edges should have "u" and "v" columns
     required = ["u", "v", "length"]

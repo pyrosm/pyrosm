@@ -462,26 +462,11 @@ def get_data_by_custom_criteria(
 
 
 def _network_filter(network_type):
-    """Resolve a predefined ``network_type`` to its filter dict (or ``None`` for the
-    unrestricted ``all`` / ``driving_psv``), mirroring ``OSM._get_network_filter``."""
-    from pyrosm.config import Conf
+    """Resolve a predefined ``network_type`` to its filter dict, mirroring
+    ``OSM._get_network_filter``."""
+    from pyrosm.config.osm_filters import get_osm_filter
 
-    possible = Conf._possible_network_filters
-    msg = "'network_type' should be one of: " + ", ".join(possible)
-    if not isinstance(network_type, str):
-        raise ValueError(msg)
-    network_type = network_type.lower()
-    if network_type not in possible:
-        raise ValueError(msg)
-    if network_type == "walking":
-        return Conf.network_filters.walking
-    if network_type == "driving":
-        return Conf.network_filters.driving
-    if network_type == "driving+service":
-        return Conf.network_filters.driving_psv
-    if network_type == "cycling":
-        return Conf.network_filters.cycling
-    return None  # "all" and "driving_psv" -> every highway
+    return get_osm_filter(network_type)
 
 
 def _write_parquet(gdf, path):
