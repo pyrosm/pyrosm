@@ -126,6 +126,30 @@ Two things related to filtering that are good to understand:
 
 ## Networks and graphs
 
+:::{dropdown} Are the network types the same as in OSMnx?
+
+Yes. `network_type` follows the [way filters of OSMnx](https://osmnx.readthedocs.io/en/stable/user-reference.html),
+so reading a network with pyrosm selects the same streets as the equivalent OSMnx query,
+and the OSMnx names work as network types as well:
+
+| pyrosm | OSMnx |
+| --- | --- |
+| `driving` | `drive` |
+| `driving+service` | `drive_service` |
+| `walking` | `walk` |
+| `cycling` | `bike` |
+| `all` | `all` |
+| `all_public` | `all_public` |
+
+`driving` leaves out the service roads (alleys, driveways, parking aisles). Use
+`driving+service` when those matter for reachability, for example when routing to
+individual buildings.
+
+A network exported with `to_graph(..., graph_type="networkx")` is OSMnx-compatible as
+well: the node and edge attributes are named as OSMnx expects, so its functions work on
+the graph directly.
+:::
+
 :::{dropdown} How do I find street intersections and their coordinates?
 
 Build a graph with `to_graph(..., simplify=True)`. Simplification reduces the network to its
