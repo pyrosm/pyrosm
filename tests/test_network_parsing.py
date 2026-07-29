@@ -524,7 +524,7 @@ def test_reading_network_from_osh(helsinki_history_pbf):
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], MultiLineString)
-    assert gdf.shape == (206, 24)
+    assert gdf.shape == (205, 24)
 
     required_cols = ["highway", "id", "timestamp", "version", "geometry"]
 
@@ -585,5 +585,6 @@ def test_osh_network_does_not_leak_empty_tag_columns(helsinki_history_pbf):
     assert phantom == [], f"empty tag columns leaked into OSH output: {phantom}"
 
     # The column set must stay lean (24 after the network-filter fix; was 25
-    # before it, and 27 with the #248 NA-leak bug).
-    assert gdf.shape == (206, 24)
+    # before it, and 27 with the #248 NA-leak bug). The row count dropped by one
+    # with the OSMnx-parity filters (#369), which the walking network follows.
+    assert gdf.shape == (205, 24)
