@@ -23,14 +23,16 @@ from pyrosm.config.default_tags import (
     aeroway_columns,
     boundary_columns,
 )
-from pyrosm.config.osm_filters import get_osm_filter
+from pyrosm.config.osm_filters import NETWORK_TYPES, get_osm_filter
 
 
 class NetworkFilter:
     driving = get_osm_filter("driving")
-    driving_psv = get_osm_filter("driving+psv")
+    driving_service = get_osm_filter("driving+service")
     walking = get_osm_filter("walking")
     cycling = get_osm_filter("cycling")
+    all = get_osm_filter("all")
+    all_public = get_osm_filter("all_public")
 
 
 class Tags:
@@ -95,8 +97,7 @@ class Tags:
 class Conf:
     network_filters = NetworkFilter()
     tags = Tags()
-    _possible_network_filters = [a for a in network_filters.__dir__() if "__" not in a]
-    _possible_network_filters += ["all", "driving+service"]
+    _possible_network_filters = NETWORK_TYPES
 
     # One way tags
     oneway_values = ["yes", "true", "1", "-1", "T", "F"]

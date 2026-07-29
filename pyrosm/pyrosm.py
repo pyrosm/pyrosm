@@ -2,6 +2,7 @@ import warnings
 
 import pandas as pd
 from pyrosm.config import Conf
+from pyrosm.config.osm_filters import get_osm_filter
 from pyrosm.filter_compiler import CompiledFilter
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm.frames import create_nodes_gdf
@@ -282,28 +283,8 @@ class OSM:
         self._timestamp_changed = False
 
     def _get_network_filter(self, net_type):
-        possible_filters = self.conf._possible_network_filters
-        possible_values = ", ".join(possible_filters)
-        msg = "'network_type' should be one of the following: " + possible_values
-        if not isinstance(net_type, str):
-            raise ValueError(msg)
-
-        net_type = net_type.lower()
-
-        if net_type not in possible_filters:
-            raise ValueError(msg)
-
-        # Get filter
-        if net_type == "walking":
-            return self.conf.network_filters.walking
-        elif net_type == "driving":
-            return self.conf.network_filters.driving
-        elif net_type == "driving+service":
-            return self.conf.network_filters.driving_psv
-        elif net_type == "cycling":
-            return self.conf.network_filters.cycling
-        elif net_type == "all":
-            return None
+        """Resolve a predefined network type to its filter, raising for an unknown one."""
+        return get_osm_filter(net_type)
 
     def _set_current_time(self, timestamp):
         unix_time = None
@@ -343,11 +324,15 @@ class OSM:
             What kind of network to parse.
             Possible values are:
 
-              - `'walking'`
-              - `'cycling'`
-              - `'driving'`
-              - `'driving+service'`
-              - `'all'`.
+              - `'walking'` (OSMnx `'walk'`)
+              - `'cycling'` (OSMnx `'bike'`)
+              - `'driving'` (OSMnx `'drive'`)
+              - `'driving+service'` (OSMnx `'drive_service'`)
+              - `'all'`
+              - `'all_public'`.
+
+            The filters follow the way filters of OSMnx, and the OSMnx name of a
+            network type is accepted as well.
 
             When `custom_filter` is given, `network_type` no longer selects the
             ways to keep; it only determines the graph semantics used by
@@ -1527,7 +1512,9 @@ class OSM:
             available for a reason or another. By default, a bidirectional graph is created for walking and all,
             and a directed graph for driving and cycling (oneway streets are taken into account;
             cycling additionally honours oneway:bicycle for contraflow).
-            Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'.
+            Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'
+            and 'all_public', plus the OSMnx names 'walk', 'bike', 'drive' and
+            'drive_service'.
 
         retain_all : bool
             if True, return the entire graph even if it is not connected.

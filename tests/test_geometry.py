@@ -100,8 +100,8 @@ def test_closed_highway_area_yes_is_polygon():
 def test_network_extraction_keeps_areas_as_lines():
     """#144 guard — network extraction must NEVER produce polygons, even for
     highway ways tagged area=yes (plazas). A Polygon is not routable, so the
-    parse_network path keeps every closed way linear. get_network('all') does not
-    exclude area=yes ways, so the plazas are present and must be lines."""
+    parse_network path keeps every closed way linear. The predefined network types
+    exclude area=yes ways, so the plazas are read with a custom filter."""
     from pyrosm import OSM
 
     osm = OSM(get_data("helsinki_pbf"))
@@ -109,7 +109,10 @@ def test_network_extraction_keeps_areas_as_lines():
     geom_types = set(edges.geometry.geom_type.unique())
     assert not any("Polygon" in t for t in geom_types), geom_types
 
-    # The area=yes plazas are present (not excluded by the 'all' filter) and linear.
+    edges = osm.get_network(custom_filter={"highway": True}, filter_type="keep")
+    geom_types = set(edges.geometry.geom_type.unique())
+    assert not any("Polygon" in t for t in geom_types), geom_types
+
     for plaza_id in (4369051, 18379563):
         row = edges[edges["id"] == plaza_id]
         assert len(row) >= 1

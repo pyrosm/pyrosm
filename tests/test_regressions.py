@@ -326,10 +326,9 @@ def test_get_network_without_custom_filter_unchanged():
     osm = OSM(get_data("test_pbf"))
     edges = osm.get_network(network_type="driving")
 
-    assert len(edges) == 200
-    assert edges["id"].nunique() == 200
+    assert len(edges) == 171
+    assert edges["id"].nunique() == 171
     assert sorted(edges.columns) == [
-        "access",
         "bridge",
         "geometry",
         "highway",
@@ -337,13 +336,11 @@ def test_get_network_without_custom_filter_unchanged():
         "int_ref",
         "lanes",
         "length",
-        "lit",
         "maxspeed",
         "name",
         "oneway",
         "osm_type",
         "ref",
-        "service",
         "surface",
         "tags",
         "timestamp",
@@ -353,7 +350,7 @@ def test_get_network_without_custom_filter_unchanged():
 
     rows = sorted(f"{i}:{h}" for i, h in zip(edges["id"], edges["highway"].fillna("")))
     digest = hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
-    assert digest == "8ce8c63b51ee14f8008a6af4d642cb3adf95e83a6f926fa6c9e4381bb3f3b072"
+    assert digest == "9d8d6995cb96d74f00422b5bb9e09d9e844342fa16781716860fc88b422a9566"
 
 
 def test_single_key_keep_filter_unchanged():
@@ -539,7 +536,7 @@ def test_valid_bbox_unchanged_by_empty_guard():
     osm = OSM(get_data("helsinki_pbf"), bounding_box=[24.93, 60.16, 24.96, 60.20])
     edges = osm.get_network(network_type="all")
     assert edges is not None
-    assert len(edges) == 2577
+    assert len(edges) == 2469
 
 
 def test_bbox_straddling_building_ways_complete_not_cut():
@@ -1464,3 +1461,231 @@ def test_networkx_export_renames_edge_tag_named_key():
     assert all(
         attr["key_tag"] == "value of a tag named key" for attr in edge_attributes
     )
+
+
+def test_driving_network_excludes_service_roads_by_default():
+    """#369 — 'driving' follows OSMnx 'drive' and leaves out service roads;
+    'driving+service' follows OSMnx 'drive_service' and keeps them, apart from the
+    service roads that only provide parking, private or emergency access."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+
+    driving = osm.get_network(network_type="driving")
+    assert "service" not in set(driving["highway"].dropna())
+
+    with_service = osm.get_network(network_type="driving+service")
+    assert "service" in set(with_service["highway"].dropna())
+    excluded = {"parking", "parking_aisle", "private", "emergency_access"}
+    assert not (set(with_service["service"].dropna()) & excluded)
+
+    # Service roads are the only difference between the two.
+    assert set(driving["id"]) < set(with_service["id"])
+
+
+def test_network_types_exclude_private_access():
+    """#369 — every mode-specific network leaves out access=private ways, as OSMnx
+    does. The unrestricted 'all' keeps them; 'all_public' does not."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+
+    for network_type in ("driving", "driving+service", "walking", "cycling"):
+        edges = osm.get_network(network_type=network_type)
+        # The column is missing altogether when no way of the network is access-tagged.
+        values = set(edges["access"].dropna()) if "access" in edges.columns else set()
+        assert "private" not in values
+
+    assert "private" in set(osm.get_network(network_type="all")["access"].dropna())
+    public = osm.get_network(network_type="all_public")
+    assert "private" not in set(public["access"].dropna())
+
+
+def test_osmnx_network_type_aliases():
+    """#369 — the OSMnx spellings select the same network as the pyrosm names."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    pairs = [
+        ("drive", "driving"),
+        ("drive_service", "driving+service"),
+        ("walk", "walking"),
+        ("bike", "cycling"),
+    ]
+    for alias, name in pairs:
+        assert set(osm.get_network(network_type=alias)["id"]) == set(
+            osm.get_network(network_type=name)["id"]
+        )
+
+
+def test_unknown_network_type_raises():
+    """#369 — the accepted network types are listed explicitly. 'driving_psv' was
+    accepted because the list was built from the filter attribute names, and it fell
+    through the resolver to return the whole unfiltered network."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    for network_type in ("driving_psv", "driving+psv", "not_a_network"):
+        with pytest.raises(ValueError, match="network_type"):
+            osm.get_network(network_type=network_type)
+
+
+def test_all_network_excludes_areas_and_lifecycle_ways():
+    """#369 — 'all' follows OSMnx and leaves out areas and the ways that are not (or
+    no longer) a physical way. It used to apply no filter at all."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    edges = osm.get_network(network_type="all")
+
+    areas = set(edges["area"].dropna()) if "area" in edges.columns else set()
+    assert "yes" not in areas
+    lifecycle = {"construction", "proposed", "planned", "razed", "abandoned", "no"}
+    assert not (set(edges["highway"].dropna()) & lifecycle)
+    assert "platform" not in set(edges["highway"].dropna())
+
+
+def test_network_filters_match_multi_value_tags():
+    """#369 — a tag can hold several values ("access=private;delivery"). OSMnx matches
+    its filters against the raw value with a regular expression, so the predefined
+    networks exclude such a way as well. A custom_filter keeps matching exactly, which
+    is what the regex filter values of #116 are for."""
+    from pyrosm import OSM, get_data
+    from pyrosm.config import Conf
+    from pyrosm.config.osm_filters import get_osm_filter
+    from pyrosm.data_filter import element_should_be_kept
+    from pyrosm.data_manager import _get_osm_ways_and_relations
+
+    ways = [
+        {"id": 1, "highway": "residential", "nodes": [1, 2]},
+        {"id": 2, "highway": "residential", "access": "private", "nodes": [2, 3]},
+        {
+            "id": 3,
+            "highway": "residential",
+            "access": "private;delivery",
+            "nodes": [3, 4],
+        },
+        {
+            "id": 4,
+            "highway": "residential",
+            "access": "delivery;destination",
+            "nodes": [4, 5],
+        },
+    ]
+    driving = get_osm_filter("driving")
+
+    # The way path (get_network) and the node/relation path (also used by the
+    # out-of-core and streaming readers) both drop the multi-value private way.
+    kept, _ = _get_osm_ways_and_relations(
+        ways, None, ["highway"], list(Conf.tags.highway), driving, "exclude"
+    )[:2]
+    assert sorted(int(i) for i in kept["id"]) == [1, 4]
+    assert [
+        element_should_be_kept(w, ["highway"], driving, "exclude") for w in ways
+    ] == [
+        True,
+        False,
+        False,
+        True,
+    ]
+
+    # A custom_filter is unaffected: the bundled extract has surface="paved;cobblestone",
+    # which an exact-value filter does not select.
+    osm = OSM(get_data("helsinki_pbf"))
+    literal = osm.get_network(
+        custom_filter={"surface": ["cobblestone"]}, filter_type="keep"
+    )
+    assert "paved;cobblestone" not in set(literal["surface"].dropna())
+
+
+def test_network_filters_match_osmnx_way_filters():
+    """#369 — the values each network type excludes, as OSMnx's way filters exclude
+    them. OSMnx writes its exclusions as unanchored regular expressions, so its "motor"
+    stands for the motor/motorway/motorway_link values written out here."""
+    from pyrosm.config.osm_filters import get_osm_filter
+
+    lifecycle = {
+        "abandoned",
+        "construction",
+        "no",
+        "planned",
+        "platform",
+        "proposed",
+        "raceway",
+        "razed",
+        "rest_area",
+        "services",
+    }
+    motor = {"motor", "motorway", "motorway_link"}
+    drive_highway = lifecycle | {
+        "bridleway",
+        "bus_guideway",
+        "corridor",
+        "cycleway",
+        "elevator",
+        "escalator",
+        "footway",
+        "path",
+        "pedestrian",
+        "steps",
+        "track",
+    }
+    expected = {
+        "driving": {
+            "area": {"yes"},
+            "access": {"private"},
+            "highway": drive_highway | {"service"},
+            "motor_vehicle": {"no"},
+            "motorcar": {"no"},
+            "service": {
+                "alley",
+                "driveway",
+                "emergency_access",
+                "parking",
+                "parking_aisle",
+                "private",
+            },
+        },
+        "driving+service": {
+            "area": {"yes"},
+            "access": {"private"},
+            "highway": drive_highway,
+            "motor_vehicle": {"no"},
+            "motorcar": {"no"},
+            "service": {"emergency_access", "parking", "parking_aisle", "private"},
+        },
+        "walking": {
+            "area": {"yes"},
+            "access": {"private"},
+            "highway": lifecycle | {"bus_guideway", "cycleway"} | motor,
+            "foot": {"no"},
+            "service": {"private"},
+            "sidewalk": {"separate"},
+            "sidewalk:both": {"separate"},
+            "sidewalk:left": {"separate"},
+            "sidewalk:right": {"separate"},
+        },
+        "cycling": {
+            "area": {"yes"},
+            "access": {"private"},
+            "highway": lifecycle
+            | {"bus_guideway", "corridor", "elevator", "escalator", "footway", "steps"}
+            | motor,
+            "bicycle": {"no"},
+            "service": {"private"},
+        },
+        # OSMnx keeps bus_guideway and the privately accessible ways in 'all'.
+        "all": {"area": {"yes"}, "highway": lifecycle},
+        "all_public": {
+            "area": {"yes"},
+            "highway": lifecycle,
+            "access": {"private"},
+            "service": {"private"},
+        },
+    }
+
+    for network_type, exclusions in expected.items():
+        network_filter = get_osm_filter(network_type)
+        assert {
+            k: set(v) for k, v in network_filter.items()
+        } == exclusions, network_type

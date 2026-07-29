@@ -219,7 +219,7 @@ def test_igraph_immutable_counts(test_pbf):
 
     assert isinstance(g, igraph.Graph)
     # Check that the edge count matches
-    assert g.ecount() == 2076
+    assert g.ecount() == 2050
     assert g.vcount() == n_nodes
 
 
@@ -283,7 +283,7 @@ def test_nxgraph_immutable_counts(test_pbf):
 
     assert isinstance(g, nx.MultiDiGraph)
     # Check that the edge count matches
-    assert nx.number_of_edges(g) == 2076
+    assert nx.number_of_edges(g) == 2050
     assert nx.number_of_nodes(g) == n_nodes
 
 
@@ -348,8 +348,8 @@ def test_connected_component(immutable_nodes_and_edges):
     assert len(cn) <= len(nodes)
 
     # Test exact shape
-    assert ce.shape == (1676, 21)
-    assert cn.shape == (793, 9)
+    assert ce.shape == (1650, 20)
+    assert cn.shape == (781, 9)
 
 
 def test_igraph_connectivity(immutable_nodes_and_edges):
@@ -380,7 +380,7 @@ def test_igraph_connectivity(immutable_nodes_and_edges):
     arr[arr == np.inf] = 0
     assert arr.min() == 0
     assert arr.max().round(0) == 3126
-    assert arr.mean().round(0) == 1421
+    assert arr.mean().round(0) == 1429
 
 
 def test_nxgraph_connectivity(immutable_nodes_and_edges):
@@ -415,7 +415,7 @@ def test_nxgraph_connectivity(immutable_nodes_and_edges):
     arr[arr == np.inf] = 0
     assert arr.min() == 0
     assert arr.max().round(0) == 3126
-    assert arr.mean().round(0) == 1421
+    assert arr.mean().round(0) == 1429
 
 
 @_pandana_unsupported_on_win
@@ -455,7 +455,7 @@ def test_pdgraph_connectivity():
     # Find the distance to nearest 5 restaurants from each node
     nearest_restaurants = g.nearest_pois(1000, "restaurants", num_pois=5)
     assert isinstance(nearest_restaurants, pd.DataFrame)
-    assert nearest_restaurants.shape == (5297, 5)
+    assert nearest_restaurants.shape == (5266, 5)
 
     # Get closest node_ids for each restaurant
     node_ids = g.get_node_ids(x, y)
@@ -469,7 +469,7 @@ def test_pdgraph_connectivity():
     # Aggregate the number of employees within 500 meters from each node
     access = g.aggregate(500, type="sum", decay="linear", name="employee_cnt")
     assert isinstance(access, pd.Series)
-    assert len(access) == 5297
+    assert len(access) == 5266
 
     # Test shortest path calculations
     shortest_distances = g.shortest_path_lengths(
@@ -736,7 +736,7 @@ def test_pandarm_connectivity():
 
     nearest_restaurants = g.nearest_pois(1000, "restaurants", num_pois=5)
     assert isinstance(nearest_restaurants, pd.DataFrame)
-    assert nearest_restaurants.shape == (5297, 5)
+    assert nearest_restaurants.shape == (5266, 5)
 
     node_ids = g.get_node_ids(x, y)
     assert isinstance(node_ids, pd.Series)
@@ -747,7 +747,7 @@ def test_pandarm_connectivity():
 
     access = g.aggregate(500, type="sum", decay="linear", name="employee_cnt")
     assert isinstance(access, pd.Series)
-    assert len(access) == 5297
+    assert len(access) == 5266
 
     shortest_distances = g.shortest_path_lengths(
         node_ids[0:100], node_ids[100:200], imp_name="length"
