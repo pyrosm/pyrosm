@@ -46,7 +46,9 @@ jobs:
       matrix:
         # macos-14 (arm64) builds both arm64 and cross-compiled x86_64 wheels
         # (see [tool.cibuildwheel.macos]); Intel macos-13 runners are retired.
-        os: [ubuntu-latest, windows-latest, macos-14]
+        # ubuntu-24.04-arm builds the aarch64 Linux wheels natively, so no
+        # emulation is needed.
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-14]
     steps:
       - uses: actions/checkout@v5
       - uses: pypa/cibuildwheel@v4.0
