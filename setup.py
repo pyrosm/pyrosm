@@ -72,6 +72,11 @@ setup(
     url="https://pyrosm.readthedocs.io/",
     packages=find_packages(),
     include_package_data=True,
+    # The Cython-generated C sources sit next to the .pyx files and are picked up
+    # by include_package_data, which shipped 14 MB of them inside every binary
+    # wheel. They are only needed to build, so keep them out of the installation
+    # (the sdist keeps them, so a source build needs no Cython).
+    exclude_package_data={"pyrosm": ["*.c"]},
     zip_safe=False,
     classifiers=[
         # complete classifier list: http://pypi.python.org/pypi?%3Aaction=list_classifiers
