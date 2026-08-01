@@ -1,6 +1,14 @@
 Changelog
 =========
 
+v0.13.1
+-------
+
+A packaging release: the wheels are considerably smaller and Linux ARM wheels are published. The library itself is unchanged.
+
+- CHANGED: The wheels no longer carry the debug information and the generated C sources. The manylinux images compile with `-g` and `auditwheel` does not strip, so the DWARF sections made up 88% of every compiled module, and `include_package_data` shipped the Cython-generated `.c` files next to the `.pyx` sources inside every binary wheel. The Linux wheel drops from 12.0 MB to about 3 MB (~44.7 MB to ~6 MB installed), and the macOS and Windows wheels from about 5.1 MB to 3.1 MB. The source distribution still contains the C sources, so a source build needs no Cython ([#374](https://github.com/pyrosm/pyrosm/pull/374))
+- NEW: Publish Linux ARM (`aarch64`) wheels, built natively on an ARM runner. Installing on Linux ARM no longer builds pyrosm from source ([#374](https://github.com/pyrosm/pyrosm/pull/374))
+
 v0.13.0
 -------
 
