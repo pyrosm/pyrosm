@@ -1,6 +1,10 @@
 import numpy as np
 import pandas as pd
-from cykhash.khashsets cimport any_int64_from_iter, isin_int64, Int64Set_from_buffer
+from pyrosm.vendor.cykhash.khashsets cimport (
+    any_int64_from_iter,
+    isin_int64,
+    Int64Set_from_buffer,
+)
 from cpython cimport array
 from pyrosm.filter_compiler import CompiledFilter
 

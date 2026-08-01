@@ -1,4 +1,4 @@
-from cykhash.khashmaps cimport Int64toInt64Map
+from pyrosm.vendor.cykhash.khashmaps cimport Int64toInt64Map
 
 
 cdef class NodeLocations:

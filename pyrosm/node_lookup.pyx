@@ -1,5 +1,8 @@
 import numpy as np
-from cykhash import Int64toInt64Map_from_buffers, Int64toInt64Map_to
+from pyrosm.vendor.cykhash.khashmaps import (
+    Int64toInt64Map_from_buffers,
+    Int64toInt64Map_to,
+)
 
 
 cdef class NodeLocations:

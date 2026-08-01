@@ -29,7 +29,6 @@ requirements = [
     "setuptools>=18.0",
     "geopandas>=0.12.0",
     "shapely>=2.1",
-    "cykhash",
     "protobuf>=6.33.5",
     "certifi",
 ]
@@ -47,7 +46,12 @@ if _linetrace:
     _directives["linetrace"] = True
     _directives["profile"] = True
 _ext_modules = cythonize(
-    str(Path("pyrosm") / "*.pyx"),
+    [
+        str(Path("pyrosm") / "*.pyx"),
+        # Vendored cykhash (see pyrosm/vendor/README.md); only the two modules
+        # pyrosm reads OSM ids with are built.
+        str(Path("pyrosm") / "vendor" / "cykhash" / "*.pyx"),
+    ],
     annotate=False,
     compiler_directives=_directives,
     force=_linetrace,
@@ -74,9 +78,10 @@ setup(
     include_package_data=True,
     # The Cython-generated C sources sit next to the .pyx files and are picked up
     # by include_package_data, which shipped 14 MB of them inside every binary
-    # wheel. They are only needed to build, so keep them out of the installation
-    # (the sdist keeps them, so a source build needs no Cython).
-    exclude_package_data={"pyrosm": ["*.c"]},
+    # wheel. They are build artifacts, so keep them out of the installation; the
+    # sdist still carries them. The empty key applies to every package, the
+    # vendored ones included.
+    exclude_package_data={"": ["*.c"]},
     zip_safe=False,
     classifiers=[
         # complete classifier list: http://pypi.python.org/pypi?%3Aaction=list_classifiers

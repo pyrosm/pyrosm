@@ -31,8 +31,8 @@ from pyrosm.proto.osmformat_pb2 import (
 )
 from pyrosm.delta_compression cimport delta_encode
 
-from cykhash import Int64Set
-from cykhash.khashsets cimport isin_int64, Int64Set_from_buffer
+from pyrosm.vendor.cykhash.khashsets import Int64Set
+from pyrosm.vendor.cykhash.khashsets cimport isin_int64, Int64Set_from_buffer
 
 DIV = 1000000000
 
