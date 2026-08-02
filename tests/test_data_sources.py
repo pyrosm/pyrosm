@@ -80,6 +80,11 @@ def test_search_source_resolves_known_names(name, fragment):
     assert fragment.lower() in rec["url"].lower()
 
 
+def test_spain_region_attribute_access_uses_ascii_names():
+    rec = sources.europe.spain.pais_vasco
+    assert rec["url"].endswith("pais-vasco-latest.osm.pbf")
+
+
 def test_search_source_unknown_name_raises():
     with pytest.raises((ValueError, KeyError)):
         search_source("not_a_real_place_xyz")
