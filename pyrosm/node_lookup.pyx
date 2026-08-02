@@ -61,8 +61,12 @@ cdef class NodeLocations:
         idx = np.empty(len(keys), dtype=np.int64)
         Int64toInt64Map_to(self._id2idx, keys, idx, stop_at_unknown=False, default_value=-1)
         safe = np.where(idx >= 0, idx, 0)
-        lon = np.asarray(self._lon)[safe]
-        lat = np.asarray(self._lat)[safe]
+        if len(self._lon) > 0:
+            lon = np.asarray(self._lon)[safe]
+            lat = np.asarray(self._lat)[safe]
+        else:
+            lon = np.zeros(len(keys), dtype=np.float64)
+            lat = np.zeros(len(keys), dtype=np.float64)
         return idx, lon, lat
 
     cdef dict _base_record(self, long long idx):
