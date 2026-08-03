@@ -340,7 +340,10 @@ cdef filter_node_indices(node_arrays, osm_keys, data_filter, filter_type, bint k
 cpdef get_latest_version(df):
     # The order of versions is always the same
     # (newest version is the last)
-    return df.groupby("id").last().reset_index()
+    # Use tail(1) instead of .last() to select whole rows — .last() picks
+    # the last non-null value per column independently, which can resurrect
+    # deleted tags from older versions when a newer version sets them to None.
+    return df.groupby("id").tail(1).reset_index(drop=True)
 
 
 cdef inline bint _is_empty_tag_value(object v):
