@@ -798,6 +798,71 @@ def test_to_pbf_repack_rejects_mixed_metadata(tmp_path):
         )
 
 
+def _pbf_file(path, *blocks, features=("OsmSchema-V0.6", "DenseNodes")):
+    """Write a PBF with a header requiring `features`, then one OSMData blob per
+    block: a PrimitiveBlock is zlib-compressed, a Blob is written as it is."""
+    from pyrosm.proto.fileformat_pb2 import Blob, BlobHeader
+    from pyrosm.proto.osmformat_pb2 import HeaderBlock
+
+    hdr = HeaderBlock()
+    hdr.required_features.extend(features)
+    with open(path, "wb") as out:
+        _frame_pbf_blob(out, "OSMHeader", hdr)
+        for blk in blocks:
+            if isinstance(blk, Blob):
+                data = blk.SerializeToString()
+                blob_header = BlobHeader(type="OSMData", datasize=len(data))
+                header_bytes = blob_header.SerializeToString()
+                out.write(len(header_bytes).to_bytes(4, "big") + header_bytes + data)
+            else:
+                _frame_pbf_blob(out, "OSMData", blk)
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "case, workers, error, match",
+    [
+        ("empty", 1, "InvalidOSMFileError", "the file is empty"),
+        ("truncated", 1, "InvalidOSMFileError", "the file is truncated"),
+        ("corrupt zlib data", 1, "InvalidOSMFileError", "decompressing"),
+        ("corrupt zlib data", 2, "InvalidOSMFileError", "decompressing"),
+        ("corrupt block", 1, "InvalidOSMFileError", "not a valid OSM PBF file"),
+        ("lzma compression", 1, "ValueError", "other than raw and zlib"),
+        ("HistoricalInformation", 1, "ValueError", "history files"),
+        ("LocationsOnWays", 1, "ValueError", "node locations stored on ways"),
+        ("Unknown-Feature", 1, "ValueError", "'Unknown-Feature' is not supported"),
+    ],
+)
+def test_crop_pbf_rejects_unreadable_input(
+    helsinki_pbf, tmp_path, case, workers, error, match
+):
+    # With workers=2 the four blocks go through the pool, where the corrupt one is
+    # decompressed.
+    from pyrosm.exceptions import InvalidOSMFileError
+    from pyrosm.pbf_export import _iter_primitive_blocks, crop_pbf
+    from pyrosm.proto.fileformat_pb2 import Blob
+
+    bad = tmp_path / "bad.osm.pbf"
+    if case == "empty":
+        bad.write_bytes(b"")
+    elif case == "truncated":
+        data = Path(helsinki_pbf).read_bytes()
+        bad.write_bytes(data[: len(data) // 2])
+    elif case == "corrupt zlib data":
+        valid = [pb for pb in _iter_primitive_blocks(helsinki_pbf)][:3]
+        _pbf_file(bad, *valid, Blob(zlib_data=b"not zlib"))
+    elif case == "corrupt block":
+        _pbf_file(bad, Blob(raw=b"\xff\xff"))
+    elif case == "lzma compression":
+        _pbf_file(bad, Blob(lzma_data=b"\x00"))
+    else:
+        _pbf_file(bad, features=("OsmSchema-V0.6", case))
+    errors = {"InvalidOSMFileError": InvalidOSMFileError, "ValueError": ValueError}
+    with pytest.raises(errors[error], match=match) as err:
+        crop_pbf(str(bad), str(tmp_path / "out.osm.pbf"), CROP_BBOX, workers=workers)
+    assert str(bad) in str(err.value)
+
+
 # ---------------------------------------------------------------------------
 # OSM.write_pbf (issue #285)
 # ---------------------------------------------------------------------------
