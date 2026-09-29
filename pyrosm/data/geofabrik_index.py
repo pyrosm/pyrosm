@@ -157,7 +157,11 @@ def _download_optionally_crop(
     full_path = _download_file(url, Path(url).name, update, directory)
     if not crop:
         return full_path
+    return _crop(full_path, geom, cropped_name, output_path, directory)
 
+
+def _crop(full_path, geom, cropped_name, output_path, directory):
+    """Crop ``full_path`` to ``geom`` into ``output_path`` or ``<directory>/<cropped_name>``."""
     from pyrosm import OSM
 
     target = output_path or str(_default_target_dir(directory) / cropped_name)

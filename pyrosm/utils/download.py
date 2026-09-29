@@ -119,7 +119,7 @@ def download(url, filename, update, target_dir):
         if not target_dir.is_dir():
             raise ValueError(f"The provided directory does not exist: " f"{target_dir}")
 
-    filepath = (target_dir / Path(filename).name).resolve()
+    filepath = target_dir.resolve() / Path(filename).name
 
     if not target_dir.exists():
         target_dir.mkdir(parents=True)
@@ -129,27 +129,34 @@ def download(url, filename, update, target_dir):
     if filepath.exists():
         file_exists = True
 
-    if update and file_exists:
-        filepath.unlink()
-
     # Download data to temp if it does not exist or if update is requested
     if update or file_exists is False:
-        try:
-            with open_url(url) as response, open(filepath, "wb") as out_file:
+
+        def fetch(out_file):
+            with open_url(url, timeout=60) as response:
                 shutil.copyfileobj(response, out_file)
+                expected = response.headers.get("Content-Length") or ""
+            if expected.isdigit() and out_file.tell() != int(expected):
+                raise OSError(
+                    f"The download of '{url}' stopped after {out_file.tell()} of "
+                    f"{expected} bytes."
+                )
+            if round(convert_unit(out_file.tell(), UNIT.MB), 2) == 0:
+                raise ValueError(
+                    f"PBF-file '{filename}' from the provider was empty. "
+                    "This is likely a temporary issue, try again later."
+                )
+
+        # write_atomic moves the file into place only when complete, so a failed download
+        # never leaves a partial file that a later call would reuse.
+        try:
+            write_atomic(filepath, fetch)
         except HTTPError:
             raise ValueError(
                 f"PBF-file '{url}' is temporarily unavailable. " f"Try again later."
             )
-        except Exception as e:
-            raise e
 
         filesize = get_file_size(filepath)
-        if filesize == 0:
-            raise ValueError(
-                f"PBF-file '{filename}' from the provider was empty. "
-                "This is likely a temporary issue, try again later."
-            )
         print(
             f"Downloaded Protobuf data '{filepath.name}' "
             f"({filesize} MB) to:\n'{filepath}'"

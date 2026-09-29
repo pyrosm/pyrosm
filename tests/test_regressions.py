@@ -912,10 +912,12 @@ def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):
         # Windows ssl bug under test). fake_urlopen ignores the context anyway.
         return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
-    def fake_urlopen(request, context=None):
+    def fake_urlopen(request, context=None, timeout=None):
         captured["context"] = context
         captured["user_agent"] = request.get_header("User-agent")
-        return io.BytesIO(b"x" * 50000)
+        response = io.BytesIO(b"x" * 50000)
+        response.headers = {}
+        return response
 
     monkeypatch.setattr(dl.ssl, "create_default_context", fake_create)
     monkeypatch.setattr(dl.urllib.request, "urlopen", fake_urlopen)
@@ -934,6 +936,52 @@ def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):
     assert Path(out).exists()
 
 
+@pytest.mark.parametrize(
+    "response, previous, error",
+    [
+        ("reset", None, "connection reset"),
+        ("reset", b"old", "connection reset"),
+        ("short", b"old", "stopped after 5 of 100 bytes"),
+    ],
+)
+def test_failed_download_leaves_no_partial_file(
+    tmp_path, monkeypatch, response, previous, error
+):
+    """A download that breaks midway, or ends before the announced size, must not
+    leave a partial file that later calls would reuse, and a failed update keeps the
+    previous copy."""
+    import io
+
+    from pyrosm.utils import download as dl
+
+    class Reset(io.BytesIO):
+        headers = {}
+
+        def read(self, *args):
+            raise OSError("connection reset")
+
+    def urlopen(request, context=None, timeout=None):
+        if response == "reset":
+            return Reset()
+        short = io.BytesIO(b"x" * 5)
+        short.headers = {"Content-Length": "100"}
+        return short
+
+    monkeypatch.setattr(dl.urllib.request, "urlopen", urlopen)
+    target = tmp_path / "x.osm.pbf"
+    if previous:
+        target.write_bytes(previous)
+    with pytest.raises(OSError, match=error):
+        dl.download(
+            "https://example.invalid/x.osm.pbf", "x.osm.pbf", True, str(tmp_path)
+        )
+    assert sorted(p.name for p in tmp_path.iterdir()) == (
+        ["x.osm.pbf"] if previous else []
+    )
+    if previous:
+        assert target.read_bytes() == previous
+
+
 def test_download_rejects_nonexistent_target_dir(tmp_path):
     """download(target_dir=...) raises when the given directory does not exist."""
     from pyrosm.utils import download as dl
@@ -945,8 +993,13 @@ def test_download_rejects_nonexistent_target_dir(tmp_path):
         )
 
 
-def test_download_update_removes_existing_file(tmp_path, monkeypatch):
-    """download(update=True) unlinks the cached file before re-fetching."""
+def _headered(response, headers=None):
+    response.headers = headers or {}
+    return response
+
+
+def test_download_update_replaces_existing_file(tmp_path, monkeypatch):
+    """download(update=True) replaces the cached file with the new download."""
     import io
 
     from pyrosm.utils import download as dl
@@ -957,7 +1010,9 @@ def test_download_update_removes_existing_file(tmp_path, monkeypatch):
 
     monkeypatch.setattr(dl.ssl, "create_default_context", lambda *a, **k: None)
     monkeypatch.setattr(
-        dl.urllib.request, "urlopen", lambda url, context=None: io.BytesIO(fresh)
+        dl.urllib.request,
+        "urlopen",
+        lambda url, context=None, timeout=None: _headered(io.BytesIO(fresh)),
     )
 
     out = dl.download(

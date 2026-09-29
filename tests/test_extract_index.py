@@ -5,13 +5,18 @@ import io
 import json
 import os
 import time
+import warnings
 from urllib.error import HTTPError, URLError
 
 import geopandas as gpd
+import pandas as pd
 import pytest
+from pathlib import Path
 from shapely.geometry import Point, box
 
+import pyrosm
 from pyrosm.data import extract_index as ei
+from pyrosm.exceptions import ExtractDownloadError
 
 
 class _Response(io.BytesIO):
@@ -26,12 +31,13 @@ class _Broken(_Response):
 
 
 def _fake_open_url(responses, calls):
-    """An ``open_url`` stand-in that returns or raises the next queued response."""
+    """An ``open_url`` stand-in that returns or raises the next queued response; the last
+    one is repeated once the queue is down to it."""
 
     def fake(url, method="GET", headers=None, timeout=None):
         assert timeout == ei._TIMEOUT
         calls.append((url, method, headers or {}))
-        response = responses.pop(0)
+        response = responses.pop(0) if len(responses) > 1 else responses[0]
         if isinstance(response, Exception):
             raise response
         return response
@@ -201,14 +207,15 @@ def test_download_sizes(tmp_path, monkeypatch):
         return _Response(headers={"Content-Length": str(n)})
 
     calls = []
-    bad = [DOWN, _Response(), size("-5"), size("\u00b2"), size("9" * 19)]
+    # A network error is retried; after three failures the size stays unknown.
+    bad = [DOWN] * 3 + [_Response(), size("-5"), size("\u00b2"), size("9" * 19)]
     responses = [size("0100")] + bad
     urls = ["https://%s" % c for c in "abcdef"]
     monkeypatch.setattr(ei, "open_url", _fake_open_url(responses, calls))
     with pytest.warns(UserWarning) as record:
         sizes = ei._download_sizes(urls, tmp_path)
-    assert sizes == {"https://a": 100} and len(record) == len(bad)
-    assert [c[1] for c in calls] == ["HEAD"] * 6
+    assert sizes == {"https://a": 100} and len(record) == 5
+    assert [c[1] for c in calls] == ["HEAD"] * 8
 
     # A size is reused for a week, then asked again; update=True always asks, and a
     # malformed record counts as missing.
@@ -216,7 +223,7 @@ def test_download_sizes(tmp_path, monkeypatch):
     assert ei._download_sizes(["https://a"], tmp_path) == {"https://a": 100}
     record = ei._size_record(tmp_path, "https://a")
     record.write_text(json.dumps([100, time.time() - 8 * 86400]))
-    responses.extend([size(n) for n in (200, 300, 400, 500, 600, 700, 800, 900)])
+    responses[:] = [size(n) for n in (200, 300, 400, 500, 600, 700, 800, 900)]
     assert ei._download_sizes(["https://a"], tmp_path) == {"https://a": 200}
     assert ei._download_sizes(["https://a"], tmp_path, True) == {"https://a": 300}
     for malformed in (
@@ -308,7 +315,10 @@ def test_covering_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up):
             ("FI", 700, box(19, 59, 32, 71)),
         ],
     )
-    monkeypatch.setattr(ei, "_geofabrik_extracts", lambda: geofabrik)
+    refreshed = []
+    monkeypatch.setattr(
+        ei, "_geofabrik_extracts", lambda update: refreshed.append(update) or geofabrik
+    )
     monkeypatch.setattr(ei, "_bbbike_extracts", lambda: bbbike)
 
     def movisda_extracts(directory, update=False):
@@ -326,10 +336,135 @@ def test_covering_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up):
     )
 
     if movisda_up:
-        got = ei._covering_extracts(area, tmp_path)
+        got = ei._covering_extracts(area, tmp_path, update=True)
         assert got["id"].tolist() == ["Helsinki", "FI", "N60E020-10", "finland"]
     else:
         with pytest.warns(UserWarning, match="Movisda"):
-            got = ei._covering_extracts(area, tmp_path)
+            got = ei._covering_extracts(area, tmp_path, update=True)
         assert got["id"].tolist() == ["Helsinki", "finland"]
     assert got["bytes"].isna().tolist()[-1]
+    assert refreshed == [True]
+
+
+HELSINKI = [24.93, 60.16, 24.96, 60.18]
+BBBIKE = ("BBBike", "Helsinki", "https://b/Helsinki/Helsinki.osm.pbf", 50)
+MOVISDA = ("Movisda", "N60E024", "https://m/grid/N60W024-latest.osm.pbf", 66)
+
+
+def _ranked(*rows):
+    """Candidates in the shape ``_covering_extracts`` returns."""
+    return gpd.GeoDataFrame(
+        {
+            "provider": [r[0] for r in rows],
+            "id": [r[1] for r in rows],
+            "name": [r[1] for r in rows],
+            "url": [r[2] for r in rows],
+            "bytes": pd.array([r[3] for r in rows], dtype="Int64"),
+        },
+        geometry=[box(*HELSINKI)] * len(rows),
+        crs="EPSG:4326",
+    )
+
+
+@pytest.mark.parametrize("crop", [True, False])
+def test_get_data_by_area_falls_back_to_next_extract(tmp_path, monkeypatch, crop):
+    helsinki = pyrosm.get_data("helsinki_pbf")
+    monkeypatch.setattr(ei, "_covering_extracts", lambda *a: _ranked(BBBIKE, MOVISDA))
+    tried = []
+
+    def download(url, filename, update, directory):
+        tried.append(filename)
+        if "Helsinki" in url:
+            raise ValueError("unavailable")
+        return helsinki
+
+    monkeypatch.setattr("pyrosm.utils.download.download", download)
+    with pytest.warns(UserWarning, match="next smallest"):
+        got = pyrosm.get_data_by_area(box(*HELSINKI), crop=crop, directory=tmp_path)
+    assert tried == ["bbbike_Helsinki.osm.pbf", "movisda_N60W024-latest.osm.pbf"]
+    assert (got.provider, got.extract, got.bytes) == ("Movisda", "N60E024", 66)
+    assert got.failed == [(BBBIKE[2], "unavailable")]
+    if crop:
+        assert Path(got).name == "bbox_24.93_60.16_24.96_60.18.osm.pbf"
+        assert Path(got).stat().st_size < Path(helsinki).stat().st_size
+        assert pyrosm.OSM(got).filepath == got.path
+    else:
+        assert got.path == helsinki
+
+
+def test_get_data_by_area_retries_network_errors(tmp_path, monkeypatch):
+    helsinki = pyrosm.get_data("helsinki_pbf")
+    monkeypatch.setattr(ei, "_covering_extracts", lambda *a: _ranked(BBBIKE, MOVISDA))
+    outcomes = [OSError("reset"), OSError("reset"), helsinki]
+
+    def download(url, filename, update, directory):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr("pyrosm.utils.download.download", download)
+    got = pyrosm.get_data_by_area(box(*HELSINKI), crop=False, directory=tmp_path)
+    assert (got.provider, got.failed, outcomes) == ("BBBike", [], [])
+
+
+@pytest.mark.parametrize(
+    "candidates, error",
+    [((), ValueError), ((BBBIKE,), ExtractDownloadError)],
+)
+def test_get_data_by_area_errors(monkeypatch, candidates, error):
+    monkeypatch.setattr(ei, "_covering_extracts", lambda *a: _ranked(*candidates))
+
+    def download(url, filename, update, directory):
+        raise OSError("down")
+
+    monkeypatch.setattr("pyrosm.utils.download.download", download)
+    warns = pytest.warns(UserWarning) if candidates else contextlib.nullcontext()
+    with pytest.raises(error) as info, warns:
+        pyrosm.get_data_by_area(box(*HELSINKI))
+    if error is ExtractDownloadError:
+        assert info.value.failed == [(BBBIKE[2], "down")]
+
+
+@pytest.mark.parametrize(
+    "area",
+    [
+        box(*HELSINKI),
+        HELSINKI,
+        gpd.GeoDataFrame(geometry=[box(*HELSINKI)], crs="EPSG:4326").to_crs(3067),
+    ],
+)
+def test_get_data_by_area_accepts_area_forms(monkeypatch, area):
+    seen = []
+    monkeypatch.setattr(
+        ei, "_covering_extracts", lambda geom, *a: seen.append(geom) or _ranked()
+    )
+    with pytest.raises(ValueError, match="No Geofabrik"):
+        pyrosm.get_data_by_area(area)
+    assert seen[0].bounds == pytest.approx(HELSINKI, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    "area, message",
+    [
+        (gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), "empty"),
+        (Point(24.94, 60.17), "width and a height"),
+        ([24.93, 60.16, 24.93, 60.18], "width and a height"),
+    ],
+)
+def test_get_data_by_area_rejects_flat_or_empty_area(area, message):
+    with pytest.raises(ValueError, match=message):
+        pyrosm.get_data_by_area(area)
+
+
+@pytest.mark.live_download
+def test_get_data_by_area_downloads_smallest_extract(tmp_path):
+    area = box(7.420, 43.733, 7.424, 43.736)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        got = pyrosm.get_data_by_area(area, directory=tmp_path)
+    if any("Movisda" in str(w.message) for w in caught):
+        pytest.skip("Movisda's index is unavailable")
+    # Movisda's Monaco extract (~0.5 MB) is smaller than Geofabrik's; no BBBike city covers it.
+    assert (got.provider, got.extract) == ("Movisda", "MC") and got.bytes < 5_000_000
+    assert len(pyrosm.OSM(got).get_buildings()) > 0

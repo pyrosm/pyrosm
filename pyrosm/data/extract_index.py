@@ -1,6 +1,6 @@
-"""Find the smallest single OSM extract that contains an area.
+"""Download the smallest single OSM extract that contains an area.
 
-Candidates come from three providers:
+Public entry point: :func:`get_data_by_area`. Candidates come from three providers:
 
 - Geofabrik, from the vendored ``geofabrik_index.geojson.gz``;
 - BBBike city extracts, from the vendored ``bbbike_index.geojson.gz``;
@@ -19,15 +19,24 @@ import io
 import json
 import time
 import warnings
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.error import HTTPError
 
 import geopandas as gpd
 import pandas as pd
-from shapely.geometry import shape
+import shapely
+from shapely.geometry import box, shape
+from shapely.geometry.base import BaseGeometry
 
-from pyrosm.data.geofabrik_index import _EQUAL_AREA_CRS
+from pyrosm.data.geofabrik_index import (
+    _EQUAL_AREA_CRS,
+    _bbox_filename,
+    _bbox_to_polygon,
+    _crop,
+)
 from pyrosm.data.geofabrik_index import _load_index as _load_geofabrik_index
+from pyrosm.exceptions import ExtractDownloadError
 from pyrosm.utils.download import download_dir, open_url, write_atomic
 
 _BBBIKE_INDEX_PATH = Path(__file__).parent / "bbbike_index.geojson.gz"
@@ -41,6 +50,7 @@ _SIZE_MAX_AGE = 7 * 24 * 3600
 _COLUMNS = ["provider", "id", "name", "url", "bytes", "geometry"]
 _FETCH_ERRORS = (OSError, http.client.HTTPException)
 _TIMEOUT = 60
+_ATTEMPTS = 3
 
 _bbbike_cache = None
 _movisda_cache = {}
@@ -62,8 +72,8 @@ def _frame(provider, ids, names, urls, sizes, geometry):
     )
 
 
-def _geofabrik_extracts():
-    gdf = _load_geofabrik_index()
+def _geofabrik_extracts(update=False):
+    gdf = _load_geofabrik_index(update)
     names = gdf["name"].fillna(gdf["id"])
     return _frame(
         "Geofabrik", gdf["id"], names, gdf["pbf"], [None] * len(gdf), gdf.geometry
@@ -101,6 +111,21 @@ def _tile_id(bounds):
         abs(minx),
     )
     return name if size == 1 else "%s-%d" % (name, size)
+
+
+def _retry(fetch):
+    """Return ``fetch()``, calling it up to three times while it fails with a network error.
+
+    HTTP error statuses are not retried; the last network error propagates.
+    """
+    for attempt in range(_ATTEMPTS):
+        try:
+            return fetch()
+        except HTTPError:
+            raise
+        except _FETCH_ERRORS:
+            if attempt == _ATTEMPTS - 1:
+                raise
 
 
 def _check_movisda_index(data, kind):
@@ -161,10 +186,13 @@ def _cached_index(url, path, update=False, check=None):
     if checked and meta.get("sha256") == hashlib.sha256(path.read_bytes()).hexdigest():
         etag = meta.get("etag") or ""
     headers = {"If-None-Match": etag} if etag else None
-    try:
+
+    def fetch():
         with open_url(url, headers=headers, timeout=_TIMEOUT) as response:
-            data = response.read()
-            new_etag = response.headers.get("ETag") or ""
+            return response.read(), response.headers.get("ETag") or ""
+
+    try:
+        data, new_etag = _retry(fetch)
         if check is not None:
             check(data)
         write_atomic(path, lambda out_file: out_file.write(data))
@@ -265,9 +293,13 @@ def _download_sizes(urls, directory, update=False):
         if cached is not None:
             sizes[url] = cached
             continue
-        try:
+
+        def head(url=url):
             with open_url(url, method="HEAD", timeout=_TIMEOUT) as response:
-                length = response.headers.get("Content-Length")
+                return response.headers.get("Content-Length")
+
+        try:
+            length = _retry(head)
         except _FETCH_ERRORS as e:
             warnings.warn(
                 "Could not get the size of %s (%s); it is ranked last." % (url, e)
@@ -296,7 +328,7 @@ def _covering_extracts(area, directory=None, update=False):
     when its index cannot be fetched.
     """
     directory = Path(directory) if directory is not None else download_dir()
-    frames = [_geofabrik_extracts(), _bbbike_extracts()]
+    frames = [_geofabrik_extracts(update), _bbbike_extracts()]
     try:
         frames.append(_movisda_extracts(directory, update))
     except (*_FETCH_ERRORS, ValueError) as e:
@@ -317,3 +349,172 @@ def _covering_extracts(area, directory=None, update=False):
         ["bytes", "_area", "provider", "id"], na_position="last", kind="stable"
     )
     return ranked[_COLUMNS].reset_index(drop=True)
+
+
+@dataclass
+class AreaExtract:
+    """The file :func:`get_data_by_area` wrote and the extract it came from.
+
+    It can be used as a path, e.g. ``OSM(get_data_by_area(area))``.
+
+    Attributes
+    ----------
+    path : str
+        The cropped file (or the full extract with ``crop=False``).
+    provider : str
+        ``"Geofabrik"``, ``"BBBike"`` or ``"Movisda"``.
+    extract : str
+        The extract's id at the provider, e.g. ``"finland"``, ``"Basel"``, ``"NL-NB"`` or a grid
+        tile such as ``"N60E024"`` (south-west corner; ``"-10"`` marks a 10° tile).
+    url : str
+        The extract's download URL.
+    bytes : int or None
+        The extract's download size, if the provider reported it.
+    download_seconds, crop_seconds : float
+        Time spent downloading (near zero when the extract was already downloaded) and cropping.
+    failed : list of (str, str)
+        ``(url, error message)`` for smaller extracts whose download failed before this one.
+    """
+
+    path: str
+    provider: str
+    extract: str
+    url: str
+    bytes: object
+    download_seconds: float
+    crop_seconds: float
+    failed: list = field(default_factory=list)
+
+    def __fspath__(self):
+        return self.path
+
+
+def _area_geometry(area):
+    """Return ``area`` as one Shapely geometry in lon/lat.
+
+    Accepts a Shapely geometry, a GeoDataFrame/GeoSeries (its geometries are unioned, after
+    reprojecting to EPSG:4326 when it has another CRS) or ``[minx, miny, maxx, maxy]``.
+    """
+    if isinstance(area, (gpd.GeoDataFrame, gpd.GeoSeries)):
+        if area.crs is not None:
+            area = area.to_crs("EPSG:4326")
+        geom = shapely.union_all(area.geometry.values)
+    elif isinstance(area, BaseGeometry):
+        geom = area
+    else:
+        geom = _bbox_to_polygon(area)
+    if geom.is_empty:
+        raise ValueError("The area is empty.")
+    minx, miny, maxx, maxy = _bbox_to_polygon(geom).bounds
+    if minx == maxx or miny == maxy:
+        raise ValueError(
+            "The area must have a width and a height; got %s." % geom.geom_type
+        )
+    return geom
+
+
+def get_data_by_area(area, crop=True, update=False, directory=None, output_path=None):
+    """Download the smallest single OSM extract that contains ``area``.
+
+    Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and 1°/10°
+    grid tiles, keeps those that contain the whole area, and downloads the one with the smallest
+    file. Extracts are never merged. A download interrupted by a network error is retried twice;
+    when it still fails, the next smallest extract is tried.
+    By default the extract is then cropped to the area's bounding box.
+
+    Movisda cuts its extracts exactly at their edges, so features crossing the edge of a Movisda
+    extract are clipped or missing there. The extract contains the whole area, so this only
+    affects the part of the bounding box outside the area.
+
+    Parameters
+    ----------
+    area : shapely geometry | GeoDataFrame | GeoSeries | list | tuple | numpy.ndarray
+        The area of interest in lon/lat: a (Multi)Polygon, a GeoDataFrame/GeoSeries (its
+        geometries are combined) or ``[minx, miny, maxx, maxy]``.
+
+    crop : bool
+        When ``True`` (default), crop the extract to the area's bounding box and return the
+        cropped file, named ``bbox_<minx>_<miny>_<maxx>_<maxy>.osm.pbf``. When ``False``, return
+        the full extract.
+
+    update : bool
+        When ``True``, re-download the extract and refresh the provider indexes and sizes.
+
+    directory : str, optional
+        Directory for the downloads, the provider indexes and the cropped file. ``None``
+        (default) uses a pyrosm temp directory.
+
+    output_path : str, optional
+        Path for the cropped file when ``crop=True`` (overrides the automatic name).
+
+    Returns
+    -------
+    AreaExtract
+        The file path and the extract it came from; usable as a path.
+
+    Raises
+    ------
+    ValueError
+        If no extract contains the whole area.
+    pyrosm.exceptions.ExtractDownloadError
+        If every extract that contains the area failed to download.
+    """
+    from pyrosm.utils.download import download as _download_file
+
+    geom = _area_geometry(area)
+    candidates = _covering_extracts(geom, directory, update)
+    if candidates.empty:
+        raise ValueError(
+            "No Geofabrik, BBBike or Movisda extract contains the whole area."
+        )
+    failed = []
+    for extract in candidates.itertuples():
+        size = (
+            "unknown size"
+            if pd.isna(extract.bytes)
+            else "%.1f MB" % (extract.bytes / 1e6)
+        )
+        print(
+            "Smallest extract containing the area: %s '%s' (%s)"
+            % (extract.provider, extract.name, size)
+        )
+        filename = "%s_%s" % (extract.provider.lower(), Path(extract.url).name)
+        start = time.perf_counter()
+        try:
+            full_path = _retry(
+                lambda: _download_file(extract.url, filename, update, directory)
+            )
+        except (*_FETCH_ERRORS, ValueError) as e:
+            failed.append((extract.url, str(e)))
+            warnings.warn(
+                "Could not download %s (%s); trying the next smallest extract."
+                % (extract.url, e)
+            )
+            continue
+        download_seconds = time.perf_counter() - start
+        start = time.perf_counter()
+        path = full_path
+        if crop:
+            envelope = box(*geom.bounds)
+            path = _crop(
+                full_path,
+                envelope,
+                _bbox_filename(envelope.bounds),
+                output_path,
+                directory,
+            )
+        return AreaExtract(
+            path=path,
+            provider=extract.provider,
+            extract=extract.id,
+            url=extract.url,
+            bytes=None if pd.isna(extract.bytes) else int(extract.bytes),
+            download_seconds=download_seconds,
+            crop_seconds=time.perf_counter() - start,
+            failed=failed,
+        )
+    raise ExtractDownloadError(
+        "Could not download any of the %d extracts that contain the area: %s"
+        % (len(failed), "; ".join("%s (%s)" % f for f in failed)),
+        failed,
+    )
