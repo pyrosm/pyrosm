@@ -828,6 +828,10 @@ def _pbf_file(path, *blocks, features=("OsmSchema-V0.6", "DenseNodes")):
         ("corrupt zlib data", 1, "InvalidOSMFileError", "decompressing"),
         ("corrupt zlib data", 2, "InvalidOSMFileError", "decompressing"),
         ("corrupt block", 1, "InvalidOSMFileError", "not a valid OSM PBF file"),
+        ("negative blob size", 1, "InvalidOSMFileError", "declared blob size -5"),
+        ("oversized blob", 1, "InvalidOSMFileError", "larger than 32 MiB"),
+        ("truncated zlib stream", 1, "InvalidOSMFileError", "zlib blob is truncated"),
+        ("raw_size mismatch", 1, "InvalidOSMFileError", "declares raw_size 1"),
         ("lzma compression", 1, "ValueError", "other than raw and zlib"),
         ("HistoricalInformation", 1, "ValueError", "history files"),
         ("LocationsOnWays", 1, "ValueError", "node locations stored on ways"),
@@ -841,7 +845,9 @@ def test_crop_pbf_rejects_unreadable_input(
     # decompressed.
     from pyrosm.exceptions import InvalidOSMFileError
     from pyrosm.pbf_export import _iter_primitive_blocks, crop_pbf
-    from pyrosm.proto.fileformat_pb2 import Blob
+    import zlib
+
+    from pyrosm.proto.fileformat_pb2 import Blob, BlobHeader
     from pyrosm.proto.osmformat_pb2 import HeaderBlock
 
     bad = tmp_path / "bad.osm.pbf"
@@ -858,6 +864,17 @@ def test_crop_pbf_rejects_unreadable_input(
         _pbf_file(bad, *valid, Blob(zlib_data=b"not zlib"))
     elif case == "corrupt block":
         _pbf_file(bad, Blob(raw=b"\xff\xff"))
+    elif case == "negative blob size":
+        _pbf_file(bad)
+        header = BlobHeader(type="OSMData", datasize=-5).SerializeToString()
+        with open(bad, "ab") as out:
+            out.write(len(header).to_bytes(4, "big") + header)
+    elif case == "oversized blob":
+        _pbf_file(bad, Blob(zlib_data=zlib.compress(b"\0" * (32 * 1024 * 1024 + 1))))
+    elif case == "truncated zlib stream":
+        _pbf_file(bad, Blob(zlib_data=zlib.compress(b"x" * 1000)[:-8]))
+    elif case == "raw_size mismatch":
+        _pbf_file(bad, Blob(zlib_data=zlib.compress(b"x" * 10), raw_size=1))
     elif case == "lzma compression":
         _pbf_file(bad, Blob(lzma_data=b"\x00"))
     else:
