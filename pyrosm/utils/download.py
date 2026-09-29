@@ -13,10 +13,11 @@ from pyrosm import __version__
 USER_AGENT = "pyrosm/%s (+https://github.com/pyrosm/pyrosm)" % __version__
 
 
-def open_url(url, method="GET", headers=None):
+def open_url(url, method="GET", headers=None, timeout=None):
     """Open ``url`` with pyrosm's User-Agent and certifi's CA bundle.
 
-    ``headers`` are added to (or override) the default ``User-Agent`` header. Returns the
+    ``headers`` are added to (or override) the default ``User-Agent`` header. ``timeout`` (in
+    seconds) limits each blocking network operation; ``None`` waits indefinitely. Returns the
     response, usable as a context manager.
     """
     # Build the HTTPS context from certifi's CA bundle instead of the OS trust store. On
@@ -27,7 +28,9 @@ def open_url(url, method="GET", headers=None):
     request = urllib.request.Request(
         url, headers={"User-Agent": USER_AGENT, **(headers or {})}, method=method
     )
-    return urllib.request.urlopen(request, context=context)
+    if timeout is None:
+        return urllib.request.urlopen(request, context=context)
+    return urllib.request.urlopen(request, context=context, timeout=timeout)
 
 
 class UNIT(enum.Enum):
@@ -51,6 +54,26 @@ def convert_unit(size_in_bytes, unit):
 def get_file_size(file_name, size_type=UNIT.MB):
     size = Path(file_name).stat().st_size
     return round(convert_unit(size, size_type), 2)
+
+
+def write_atomic(path, write):
+    """Write ``path`` by calling ``write(file)`` on a new temporary file next to it.
+
+    The temporary file gets a unique name and replaces ``path`` only when ``write`` returns, so
+    readers never see a partial file; it is removed when ``write`` fails.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, partial = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".part", dir=path.parent
+    )
+    try:
+        with open(fd, "wb") as out_file:
+            write(out_file)
+        Path(partial).replace(path)
+    except BaseException:
+        Path(partial).unlink(missing_ok=True)
+        raise
 
 
 def download_dir():
