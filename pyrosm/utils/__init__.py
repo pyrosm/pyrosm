@@ -222,10 +222,14 @@ def validate_edge_gdf(edges):
             )
 
 
-def valid_header_block(header_block):
+def valid_header_block(header_block, filepath=None):
     for feature in header_block.required_features:
         if not (feature in ("OsmSchema-V0.6", "DenseNodes", "HistoricalInformation")):
-            raise PBFNotImplemented("Required feature %s not implemented!", feature)
+            source = f"'{filepath}'" if filepath is not None else "The PBF file"
+            raise PBFNotImplemented(
+                f"{source} requires the PBF feature '{feature}', which pyrosm does "
+                "not support."
+            )
     return True
 
 
@@ -234,7 +238,7 @@ def get_bounding_box(filepath):
 
     header_block = read_header_block(filepath)
     # Validate required features (raises PBFNotImplemented on unknown ones).
-    valid_header_block(header_block)
+    valid_header_block(header_block, filepath)
 
     # Parse the optional data bounding box (in nano-degrees).
     if not header_block.HasField("bbox"):
