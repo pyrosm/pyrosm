@@ -3,7 +3,7 @@
 Public entry point: :func:`get_data_by_bbox`. It is backed by a vendored snapshot
 of Geofabrik's ``index-v1.json`` (``geofabrik_index.geojson.gz``), a GeoJSON
 ``FeatureCollection`` of every extract's extent polygon and PBF URL. Refresh the
-snapshot with ``scripts/update_geofabrik_index.py``.
+snapshot with ``scripts/update_extract_indexes.py``.
 """
 
 import gzip
