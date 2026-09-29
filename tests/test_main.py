@@ -172,3 +172,20 @@ def test_invalid_osm_pbf_raises_meaningful_error(tmp_path):
     malformed.write_bytes(struct.pack("!L", 1) + b"\x08")
     with pytest.raises(InvalidOSMFileError):
         OSM(malformed)
+
+    # 6) A valid header requiring a feature pyrosm does not support: the message
+    #    names the file.
+    import zlib
+    from pyrosm.exceptions import PBFNotImplemented
+    from pyrosm.proto.fileformat_pb2 import Blob
+    from pyrosm.proto.osmformat_pb2 import HeaderBlock
+
+    header_block = HeaderBlock(required_features=["OsmSchema-V0.6", "LocationsOnWays"])
+    data = header_block.SerializeToString()
+    blob = Blob(raw_size=len(data), zlib_data=zlib.compress(data)).SerializeToString()
+    header = BlobHeader(type="OSMHeader", datasize=len(blob)).SerializeToString()
+    unsupported = tmp_path / "locations_on_ways.pbf"
+    unsupported.write_bytes(struct.pack("!L", len(header)) + header + blob)
+    with pytest.raises(PBFNotImplemented, match="'LocationsOnWays'") as err:
+        OSM(unsupported)
+    assert str(unsupported) in str(err.value)
