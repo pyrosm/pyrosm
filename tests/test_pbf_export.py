@@ -823,6 +823,7 @@ def _pbf_file(path, *blocks, features=("OsmSchema-V0.6", "DenseNodes")):
     "case, workers, error, match",
     [
         ("empty", 1, "InvalidOSMFileError", "the file is empty"),
+        ("no header block", 1, "InvalidOSMFileError", "expected 'OSMHeader'"),
         ("truncated", 1, "InvalidOSMFileError", "the file is truncated"),
         ("corrupt zlib data", 1, "InvalidOSMFileError", "decompressing"),
         ("corrupt zlib data", 2, "InvalidOSMFileError", "decompressing"),
@@ -841,6 +842,7 @@ def test_crop_pbf_rejects_unreadable_input(
     from pyrosm.exceptions import InvalidOSMFileError
     from pyrosm.pbf_export import _iter_primitive_blocks, crop_pbf
     from pyrosm.proto.fileformat_pb2 import Blob
+    from pyrosm.proto.osmformat_pb2 import HeaderBlock
 
     bad = tmp_path / "bad.osm.pbf"
     if case == "empty":
@@ -848,6 +850,9 @@ def test_crop_pbf_rejects_unreadable_input(
     elif case == "truncated":
         data = Path(helsinki_pbf).read_bytes()
         bad.write_bytes(data[: len(data) // 2])
+    elif case == "no header block":
+        with open(bad, "wb") as out:
+            _frame_pbf_blob(out, "OSMData", HeaderBlock())
     elif case == "corrupt zlib data":
         valid = [pb for pb in _iter_primitive_blocks(helsinki_pbf)][:3]
         _pbf_file(bad, *valid, Blob(zlib_data=b"not zlib"))
