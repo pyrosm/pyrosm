@@ -1,11 +1,6 @@
 Changelog
 =========
 
-Unreleased
-----------
-
-- FIXED: Cropping a truncated or corrupt PBF with `OSM.to_pbf` raises an `InvalidOSMFileError` that names the file. The crop read the data blocks without checking them, so a truncated download failed with a bare protobuf `DecodeError`, `zlib.error` or `struct.error`. The crop and the header check of `OSM()` now share one blob reader, and the crop's `ValueError` for an unsupported compression or required feature names the file too ([#385](https://github.com/pyrosm/pyrosm/pull/385))
-
 v0.13.1
 -------
 
