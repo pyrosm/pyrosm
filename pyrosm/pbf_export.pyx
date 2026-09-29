@@ -11,6 +11,10 @@ reference a kept node or way.
 
 The id/coordinate re-encoding works in the raw integer (delta) space of the PBF,
 so coordinates round-trip exactly (no rounding loss).
+
+``merge_pbf`` merges several overlapping extracts into one file sorted by type
+then id, de-duplicating the elements they share, and applies the same crop rule
+to their union when a bounding box is given.
 """
 
 import os
@@ -41,6 +45,11 @@ DIV = 1000000000
 # Relation member types (osmformat.proto Relation.MemberType): 0=node, 1=way.
 _MEMBER_NODE = 0
 _MEMBER_WAY = 1
+
+# Primitive group kinds, in the order a file sorted by type then id holds them.
+_NODES = 0
+_WAYS = 1
+_RELATIONS = 2
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +188,7 @@ cdef _read_header(filepath):
             reason = "node locations stored on ways are not supported"
         else:
             reason = "its required feature '%s' is not supported" % feature
-        raise ValueError("Cannot crop '%s': %s." % (filepath, reason))
+        raise ValueError("Cannot crop or merge '%s': %s." % (filepath, reason))
     return header
 
 
@@ -551,15 +560,19 @@ cdef _write_blob(out, blob_type, message):
     out.write(_frame_blob(blob_type, message))
 
 
-cdef _write_header(out, bounds):
-    xmin, ymin, xmax, ymax = bounds
+cdef _write_header(out, bounds, sorted_output=False):
+    """Write the OSMHeader blob; `bounds` None leaves out the header bbox."""
     header = HeaderBlock()
     header.required_features.extend(["OsmSchema-V0.6", "DenseNodes"])
+    if sorted_output:
+        header.optional_features.append("Sort.Type_then_ID")
     header.writingprogram = "pyrosm"
-    header.bbox.left = int(round(xmin * DIV))
-    header.bbox.right = int(round(xmax * DIV))
-    header.bbox.top = int(round(ymax * DIV))
-    header.bbox.bottom = int(round(ymin * DIV))
+    if bounds is not None:
+        xmin, ymin, xmax, ymax = bounds
+        header.bbox.left = int(round(xmin * DIV))
+        header.bbox.right = int(round(xmax * DIV))
+        header.bbox.top = int(round(ymax * DIV))
+        header.bbox.bottom = int(round(ymin * DIV))
     _write_blob(out, "OSMHeader", header)
 
 
@@ -618,43 +631,87 @@ cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
     # Stage 0: header pre-flight (rejects unsupported inputs before any streaming).
     _read_header(source_path)
 
-    if workers is not None and workers > 1:
-        if _count_data_blocks(source_path) >= 2 * int(workers):
-            return _crop_pbf_parallel(
-                source_path, output_path, bounds, keep_relations, int(workers),
-                compact, repack
+    pool, tmpdir = _open_pool(workers, [source_path], bounds, compact)
+    try:
+        kept_nodes, kept_ways, kept_rel = _select(
+            [source_path], bounds, keep_relations, pool, tmpdir
+        )
+        kept_ways, kept_rel = kept_ways[0], kept_rel[0]
+        if repack:
+            _repack_write(
+                source_path, output_path, _to_set(kept_nodes), _to_set(kept_ways),
+                _to_set(kept_rel), bounds
             )
-        # Too few blocks for parallelism to pay off -> run sequentially.
+        elif pool is not None:
+            _broadcast(tmpdir, "kept_nodes", kept_nodes)
+            _broadcast(tmpdir, "kept_ways", kept_ways)
+            _broadcast(tmpdir, "kept_rel", kept_rel)
+            # imap preserves input order -> the same bytes as the sequential write.
+            with open(output_path, "wb") as out:
+                _write_header(out, bounds)
+                for blob_bytes in pool.imap(_w_write, _iter_payloads(source_path)):
+                    if blob_bytes is not None:
+                        out.write(blob_bytes)
+        else:
+            _write_pbf(
+                source_path, output_path, _to_set(kept_nodes), _to_set(kept_ways),
+                _to_set(kept_rel), bounds, compact
+            )
+    finally:
+        _close_pool(pool, tmpdir)
+    return output_path
 
+
+cdef _select(sources, bounds, keep_relations, pool, tmpdir):
+    """Run the crop selection stages over one or more PBF files.
+
+    Returns the kept node ids of all files together, and a list with the kept way
+    ids and a list with the kept relation ids of each file. With a `pool`, each
+    stage spreads a file's blocks over the workers, which read the id sets the
+    stage needs from `tmpdir`.
+    """
     # Stage 1: nodes inside the bbox.
-    nodes_in_bbox = _stage1_nodes_in_bbox(source_path, bounds)
-    nib_set = _to_set(nodes_in_bbox)
+    if pool is None:
+        nodes_in_bbox = _unique_concat(
+            [_stage1_nodes_in_bbox(p, bounds) for p in sources]
+        )
+        nib_set = _to_set(nodes_in_bbox)
+    else:
+        nodes_in_bbox = _unique_concat(
+            [ids for p in sources for ids in pool.imap(_w_stage1, _iter_payloads(p))]
+        )
+        _broadcast(tmpdir, "nodes_in_bbox", nodes_in_bbox)
 
     # Stage 2: ways with >=1 node in the bbox (+ all their refs -> complete ways).
-    kept_ways, extra_nodes = _stage2_ways(source_path, nib_set)
-    kept_nodes = _unique_concat([nodes_in_bbox, extra_nodes])
-    kept_nodes_set = _to_set(kept_nodes)
-    kept_ways_set = _to_set(kept_ways)
+    kept_ways = []
+    kept_nodes = [nodes_in_bbox]
+    for p in sources:
+        if pool is None:
+            ways, refs = _stage2_ways(p, nib_set)
+        else:
+            results = list(pool.imap(_w_stage2, _iter_payloads(p)))
+            ways = _unique_concat([w for w, _ in results])
+            refs = _unique_concat([r for _, r in results])
+        kept_ways.append(ways)
+        kept_nodes.append(refs)
+    kept_nodes = _unique_concat(kept_nodes)
 
     # Stage 3: relations referencing a kept node/way.
-    if keep_relations:
-        kept_rel = _stage3_relations(source_path, kept_nodes_set, kept_ways_set)
+    if not keep_relations:
+        return kept_nodes, kept_ways, [np.empty(0, dtype=np.int64) for _ in sources]
+    all_ways = _unique_concat(kept_ways)
+    if pool is None:
+        kept_nodes_set = _to_set(kept_nodes)
+        kept_ways_set = _to_set(all_ways)
+        kept_rel = [_stage3_relations(p, kept_nodes_set, kept_ways_set) for p in sources]
     else:
-        kept_rel = np.empty(0, dtype=np.int64)
-    kept_rel_set = _to_set(kept_rel)
-
-    # Write pass.
-    if repack:
-        _repack_write(
-            source_path, output_path, kept_nodes_set, kept_ways_set, kept_rel_set,
-            bounds
-        )
-    else:
-        _write_pbf(
-            source_path, output_path, kept_nodes_set, kept_ways_set, kept_rel_set,
-            bounds, compact
-        )
-    return output_path
+        _broadcast(tmpdir, "kept_nodes", kept_nodes)
+        _broadcast(tmpdir, "kept_ways", all_ways)
+        kept_rel = [
+            _unique_concat(list(pool.imap(_w_stage3, _iter_payloads(p))))
+            for p in sources
+        ]
+    return kept_nodes, kept_ways, kept_rel
 
 
 # ---------------------------------------------------------------------------
@@ -665,13 +722,13 @@ cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
 # depends on the previous stage's *complete* result. A SINGLE pool is reused
 # across all four stages (re-spawning a pool per stage would re-pay the worker
 # startup cost four times). The main process reads raw (still-compressed) blob
-# payloads sequentially (cheap I/O) and hands them to the pool; workers do the
-# heavy decompress + protobuf parse + (re-)encode. The growing kept-id arrays a
-# stage needs are broadcast to the persistent workers via small `.npy` files in
-# a temp dir (written by the main process between stages, memory-mapped + cached
-# per worker on first use) rather than re-pickled per task. Output blobs come
-# back in input order (Pool.imap preserves order) so the written bytes are
-# identical to the sequential path.
+# payloads sequentially (cheap I/O) and feeds them to the pool through `Pool.imap`
+# as they are read; workers do the heavy decompress + protobuf parse + (re-)encode.
+# The growing kept-id arrays a stage needs are broadcast to the persistent workers
+# via small `.npy` files in a temp dir (written by the main process between stages,
+# memory-mapped + cached per worker on first use) rather than re-pickled per task.
+# Output blobs come back in input order (Pool.imap preserves order) so the written
+# bytes are identical to the sequential path.
 
 # Per-worker globals populated by `_winit`; `_W_CACHE` memoizes the khash sets
 # built from the broadcast `.npy` files so each worker loads each set only once.
@@ -824,53 +881,28 @@ cdef _broadcast(tmpdir, name, arr):
     np.save(Path(tmpdir) / (name + ".npy"), np.ascontiguousarray(arr, dtype=np.int64))
 
 
-cdef _crop_pbf_parallel(source_path, output_path, bounds, keep_relations, workers,
-                        compact=False, repack=False):
+cdef _open_pool(workers, sources, bounds, compact):
+    """A worker pool and its broadcast temp dir, or (None, None) to run sequentially.
+
+    Sequential when ``workers <= 1`` or the files have fewer than ``2 * workers``
+    OSMData blocks in total.
+    """
+    if workers is None or workers <= 1:
+        return None, None
+    if sum([_count_data_blocks(p) for p in sources]) < 2 * int(workers):
+        return None, None
     import multiprocessing as mp
 
     tmpdir = tempfile.mkdtemp(prefix="pyrosm_crop_par_")
-    pool = mp.Pool(workers, initializer=_winit, initargs=(bounds, tmpdir, compact))
-    try:
-        # Stage 1: nodes inside the bbox.
-        results = pool.map(_w_stage1, _iter_payloads(source_path))
-        nodes_in_bbox = _unique_concat(results)
-        _broadcast(tmpdir, "nodes_in_bbox", nodes_in_bbox)
+    pool = mp.Pool(int(workers), initializer=_winit, initargs=(bounds, tmpdir, compact))
+    return pool, tmpdir
 
-        # Stage 2: complete ways.
-        results = pool.map(_w_stage2, _iter_payloads(source_path))
-        kept_ways = _unique_concat([w for w, _ in results])
-        extra_nodes = _unique_concat([e for _, e in results])
-        kept_nodes = _unique_concat([nodes_in_bbox, extra_nodes])
-        _broadcast(tmpdir, "kept_nodes", kept_nodes)
-        _broadcast(tmpdir, "kept_ways", kept_ways)
 
-        # Stage 3: relations.
-        if keep_relations:
-            results = pool.map(_w_stage3, _iter_payloads(source_path))
-            kept_rel = _unique_concat(results)
-        else:
-            kept_rel = np.empty(0, dtype=np.int64)
-        _broadcast(tmpdir, "kept_rel", kept_rel)
-
-        if repack:
-            # Re-pack needs a global re-chunk, so the write is sequential (selection
-            # above stays parallel). Build the kept-id sets in the main process.
-            _repack_write(
-                source_path, output_path, _to_set(kept_nodes), _to_set(kept_ways),
-                _to_set(kept_rel), bounds
-            )
-        else:
-            # Write pass (imap preserves input order -> deterministic output bytes).
-            with open(output_path, "wb") as out:
-                _write_header(out, bounds)
-                for blob_bytes in pool.imap(_w_write, _iter_payloads(source_path)):
-                    if blob_bytes is not None:
-                        out.write(blob_bytes)
-    finally:
+cdef _close_pool(pool, tmpdir):
+    if pool is not None:
         pool.close()
         pool.join()
         shutil.rmtree(tmpdir, ignore_errors=True)
-    return output_path
 
 
 # ---------------------------------------------------------------------------
@@ -1196,9 +1228,16 @@ cdef _decode_info(info_msg):
 
 
 cdef _decode_kept_dense_nodes(dense, stringtable, kept_nodes_set):
+    """Dense group -> (ids, lat, lon, tags, meta) of the nodes in `kept_nodes_set`.
+
+    Every node is kept when `kept_nodes_set` is None; None when no node is kept.
+    """
     cdef int n = len(dense.id)
     ids = np.cumsum(np.fromiter(dense.id, dtype=np.int64, count=n))
-    mask = _isin(ids, kept_nodes_set)
+    if kept_nodes_set is None:
+        mask = np.ones(n, dtype=bool)
+    else:
+        mask = _isin(ids, kept_nodes_set)
     if not mask.any():
         return None
     lat = np.cumsum(np.fromiter(dense.lat, dtype=np.int64, count=n))[mask]
@@ -1237,7 +1276,7 @@ cdef _decode_kept_dense_nodes(dense, stringtable, kept_nodes_set):
     if len(di.user_sid) > 0:
         sids = np.cumsum(
             np.fromiter(di.user_sid, dtype=np.int64, count=len(di.user_sid)))[mask]
-        meta["user"] = [stringtable[s] for s in sids.tolist()]
+        meta["user"] = np.array([stringtable[s] for s in sids.tolist()], dtype=object)
     if len(di.visible) > 0:
         meta["visible"] = np.array(list(di.visible), dtype=bool)[mask]
     if not meta:
@@ -1247,8 +1286,8 @@ cdef _decode_kept_dense_nodes(dense, stringtable, kept_nodes_set):
 
 cdef _decode_kept_plain_nodes(nodes, stringtable, kept_nodes_set):
     """Non-dense node group -> the same chunk shape (emitted as dense)."""
-    kept = [node for node in nodes if _isin(
-        np.asarray([node.id], dtype=np.int64), kept_nodes_set)[0]]
+    kept = [node for node in nodes
+            if kept_nodes_set is None or node.id in kept_nodes_set]
     if not kept:
         return None
     ids = np.asarray([node.id for node in kept], dtype=np.int64)
@@ -1280,7 +1319,7 @@ cdef _decode_kept_plain_nodes(nodes, stringtable, kept_nodes_set):
         meta = {}
         for key in metas[0].keys():
             if key == "user":
-                meta["user"] = [m["user"] for m in metas]
+                meta["user"] = np.array([m["user"] for m in metas], dtype=object)
             elif key == "visible":
                 meta["visible"] = np.asarray([m["visible"] for m in metas], dtype=bool)
             else:
@@ -1291,7 +1330,7 @@ cdef _decode_kept_plain_nodes(nodes, stringtable, kept_nodes_set):
 cdef _decode_kept_ways(ways, stringtable, kept_ways_set):
     records = []
     for way in ways:
-        if not _isin(np.asarray([way.id], dtype=np.int64), kept_ways_set)[0]:
+        if kept_ways_set is not None and way.id not in kept_ways_set:
             continue
         tags = {stringtable[k]: stringtable[v]
                 for k, v in zip(way.keys, way.vals)} if len(way.keys) > 0 else None
@@ -1306,7 +1345,7 @@ cdef _decode_kept_ways(ways, stringtable, kept_ways_set):
 cdef _decode_kept_relations(relations, stringtable, kept_rel_set):
     records = []
     for rel in relations:
-        if not _isin(np.asarray([rel.id], dtype=np.int64), kept_rel_set)[0]:
+        if kept_rel_set is not None and rel.id not in kept_rel_set:
             continue
         tags = {stringtable[k]: stringtable[v]
                 for k, v in zip(rel.keys, rel.vals)} if len(rel.keys) > 0 else None
@@ -1330,34 +1369,17 @@ cdef _meta_schema(meta):
 
 
 cdef _concat_meta(metas):
-    # All chunks merged into one output block must share a metadata schema: a dense
-    # block's DenseInfo is per-field all-or-nothing, so it cannot represent some nodes
-    # with metadata and others without. Real PBF is uniform; reject the mixed case
-    # rather than drop or misalign fields.
-    if len(set(_meta_schema(m) for m in metas)) > 1:
-        raise ValueError(
-            "to_pbf(repack=True) requires a uniform element-metadata schema across the "
-            "file; this file mixes blocks with and without (or with differing) "
-            "metadata. Use repack=False for this file."
-        )
-    if not metas or metas[0] is None:
+    """Concatenate the metadata of chunks that share one metadata schema."""
+    if metas[0] is None:
         return None
-    out = {}
-    for key in metas[0].keys():
-        if key == "user":
-            users = []
-            for m in metas:
-                users.extend(m["user"])
-            out["user"] = users
-        else:
-            out[key] = np.concatenate([m[key] for m in metas])
-    return out
+    return {key: np.concatenate([m[key] for m in metas]) for key in metas[0]}
 
 
-cdef _slice_meta(meta, a, b):
+cdef _slice_meta(meta, sel):
+    """The metadata at `sel` (a slice or an index array)."""
     if meta is None:
         return None
-    return {k: v[a:b] for k, v in meta.items()}
+    return {k: v[sel] for k, v in meta.items()}
 
 
 cdef class _RepackWriter:
@@ -1374,7 +1396,20 @@ cdef class _RepackWriter:
         self.way_buf = []
         self.rel_buf = []
 
+    cdef add(self, kind, chunk):
+        if kind == _NODES:
+            self.add_nodes(chunk)
+        elif kind == _WAYS:
+            self.add_ways(chunk)
+        else:
+            self.add_relations(chunk)
+
     cdef add_nodes(self, chunk):
+        # A dense block's DenseInfo is per-field all-or-nothing, so the nodes of one
+        # block share a metadata schema: a chunk with another schema starts a new block.
+        if self.node_chunks and \
+                _meta_schema(chunk[4]) != _meta_schema(self.node_chunks[0][4]):
+            self._flush_nodes()
         self.node_chunks.append(chunk)
         self.node_count += len(chunk[0])
         while self.node_count >= _MAX_GROUP:
@@ -1390,9 +1425,9 @@ cdef class _RepackWriter:
         meta = _concat_meta([c[4] for c in self.node_chunks])
         _emit_repack_node_block(
             self.out, ids[:_MAX_GROUP], lat[:_MAX_GROUP], lon[:_MAX_GROUP],
-            tags[:_MAX_GROUP], _slice_meta(meta, 0, _MAX_GROUP))
+            tags[:_MAX_GROUP], _slice_meta(meta, slice(None, _MAX_GROUP)))
         rem = (ids[_MAX_GROUP:], lat[_MAX_GROUP:], lon[_MAX_GROUP:],
-               tags[_MAX_GROUP:], _slice_meta(meta, _MAX_GROUP, len(ids)))
+               tags[_MAX_GROUP:], _slice_meta(meta, slice(_MAX_GROUP, None)))
         self.node_chunks = [rem]
         self.node_count = len(ids) - _MAX_GROUP
 
@@ -1437,37 +1472,299 @@ cdef class _RepackWriter:
             self.rel_buf = []
 
 
+cdef _check_standard_grid(pblock, filepath):
+    if (pblock.granularity != 100 or pblock.lat_offset != 0
+            or pblock.lon_offset != 0 or pblock.date_granularity != 1000):
+        raise ValueError(
+            "to_pbf(repack=True) and merge_pbf() require the standard PBF grid "
+            "(granularity 100, zero lat/lon offsets, date_granularity 1000), which "
+            "'%s' does not use; to_pbf(repack=False) can still crop it." % filepath
+        )
+
+
+def _iter_groups(filepath):
+    """Yield (kind, string table, group) for each primitive group of a PBF."""
+    for pblock in _iter_primitive_blocks(filepath):
+        _check_standard_grid(pblock, filepath)
+        st = pblock.stringtable.s
+        for g in pblock.primitivegroup:
+            if len(g.dense.id) > 0 or len(g.nodes) > 0:
+                yield _NODES, st, g
+            elif len(g.ways) > 0:
+                yield _WAYS, st, g
+            elif len(g.relations) > 0:
+                yield _RELATIONS, st, g
+
+
+cdef _decode_group(kind, st, g, kept):
+    """Decode the elements of `g` in the id set `kept` (all when None), or None."""
+    if kind == _NODES:
+        if len(g.dense.id) > 0:
+            return _decode_kept_dense_nodes(g.dense, st, kept)
+        return _decode_kept_plain_nodes(g.nodes, st, kept)
+    if kind == _WAYS:
+        records = _decode_kept_ways(g.ways, st, kept)
+    else:
+        records = _decode_kept_relations(g.relations, st, kept)
+    return records if records else None
+
+
 cdef _repack_write(source_path, output_path, kept_nodes_set, kept_ways_set,
                    kept_rel_set, bounds):
     """Sequential re-pack write: re-chunk the kept crop into canonical full blocks."""
+    kept = (kept_nodes_set, kept_ways_set, kept_rel_set)
     with open(output_path, "wb") as out:
         _write_header(out, bounds)
         writer = _RepackWriter(out)
-        for pblock in _iter_primitive_blocks(source_path):
-            if (pblock.granularity != 100 or pblock.lat_offset != 0
-                    or pblock.lon_offset != 0 or pblock.date_granularity != 1000):
-                raise ValueError(
-                    "to_pbf(repack=True) requires the standard PBF grid "
-                    "(granularity 100, zero lat/lon offsets, date_granularity 1000); "
-                    "this file uses a different grid. Use repack=False."
+        for kind, st, g in _iter_groups(source_path):
+            chunk = _decode_group(kind, st, g, kept[kind])
+            if chunk is not None:
+                writer.add(kind, chunk)
+        writer.close()
+    return output_path
+
+
+# ---------------------------------------------------------------------------
+# Merge several extracts into one sorted, de-duplicated PBF
+# ---------------------------------------------------------------------------
+# Each input is read in file order, one element type at a time. Its decoded
+# chunks are merged in id order: every id up to the smallest last id of the
+# inputs' current chunks is complete, because the later chunks of each input
+# hold only larger ids. The copies of one id are ranked by version, timestamp
+# and input order, and the winners go through the re-pack writer.
+
+cdef _not_sorted(filepath):
+    return ValueError(
+        "'%s' is not sorted by type then id, which merging requires. Sort it first, "
+        "e.g. with `osmium sort`." % filepath
+    )
+
+
+cdef _chunk_ids(kind, chunk):
+    if kind == _NODES:
+        return chunk[0]
+    return np.array([r["id"] for r in chunk], dtype=np.int64)
+
+
+cdef _chunk_ranks(kind, chunk):
+    """(versions, timestamps) of a decoded chunk, -1 where the metadata is missing."""
+    if kind == _NODES:
+        meta = chunk[4] or {}
+        missing = np.full(len(chunk[0]), -1, dtype=np.int64)
+        return meta.get("version", missing), meta.get("timestamp", missing)
+    infos = [r["info"] or {} for r in chunk]
+    return (
+        np.array([info.get("version", -1) for info in infos], dtype=np.int64),
+        np.array([info.get("timestamp", -1) for info in infos], dtype=np.int64),
+    )
+
+
+cdef _take(kind, chunk, idx):
+    """The elements of a decoded chunk at the positions `idx`."""
+    if kind == _NODES:
+        ids, lat, lon, tags, meta = chunk
+        return ids[idx], lat[idx], lon[idx], [tags[i] for i in idx], _slice_meta(meta, idx)
+    return [chunk[i] for i in idx]
+
+
+class _SortedInput:
+    """One merge input, read group by group and checked to be sorted by type then id."""
+
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self._groups = _iter_groups(filepath)
+        self._next = next(self._groups, None)
+
+    def chunks(self, kind, kept):
+        """Yield (chunk, ids, versions, timestamps) for the elements of `kind` in `kept`."""
+        last_id = None
+        while self._next is not None and self._next[0] <= kind:
+            group_kind, st, g = self._next
+            if group_kind < kind:
+                raise _not_sorted(self.filepath)
+            self._next = next(self._groups, None)
+            chunk = _decode_group(kind, st, g, kept)
+            if chunk is None:
+                continue
+            ids = _chunk_ids(kind, chunk)
+            if (ids[1:] <= ids[:-1]).any() or (last_id is not None and ids[0] <= last_id):
+                raise _not_sorted(self.filepath)
+            last_id = ids[-1]
+            versions, timestamps = _chunk_ranks(kind, chunk)
+            yield chunk, ids, versions, timestamps
+
+
+cdef _write_winners(_RepackWriter writer, kind, chunk, won, i):
+    """Write winning elements of input `i`; with `won`, only those selected in it."""
+    if won is not None:
+        selected = won[i]
+        chunk = [r for r in chunk if r["id"] in selected]
+        if not chunk:
+            return
+    writer.add(kind, chunk)
+
+
+cdef _merge_kind(inputs, kind, kept, won, _RepackWriter writer):
+    """Write the elements of `kind` of all inputs, one copy per id, in id order."""
+    streams = [inp.chunks(kind, kept) for inp in inputs]
+    heads = [next(s, None) for s in streams]
+    while True:
+        live = [i for i in range(len(heads)) if heads[i] is not None]
+        if not live:
+            return
+        if len(live) == 1:
+            i = live[0]
+            _write_winners(writer, kind, heads[i][0], won, i)
+            heads[i] = next(streams[i], None)
+            continue
+
+        frontier = min([heads[i][1][-1] for i in live])
+        counts = [int(np.searchsorted(heads[i][1], frontier, side="right")) for i in live]
+        src = np.repeat(np.array(live), counts)
+        pos = np.concatenate([np.arange(n) for n in counts])
+        ids = np.concatenate([heads[i][1][:n] for i, n in zip(live, counts)])
+        versions = np.concatenate([heads[i][2][:n] for i, n in zip(live, counts)])
+        timestamps = np.concatenate([heads[i][3][:n] for i, n in zip(live, counts)])
+
+        # Highest version, then latest timestamp, then first input wins.
+        order = np.lexsort((src, -timestamps, -versions, ids))
+        first = np.ones(len(order), dtype=bool)
+        first[1:] = ids[order[1:]] != ids[order[:-1]]
+        winners = order[first]
+        cuts = np.flatnonzero(src[winners[1:]] != src[winners[:-1]]) + 1
+        for run in np.split(winners, cuts):
+            i = src[run[0]]
+            _write_winners(writer, kind, _take(kind, heads[i][0], pos[run]), won, i)
+
+        for i, n in zip(live, counts):
+            chunk, chunk_ids, chunk_versions, chunk_timestamps = heads[i]
+            if n == len(chunk_ids):
+                heads[i] = next(streams[i], None)
+            elif n > 0:
+                rest = np.arange(n, len(chunk_ids))
+                heads[i] = (
+                    _take(kind, chunk, rest), chunk_ids[n:], chunk_versions[n:],
+                    chunk_timestamps[n:],
                 )
-            st = pblock.stringtable.s
-            for g in pblock.primitivegroup:
-                if len(g.dense.id) > 0:
-                    chunk = _decode_kept_dense_nodes(g.dense, st, kept_nodes_set)
-                    if chunk is not None:
-                        writer.add_nodes(chunk)
-                elif len(g.nodes) > 0:
-                    chunk = _decode_kept_plain_nodes(g.nodes, st, kept_nodes_set)
-                    if chunk is not None:
-                        writer.add_nodes(chunk)
-                elif len(g.ways) > 0:
-                    records = _decode_kept_ways(g.ways, st, kept_ways_set)
-                    if records:
-                        writer.add_ways(records)
-                elif len(g.relations) > 0:
-                    records = _decode_kept_relations(g.relations, st, kept_rel_set)
-                    if records:
-                        writer.add_relations(records)
+
+
+cdef _header_bounds(headers):
+    """Union of the header bounding boxes, or None when no header has one."""
+    boxes = np.array(
+        [(h.bbox.left, h.bbox.bottom, h.bbox.right, h.bbox.top)
+         for h in headers if h.HasField("bbox")],
+        dtype=np.float64,
+    ) / DIV
+    if len(boxes) == 0:
+        return None
+    return boxes[:, 0].min(), boxes[:, 1].min(), boxes[:, 2].max(), boxes[:, 3].max()
+
+
+cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True,
+                workers=1):
+    """
+    Merge overlapping ``*.osm.pbf`` extracts into one PBF, optionally cropped
+    to a bounding box.
+
+    The inputs may come from different providers, have snapshots days apart and
+    carry element metadata or not. An element found in several inputs is written
+    once: the copy with the highest ``version`` wins, then the one with the latest
+    ``timestamp``, then the one from the earliest input. The output is sorted by
+    type then id (header feature ``Sort.Type_then_ID``) and written in densely
+    packed blocks. The inputs are streamed block by block; only id sets are held
+    in memory.
+
+    Without ``bounding_box`` the output holds everything the inputs hold. With
+    it, the crop rule of :meth:`OSM.to_pbf` is applied to the union of the
+    inputs: a node is kept when a copy of it lies inside the box, a way when its
+    winning copy has a node inside the box, and a relation when its winning copy
+    references a kept node or way. A kept way keeps its full node list, whichever
+    input holds those nodes.
+
+    Parameters
+    ----------
+
+    inputs : list of str or path-like
+        The PBF files to merge, each sorted by type then id (``osmium sort``
+        sorts a file that is not). History files and files storing node
+        locations on ways are not supported.
+
+    output_path : str or path-like, optional
+        Where to write the merged PBF. When ``None`` (default) a temporary file
+        is created in the system temp directory and its path returned.
+
+    bounding_box : list or shapely geometry, optional
+        ``[minx, miny, maxx, maxy]`` in lon/lat, or a ``Polygon``/``MultiPolygon``,
+        which is cropped by its envelope. The output's header bounding box is
+        this box, or else the union of the inputs' header boxes.
+
+    keep_relations : bool
+        When ``True`` (default) relations are written (with ``bounding_box``,
+        those referencing a kept node or way); when ``False`` none are written.
+
+    workers : int
+        Number of worker processes for selecting the elements inside
+        ``bounding_box``. ``1`` (default) runs sequentially. The merged file is
+        written sequentially either way.
+
+    Returns
+    -------
+    str or path-like
+        The path of the written PBF file.
+
+    Raises
+    ------
+    ValueError
+        When an input cannot be read as a PBF, is not supported, or is not sorted
+        by type then id. The message names the file.
+
+    Examples
+    --------
+    >>> import pyrosm
+    >>> out = pyrosm.merge_pbf(
+    ...     ["switzerland-latest.osm.pbf", "france-latest.osm.pbf"],
+    ...     "basel.osm.pbf",
+    ...     bounding_box=[7.52, 47.51, 7.66, 47.60],
+    ... )
+    """
+    if isinstance(inputs, (str, os.PathLike)):
+        inputs = [inputs]
+    sources = [os.fspath(p) for p in inputs]
+    if not sources:
+        raise ValueError("merge_pbf() needs at least one input file.")
+    headers = [_read_header(p) for p in sources]
+
+    if output_path is None:
+        fd, output_path = tempfile.mkstemp(suffix=".osm.pbf", prefix="pyrosm_merge_")
+        os.close(fd)
+    elif Path(output_path).resolve() in [Path(p).resolve() for p in sources]:
+        raise ValueError("The output path '%s' is one of the inputs." % output_path)
+
+    if bounding_box is None:
+        bounds = _header_bounds(headers)
+        kept = (None, None, None if keep_relations else Int64Set())
+        won = (None, None, None)
+    else:
+        bounds = _bounds_from_bbox(bounding_box)
+        pool, tmpdir = _open_pool(workers, sources, bounds, False)
+        try:
+            kept_nodes, kept_ways, kept_rel = _select(
+                sources, bounds, keep_relations, pool, tmpdir
+            )
+        finally:
+            _close_pool(pool, tmpdir)
+        kept = (
+            _to_set(kept_nodes),
+            _to_set(_unique_concat(kept_ways)),
+            _to_set(_unique_concat(kept_rel)),
+        )
+        won = (None, [_to_set(w) for w in kept_ways], [_to_set(r) for r in kept_rel])
+
+    inputs = [_SortedInput(p) for p in sources]
+    with open(output_path, "wb") as out:
+        _write_header(out, bounds, sorted_output=True)
+        writer = _RepackWriter(out)
+        for kind in (_NODES, _WAYS, _RELATIONS):
+            _merge_kind(inputs, kind, kept[kind], won[kind], writer)
         writer.close()
     return output_path

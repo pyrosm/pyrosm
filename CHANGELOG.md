@@ -1,6 +1,13 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- NEW: Add `pyrosm.merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True, workers=1)` to merge overlapping `.osm.pbf` extracts, for example two country extracts that together cover a border city, into one file sorted by type then id. An element found in several inputs is written once (the highest `version`, then the latest `timestamp`, then the earliest input), and inputs with and without element metadata can be mixed. With `bounding_box` the crop rule of `OSM.to_pbf` is applied to the union of the inputs, and a kept way keeps its full node list whichever input holds the nodes. The inputs are streamed block by block and `workers` parallelises the crop selection. `to_pbf(repack=True)` now writes a file that mixes blocks with and without element metadata instead of raising ([#388](https://github.com/pyrosm/pyrosm/pull/388))
+- FIXED: Cropping a truncated or corrupt PBF with `OSM.to_pbf` raises an `InvalidOSMFileError` that names the file. The crop read the data blocks without checking them, so a truncated download failed with a bare protobuf `DecodeError`, `zlib.error` or `struct.error`. The crop and the header check of `OSM()` now share one blob reader, and the crop's `ValueError` for an unsupported compression or required feature names the file too ([#385](https://github.com/pyrosm/pyrosm/pull/385))
+- FIXED: Graph simplification (`OSM.to_graph(..., simplify=True)`) keeps one edge where two OSM ways overlap node for node along a simplified chain, as OSMnx does. It kept a parallel copy of the stretch for each way, which counted it twice in the edge count and the total length ([#386](https://github.com/pyrosm/pyrosm/pull/386))
+
 v0.13.1
 -------
 

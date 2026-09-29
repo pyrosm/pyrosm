@@ -15,6 +15,7 @@ __all__ = [
     "get_data_by_bbox",
     "get_data_by_geocoding",
     "get_path",
+    "merge_pbf",
 ]
 
 
@@ -35,4 +36,8 @@ def __getattr__(name):
         from pyrosm.data import geocode, get_data_by_geocoding
 
         return geocode if name == "geocode" else get_data_by_geocoding
+    if name == "merge_pbf":
+        from pyrosm.pbf_export import merge_pbf
+
+        return merge_pbf
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
