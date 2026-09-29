@@ -22,6 +22,8 @@ from struct import pack, unpack
 
 import numpy as np
 
+from google.protobuf.message import DecodeError
+from pyrosm.exceptions import InvalidOSMFileError
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
 from pyrosm.proto.osmformat_pb2 import (
     HeaderBlock,
@@ -62,26 +64,77 @@ cdef _bounds_from_bbox(bounding_box):
 # ---------------------------------------------------------------------------
 # Blob-level I/O
 # ---------------------------------------------------------------------------
-cdef _read_next_blob(f):
-    """Read one (BlobHeader, decompressed_bytes) from `f`; (None, None) at EOF."""
+# The OSM PBF spec caps a BlobHeader at 64 KiB; a larger declared size is a
+# strong signal the file is not an OSM PBF (matches osmium's check).
+_MAX_BLOB_HEADER_SIZE = 64 * 1024
+
+
+cdef _invalid(filepath, reason):
+    return InvalidOSMFileError(
+        "'%s' is not a valid OSM PBF file. Pyrosm reads OpenStreetMap data in the "
+        "OSM PBF format (https://wiki.openstreetmap.org/wiki/PBF_Format); this file "
+        "does not follow the OSM PBF schema (%s)." % (filepath, reason)
+    )
+
+
+cdef _read_exact(f, n):
+    data = f.read(n)
+    if len(data) < n:
+        raise _invalid(f.name, "the file is truncated")
+    return data
+
+
+cdef _parse(message, data, f, reason=None):
+    """Parse `data` into `message`, naming the file of `f` when it is not valid."""
+    try:
+        message.ParseFromString(data)
+    except DecodeError as err:
+        raise _invalid(f.name, reason or err) from None
+    return message
+
+
+cdef _read_blob_header(f):
+    """Read the next BlobHeader from `f`; None at EOF."""
     buf = f.read(4)
     if len(buf) == 0:
-        return None, None
+        return None
+    if len(buf) < 4:
+        raise _invalid(f.name, "the file is truncated")
     msg_len = unpack("!L", buf)[0]
-    blob_header = BlobHeader()
-    blob_header.ParseFromString(f.read(msg_len))
-    blob = Blob()
-    blob.ParseFromString(f.read(blob_header.datasize))
-    if blob.HasField("raw"):
-        data = blob.raw
-    elif blob.HasField("zlib_data"):
-        data = zlib.decompress(blob.zlib_data)
-    else:
-        raise ValueError(
-            "Unsupported Blob compression in source PBF (only raw and zlib are "
-            "handled by pyrosm)."
+    if msg_len > _MAX_BLOB_HEADER_SIZE:
+        raise _invalid(
+            f.name,
+            "declared BlobHeader size %d exceeds the %d-byte maximum"
+            % (msg_len, _MAX_BLOB_HEADER_SIZE),
         )
-    return blob_header, data
+    return _parse(
+        BlobHeader(), _read_exact(f, msg_len), f, "the BlobHeader could not be parsed"
+    )
+
+
+cdef _read_blob(f, blob_header):
+    """Read the raw or zlib Blob that follows `blob_header`."""
+    blob = _parse(Blob(), _read_exact(f, blob_header.datasize), f)
+    if not (blob.HasField("raw") or blob.HasField("zlib_data")):
+        raise ValueError(
+            "'%s' uses a blob compression other than raw and zlib, which pyrosm "
+            "does not read." % f.name
+        )
+    return blob
+
+
+cdef _read_next_blob(f):
+    """Read one (BlobHeader, decompressed_bytes) from `f`; (None, None) at EOF."""
+    blob_header = _read_blob_header(f)
+    if blob_header is None:
+        return None, None
+    blob = _read_blob(f, blob_header)
+    if blob.HasField("raw"):
+        return blob_header, blob.raw
+    try:
+        return blob_header, zlib.decompress(blob.zlib_data)
+    except zlib.error as err:
+        raise _invalid(f.name, err) from None
 
 
 def _iter_primitive_blocks(filepath):
@@ -94,38 +147,39 @@ def _iter_primitive_blocks(filepath):
                 break
             if blob_header.type != "OSMData":
                 continue
-            pblock = PrimitiveBlock()
-            pblock.ParseFromString(data)
-            yield pblock
+            yield _parse(PrimitiveBlock(), data, f)
+
+
+cpdef read_header_block(filepath):
+    """Read the leading HeaderBlock of a PBF.
+
+    Raises InvalidOSMFileError naming the file when it does not start with a
+    valid OSMHeader block.
+    """
+    with open(filepath, "rb") as f:
+        blob_header, data = _read_next_blob(f)
+        if blob_header is None:
+            raise _invalid(f.name, "the file is empty")
+        if blob_header.type != "OSMHeader":
+            raise _invalid(
+                f.name, "first block is '%s', expected 'OSMHeader'" % blob_header.type
+            )
+        return _parse(HeaderBlock(), data, f)
 
 
 cdef _read_header(filepath):
     """Parse + validate the leading HeaderBlock; reject unsupported features."""
-    with open(filepath, "rb") as f:
-        blob_header, data = _read_next_blob(f)
-    if blob_header is None or blob_header.type != "OSMHeader":
-        raise ValueError(
-            "File does not start with an OSMHeader block; it is not a valid "
-            "OSM PBF file."
-        )
-    header = HeaderBlock()
-    header.ParseFromString(data)
+    header = read_header_block(filepath)
     for feature in header.required_features:
         if feature in ("OsmSchema-V0.6", "DenseNodes"):
             continue
         if feature == "HistoricalInformation":
-            raise ValueError(
-                "Cropping history files (.osh.pbf / 'HistoricalInformation') is "
-                "not supported."
-            )
-        if feature == "LocationsOnWays":
-            raise ValueError(
-                "Cropping PBF files that store node locations on ways "
-                "('LocationsOnWays') is not supported."
-            )
-        raise ValueError(
-            "Source PBF requires unsupported feature '%s'; cannot crop it." % feature
-        )
+            reason = "history files (.osh.pbf) are not supported"
+        elif feature == "LocationsOnWays":
+            reason = "node locations stored on ways are not supported"
+        else:
+            reason = "its required feature '%s' is not supported" % feature
+        raise ValueError("Cannot crop '%s': %s." % (filepath, reason))
     return header
 
 
@@ -527,21 +581,11 @@ cdef _write_pbf(filepath, output_path, kept_nodes_set, kept_ways_set, kept_rel_s
 cdef _count_data_blocks(filepath):
     """Count OSMData blocks by reading only blob headers (seeks past blob data)."""
     cdef int n = 0
-    cdef int msg_len
     with open(filepath, "rb") as f:
-        buf = f.read(4)
-        if len(buf) == 4:  # skip the leading OSMHeader blob
-            msg_len = unpack("!L", buf)[0]
-            blob_header = BlobHeader()
-            blob_header.ParseFromString(f.read(msg_len))
-            f.seek(blob_header.datasize, 1)
         while True:
-            buf = f.read(4)
-            if len(buf) == 0:
+            blob_header = _read_blob_header(f)
+            if blob_header is None:
                 break
-            msg_len = unpack("!L", buf)[0]
-            blob_header = BlobHeader()
-            blob_header.ParseFromString(f.read(msg_len))
             if blob_header.type == "OSMData":
                 n += 1
             f.seek(blob_header.datasize, 1)
@@ -638,24 +682,14 @@ _W_COMPACT = False
 
 
 cdef _read_next_payload(f):
-    """Read one (blob_type, (is_raw, payload_bytes)); (None, None) at EOF."""
-    buf = f.read(4)
-    if len(buf) == 0:
+    """Read one (blob_type, (filepath, is_raw, payload_bytes)); (None, None) at EOF."""
+    blob_header = _read_blob_header(f)
+    if blob_header is None:
         return None, None
-    msg_len = unpack("!L", buf)[0]
-    blob_header = BlobHeader()
-    blob_header.ParseFromString(f.read(msg_len))
-    blob = Blob()
-    blob.ParseFromString(f.read(blob_header.datasize))
+    blob = _read_blob(f, blob_header)
     if blob.HasField("raw"):
-        return blob_header.type, (True, blob.raw)
-    elif blob.HasField("zlib_data"):
-        return blob_header.type, (False, blob.zlib_data)
-    else:
-        raise ValueError(
-            "Unsupported Blob compression in source PBF (only raw and zlib are "
-            "handled by pyrosm)."
-        )
+        return blob_header.type, (f.name, True, blob.raw)
+    return blob_header.type, (f.name, False, blob.zlib_data)
 
 
 def _iter_payloads(filepath):
@@ -672,11 +706,12 @@ def _iter_payloads(filepath):
 
 
 cdef _payload_to_block(payload):
-    is_raw, data = payload
-    if not is_raw:
-        data = zlib.decompress(data)
+    filepath, is_raw, data = payload
     pblock = PrimitiveBlock()
-    pblock.ParseFromString(data)
+    try:
+        pblock.ParseFromString(data if is_raw else zlib.decompress(data))
+    except (zlib.error, DecodeError) as err:
+        raise _invalid(filepath, err) from None
     return pblock
 
 
