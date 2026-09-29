@@ -78,6 +78,8 @@ cdef _bounds_from_bbox(bounding_box):
 # limits osmium checks).
 _MAX_BLOB_HEADER_SIZE = 64 * 1024
 _MAX_BLOB_SIZE = 32 * 1024 * 1024
+# Re-packed blocks are split above the 16 MiB the spec recommends as a blob's size.
+_MAX_PACKED_BLOCK_SIZE = 16 * 1024 * 1024
 
 
 cdef _invalid(filepath, reason):
@@ -335,6 +337,81 @@ cdef _stage3_relations(filepath, kept_nodes_set, kept_ways_set):
                 if keep:
                     kept_rel_ids.append(rel.id)
     return np.array(kept_rel_ids, dtype=np.int64)
+
+
+cdef _block_way_copies(pblock, candidates, nodes_in_bbox_set):
+    """The copies in `pblock` of the ways in `candidates`, as (ids, versions,
+    timestamps, touches, ref_counts, refs): versions and timestamps are -1 where not
+    recorded, `touches` marks copies with a node in the box, and `refs` holds the
+    node ids of the touching copies back to back (`ref_counts` per copy, 0 for the
+    others)."""
+    ids, versions, timestamps, touches, ref_counts, refs = [], [], [], [], [], []
+    for g in pblock.primitivegroup:
+        for way in g.ways:
+            if way.id not in candidates:
+                continue
+            ids.append(way.id)
+            versions.append(way.info.version if way.info.HasField("version") else -1)
+            timestamps.append(
+                way.info.timestamp if way.info.HasField("timestamp") else -1
+            )
+            way_refs = np.cumsum(
+                np.fromiter(way.refs, dtype=np.int64, count=len(way.refs))
+            )
+            touching = bool(_isin(way_refs, nodes_in_bbox_set).any())
+            touches.append(touching)
+            ref_counts.append(len(way_refs) if touching else 0)
+            if touching:
+                refs.append(way_refs)
+    return (
+        np.array(ids, dtype=np.int64),
+        np.array(versions, dtype=np.int64),
+        np.array(timestamps, dtype=np.int64),
+        np.array(touches, dtype=bool),
+        np.array(ref_counts, dtype=np.int64),
+        np.concatenate(refs) if refs else np.empty(0, dtype=np.int64),
+    )
+
+
+cdef _way_winners(sources, touching, nodes_in_bbox, pool, tmpdir):
+    """Keep a way only where its winning copy is a copy that touches the box.
+
+    `touching` holds, per file, the ways whose copy in that file has a node in the
+    box. Every copy of those ways is ranked as in the merge, so a way whose winning
+    copy lies outside the box is dropped, and only the winning copies' nodes are
+    kept. Returns the kept way ids of each file and the kept node ids.
+    """
+    candidates = _unique_concat(touching)
+    if pool is None:
+        candidates_set = _to_set(candidates)
+        nib_set = _to_set(nodes_in_bbox)
+        copies = [
+            [
+                _block_way_copies(pb, candidates_set, nib_set)
+                for pb in _iter_primitive_blocks(p)
+            ]
+            for p in sources
+        ]
+    else:
+        _broadcast(tmpdir, "candidate_ways", candidates)
+        copies = [list(pool.imap(_w_way_copies, _iter_payloads(p))) for p in sources]
+    blocks = [block for source_blocks in copies for block in source_blocks]
+    ids, versions, timestamps, touches, ref_counts, refs = [
+        np.concatenate([block[k] for block in blocks]) if blocks
+        else np.empty(0, dtype=np.int64)
+        for k in range(6)
+    ]
+    src = np.repeat(
+        np.arange(len(sources)),
+        [sum([len(block[0]) for block in source_blocks]) for source_blocks in copies],
+    )
+
+    winners = _winning_copies(ids, versions, timestamps, src)
+    passing = np.zeros(len(ids), dtype=bool)
+    passing[winners] = touches[winners].astype(bool)
+    kept_ways = [ids[passing & (src == i)] for i in range(len(sources))]
+    kept_refs = refs[np.repeat(passing, ref_counts)]
+    return kept_ways, _unique_concat([nodes_in_bbox, kept_refs])
 
 
 # ---------------------------------------------------------------------------
@@ -696,9 +773,10 @@ cdef _select(sources, bounds, keep_relations, pool, tmpdir):
     """Run the crop selection stages over one or more PBF files.
 
     Returns the kept node ids of all files together, and a list with the kept way
-    ids and a list with the kept relation ids of each file. With a `pool`, each
-    stage spreads a file's blocks over the workers, which read the id sets the
-    stage needs from `tmpdir`.
+    ids and a list with the kept relation ids of each file. With several files, a
+    way is kept only from the file holding its winning copy (see `_way_winners`).
+    With a `pool`, each stage spreads a file's blocks over the workers, which read
+    the id sets the stage needs from `tmpdir`.
     """
     # Stage 1: nodes inside the bbox.
     if pool is None:
@@ -724,7 +802,12 @@ cdef _select(sources, bounds, keep_relations, pool, tmpdir):
             refs = _unique_concat([r for _, r in results])
         kept_ways.append(ways)
         kept_nodes.append(refs)
-    kept_nodes = _unique_concat(kept_nodes)
+    if len(sources) > 1:
+        kept_ways, kept_nodes = _way_winners(
+            sources, kept_ways, nodes_in_bbox, pool, tmpdir
+        )
+    else:
+        kept_nodes = _unique_concat(kept_nodes)
 
     # Stage 3: relations referencing a kept node/way.
     if not keep_relations:
@@ -865,6 +948,14 @@ def _w_stage2(payload):
                 kept_way_ids.append(way.id)
                 extra_nodes.append(refs)
     return (np.array(kept_way_ids, dtype=np.int64), _unique_concat(extra_nodes))
+
+
+def _w_way_copies(payload):
+    return _block_way_copies(
+        _payload_to_block(payload),
+        _w_get_set("candidate_ways"),
+        _w_get_set("nodes_in_bbox"),
+    )
 
 
 def _w_stage3(payload):
@@ -1132,6 +1223,11 @@ cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds):
 # see the guard in `_repack_write`). These emitters are separate from the from-records
 # `_emit_*` so the `write_pbf` path is untouched.
 
+cdef _too_large(block, n_elements):
+    """True when a re-packed block of several elements should be split in two."""
+    return n_elements > 1 and block.ByteSize() > _MAX_PACKED_BLOCK_SIZE
+
+
 cdef _emit_repack_node_block(out, ids, lat_raw, lon_raw, tags_list, meta):
     block = _new_block()
     st = _StringTable()
@@ -1170,6 +1266,17 @@ cdef _emit_repack_node_block(out, ids, lat_raw, lon_raw, tags_list, meta):
 
     for s in st.strings:
         block.stringtable.s.append(s)
+    if _too_large(block, len(ids)):
+        half = len(ids) // 2
+        _emit_repack_node_block(
+            out, ids[:half], lat_raw[:half], lon_raw[:half], tags_list[:half],
+            _slice_meta(meta, slice(None, half)),
+        )
+        _emit_repack_node_block(
+            out, ids[half:], lat_raw[half:], lon_raw[half:], tags_list[half:],
+            _slice_meta(meta, slice(half, None)),
+        )
+        return
     _write_blob(out, "OSMData", block)
 
 
@@ -1207,6 +1314,11 @@ cdef _emit_repack_way_block(out, way_batch):
         way.refs.extend(delta_encode(w["refs"]).tolist())
     for s in st.strings:
         block.stringtable.s.append(s)
+    if _too_large(block, len(way_batch)):
+        half = len(way_batch) // 2
+        _emit_repack_way_block(out, way_batch[:half])
+        _emit_repack_way_block(out, way_batch[half:])
+        return
     _write_blob(out, "OSMData", block)
 
 
@@ -1233,6 +1345,11 @@ cdef _emit_repack_relation_block(out, rel_batch):
         )
     for s in st.strings:
         block.stringtable.s.append(s)
+    if _too_large(block, len(rel_batch)):
+        half = len(rel_batch) // 2
+        _emit_repack_relation_block(out, rel_batch[:half])
+        _emit_repack_relation_block(out, rel_batch[half:])
+        return
     _write_blob(out, "OSMData", block)
 
 
@@ -1317,36 +1434,13 @@ cdef _decode_kept_dense_nodes(dense, stringtable, kept_nodes_set):
     return kept_ids, lat, lon, tags_list, meta
 
 
-cdef _decode_kept_plain_nodes(nodes, stringtable, kept_nodes_set):
-    """Non-dense node group -> the same chunk shape (emitted as dense)."""
-    kept = [node for node in nodes
-            if kept_nodes_set is None or node.id in kept_nodes_set]
-    if not kept:
-        return None
-    ids = np.asarray([node.id for node in kept], dtype=np.int64)
-    lat = np.asarray([node.lat for node in kept], dtype=np.int64)
-    lon = np.asarray([node.lon for node in kept], dtype=np.int64)
-    tags_list = []
-    metas = []
-    for node in kept:
-        if len(node.keys) > 0:
-            tags_list.append({stringtable[k]: stringtable[v]
-                              for k, v in zip(node.keys, node.vals)})
-        else:
-            tags_list.append(None)
-        info = _decode_info(node.info)
-        if info is not None and "_user_sid" in info:
-            info["user"] = stringtable[info.pop("_user_sid")]
-        metas.append(info)
-    # A canonical dense block carries DenseInfo for every node or for none, so a
-    # non-dense group whose kept nodes have mixed metadata (some with, some without,
-    # or differing fields) cannot be re-packed faithfully -> reject rather than drop
-    # or synthesize metadata. Real (dense) PBF never hits this.
-    if len(set(_meta_schema(m) for m in metas)) > 1:
-        raise ValueError(
-            "to_pbf(repack=True) does not support a non-dense node group whose nodes "
-            "carry mixed element metadata; use repack=False for this file."
-        )
+cdef _plain_nodes_chunk(run):
+    """(ids, lat, lon, tags, meta) of (node, tags, info) triples sharing a schema."""
+    ids = np.asarray([node.id for node, _, _ in run], dtype=np.int64)
+    lat = np.asarray([node.lat for node, _, _ in run], dtype=np.int64)
+    lon = np.asarray([node.lon for node, _, _ in run], dtype=np.int64)
+    tags_list = [tags for _, tags, _ in run]
+    metas = [info for _, _, info in run]
     meta = None
     if metas[0] is not None:
         meta = {}
@@ -1358,6 +1452,28 @@ cdef _decode_kept_plain_nodes(nodes, stringtable, kept_nodes_set):
             else:
                 meta[key] = np.asarray([m[key] for m in metas], dtype=np.int64)
     return ids, lat, lon, tags_list, meta
+
+
+cdef _decode_kept_plain_nodes(nodes, stringtable, kept_nodes_set):
+    """Non-dense node group -> chunks of the dense chunk shape, one per run of
+    consecutive kept nodes with the same metadata schema (a dense block's DenseInfo
+    is all-or-nothing per field)."""
+    chunks, run = [], []
+    for node in nodes:
+        if kept_nodes_set is not None and node.id not in kept_nodes_set:
+            continue
+        tags = {stringtable[k]: stringtable[v]
+                for k, v in zip(node.keys, node.vals)} if len(node.keys) > 0 else None
+        info = _decode_info(node.info)
+        if info is not None and "_user_sid" in info:
+            info["user"] = stringtable[info.pop("_user_sid")]
+        if run and _meta_schema(info) != _meta_schema(run[-1][2]):
+            chunks.append(_plain_nodes_chunk(run))
+            run = []
+        run.append((node, tags, info))
+    if run:
+        chunks.append(_plain_nodes_chunk(run))
+    return chunks
 
 
 cdef _decode_kept_ways(ways, stringtable, kept_ways_set):
@@ -1530,16 +1646,18 @@ def _iter_groups(filepath):
 
 
 cdef _decode_group(kind, st, g, kept):
-    """Decode the elements of `g` in the id set `kept` (all when None), or None."""
+    """Decoded chunks of the elements of `g` in the id set `kept` (all when None);
+    an empty list when none is kept."""
     if kind == _NODES:
         if len(g.dense.id) > 0:
-            return _decode_kept_dense_nodes(g.dense, st, kept)
+            chunk = _decode_kept_dense_nodes(g.dense, st, kept)
+            return [chunk] if chunk is not None else []
         return _decode_kept_plain_nodes(g.nodes, st, kept)
     if kind == _WAYS:
         records = _decode_kept_ways(g.ways, st, kept)
     else:
         records = _decode_kept_relations(g.relations, st, kept)
-    return records if records else None
+    return [records] if records else []
 
 
 cdef _repack_write(source_path, output_path, kept_nodes_set, kept_ways_set,
@@ -1550,8 +1668,7 @@ cdef _repack_write(source_path, output_path, kept_nodes_set, kept_ways_set,
         _write_header(out, bounds)
         writer = _RepackWriter(out)
         for kind, st, g in _iter_groups(source_path):
-            chunk = _decode_group(kind, st, g, kept[kind])
-            if chunk is not None:
+            for chunk in _decode_group(kind, st, g, kept[kind]):
                 writer.add(kind, chunk)
         writer.close()
     return output_path
@@ -1600,6 +1717,17 @@ cdef _take(kind, chunk, idx):
     return [chunk[i] for i in idx]
 
 
+cdef _group_ids(kind, g):
+    """Ids of all elements of a primitive group, in file order."""
+    if kind == _NODES:
+        if len(g.dense.id) > 0:
+            return np.cumsum(np.fromiter(g.dense.id, dtype=np.int64, count=len(g.dense.id)))
+        return np.array([node.id for node in g.nodes], dtype=np.int64)
+    if kind == _WAYS:
+        return np.array([way.id for way in g.ways], dtype=np.int64)
+    return np.array([rel.id for rel in g.relations], dtype=np.int64)
+
+
 class _SortedInput:
     """One merge input, read group by group and checked to be sorted by type then id."""
 
@@ -1616,15 +1744,28 @@ class _SortedInput:
             if group_kind < kind:
                 raise _not_sorted(self.filepath)
             self._next = next(self._groups, None)
-            chunk = _decode_group(kind, st, g, kept)
-            if chunk is None:
-                continue
-            ids = _chunk_ids(kind, chunk)
-            if (ids[1:] <= ids[:-1]).any() or (last_id is not None and ids[0] <= last_id):
+            # Every element counts for the order, not only the kept ones.
+            group_ids = _group_ids(kind, g)
+            if (group_ids[1:] <= group_ids[:-1]).any() or (
+                last_id is not None and group_ids[0] <= last_id
+            ):
                 raise _not_sorted(self.filepath)
-            last_id = ids[-1]
-            versions, timestamps = _chunk_ranks(kind, chunk)
-            yield chunk, ids, versions, timestamps
+            last_id = group_ids[-1]
+            for chunk in _decode_group(kind, st, g, kept):
+                versions, timestamps = _chunk_ranks(kind, chunk)
+                yield chunk, _chunk_ids(kind, chunk), versions, timestamps
+
+
+cdef _winning_copies(ids, versions, timestamps, src):
+    """Positions of the winning copy of each id, in id order.
+
+    The copy with the highest version wins, then the one with the latest timestamp,
+    then the one from the earliest input (lowest `src`).
+    """
+    order = np.lexsort((src, -timestamps, -versions, ids))
+    first = np.ones(len(order), dtype=bool)
+    first[1:] = ids[order[1:]] != ids[order[:-1]]
+    return order[first]
 
 
 cdef _write_winners(_RepackWriter writer, kind, chunk, won, i):
@@ -1659,11 +1800,7 @@ cdef _merge_kind(inputs, kind, kept, won, _RepackWriter writer):
         versions = np.concatenate([heads[i][2][:n] for i, n in zip(live, counts)])
         timestamps = np.concatenate([heads[i][3][:n] for i, n in zip(live, counts)])
 
-        # Highest version, then latest timestamp, then first input wins.
-        order = np.lexsort((src, -timestamps, -versions, ids))
-        first = np.ones(len(order), dtype=bool)
-        first[1:] = ids[order[1:]] != ids[order[:-1]]
-        winners = order[first]
+        winners = _winning_copies(ids, versions, timestamps, src)
         cuts = np.flatnonzero(src[winners[1:]] != src[winners[:-1]]) + 1
         for run in np.split(winners, cuts):
             i = src[run[0]]
@@ -1691,6 +1828,15 @@ cdef _header_bounds(headers):
     if len(boxes) == 0:
         return None
     return boxes[:, 0].min(), boxes[:, 1].min(), boxes[:, 2].max(), boxes[:, 3].max()
+
+
+cdef _fingerprint(path):
+    """Identity and change times of a path and of the file it resolves to."""
+    link, stat = os.lstat(path), os.stat(path)
+    return (
+        link.st_dev, link.st_ino, link.st_ctime_ns,
+        stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
+    )
 
 
 cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True,
@@ -1765,13 +1911,15 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     sources = [os.fspath(p) for p in inputs]
     if not sources:
         raise ValueError("merge_pbf() needs at least one input file.")
+    fingerprints = [_fingerprint(p) for p in sources]
     headers = [_read_header(p) for p in sources]
 
-    if output_path is None:
-        fd, output_path = tempfile.mkstemp(suffix=".osm.pbf", prefix="pyrosm_merge_")
-        os.close(fd)
-    elif Path(output_path).resolve() in [Path(p).resolve() for p in sources]:
-        raise ValueError("The output path '%s' is one of the inputs." % output_path)
+    if output_path is not None and Path(output_path).exists():
+        clash = [p for p in sources if os.path.samefile(output_path, p)]
+        if clash:
+            raise ValueError(
+                "The output path '%s' is the input '%s'." % (output_path, clash[0])
+            )
 
     if bounding_box is None:
         bounds = _header_bounds(headers)
@@ -1793,11 +1941,36 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
         )
         won = (None, [_to_set(w) for w in kept_ways], [_to_set(r) for r in kept_rel])
 
-    inputs = [_SortedInput(p) for p in sources]
-    with open(output_path, "wb") as out:
-        _write_header(out, bounds, sorted_output=True)
-        writer = _RepackWriter(out)
-        for kind in (_NODES, _WAYS, _RELATIONS):
-            _merge_kind(inputs, kind, kept[kind], won[kind], writer)
-        writer.close()
+    # Written next to the output and moved into place when complete, so a failed
+    # merge leaves no partial file at `output_path`.
+    if output_path is None:
+        out_dir = tempfile.gettempdir()
+    else:
+        out_dir = os.path.dirname(os.path.abspath(output_path))
+    fd, partial_path = tempfile.mkstemp(
+        suffix=".osm.pbf", prefix=".pyrosm_merge_", dir=out_dir
+    )
+    try:
+        with os.fdopen(fd, "wb") as out:
+            inputs = [_SortedInput(p) for p in sources]
+            _write_header(out, bounds, sorted_output=True)
+            writer = _RepackWriter(out)
+            for kind in (_NODES, _WAYS, _RELATIONS):
+                _merge_kind(inputs, kind, kept[kind], won[kind], writer)
+            writer.close()
+        changed = [
+            p for p, before in zip(sources, fingerprints) if _fingerprint(p) != before
+        ]
+        if changed:
+            raise ValueError(
+                "'%s' changed while it was being merged; the merge was discarded."
+                % changed[0]
+            )
+        if output_path is None:
+            fd, output_path = tempfile.mkstemp(suffix=".osm.pbf", prefix="pyrosm_merge_")
+            os.close(fd)
+        os.replace(partial_path, output_path)
+    except BaseException:
+        Path(partial_path).unlink(missing_ok=True)
+        raise
     return output_path
