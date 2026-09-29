@@ -766,38 +766,6 @@ def test_to_pbf_repack_rejects_nonstandard_grid(tmp_path, field, value):
         )
 
 
-def test_to_pbf_repack_rejects_mixed_metadata(tmp_path):
-    # Two dense blocks, one carrying DenseInfo and one without: re-pack cannot merge
-    # them into a canonical block faithfully, so it must raise (not crash or drop).
-    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock, HeaderBlock
-
-    def dense_block(start_id, with_meta):
-        blk = PrimitiveBlock()
-        blk.granularity = 100
-        blk.date_granularity = 1000
-        blk.stringtable.s.append(b"")
-        d = blk.primitivegroup.add().dense
-        d.id.extend([start_id, 1])  # ids start_id, start_id+1 (delta encoded)
-        d.lat.extend([600000, 100])
-        d.lon.extend([250000, 100])
-        if with_meta:
-            d.denseinfo.version.extend([1, 1])
-            d.denseinfo.timestamp.extend([0, 0])
-        return blk
-
-    src = str(tmp_path / "mixed.osm.pbf")
-    hdr = HeaderBlock()
-    hdr.required_features.extend(["OsmSchema-V0.6", "DenseNodes"])
-    with open(src, "wb") as out:
-        _frame_pbf_blob(out, "OSMHeader", hdr)
-        _frame_pbf_blob(out, "OSMData", dense_block(1, with_meta=True))
-        _frame_pbf_blob(out, "OSMData", dense_block(100, with_meta=False))
-    with pytest.raises(ValueError):
-        OSM(src, bounding_box=[-1, -1, 2, 2]).to_pbf(
-            str(tmp_path / "out.pbf"), repack=True
-        )
-
-
 def _pbf_file(path, *blocks, features=("OsmSchema-V0.6", "DenseNodes")):
     """Write a PBF with a header requiring `features`, then one OSMData blob per
     block: a PrimitiveBlock is zlib-compressed, a Blob is written as it is."""
@@ -883,6 +851,329 @@ def test_crop_pbf_rejects_unreadable_input(
     with pytest.raises(errors[error], match=match) as err:
         crop_pbf(str(bad), str(tmp_path / "out.osm.pbf"), CROP_BBOX, workers=workers)
     assert str(bad) in str(err.value)
+
+
+# ---------------------------------------------------------------------------
+# merge_pbf
+# ---------------------------------------------------------------------------
+# Two crops of the bundled extent that overlap in x and share the y range, so
+# their union is the rectangle MERGE_UNION.
+MERGE_A = [24.9352, 60.1642, 24.9460, 60.1791]
+MERGE_B = [24.9420, 60.1642, 24.9534, 60.1791]
+MERGE_UNION = [24.9352, 60.1642, 24.9534, 60.1791]
+MERGE_CROP = [24.9440, 60.1690, 24.9480, 60.1740]
+
+
+def _merge_inputs(src, tmp_path):
+    from pyrosm.pbf_export import crop_pbf
+
+    return (
+        crop_pbf(src, str(tmp_path / "a.osm.pbf"), MERGE_A),
+        crop_pbf(src, str(tmp_path / "b.osm.pbf"), MERGE_B),
+    )
+
+
+def _dense_nodes(path):
+    """{node id: (version or None, tags)} of the dense nodes of a PBF, and the
+    DenseInfo version count and node count of each dense group."""
+    from pyrosm.pbf_export import _iter_primitive_blocks
+
+    nodes, groups = {}, []
+    for pb in _iter_primitive_blocks(path):
+        st = [s.decode() for s in pb.stringtable.s]
+        for g in pb.primitivegroup:
+            d = g.dense
+            if len(d.id) == 0:
+                continue
+            ids = np.cumsum(np.array(list(d.id), dtype=np.int64))
+            groups.append((len(d.denseinfo.version), len(ids)))
+            versions = list(d.denseinfo.version) or [None] * len(ids)
+            tags = [{} for _ in ids]
+            kv, i, j = list(d.keys_vals), 0, 0
+            while j < len(kv):
+                if kv[j] == 0:
+                    i, j = i + 1, j + 1
+                else:
+                    tags[i][st[kv[j]]] = st[kv[j + 1]]
+                    j += 2
+            for nid, version, t in zip(ids, versions, tags):
+                nodes[int(nid)] = (version, t)
+    return nodes, groups
+
+
+def test_merge_pbf_overlapping_crops(helsinki_pbf, tmp_path):
+    osmium = pytest.importorskip("osmium")
+    from pyrosm import merge_pbf
+    from pyrosm.pbf_export import crop_pbf, read_header_block
+
+    a, b = _merge_inputs(helsinki_pbf, tmp_path)
+    merged = merge_pbf([a, b], str(tmp_path / "merged.osm.pbf"))
+    union = crop_pbf(helsinki_pbf, str(tmp_path / "union.osm.pbf"), MERGE_UNION)
+
+    nodes, ways, rels, _, way_refs = _read_elements(merged)
+    assert (nodes, ways, rels) == _read_elements(union)[:3]
+    source_nodes = _read_elements(helsinki_pbf)[0]
+    assert all(set(refs) & source_nodes <= nodes for refs in way_refs.values())
+
+    header = read_header_block(merged)
+    assert "Sort.Type_then_ID" in header.optional_features
+    box = [header.bbox.left, header.bbox.bottom, header.bbox.right, header.bbox.top]
+    assert np.allclose(np.array(box) / 1e9, MERGE_UNION)
+
+    order = [(o.type_str(), o.id) for o in osmium.FileProcessor(merged)]
+    rank = {"n": 0, "w": 1, "r": 2}
+    assert order == sorted(order, key=lambda k: (rank[k[0]], k[1]))
+    assert len(order) == len(nodes) + len(ways) + len(rels)
+    assert len(OSM(merged).get_network()) == len(OSM(union).get_network())
+
+    no_rels = merge_pbf([a, b], str(tmp_path / "no_rels.osm.pbf"), keep_relations=False)
+    assert _read_elements(no_rels)[:3] == (nodes, ways, set())
+
+
+@pytest.mark.parametrize(
+    "a_meta, b_meta, winner",
+    [
+        ((2, 50), (1, 100), "a"),  # higher version beats a later timestamp
+        ((2, 100), (2, 200), "b"),  # equal versions: later timestamp
+        ((2, 100), (2, 100), "a"),  # full tie: first input
+    ],
+)
+def test_merge_pbf_duplicate_ranking_and_cross_file_refs(
+    tmp_path, a_meta, b_meta, winner
+):
+    # Node 1 is in both inputs; way 10 (only in "a") references node 2, which only
+    # "b" holds and which lies outside the crop box. Way 11 touches the box in "a",
+    # but its newer copy in "b" does not, so neither it, its outside node 3 nor
+    # relation 20 (whose only member is way 11) is written. Relation 21 references
+    # node 1 in "a", but its newer copy in "b" references only node 3, so it is not
+    # written either.
+    from pyrosm import merge_pbf
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    def write(name, rows, ways, relations=()):
+        ids, lons, lats, versions, timestamps, tags = zip(*rows)
+        nodes = {
+            "id": ids,
+            "lon": lons,
+            "lat": lats,
+            "version": versions,
+            "timestamp": timestamps,
+            "changeset": [0] * len(ids),
+            "tags": np.array(tags, dtype=object),
+        }
+        path = str(tmp_path / f"{name}.osm.pbf")
+        return write_pbf_from_records(
+            nodes, ways, list(relations), path, (24.9, 60.1, 25.6, 61.1)
+        )
+
+    a = write(
+        "a",
+        [(1, 24.9445, 60.1708, *a_meta, {"src": "a"}), (3, 25.5, 61.05, 1, 0, None)],
+        [
+            {"id": 10, "tags": {"highway": "path"}, "refs": [1, 2]},
+            {"id": 11, "tags": {"highway": "path"}, "refs": [1, 3], "version": 1},
+        ],
+        [
+            {"id": 20, "tags": {"type": "route"}, "members": [("way", 11, "")]},
+            {"id": 21, "tags": {"type": "site"}, "members": [("node", 1, "")]},
+        ],
+    )
+    b = write(
+        "b",
+        [(1, 24.9445, 60.1708, *b_meta, {"src": "b"}), (2, 25.5, 61.0, 1, 0, None)],
+        [{"id": 11, "tags": {"highway": "path"}, "refs": [3], "version": 2}],
+        [
+            {
+                "id": 21,
+                "tags": {"type": "site"},
+                "members": [("node", 3, "")],
+                "version": 2,
+            }
+        ],
+    )
+    merged = merge_pbf([a, b], str(tmp_path / "merged.osm.pbf"), bounding_box=META_BBOX)
+
+    nodes, _ = _dense_nodes(merged)
+    assert set(nodes) == {1, 2}
+    assert nodes[1][1] == {"src": winner}
+    assert _read_elements(merged)[1:3] == ({10}, set())
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_merge_pbf_bounding_box_equals_crop_of_merge(helsinki_pbf, tmp_path, workers):
+    from shapely.geometry import box
+
+    from pyrosm import merge_pbf
+    from pyrosm.pbf_export import crop_pbf
+
+    a, b = _merge_inputs(helsinki_pbf, tmp_path)
+    merged = merge_pbf([a, b], str(tmp_path / "merged.osm.pbf"))
+    expected = crop_pbf(merged, str(tmp_path / "expected.osm.pbf"), MERGE_CROP)
+    cropped = merge_pbf(
+        [a, b],
+        str(tmp_path / "cropped.osm.pbf"),
+        bounding_box=box(*MERGE_CROP),
+        workers=workers,
+    )
+    assert _read_elements(cropped)[:3] == _read_elements(expected)[:3]
+    assert len(_read_elements(cropped)[2]) > 0
+
+
+def test_merge_pbf_splits_large_blocks(helsinki_pbf, tmp_path, monkeypatch):
+    # With the block size limit lowered to 4 KiB, every written block stays below it
+    # unless it holds a single element, and the merged elements are unchanged.
+    import pyrosm.pbf_export as pbf_export
+    from pyrosm import merge_pbf
+
+    a, b = _merge_inputs(helsinki_pbf, tmp_path)
+    expected = _read_elements(merge_pbf([a, b], str(tmp_path / "default.osm.pbf")))
+    monkeypatch.setattr(pbf_export, "_MAX_PACKED_BLOCK_SIZE", 4096)
+    merged = merge_pbf([a, b], str(tmp_path / "split.osm.pbf"))
+
+    assert _read_elements(merged)[:3] == expected[:3]
+    blocks = list(pbf_export._iter_primitive_blocks(merged))
+    assert len(blocks) > 20
+    for pb in blocks:
+        n_elements = sum(
+            len(g.dense.id) + len(g.nodes) + len(g.ways) + len(g.relations)
+            for g in pb.primitivegroup
+        )
+        assert pb.ByteSize() <= 4096 or n_elements == 1
+
+
+def _dense_block(ids, with_meta):
+    """A PrimitiveBlock with one dense group of `amenity=cafe` nodes."""
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    blk = PrimitiveBlock()
+    blk.granularity = 100
+    blk.date_granularity = 1000
+    blk.stringtable.s.extend([b"", b"amenity", b"cafe"])
+    d = blk.primitivegroup.add().dense
+    d.id.extend(np.diff(ids, prepend=0).tolist())
+    d.lat.extend([601700000] + [100] * (len(ids) - 1))
+    d.lon.extend([249440000] + [100] * (len(ids) - 1))
+    d.keys_vals.extend([1, 2, 0] * len(ids))
+    if with_meta:
+        d.denseinfo.version.extend([2] * len(ids))
+        d.denseinfo.timestamp.extend([0] * len(ids))
+    return blk
+
+
+def test_merge_pbf_mixed_metadata(tmp_path):
+    # One input carries DenseInfo and the other is a plain node group in which only
+    # node 4 has metadata. Their ids interleave, so the merged blocks alternate
+    # between metadata schemas, and the copy of node 3 with metadata wins although it
+    # comes from the second input. Re-packing a crop of a file holding both kinds of
+    # blocks, or merging that file on its own, writes it too.
+    from pyrosm import merge_pbf
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    plain = PrimitiveBlock(granularity=100, date_granularity=1000)
+    plain.stringtable.s.extend([b"", b"amenity", b"cafe"])
+    group = plain.primitivegroup.add()
+    for i, nid in enumerate([2, 3, 4]):
+        node = group.nodes.add(
+            id=nid, lat=601700000 + 100 * i, lon=249440000 + 100 * i, keys=[1], vals=[2]
+        )
+        if nid == 4:
+            node.info.version = 7
+    without = _pbf_file(tmp_path / "without.osm.pbf", plain)
+    with_meta = _pbf_file(tmp_path / "with.osm.pbf", _dense_block([1, 3, 5], True))
+    mixed = _pbf_file(
+        tmp_path / "mixed.osm.pbf",
+        _dense_block([1, 3, 5], True),
+        _dense_block([10, 11], False),
+    )
+    outputs = {
+        "merged": merge_pbf([without, with_meta], str(tmp_path / "merged.osm.pbf")),
+        "repacked": OSM(mixed, bounding_box=[-1, -1, 30, 70]).to_pbf(
+            str(tmp_path / "repacked.osm.pbf"), repack=True
+        ),
+        "single": merge_pbf(Path(mixed)),
+    }
+    in_mixed = {1: 2, 3: 2, 5: 2, 10: None, 11: None}
+    expected = {
+        "merged": {1: 2, 2: None, 3: 2, 4: 7, 5: 2},
+        "repacked": in_mixed,
+        "single": in_mixed,
+    }
+    for name, path in outputs.items():
+        nodes, groups = _dense_nodes(path)
+        assert {nid: version for nid, (version, _) in nodes.items()} == expected[name]
+        assert all(n_versions in (0, n_nodes) for n_versions, n_nodes in groups)
+        pois = OSM(path).get_pois(custom_filter={"amenity": ["cafe"]})
+        assert sorted(pois["id"]) == sorted(expected[name])
+    Path(outputs["single"]).unlink()
+
+
+@pytest.mark.parametrize(
+    "case, error, match",
+    [
+        ("truncated", "InvalidOSMFileError", "the file is truncated"),
+        ("HistoricalInformation", "ValueError", "Cannot crop or merge"),
+        ("unsorted ids", "ValueError", "not sorted by type then id"),
+        ("unsorted ids outside the box", "ValueError", "not sorted by type then id"),
+        ("nodes after ways", "ValueError", "not sorted by type then id"),
+        ("output is an input", "ValueError", "is the input"),
+        ("output is a hard link to an input", "ValueError", "is the input"),
+        ("input changes during the merge", "ValueError", "changed while it was"),
+        ("no inputs", "ValueError", "at least one input"),
+    ],
+)
+def test_merge_pbf_rejects_bad_input(
+    helsinki_pbf, tmp_path, monkeypatch, case, error, match
+):
+    import os
+
+    from pyrosm import merge_pbf
+    from pyrosm.exceptions import InvalidOSMFileError
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    bad = tmp_path / "bad.osm.pbf"
+    inputs, output = [helsinki_pbf, str(bad)], str(tmp_path / "out.osm.pbf")
+    ways = PrimitiveBlock()
+    ways.stringtable.s.append(b"")
+    ways.primitivegroup.add().ways.add(id=1, refs=[1])
+    if case == "truncated":
+        data = Path(helsinki_pbf).read_bytes()
+        bad.write_bytes(data[: len(data) // 2])
+    elif case == "HistoricalInformation":
+        _pbf_file(bad, features=("OsmSchema-V0.6", case))
+    elif case in ("unsorted ids", "unsorted ids outside the box"):
+        _pbf_file(bad, _dense_block([10, 11], True), _dense_block([5, 6], True))
+    elif case == "nodes after ways":
+        _pbf_file(bad, ways, _dense_block([5, 6], True))
+    elif case == "output is an input":
+        bad.write_bytes(Path(helsinki_pbf).read_bytes())
+        output = str(bad)
+    elif case == "input changes during the merge":
+        import pyrosm.pbf_export as pbf_export
+
+        bad.write_bytes(Path(helsinki_pbf).read_bytes())
+
+        class ChangingInput(pbf_export._SortedInput):
+            def __init__(self, filepath):
+                if filepath == str(bad):
+                    os.utime(filepath, ns=(0, 0))
+                super().__init__(filepath)
+
+        monkeypatch.setattr(pbf_export, "_SortedInput", ChangingInput)
+    elif case == "output is a hard link to an input":
+        bad.write_bytes(Path(helsinki_pbf).read_bytes())
+        output = str(tmp_path / "link.osm.pbf")
+        os.link(bad, output)
+    else:
+        inputs = []
+    errors = {"InvalidOSMFileError": InvalidOSMFileError, "ValueError": ValueError}
+    kwargs = {"bounding_box": [0, 0, 1, 1]} if case.endswith("outside the box") else {}
+    with pytest.raises(errors[error], match=match) as err:
+        merge_pbf(inputs, output, **kwargs)
+    assert not list(tmp_path.glob(".pyrosm_merge_*"))
+    if output == str(tmp_path / "out.osm.pbf"):
+        assert not Path(output).exists()
+    if inputs:
+        assert str(bad) in str(err.value)
 
 
 # ---------------------------------------------------------------------------
