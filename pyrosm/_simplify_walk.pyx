@@ -3,8 +3,10 @@
 
 Walks interstitial chains between endpoint nodes over a directed CSR adjacency,
 emitting one chain per walk as a flat array of original directed-row ids plus a
-per-chain offset array. Each directed row is consumed by exactly one chain. This is
-the only non-vectorized stage; everything else is numpy/pandas/shapely.
+per-chain offset array. Each directed row is consumed by at most one chain: where
+several rows run between the same two consecutive nodes of a chain (duplicate ways
+drawn over one street), the chain keeps the first and drops the others, as OSMnx does.
+This is the only non-vectorized stage; everything else is numpy/pandas/shapely.
 
 Arrays are typed as ``long long`` (format 'q'); the Python caller casts to
 ``np.longlong`` so binding is portable (np.int64 is 'l' on LP64 platforms).
@@ -49,6 +51,11 @@ def walk_chains(long long[::1] indptr,
                 n_out += 1
                 prev = e
                 cur = indices[p]
+                if is_endpoint[cur] == 0:
+                    # drop the parallel duplicates of this first step
+                    for q in range(indptr[e], indptr[e + 1]):
+                        if indices[q] == cur:
+                            visited[q] = 1
                 guard = 0
                 while is_endpoint[cur] == 0:
                     nxt = -1
@@ -61,6 +68,10 @@ def walk_chains(long long[::1] indptr,
                     visited[nxt] = 1
                     out_ids[n_out] = edge_id[nxt]
                     n_out += 1
+                    # drop the parallel duplicates of this step
+                    for q in range(indptr[cur], indptr[cur + 1]):
+                        if indices[q] == indices[nxt]:
+                            visited[q] = 1
                     prev = cur
                     cur = indices[nxt]
                     guard += 1

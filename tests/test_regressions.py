@@ -1689,3 +1689,37 @@ def test_network_filters_match_osmnx_way_filters():
         assert {
             k: set(v) for k, v in network_filter.items()
         } == exclusions, network_type
+
+
+@pytest.mark.parametrize("kernel", ["cython", "reference"])
+def test_simplify_keeps_one_of_duplicate_ways(monkeypatch, kernel):
+    """Two one-way OSM ways overlapping node for node (way 11 duplicates the end of
+    way 10 on 3->4->5, as on Vääksyntie, Helsinki, in 2018-2024) collapse into one
+    simplified edge built from the first way, as osmnx.simplification.simplify_graph
+    does, instead of two parallel copies."""
+    from geopandas import GeoDataFrame
+    from shapely.geometry import LineString, Point
+
+    import pyrosm.graph_simplify as gs
+
+    if kernel == "reference":
+        monkeypatch.setattr(gs, "_cython_walk_chains", None)
+    rows = [(1, 2, 10), (2, 3, 10), (3, 4, 10), (4, 5, 10), (3, 4, 11), (4, 5, 11)]
+    nodes = GeoDataFrame(
+        {"id": [1, 2, 3, 4, 5], "geometry": [Point(i - 1, 0) for i in range(1, 6)]},
+        crs="epsg:4326",
+    )
+    edges = GeoDataFrame(
+        {
+            "u": [u for u, _, _ in rows],
+            "v": [v for _, v, _ in rows],
+            "id": [way for _, _, way in rows],
+            "length": [1.0] * len(rows),
+            "geometry": [LineString([(u - 1, 0), (v - 1, 0)]) for u, v, _ in rows],
+        },
+        crs="epsg:4326",
+    )
+    _, simplified = gs.simplify_graph(nodes, edges)
+    assert sorted(
+        zip(simplified["u"], simplified["v"], simplified["id"], simplified["length"])
+    ) == [(1, 3, 10, 2.0), (3, 5, 10, 2.0)]
