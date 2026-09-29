@@ -8,6 +8,27 @@ from urllib.error import HTTPError
 
 import certifi
 
+from pyrosm import __version__
+
+USER_AGENT = "pyrosm/%s (+https://github.com/pyrosm/pyrosm)" % __version__
+
+
+def open_url(url, method="GET", headers=None):
+    """Open ``url`` with pyrosm's User-Agent and certifi's CA bundle.
+
+    ``headers`` are added to (or override) the default ``User-Agent`` header. Returns the
+    response, usable as a context manager.
+    """
+    # Build the HTTPS context from certifi's CA bundle instead of the OS trust store. On
+    # Windows, loading the system certificate store can raise ssl.SSLError [ASN1:
+    # NOT_ENOUGH_DATA] (a CPython bug triggered by a malformed entry in the store); certifi
+    # avoids it and works the same across platforms.
+    context = ssl.create_default_context(cafile=certifi.where())
+    request = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT, **(headers or {})}, method=method
+    )
+    return urllib.request.urlopen(request, context=context)
+
 
 class UNIT(enum.Enum):
     BYTES = 1
@@ -91,15 +112,7 @@ def download(url, filename, update, target_dir):
     # Download data to temp if it does not exist or if update is requested
     if update or file_exists is False:
         try:
-            # Build the HTTPS context from certifi's CA bundle instead of the OS
-            # trust store. On Windows, loading the system certificate store can
-            # raise ssl.SSLError [ASN1: NOT_ENOUGH_DATA] (a CPython bug triggered
-            # by a malformed entry in the store); certifi avoids it and works the
-            # same across platforms.
-            context = ssl.create_default_context(cafile=certifi.where())
-            with urllib.request.urlopen(url, context=context) as response, open(
-                filepath, "wb"
-            ) as out_file:
+            with open_url(url) as response, open(filepath, "wb") as out_file:
                 shutil.copyfileobj(response, out_file)
         except HTTPError:
             raise ValueError(
