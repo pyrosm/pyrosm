@@ -944,7 +944,9 @@ def test_merge_pbf_duplicate_ranking_and_cross_file_refs(
     # Node 1 is in both inputs; way 10 (only in "a") references node 2, which only
     # "b" holds and which lies outside the crop box. Way 11 touches the box in "a",
     # but its newer copy in "b" does not, so neither it, its outside node 3 nor
-    # relation 20 (whose only member is way 11) is written.
+    # relation 20 (whose only member is way 11) is written. Relation 21 references
+    # node 1 in "a", but its newer copy in "b" references only node 3, so it is not
+    # written either.
     from pyrosm import merge_pbf
     from pyrosm.pbf_export import write_pbf_from_records
 
@@ -971,12 +973,23 @@ def test_merge_pbf_duplicate_ranking_and_cross_file_refs(
             {"id": 10, "tags": {"highway": "path"}, "refs": [1, 2]},
             {"id": 11, "tags": {"highway": "path"}, "refs": [1, 3], "version": 1},
         ],
-        [{"id": 20, "tags": {"type": "route"}, "members": [("way", 11, "")]}],
+        [
+            {"id": 20, "tags": {"type": "route"}, "members": [("way", 11, "")]},
+            {"id": 21, "tags": {"type": "site"}, "members": [("node", 1, "")]},
+        ],
     )
     b = write(
         "b",
         [(1, 24.9445, 60.1708, *b_meta, {"src": "b"}), (2, 25.5, 61.0, 1, 0, None)],
         [{"id": 11, "tags": {"highway": "path"}, "refs": [3], "version": 2}],
+        [
+            {
+                "id": 21,
+                "tags": {"type": "site"},
+                "members": [("node", 3, "")],
+                "version": 2,
+            }
+        ],
     )
     merged = merge_pbf([a, b], str(tmp_path / "merged.osm.pbf"), bounding_box=META_BBOX)
 
