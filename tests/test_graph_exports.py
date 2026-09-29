@@ -1,4 +1,3 @@
-import os
 import sys
 import pytest
 from pyrosm import get_data
@@ -6,18 +5,12 @@ from pyrosm.config import Conf
 
 
 def _ulanbator_pbf():
-    """Path to the UlanBator test network.
+    """Path to the UlanBator test network, a pinned snapshot hosted on a gist.
 
-    On the single CI canary runner (``RUN_DOWNLOAD_TESTS=true``) the live
-    BBBike extract is fetched, so we notice if BBBike breaks. Everywhere else
-    (and locally) a pinned, uncropped snapshot hosted on a gist is used --
-    reliable, fast, and friendly to BBBike's small server. The data must stay
-    uncropped: the export tests assert ``ecount == 2 * n_edges`` and
-    ``vcount == n_nodes``, which only hold when no boundary nodes/edges are
+    The data must stay uncropped: the export tests assert ``ecount == 2 * n_edges``
+    and ``vcount == n_nodes``, which only hold when no boundary nodes/edges are
     dropped.
     """
-    if os.environ.get("RUN_DOWNLOAD_TESTS") == "true":
-        return get_data("ulanbator")
     return get_data("ulanbator_test_pbf")
 
 

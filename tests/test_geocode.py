@@ -1,5 +1,4 @@
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -7,14 +6,6 @@ from shapely.geometry import box
 
 import pyrosm
 import pyrosm.data.geocoding as gc
-
-# The live geocoding test reaches Nominatim over the network; gate it like the
-# other download tests so the CI matrix doesn't hammer the service.
-run_downloads_only_once = pytest.mark.skipif(
-    os.environ.get("RUN_DOWNLOAD_TESTS") != "true",
-    reason="Live download tests run on a single CI runner "
-    "(windows-latest + Python 3.14); set RUN_DOWNLOAD_TESTS=true to run locally.",
-)
 
 BRIGHTON = [
     {
@@ -173,7 +164,7 @@ def test_slug_filename():
     assert gc._slug_filename("???") == "place.osm.pbf"
 
 
-@run_downloads_only_once
+@pytest.mark.live_download
 def test_geocode_live():
     geom = pyrosm.geocode("Brighton and Hove, UK")
     assert geom.geom_type in ("Polygon", "MultiPolygon")

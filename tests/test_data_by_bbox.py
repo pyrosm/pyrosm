@@ -1,5 +1,4 @@
 import json
-import os
 from pathlib import Path
 
 import geopandas as gpd
@@ -9,14 +8,6 @@ from shapely.geometry import box, mapping
 import pyrosm
 import pyrosm.data.geofabrik_index as gi
 from pyrosm import get_data_by_bbox
-
-# The live update=True path fetches Geofabrik's index over the network; gate it
-# like the other download tests so the CI matrix doesn't hammer the service.
-run_downloads_only_once = pytest.mark.skipif(
-    os.environ.get("RUN_DOWNLOAD_TESTS") != "true",
-    reason="Live download tests run on a single CI runner "
-    "(windows-latest + Python 3.14); set RUN_DOWNLOAD_TESTS=true to run locally.",
-)
 
 HELSINKI = [24.93, 60.16, 24.96, 60.18]
 LONDON = [-0.20, 51.45, 0.0, 51.55]
@@ -231,6 +222,6 @@ def test_data_module_getattr_rejects_unknown():
         pyrosm.data.this_attribute_does_not_exist
 
 
-@run_downloads_only_once
+@pytest.mark.live_download
 def test_update_fetches_live_index():
     assert get_data_by_bbox(HELSINKI, update=True, download=False) == FINLAND_URL

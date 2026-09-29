@@ -77,11 +77,12 @@ jobs:
 
       - name: Test pyrosm
         shell: bash -l {0}
-        # Exercise the live download tests (BBBike + Geofabrik) on a single
-        # runner only (see tests/test_data.py) so we don't overload those
-        # services by fetching from every OS/Python combination in the matrix.
+        # Run the live download tests (Geofabrik, Nominatim; the live_download
+        # marker in tests/conftest.py) only on the Ubuntu runners of the oldest
+        # and newest supported Python, so we don't load those services from
+        # every OS/Python combination in the matrix.
         env:
-          RUN_DOWNLOAD_TESTS: "${{ matrix.os == 'windows-latest' && matrix.env == 'ci/314-conda.yaml' }}"
+          RUN_DOWNLOAD_TESTS: "${{ matrix.os == 'ubuntu-latest' && (matrix.env == 'ci/310-conda.yaml' || matrix.env == 'ci/314-conda.yaml') }}"
         run: pytest -v -r s --color=yes --cov=pyrosm --cov-append --cov-report term-missing --cov-report xml tests/
 
       - name: Update codecov.io
