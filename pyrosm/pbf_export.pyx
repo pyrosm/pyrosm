@@ -73,9 +73,11 @@ cdef _bounds_from_bbox(bounding_box):
 # ---------------------------------------------------------------------------
 # Blob-level I/O
 # ---------------------------------------------------------------------------
-# The OSM PBF spec caps a BlobHeader at 64 KiB; a larger declared size is a
-# strong signal the file is not an OSM PBF (matches osmium's check).
+# The OSM PBF spec caps a BlobHeader at 64 KiB and a blob at 32 MiB (compressed
+# and uncompressed); larger declared sizes mean the file is not an OSM PBF (the
+# limits osmium checks).
 _MAX_BLOB_HEADER_SIZE = 64 * 1024
+_MAX_BLOB_SIZE = 32 * 1024 * 1024
 
 
 cdef _invalid(filepath, reason):
@@ -116,9 +118,16 @@ cdef _read_blob_header(f):
             "declared BlobHeader size %d exceeds the %d-byte maximum"
             % (msg_len, _MAX_BLOB_HEADER_SIZE),
         )
-    return _parse(
+    blob_header = _parse(
         BlobHeader(), _read_exact(f, msg_len), f, "the BlobHeader could not be parsed"
     )
+    if not 0 <= blob_header.datasize <= _MAX_BLOB_SIZE:
+        raise _invalid(
+            f.name,
+            "declared blob size %d is outside 0-%d bytes"
+            % (blob_header.datasize, _MAX_BLOB_SIZE),
+        )
+    return blob_header
 
 
 cdef _read_blob(f, blob_header):
@@ -132,6 +141,30 @@ cdef _read_blob(f, blob_header):
     return blob
 
 
+cdef _decompress(data, raw_size, filepath):
+    """Decompress a zlib blob of at most 32 MiB, checking it against `raw_size`."""
+    decompressor = zlib.decompressobj()
+    try:
+        out = decompressor.decompress(data, _MAX_BLOB_SIZE)
+    except zlib.error as err:
+        raise _invalid(filepath, err) from None
+    if decompressor.unconsumed_tail:
+        raise _invalid(filepath, "a blob is larger than 32 MiB when decompressed")
+    if not decompressor.eof:
+        raise _invalid(filepath, "a zlib blob is truncated")
+    if raw_size is not None and raw_size != len(out):
+        raise _invalid(
+            filepath,
+            "a blob decompresses to %d bytes but declares raw_size %d"
+            % (len(out), raw_size),
+        )
+    return out
+
+
+cdef _raw_size(blob):
+    return blob.raw_size if blob.HasField("raw_size") else None
+
+
 cdef _read_next_blob(f):
     """Read one (BlobHeader, decompressed_bytes) from `f`; (None, None) at EOF."""
     blob_header = _read_blob_header(f)
@@ -140,10 +173,7 @@ cdef _read_next_blob(f):
     blob = _read_blob(f, blob_header)
     if blob.HasField("raw"):
         return blob_header, blob.raw
-    try:
-        return blob_header, zlib.decompress(blob.zlib_data)
-    except zlib.error as err:
-        raise _invalid(f.name, err) from None
+    return blob_header, _decompress(blob.zlib_data, _raw_size(blob), f.name)
 
 
 def _iter_primitive_blocks(filepath):
@@ -739,14 +769,15 @@ _W_COMPACT = False
 
 
 cdef _read_next_payload(f):
-    """Read one (blob_type, (filepath, is_raw, payload_bytes)); (None, None) at EOF."""
+    """Read one (blob_type, (filepath, is_raw, payload_bytes, raw_size)); (None, None)
+    at EOF."""
     blob_header = _read_blob_header(f)
     if blob_header is None:
         return None, None
     blob = _read_blob(f, blob_header)
     if blob.HasField("raw"):
-        return blob_header.type, (f.name, True, blob.raw)
-    return blob_header.type, (f.name, False, blob.zlib_data)
+        return blob_header.type, (f.name, True, blob.raw, None)
+    return blob_header.type, (f.name, False, blob.zlib_data, _raw_size(blob))
 
 
 def _iter_payloads(filepath):
@@ -763,11 +794,13 @@ def _iter_payloads(filepath):
 
 
 cdef _payload_to_block(payload):
-    filepath, is_raw, data = payload
+    filepath, is_raw, data, raw_size = payload
+    if not is_raw:
+        data = _decompress(data, raw_size, filepath)
     pblock = PrimitiveBlock()
     try:
-        pblock.ParseFromString(data if is_raw else zlib.decompress(data))
-    except (zlib.error, DecodeError) as err:
+        pblock.ParseFromString(data)
+    except DecodeError as err:
         raise _invalid(filepath, err) from None
     return pblock
 
