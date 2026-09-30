@@ -399,7 +399,7 @@ class Russia:
     available = regions
     available.sort()
 
-    country = {"name": "russia" + suffix, "url": URL + russia_url + "russia" + suffix}
+    country = {"name": "russia" + suffix, "url": URL + "russia" + suffix}
 
     # Create data sources
     _sources = {

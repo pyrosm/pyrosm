@@ -54,18 +54,30 @@ def test_subregion_sources_resolve():
     assert _walk_source(sources.subregions) > 0
 
 
-def test_catalogue_covers_every_geofabrik_extract():
-    """Every extract in the vendored Geofabrik index can be downloaded by name."""
+def test_catalogue_matches_geofabrik_index():
+    """Every extract in the vendored Geofabrik index can be downloaded by name, and
+    the catalogue lists no Geofabrik URL that the index lacks."""
     from pyrosm.data import _find_sources
     from pyrosm.data.geofabrik_index import _load_index
 
-    reachable = {
-        record["url"].split("download.geofabrik.de/")[-1]
-        for name in sources._all_sources
-        for _, record in _find_sources(name)
+    def path(url):
+        return url.split("download.geofabrik.de/")[-1]
+
+    named = [
+        record for name in sources._all_sources for _, record in _find_sources(name)
+    ]
+    countries = [
+        getattr(sources.subregions, name).country
+        for name in sources.subregions.available
+    ]
+    index = {path(url) for url in _load_index()["pbf"]}
+    assert sorted(index - {path(record["url"]) for record in named}) == []
+    listed = {
+        path(record["url"])
+        for record in named + countries
+        if "download.geofabrik.de/" in record["url"]
     }
-    index = {u.split("download.geofabrik.de/")[-1] for u in _load_index()["pbf"]}
-    assert sorted(index - reachable) == []
+    assert sorted(listed - index) == []
 
 
 def test_city_sources_resolve():
