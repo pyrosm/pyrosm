@@ -54,6 +54,20 @@ def test_subregion_sources_resolve():
     assert _walk_source(sources.subregions) > 0
 
 
+def test_catalogue_covers_every_geofabrik_extract():
+    """Every extract in the vendored Geofabrik index can be downloaded by name."""
+    from pyrosm.data import _find_sources
+    from pyrosm.data.geofabrik_index import _load_index
+
+    reachable = {
+        record["url"].split("download.geofabrik.de/")[-1]
+        for name in sources._all_sources
+        for _, record in _find_sources(name)
+    }
+    index = {u.split("download.geofabrik.de/")[-1] for u in _load_index()["pbf"]}
+    assert sorted(index - reachable) == []
+
+
 def test_city_sources_resolve():
     cities = sources.cities.available
     assert isinstance(cities, list) and len(cities) > 0
@@ -71,6 +85,11 @@ def test_city_sources_resolve():
         ("algeria", "algeria-latest.osm.pbf"),
         ("alsace", "france/alsace-latest.osm.pbf"),
         ("new_york", "us/new-york-latest.osm.pbf"),
+        ("anhui", "asia/china/anhui-latest.osm.pbf"),
+        ("kivalliq", "canada/nunavut/kivalliq-latest.osm.pbf"),
+        ("enfield", "england/london/enfield-latest.osm.pbf"),
+        ("china/beijing", "asia/china/beijing-latest.osm.pbf"),
+        ("cities/beijing", "bbbike/Beijing/Beijing.osm.pbf"),
     ],
 )
 def test_search_source_resolves_known_names(name, fragment):
