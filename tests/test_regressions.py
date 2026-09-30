@@ -1782,3 +1782,28 @@ def test_simplify_keeps_one_of_duplicate_ways(monkeypatch, kernel):
     assert sorted(
         zip(simplified["u"], simplified["v"], simplified["id"], simplified["length"])
     ) == [(1, 3, 10, 2.0), (3, 5, 10, 2.0)]
+
+
+def test_merge_pbf_ignores_metadata_only_changes(tmp_path, monkeypatch):
+    """A sync client such as OneDrive touches a file's metadata soon after it is
+    written, which changes its ctime but not its contents; merge_pbf must not
+    reject such an input as changed during the merge."""
+    import os
+    import shutil
+
+    import pyrosm.pbf_export as pbf_export
+    from pyrosm import get_data, merge_pbf
+
+    source = tmp_path / "a.osm.pbf"
+    shutil.copy(get_data("helsinki_pbf"), source)
+
+    class TouchedInput(pbf_export._SortedInput):
+        def __init__(self, filepath):
+            mode = os.stat(filepath).st_mode
+            os.chmod(filepath, mode ^ 0o040)  # changes the ctime only
+            os.chmod(filepath, mode)
+            super().__init__(filepath)
+
+    monkeypatch.setattr(pbf_export, "_SortedInput", TouchedInput)
+    out = merge_pbf([str(source)], str(tmp_path / "out.osm.pbf"))
+    assert os.path.getsize(out) > 0

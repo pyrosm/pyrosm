@@ -1831,11 +1831,15 @@ cdef _header_bounds(headers):
 
 
 cdef _fingerprint(path):
-    """Identity and change times of a path and of the file it resolves to."""
+    """Identity, size and modification time of a path and of the file it resolves to.
+
+    Change times are left out: sync clients such as OneDrive update them when they
+    touch a file's metadata, which leaves its contents unchanged.
+    """
     link, stat = os.lstat(path), os.stat(path)
     return (
-        link.st_dev, link.st_ino, link.st_ctime_ns,
-        stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
+        link.st_dev, link.st_ino,
+        stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns,
     )
 
 
