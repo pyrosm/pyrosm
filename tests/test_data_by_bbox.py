@@ -207,8 +207,7 @@ def test_update_reads_live_index_schema(monkeypatch):
             return False
 
     monkeypatch.setattr(
-        gi.urllib.request,
-        "urlopen",
+        "urllib.request.urlopen",
         lambda url, context=None: _FakeResponse(json.dumps(fc).encode()),
     )
     # update=True refreshes the index; download=False returns the looked-up URL.

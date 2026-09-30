@@ -8,6 +8,30 @@ from urllib.error import HTTPError
 
 import certifi
 
+from pyrosm import __version__
+
+USER_AGENT = "pyrosm/%s (+https://github.com/pyrosm/pyrosm)" % __version__
+
+
+def open_url(url, method="GET", headers=None, timeout=None):
+    """Open ``url`` with pyrosm's User-Agent and certifi's CA bundle.
+
+    ``headers`` are added to (or override) the default ``User-Agent`` header. ``timeout`` (in
+    seconds) limits each blocking network operation; ``None`` waits indefinitely. Returns the
+    response, usable as a context manager.
+    """
+    # Build the HTTPS context from certifi's CA bundle instead of the OS trust store. On
+    # Windows, loading the system certificate store can raise ssl.SSLError [ASN1:
+    # NOT_ENOUGH_DATA] (a CPython bug triggered by a malformed entry in the store); certifi
+    # avoids it and works the same across platforms.
+    context = ssl.create_default_context(cafile=certifi.where())
+    request = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT, **(headers or {})}, method=method
+    )
+    if timeout is None:
+        return urllib.request.urlopen(request, context=context)
+    return urllib.request.urlopen(request, context=context, timeout=timeout)
+
 
 class UNIT(enum.Enum):
     BYTES = 1
@@ -30,6 +54,26 @@ def convert_unit(size_in_bytes, unit):
 def get_file_size(file_name, size_type=UNIT.MB):
     size = Path(file_name).stat().st_size
     return round(convert_unit(size, size_type), 2)
+
+
+def write_atomic(path, write):
+    """Write ``path`` by calling ``write(file)`` on a new temporary file next to it.
+
+    The temporary file gets a unique name and replaces ``path`` only when ``write`` returns, so
+    readers never see a partial file; it is removed when ``write`` fails.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, partial = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".part", dir=path.parent
+    )
+    try:
+        with open(fd, "wb") as out_file:
+            write(out_file)
+        Path(partial).replace(path)
+    except BaseException:
+        Path(partial).unlink(missing_ok=True)
+        raise
 
 
 def download_dir():
@@ -75,7 +119,7 @@ def download(url, filename, update, target_dir):
         if not target_dir.is_dir():
             raise ValueError(f"The provided directory does not exist: " f"{target_dir}")
 
-    filepath = (target_dir / Path(filename).name).resolve()
+    filepath = target_dir.resolve() / Path(filename).name
 
     if not target_dir.exists():
         target_dir.mkdir(parents=True)
@@ -85,35 +129,34 @@ def download(url, filename, update, target_dir):
     if filepath.exists():
         file_exists = True
 
-    if update and file_exists:
-        filepath.unlink()
-
     # Download data to temp if it does not exist or if update is requested
     if update or file_exists is False:
-        try:
-            # Build the HTTPS context from certifi's CA bundle instead of the OS
-            # trust store. On Windows, loading the system certificate store can
-            # raise ssl.SSLError [ASN1: NOT_ENOUGH_DATA] (a CPython bug triggered
-            # by a malformed entry in the store); certifi avoids it and works the
-            # same across platforms.
-            context = ssl.create_default_context(cafile=certifi.where())
-            with urllib.request.urlopen(url, context=context) as response, open(
-                filepath, "wb"
-            ) as out_file:
+
+        def fetch(out_file):
+            with open_url(url, timeout=60) as response:
                 shutil.copyfileobj(response, out_file)
+                expected = response.headers.get("Content-Length") or ""
+            if expected.isdigit() and out_file.tell() != int(expected):
+                raise OSError(
+                    f"The download of '{url}' stopped after {out_file.tell()} of "
+                    f"{expected} bytes."
+                )
+            if round(convert_unit(out_file.tell(), UNIT.MB), 2) == 0:
+                raise ValueError(
+                    f"PBF-file '{filename}' from the provider was empty. "
+                    "This is likely a temporary issue, try again later."
+                )
+
+        # write_atomic moves the file into place only when complete, so a failed download
+        # never leaves a partial file that a later call would reuse.
+        try:
+            write_atomic(filepath, fetch)
         except HTTPError:
             raise ValueError(
                 f"PBF-file '{url}' is temporarily unavailable. " f"Try again later."
             )
-        except Exception as e:
-            raise e
 
         filesize = get_file_size(filepath)
-        if filesize == 0:
-            raise ValueError(
-                f"PBF-file '{filename}' from the provider was empty. "
-                "This is likely a temporary issue, try again later."
-            )
         print(
             f"Downloaded Protobuf data '{filepath.name}' "
             f"({filesize} MB) to:\n'{filepath}'"

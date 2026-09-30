@@ -3,22 +3,21 @@
 Public entry point: :func:`get_data_by_bbox`. It is backed by a vendored snapshot
 of Geofabrik's ``index-v1.json`` (``geofabrik_index.geojson.gz``), a GeoJSON
 ``FeatureCollection`` of every extract's extent polygon and PBF URL. Refresh the
-snapshot with ``scripts/update_geofabrik_index.py``.
+snapshot with ``scripts/update_extract_indexes.py``.
 """
 
 import gzip
 import json
-import ssl
 import tempfile
-import urllib.request
 import warnings
 from pathlib import Path
 
-import certifi
 import geopandas as gpd
 import numpy as np
 from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
+
+from pyrosm.utils.download import open_url
 
 _INDEX_PATH = Path(__file__).parent / "geofabrik_index.geojson.gz"
 _INDEX_URL = "https://download.geofabrik.de/index-v1.json"
@@ -44,8 +43,7 @@ def _features_to_gdf(features):
 def _load_index(update=False):
     global _index_cache
     if update:
-        context = ssl.create_default_context(cafile=certifi.where())
-        with urllib.request.urlopen(_INDEX_URL, context=context) as response:
+        with open_url(_INDEX_URL) as response:
             collection = json.loads(response.read())
         return _features_to_gdf(collection["features"])
     if _index_cache is None:
@@ -159,7 +157,11 @@ def _download_optionally_crop(
     full_path = _download_file(url, Path(url).name, update, directory)
     if not crop:
         return full_path
+    return _crop(full_path, geom, cropped_name, output_path, directory)
 
+
+def _crop(full_path, geom, cropped_name, output_path, directory):
+    """Crop ``full_path`` to ``geom`` into ``output_path`` or ``<directory>/<cropped_name>``."""
     from pyrosm import OSM
 
     target = output_path or str(_default_target_dir(directory) / cropped_name)
