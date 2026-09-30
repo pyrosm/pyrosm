@@ -461,6 +461,7 @@ def test_get_data_by_area_errors(monkeypatch, candidates, error):
         box(*HELSINKI),
         HELSINKI,
         gpd.GeoDataFrame(geometry=[box(*HELSINKI)], crs="EPSG:4326").to_crs(3067),
+        gpd.GeoDataFrame(geometry=[box(*HELSINKI)]),
     ],
 )
 def test_get_data_by_area_accepts_area_forms(monkeypatch, area):

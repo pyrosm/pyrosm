@@ -942,14 +942,15 @@ def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):
         ("reset", None, "connection reset"),
         ("reset", b"old", "connection reset"),
         ("short", b"old", "stopped after 5 of 100 bytes"),
+        ("empty", b"old", "was empty"),
     ],
 )
 def test_failed_download_leaves_no_partial_file(
     tmp_path, monkeypatch, response, previous, error
 ):
-    """A download that breaks midway, or ends before the announced size, must not
-    leave a partial file that later calls would reuse, and a failed update keeps the
-    previous copy."""
+    """A download that breaks midway, ends before the announced size or is empty must
+    not leave a partial file that later calls would reuse, and a failed update keeps
+    the previous copy."""
     import io
 
     from pyrosm.utils import download as dl
@@ -963,15 +964,15 @@ def test_failed_download_leaves_no_partial_file(
     def urlopen(request, context=None, timeout=None):
         if response == "reset":
             return Reset()
-        short = io.BytesIO(b"x" * 5)
-        short.headers = {"Content-Length": "100"}
-        return short
+        body = io.BytesIO(b"x" * 5 if response == "short" else b"")
+        body.headers = {"Content-Length": "100"} if response == "short" else {}
+        return body
 
     monkeypatch.setattr(dl.urllib.request, "urlopen", urlopen)
     target = tmp_path / "x.osm.pbf"
     if previous:
         target.write_bytes(previous)
-    with pytest.raises(OSError, match=error):
+    with pytest.raises((OSError, ValueError), match=error):
         dl.download(
             "https://example.invalid/x.osm.pbf", "x.osm.pbf", True, str(tmp_path)
         )

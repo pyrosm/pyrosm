@@ -118,14 +118,14 @@ def _retry(fetch):
 
     HTTP error statuses are not retried; the last network error propagates.
     """
-    for attempt in range(_ATTEMPTS):
+    for _ in range(_ATTEMPTS - 1):
         try:
             return fetch()
         except HTTPError:
             raise
         except _FETCH_ERRORS:
-            if attempt == _ATTEMPTS - 1:
-                raise
+            pass
+    return fetch()
 
 
 def _check_movisda_index(data, kind):
