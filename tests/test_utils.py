@@ -278,6 +278,14 @@ class _Served(io.BytesIO):
             None,
         ),
         (_STRONG, "unsolicited", [None, None], [(None, None), (None, None)], None),
+        # A 206 whose Content-Range cannot be read is not appended either.
+        (
+            _STRONG,
+            "garbled",
+            [40, None, None],
+            [(None, None), ("bytes=40-", '"v1"'), (None, None)],
+            None,
+        ),
         # A full answer with a content coding drops the validator of the earlier copy.
         (
             _STRONG,
@@ -330,6 +338,8 @@ def test_download_resumes(
             status = 206
             last = {"backwards": start - 10, "long": start + 9}.get(ranges, 99)
             extra = {"Content-Range": "bytes %d-%d/100" % (start, last)}
+            if ranges == "garbled":
+                extra = {"Content-Range": "bytes */100"}
             extra["Content-Length"] = str(100 - start)
         cut = None if drop is None else max(0, drop - start)
         return _Served(_BODY[start:], status, {**headers, **extra}, cut)
