@@ -399,6 +399,8 @@ def test_open_url_opener_and_timeouts(monkeypatch):
 
 
 def test_timed_connection_sets_read_timeout(monkeypatch):
+    """pyrosm's handlers open their requests with timed connection classes, which connect
+    with the connect timeout and then set the read timeout on the socket."""
     import http.client
 
     from pyrosm.utils import download as dl
@@ -413,9 +415,24 @@ def test_timed_connection_sets_read_timeout(monkeypatch):
         self.sock = Socket()
 
     monkeypatch.setattr(http.client.HTTPConnection, "connect", connect)
-    connection = dl._timed(http.client.HTTPConnection, 30)("example.invalid", timeout=3)
-    connection.connect()
-    assert (connection.timeout, connection.sock.timeout) == (3, 30)
+    monkeypatch.setattr(http.client.HTTPSConnection, "connect", connect)
+    opened = []
+    monkeypatch.setattr(
+        urllib.request.AbstractHTTPHandler,
+        "do_open",
+        lambda self, connection, req, **kw: opened.append((connection, kw)) or "ok",
+    )
+    context = object()
+    assert dl._HTTPSHandler(context, 30).https_open("request") == "ok"
+    assert dl._HTTPHandler(30).http_open("request") == "ok"
+    assert [kw for _, kw in opened] == [{"context": context}, {}]
+    for (connection, _), base in zip(
+        opened, (http.client.HTTPSConnection, http.client.HTTPConnection)
+    ):
+        assert connection is not base and issubclass(connection, base)
+        opened_connection = connection("example.invalid", timeout=3)
+        opened_connection.connect()
+        assert (opened_connection.timeout, opened_connection.sock.timeout) == (3, 30)
 
 
 def test_download_with_caller_options(tmp_path):
