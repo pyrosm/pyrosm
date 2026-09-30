@@ -12,7 +12,7 @@ fastest PBF extraction and cropping tools available (see :doc:`benchmarks <bench
 
 Pyrosm is easy to use and it provides a somewhat similar user interface as `OSMnx <https://github.com/gboeing/osmnx>`__.
 The main difference between pyrosm and OSMnx is that OSMnx reads the data using an OverPass API, whereas pyrosm reads
-the data from local OSM data dumps that are downloaded from the PBF data providers (Geofabrik, BBBike).
+the data from local OSM data dumps that are downloaded from the PBF data providers (Geofabrik, BBBike, Movisda).
 This makes it possible to parse OSM data faster and make it more feasible to extract data covering large regions.
 
 .. figure:: img/NY_roads_and_buildings.PNG
@@ -73,7 +73,7 @@ License
 
 Pyrosm is licensed under MIT (see `license <https://github.com/HTenkanen/pyrosm/blob/master/LICENSE>`__).
 
-Data © `Geofabrik GmbH <http://www.geofabrik.de/>`__, `BBBike <https://download.bbbike.org>`__ and `OpenStreetMap Contributors <http://www.openstreetmap.org>`__.
+Data © `Geofabrik GmbH <http://www.geofabrik.de/>`__, `BBBike <https://download.bbbike.org>`__, `Movisda <https://osm.download.movisda.io>`__ and `OpenStreetMap Contributors <http://www.openstreetmap.org>`__.
 All data from the `OpenStreetMap <https://www.openstreetmap.org>`__ is licensed under the `OpenStreetMap License <https://www.openstreetmap.org/copyright>`__.
 
 Citation
