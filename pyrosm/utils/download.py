@@ -1,19 +1,32 @@
-import logging
-import urllib.request
-import tempfile
+import email.utils
 import enum
-import shutil
+import http.client
+import logging
 import ssl
+import tempfile
+import time
+import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError
 
 import certifi
 
 from pyrosm import __version__
+from pyrosm.exceptions import DownloadError
 
 USER_AGENT = "pyrosm/%s (+https://github.com/pyrosm/pyrosm)" % __version__
 
 logger = logging.getLogger(__name__)
+
+_FETCH_ERRORS = (OSError, http.client.HTTPException)
+_RETRY_STATUSES = (408, 425, 429)
+_TIMEOUT = 60
+_ATTEMPTS = 3
+_BACKOFF = 1.0
+_MAX_RETRY_AFTER = 60
+_CHUNK = 1 << 20
+_sleep = time.sleep
 
 
 def open_url(url, method="GET", headers=None, timeout=None):
@@ -34,6 +47,78 @@ def open_url(url, method="GET", headers=None, timeout=None):
     if timeout is None:
         return urllib.request.urlopen(request, context=context)
     return urllib.request.urlopen(request, context=context, timeout=timeout)
+
+
+def _content_length(value):
+    """A ``Content-Length`` header value as an int in ``[0, 2**63)``, or ``None`` when it is
+    missing or not a plain decimal number in that range."""
+    if not value or not (value.isascii() and value.isdigit()) or len(value) > 19:
+        return None
+    size = int(value)
+    return size if size < 2**63 else None
+
+
+def _retry_after(error):
+    """Seconds the ``Retry-After`` header of an ``HTTPError`` asks to wait, or ``None`` when it
+    has none or it cannot be read. An HTTP-date is converted to seconds from now; a number too
+    long to be a sensible wait counts as infinite."""
+    value = (getattr(error, "headers", None) or {}).get("Retry-After")
+    if not value:
+        return None
+    value = value.strip()
+    if value.isascii() and value.isdigit():
+        value = value.lstrip("0") or "0"
+        return int(value) if len(value) <= 9 else float("inf")
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+        return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _retryable(error):
+    """Whether ``error`` is a network error or an HTTP status worth another attempt."""
+    if isinstance(error, HTTPError):
+        return error.code in _RETRY_STATUSES or 500 <= error.code <= 599
+    return isinstance(error, _FETCH_ERRORS)
+
+
+def _retry(fetch, attempts=_ATTEMPTS):
+    """Return ``fetch()``, calling it up to ``attempts`` times while it fails with a network
+    error or HTTP status 408, 425, 429 or 5xx.
+
+    Between attempts it waits the ``Retry-After`` the server sent, or else 1 s, 2 s, ... A
+    ``Retry-After`` above 60 s is not waited for: the error is raised at once. Other HTTP errors
+    and the last failure propagate.
+    """
+    for attempt in range(attempts):
+        try:
+            return fetch()
+        except _FETCH_ERRORS as e:
+            wait = None
+            if isinstance(e, HTTPError):
+                if getattr(e, "fp", None) is not None:
+                    e.close()
+                wait = _retry_after(e)
+            if not _retryable(e) or attempt == attempts - 1:
+                raise
+            if wait is None:
+                wait = _BACKOFF * 2**attempt
+            elif wait > _MAX_RETRY_AFTER:
+                raise
+            _sleep(wait)
+
+
+class _LocalWriteError(Exception):
+    """Carries an ``OSError`` of the local file out of :func:`_retry` without a retry."""
+
+
+def _local(call, *args):
+    """Call a method of the local file, marking its ``OSError`` as not a network failure."""
+    try:
+        return call(*args)
+    except OSError as e:
+        raise _LocalWriteError() from e
 
 
 class UNIT(enum.Enum):
@@ -134,30 +219,45 @@ def download(url, filename, update, target_dir):
 
     # Download data to temp if it does not exist or if update is requested
     if update or file_exists is False:
+        attempts = []
 
-        def fetch(out_file):
-            with open_url(url, timeout=60) as response:
-                shutil.copyfileobj(response, out_file)
-                expected = response.headers.get("Content-Length") or ""
-            if expected.isdigit() and out_file.tell() != int(expected):
+        def attempt(out_file):
+            attempts.append(url)
+            _local(out_file.seek, 0)
+            _local(out_file.truncate)
+            written = 0
+            with open_url(url, timeout=_TIMEOUT) as response:
+                while chunk := response.read(_CHUNK):
+                    _local(out_file.write, chunk)
+                    written += len(chunk)
+                expected = _content_length(response.headers.get("Content-Length"))
+            if expected is not None and written != expected:
                 raise OSError(
-                    f"The download of '{url}' stopped after {out_file.tell()} of "
+                    f"The download of '{url}' stopped after {written} of "
                     f"{expected} bytes."
                 )
-            if round(convert_unit(out_file.tell(), UNIT.MB), 2) == 0:
-                raise ValueError(
-                    f"PBF-file '{filename}' from the provider was empty. "
-                    "This is likely a temporary issue, try again later."
-                )
+            if written == 0:
+                raise OSError(f"PBF-file '{filename}' from the provider was empty.")
+
+        def fetch(out_file):
+            try:
+                _retry(lambda: attempt(out_file))
+            except _FETCH_ERRORS as e:
+                raise DownloadError(
+                    f"Could not download '{url}' ({len(attempts)} attempt"
+                    f"{'' if len(attempts) == 1 else 's'}): {e}",
+                    url=url,
+                    status=e.code if isinstance(e, HTTPError) else None,
+                    attempts=len(attempts),
+                ) from e
 
         # write_atomic moves the file into place only when complete, so a failed download
-        # never leaves a partial file that a later call would reuse.
+        # never leaves a partial file that a later call would reuse. Errors creating or
+        # replacing the local file propagate as they are.
         try:
             write_atomic(filepath, fetch)
-        except HTTPError:
-            raise ValueError(
-                f"PBF-file '{url}' is temporarily unavailable. " f"Try again later."
-            )
+        except _LocalWriteError as e:
+            raise e.__cause__
 
         logger.info(
             "Downloaded Protobuf data '%s' (%s MB) to '%s'",

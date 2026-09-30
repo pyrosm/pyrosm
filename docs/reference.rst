@@ -86,6 +86,7 @@ Exceptions
 
    ExtractNotFoundError
    ExtractDownloadError
+   DownloadError
    InvalidOSMFileError
    PBFNotImplemented
    PBFException

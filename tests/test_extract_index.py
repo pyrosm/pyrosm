@@ -17,7 +17,11 @@ from shapely.geometry import Point, box
 
 import pyrosm
 from pyrosm.data import extract_index as ei
-from pyrosm.exceptions import ExtractDownloadError, ExtractNotFoundError
+from pyrosm.exceptions import (
+    DownloadError,
+    ExtractDownloadError,
+    ExtractNotFoundError,
+)
 
 
 class _Response(io.BytesIO):
@@ -429,7 +433,7 @@ def test_get_data_by_area_falls_back_to_next_extract(
     def download(url, filename, update, directory):
         tried.append(filename)
         if "Helsinki" in url:
-            raise ValueError("unavailable")
+            raise DownloadError("unavailable", url=url, status=503, attempts=3)
         return helsinki
 
     monkeypatch.setattr("pyrosm.utils.download.download", download)
@@ -448,22 +452,6 @@ def test_get_data_by_area_falls_back_to_next_extract(
         assert got.path == helsinki
 
 
-def test_get_data_by_area_retries_network_errors(tmp_path, monkeypatch):
-    helsinki = pyrosm.get_data("helsinki_pbf")
-    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: _ranked(BBBIKE, MOVISDA))
-    outcomes = [OSError("reset"), OSError("reset"), helsinki]
-
-    def download(url, filename, update, directory):
-        outcome = outcomes.pop(0)
-        if isinstance(outcome, Exception):
-            raise outcome
-        return outcome
-
-    monkeypatch.setattr("pyrosm.utils.download.download", download)
-    got = pyrosm.get_data_by_area(box(*HELSINKI), crop=False, directory=tmp_path)
-    assert (got.provider, got.failed, outcomes) == ("BBBike", [], [])
-
-
 @pytest.mark.parametrize(
     "candidates, error",
     [((), ExtractNotFoundError), ((BBBIKE,), ExtractDownloadError)],
@@ -472,7 +460,7 @@ def test_get_data_by_area_errors(monkeypatch, candidates, error):
     monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: _ranked(*candidates))
 
     def download(url, filename, update, directory):
-        raise OSError("down")
+        raise DownloadError("down", url=url, attempts=3)
 
     monkeypatch.setattr("pyrosm.utils.download.download", download)
     warns = pytest.warns(UserWarning) if candidates else contextlib.nullcontext()
@@ -480,6 +468,8 @@ def test_get_data_by_area_errors(monkeypatch, candidates, error):
         pyrosm.get_data_by_area(box(*HELSINKI))
     if error is ExtractDownloadError:
         assert info.value.failed == [(BBBIKE[2], "down")]
+        assert [(e.url, e.attempts) for e in info.value.errors] == [(BBBIKE[2], 3)]
+        assert not isinstance(info.value, ValueError)
     else:
         assert isinstance(info.value, ValueError)
 

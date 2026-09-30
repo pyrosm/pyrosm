@@ -16,7 +16,6 @@ server, and the answer is cached for a week. Refresh the vendored snapshots with
 
 import gzip
 import hashlib
-import http.client
 import io
 import json
 import logging
@@ -39,8 +38,20 @@ from pyrosm.data.geofabrik_index import (
     _crop,
 )
 from pyrosm.data.geofabrik_index import _load_index as _load_geofabrik_index
-from pyrosm.exceptions import ExtractDownloadError, ExtractNotFoundError
-from pyrosm.utils.download import download_dir, open_url, write_atomic
+from pyrosm.exceptions import (
+    DownloadError,
+    ExtractDownloadError,
+    ExtractNotFoundError,
+)
+from pyrosm.utils.download import (
+    _FETCH_ERRORS,
+    _TIMEOUT,
+    _content_length,
+    _retry,
+    download_dir,
+    open_url,
+    write_atomic,
+)
 
 _BBBIKE_INDEX_PATH = Path(__file__).parent / "bbbike_index.geojson.gz"
 _MOVISDA_URL = "https://osm.download.movisda.io"
@@ -51,9 +62,6 @@ _MOVISDA_INDEXES = {
 _INDEX_MAX_AGE = 24 * 3600
 _SIZE_MAX_AGE = 7 * 24 * 3600
 _COLUMNS = ["provider", "id", "name", "url", "bytes", "contains", "geometry"]
-_FETCH_ERRORS = (OSError, http.client.HTTPException)
-_TIMEOUT = 60
-_ATTEMPTS = 3
 
 logger = logging.getLogger(__name__)
 
@@ -116,21 +124,6 @@ def _tile_id(bounds):
         abs(minx),
     )
     return name if size == 1 else "%s-%d" % (name, size)
-
-
-def _retry(fetch):
-    """Return ``fetch()``, calling it up to three times while it fails with a network error.
-
-    HTTP error statuses are not retried; the last network error propagates.
-    """
-    for _ in range(_ATTEMPTS - 1):
-        try:
-            return fetch()
-        except HTTPError:
-            raise
-        except _FETCH_ERRORS:
-            pass
-    return fetch()
 
 
 def _check_movisda_index(data, kind):
@@ -310,12 +303,8 @@ def _download_sizes(urls, directory, update=False):
                 "Could not get the size of %s (%s); it is ranked last." % (url, e)
             )
             continue
-        try:
-            digits = length and length.isascii() and length.isdigit()
-            size = int(length) if digits else -1
-        except ValueError:
-            size = -1
-        if not 0 <= size < 2**63:
+        size = _content_length(length)
+        if size is None:
             warnings.warn("%s sends no valid size; it is ranked last." % url)
             continue
         sizes[url] = size
@@ -465,9 +454,10 @@ def get_data_by_area(area, crop=True, update=False, directory=None, output_path=
     Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and 1°/10°
     grid tiles, keeps those that contain the whole area, and downloads the one with the smallest
     file (the first row of ``find_extracts(area, contains_only=True)``). Extracts are never
-    merged. A download interrupted by a network error is retried twice; when it still fails, the
-    next smallest extract is tried. By default the extract is then cropped to the area's
-    bounding box.
+    merged. A download that fails with a network error or HTTP status 408, 425, 429 or 5xx is
+    tried up to three times, waiting 1 s, 2 s or the server's ``Retry-After`` in between; when it
+    still fails, the next smallest extract is tried. By default the extract is then cropped to
+    the area's bounding box.
 
     Movisda cuts its extracts exactly at their edges, so features crossing the edge of a Movisda
     extract are clipped or missing there. The extract contains the whole area, so this only
@@ -506,7 +496,8 @@ def get_data_by_area(area, crop=True, update=False, directory=None, output_path=
     pyrosm.exceptions.ExtractNotFoundError
         If no extract contains the whole area (a ``ValueError`` subclass).
     pyrosm.exceptions.ExtractDownloadError
-        If every extract that contains the area failed to download.
+        If every extract that contains the area failed to download; its ``errors`` hold the
+        :class:`~pyrosm.exceptions.DownloadError` of each extract tried.
     """
     from pyrosm.utils.download import download as _download_file
 
@@ -518,7 +509,7 @@ def get_data_by_area(area, crop=True, update=False, directory=None, output_path=
         raise ExtractNotFoundError(
             "No Geofabrik, BBBike or Movisda extract contains the whole area."
         )
-    failed = []
+    failed, errors = [], []
     for extract in candidates.itertuples():
         size = (
             "unknown size"
@@ -534,11 +525,10 @@ def get_data_by_area(area, crop=True, update=False, directory=None, output_path=
         filename = "%s_%s" % (extract.provider.lower(), Path(extract.url).name)
         start = time.perf_counter()
         try:
-            full_path = _retry(
-                lambda: _download_file(extract.url, filename, update, directory)
-            )
-        except (*_FETCH_ERRORS, ValueError) as e:
+            full_path = _download_file(extract.url, filename, update, directory)
+        except DownloadError as e:
             failed.append((extract.url, str(e)))
+            errors.append(e)
             warnings.warn(
                 "Could not download %s (%s); trying the next smallest extract."
                 % (extract.url, e)
@@ -570,4 +560,5 @@ def get_data_by_area(area, crop=True, update=False, directory=None, output_path=
         "Could not download any of the %d extracts that contain the area: %s"
         % (len(failed), "; ".join("%s (%s)" % f for f in failed)),
         failed,
+        errors=errors,
     )
