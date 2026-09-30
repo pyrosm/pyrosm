@@ -44,11 +44,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-14 (arm64) builds both arm64 and cross-compiled x86_64 wheels
+        # macos-15 (arm64) builds both arm64 and cross-compiled x86_64 wheels
         # (see [tool.cibuildwheel.macos]); Intel macos-13 runners are retired.
+        # The x86_64 wheels are tested under Rosetta, and some dependencies
+        # (pyproj 3.8) publish x86_64 wheels for macOS 15 and newer only.
         # ubuntu-24.04-arm builds the aarch64 Linux wheels natively, so no
         # emulation is needed.
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-14]
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-15]
     steps:
       - uses: actions/checkout@v5
       - uses: pypa/cibuildwheel@v4.0
