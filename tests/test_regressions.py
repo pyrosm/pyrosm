@@ -1794,14 +1794,21 @@ def test_merge_pbf_ignores_metadata_only_changes(tmp_path, monkeypatch):
     import pyrosm.pbf_export as pbf_export
     from pyrosm import get_data, merge_pbf
 
+    def touch_metadata(path):
+        mode = os.stat(path).st_mode
+        os.chmod(path, mode ^ 0o040)
+        os.chmod(path, mode)
+
     source = tmp_path / "a.osm.pbf"
     shutil.copy(get_data("helsinki_pbf"), source)
+    before = os.stat(source).st_ctime_ns
+    touch_metadata(source)
+    if os.stat(source).st_ctime_ns == before:
+        pytest.skip("chmod does not change the ctime on this platform")
 
     class TouchedInput(pbf_export._SortedInput):
         def __init__(self, filepath):
-            mode = os.stat(filepath).st_mode
-            os.chmod(filepath, mode ^ 0o040)  # changes the ctime only
-            os.chmod(filepath, mode)
+            touch_metadata(filepath)
             super().__init__(filepath)
 
     monkeypatch.setattr(pbf_export, "_SortedInput", TouchedInput)

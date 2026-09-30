@@ -1899,7 +1899,8 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     ------
     ValueError
         When an input cannot be read as a PBF, is not supported, or is not sorted
-        by type then id. The message names the file.
+        by type then id, or when an input's size or modification time changes (or
+        the file is replaced) while the merge runs. The message names the file.
 
     Examples
     --------
