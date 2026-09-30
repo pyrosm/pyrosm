@@ -1,5 +1,7 @@
 import email.utils
+import io
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
@@ -167,3 +169,175 @@ def test_retry(monkeypatch, outcomes, waits, raised):
     assert len(calls) == len(outcomes)
     # An HTTP-date is read against the clock, so its wait is a little under 10 s.
     assert waited == pytest.approx(waits, abs=1)
+
+
+_BODY = bytes(range(100))
+_MODIFIED = "Wed, 30 Sep 2026 10:00:00 GMT"
+_STRONG = {"ETag": '"v1"'}
+
+
+class _Served(io.BytesIO):
+    """A response body that drops the connection once ``drop`` bytes of it were read."""
+
+    def __init__(self, data, status, headers, drop=None):
+        super().__init__(data)
+        self.status, self.headers, self.drop, self.sent = status, headers, drop, 0
+
+    def read(self, size=-1):
+        if self.drop is not None and self.sent >= self.drop:
+            raise OSError("connection reset")
+        if self.drop is not None:
+            size = (
+                self.drop - self.sent if size < 0 else min(size, self.drop - self.sent)
+            )
+        chunk = super().read(size)
+        self.sent += len(chunk)
+        return chunk
+
+
+@pytest.mark.parametrize(
+    "headers, ranges, drops, requests, attempts",
+    [
+        # A strong ETag resumes at the byte where the connection dropped.
+        (_STRONG, "honour", [40, None], [(None, None), ("bytes=40-", '"v1"')], None),
+        # A Last-Modified a second older than Date is strong; a weak ETag is not used.
+        (
+            {
+                "ETag": 'W/"v1"',
+                "Last-Modified": _MODIFIED,
+                "Date": "Wed, 30 Sep 2026 10:00:02 GMT",
+            },
+            "honour",
+            [40, None],
+            [(None, None), ("bytes=40-", _MODIFIED)],
+            None,
+        ),
+        # A Last-Modified as new as Date is weak, so the copy restarts.
+        (
+            {"Last-Modified": _MODIFIED, "Date": _MODIFIED},
+            "honour",
+            [40, None],
+            [(None, None), (None, None)],
+            None,
+        ),
+        ({}, "honour", [40, None], [(None, None), (None, None)], None),
+        # An ETag outside the entity-tag grammar, or a folded one, is not replayed.
+        ({"ETag": "v1"}, "honour", [40, None], [(None, None), (None, None)], None),
+        (
+            {"ETag": '"v1"\r\nX-Injected: 1'},
+            "honour",
+            [40, None],
+            [(None, None), (None, None)],
+            None,
+        ),
+        # A Last-Modified with a numeric zone is sent back as a GMT HTTP-date.
+        (
+            {
+                "Last-Modified": "Wed, 30 Sep 2026 12:00:00 +0200",
+                "Date": "Wed, 30 Sep 2026 10:00:02 GMT",
+            },
+            "honour",
+            [40, None],
+            [(None, None), ("bytes=40-", _MODIFIED)],
+            None,
+        ),
+        # A 200 answer to the range request rewrites the file from the start.
+        (_STRONG, "ignore", [40, None], [(None, None), ("bytes=40-", '"v1"')], None),
+        # A 206 at the wrong byte, going backwards, longer than its range or not asked for
+        # switches resuming off for the rest of the call.
+        (
+            _STRONG,
+            "wrong",
+            [40, None, None],
+            [(None, None), ("bytes=40-", '"v1"'), (None, None)],
+            None,
+        ),
+        (
+            _STRONG,
+            "wrong",
+            [40, None, 40],
+            [(None, None), ("bytes=40-", '"v1"'), (None, None)],
+            3,
+        ),
+        (
+            _STRONG,
+            "backwards",
+            [40, None, None],
+            [(None, None), ("bytes=40-", '"v1"'), (None, None)],
+            None,
+        ),
+        (
+            _STRONG,
+            "long",
+            [40, None, None],
+            [(None, None), ("bytes=40-", '"v1"'), (None, None)],
+            None,
+        ),
+        (_STRONG, "unsolicited", [None, None], [(None, None), (None, None)], None),
+        # A full answer with a content coding drops the validator of the earlier copy.
+        (
+            _STRONG,
+            "recode",
+            [40, 60, None],
+            [(None, None), ("bytes=40-", '"v1"'), (None, None)],
+            None,
+        ),
+        (
+            {**_STRONG, "Content-Encoding": "gzip"},
+            "honour",
+            [40, None],
+            [(None, None), (None, None)],
+            None,
+        ),
+        # Rounds that keep more bytes earn more attempts than the three of one round.
+        (
+            _STRONG,
+            "honour",
+            [10, 20, 30, 40, 50, None],
+            [(None, None)] + [("bytes=%d-" % n, '"v1"') for n in (10, 20, 30, 40, 50)],
+            None,
+        ),
+        (_STRONG, "honour", [0, 0, 0], [(None, None)] * 3, 3),
+        ({}, "honour", [40] * 6, [(None, None)] * 3, 3),
+    ],
+)
+def test_download_resumes(
+    tmp_path, monkeypatch, headers, ranges, drops, requests, attempts
+):
+    """After a dropped connection the download continues with Range and If-Range when the
+    server gave a strong validator, and starts over otherwise."""
+    from pyrosm.exceptions import DownloadError
+    from pyrosm.utils import download as dl
+
+    seen = []
+
+    def urlopen(request, context=None, timeout=None):
+        wanted = (request.get_header("Range"), request.get_header("If-range"))
+        drop = drops[len(seen)]
+        seen.append(wanted)
+        start, status, extra = 0, 200, {"Content-Length": "100"}
+        if ranges == "unsolicited" and len(seen) == 1:
+            partial = {"Content-Range": "bytes 0-39/100", "Content-Length": "40"}
+            return _Served(_BODY[:40], 206, {**headers, **partial})
+        if wanted[0] and ranges == "recode":
+            extra = {**extra, "Content-Encoding": "gzip"}
+        elif wanted[0] and ranges != "ignore":
+            start = int(wanted[0][6:-1]) - (10 if ranges == "wrong" else 0)
+            status = 206
+            last = {"backwards": start - 10, "long": start + 9}.get(ranges, 99)
+            extra = {"Content-Range": "bytes %d-%d/100" % (start, last)}
+            extra["Content-Length"] = str(100 - start)
+        cut = None if drop is None else max(0, drop - start)
+        return _Served(_BODY[start:], status, {**headers, **extra}, cut)
+
+    monkeypatch.setattr(dl.urllib.request, "urlopen", urlopen)
+    url = "https://example.invalid/x.osm.pbf"
+    if attempts is None:
+        path = dl.download(url, "x.osm.pbf", True, tmp_path)
+        assert Path(path).read_bytes() == _BODY
+    else:
+        with pytest.raises(DownloadError) as info:
+            dl.download(url, "x.osm.pbf", True, tmp_path)
+        assert info.value.attempts == attempts
+        assert list(tmp_path.iterdir()) == []
+    assert seen == requests

@@ -2,6 +2,7 @@ import email.utils
 import enum
 import http.client
 import logging
+import re
 import ssl
 import tempfile
 import time
@@ -26,6 +27,8 @@ _ATTEMPTS = 3
 _BACKOFF = 1.0
 _MAX_RETRY_AFTER = 60
 _CHUNK = 1 << 20
+_STRONG_ETAG = re.compile(r'"[\x21\x23-\x7e\x80-\xff]*"')
+_CONTENT_RANGE = re.compile(r"bytes (\d{1,19})-(\d{1,19})/(\d{1,19})")
 _sleep = time.sleep
 
 
@@ -107,6 +110,118 @@ def _retry(fetch, attempts=_ATTEMPTS):
             elif wait > _MAX_RETRY_AFTER:
                 raise
             _sleep(wait)
+
+
+def _validator(headers):
+    """The ``If-Range`` value that pins a resumed download to the copy being downloaded.
+
+    A strong ``ETag`` that follows the entity-tag grammar, else a ``Last-Modified`` at least one
+    second older than the response's ``Date`` (strong by RFC 9110, section 8.8.2.2), written
+    back as a GMT HTTP-date; ``None`` when there is neither.
+    """
+    etag = (headers.get("ETag") or "").strip()
+    if _STRONG_ETAG.fullmatch(etag):
+        return etag
+    try:
+        modified = email.utils.parsedate_to_datetime(headers.get("Last-Modified"))
+        date = email.utils.parsedate_to_datetime(headers.get("Date"))
+        if modified.tzinfo is not None and (date - modified).total_seconds() >= 1:
+            return email.utils.format_datetime(modified.astimezone(timezone.utc), True)
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return None
+
+
+def _encoded(headers):
+    """Whether a response body has a content coding, so its bytes are not the file's."""
+    coding = (headers.get("Content-Encoding") or "identity").strip().lower()
+    return coding != "identity"
+
+
+class _Transfer:
+    """One file downloaded into ``out_file``, over as many attempts as it takes.
+
+    An attempt after a dropped connection asks for the rest of the file with ``Range`` and
+    ``If-Range`` when the server gave a strong validator, and starts over otherwise. After a
+    partial answer that does not fit the copy, the rest of the call starts over every time.
+    """
+
+    def __init__(self, url, filename, out_file):
+        self.url = url
+        self.filename = filename
+        self.out_file = out_file
+        self.written = 0
+        self.validator = None
+        self.total = None
+        self.resumable = True
+        self.attempts = 0
+
+    def _restart(self):
+        _local(self.out_file.seek, 0)
+        _local(self.out_file.truncate)
+        self.written = 0
+
+    def _mismatch(self, reason):
+        """Stop resuming for the rest of the call, drop the copy and fail this attempt."""
+        self.resumable = False
+        self.validator = None
+        self._restart()
+        return OSError(
+            f"The server answered the download of '{self.url}' with {reason}."
+        )
+
+    def _range_length(self, headers):
+        """The length of a ``206`` answer that continues the copy at ``written``."""
+        content_range = (headers.get("Content-Range") or "").strip()
+        match = _CONTENT_RANGE.fullmatch(content_range)
+        if match is None or _encoded(headers):
+            raise self._mismatch(f"the partial content '{content_range}'")
+        first, last, total = (int(v) for v in match.groups())
+        if (
+            first != self.written
+            or not first <= last < total
+            or (self.total is not None and total != self.total)
+        ):
+            raise self._mismatch(f"the range '{content_range}'")
+        self.total = total
+        return last - first + 1
+
+    def attempt(self):
+        self.attempts += 1
+        resume = self.written > 0 and self.validator is not None
+        headers = None
+        if resume:
+            headers = {"Range": f"bytes={self.written}-", "If-Range": self.validator}
+        else:
+            self._restart()
+        with open_url(self.url, headers=headers, timeout=_TIMEOUT) as response:
+            if getattr(response, "status", 200) == 206:
+                if not resume:
+                    raise self._mismatch("partial content it was not asked for")
+                limit = self._range_length(response.headers)
+            else:
+                # A full answer, also to a range request whose copy has changed.
+                self._restart()
+                limit = None
+                self.validator = None
+                if self.resumable and not _encoded(response.headers):
+                    self.validator = _validator(response.headers)
+                self.total = _content_length(response.headers.get("Content-Length"))
+            _local(self.out_file.seek, self.written)
+            received = 0
+            while chunk := response.read(_CHUNK):
+                received += len(chunk)
+                if limit is not None and received > limit:
+                    raise self._mismatch("more bytes than its range")
+                _local(self.out_file.write, chunk)
+                self.written += len(chunk)
+        if self.total is not None and self.written != self.total:
+            raise OSError(
+                f"The download of '{self.url}' stopped after {self.written} of "
+                f"{self.total} bytes."
+            )
+        if self.written == 0:
+            raise OSError(f"PBF-file '{self.filename}' from the provider was empty.")
 
 
 class _LocalWriteError(Exception):
@@ -219,37 +334,26 @@ def download(url, filename, update, target_dir):
 
     # Download data to temp if it does not exist or if update is requested
     if update or file_exists is False:
-        attempts = []
-
-        def attempt(out_file):
-            attempts.append(url)
-            _local(out_file.seek, 0)
-            _local(out_file.truncate)
-            written = 0
-            with open_url(url, timeout=_TIMEOUT) as response:
-                while chunk := response.read(_CHUNK):
-                    _local(out_file.write, chunk)
-                    written += len(chunk)
-                expected = _content_length(response.headers.get("Content-Length"))
-            if expected is not None and written != expected:
-                raise OSError(
-                    f"The download of '{url}' stopped after {written} of "
-                    f"{expected} bytes."
-                )
-            if written == 0:
-                raise OSError(f"PBF-file '{filename}' from the provider was empty.")
 
         def fetch(out_file):
-            try:
-                _retry(lambda: attempt(out_file))
-            except _FETCH_ERRORS as e:
-                raise DownloadError(
-                    f"Could not download '{url}' ({len(attempts)} attempt"
-                    f"{'' if len(attempts) == 1 else 's'}): {e}",
-                    url=url,
-                    status=e.code if isinstance(e, HTTPError) else None,
-                    attempts=len(attempts),
-                ) from e
+            transfer = _Transfer(url, filename, out_file)
+            while True:
+                kept = transfer.written
+                try:
+                    return _retry(transfer.attempt)
+                except _FETCH_ERRORS as e:
+                    # A resumable round that kept more of the file earns another round.
+                    progress = transfer.written > kept
+                    if _retryable(e) and transfer.validator is not None and progress:
+                        continue
+                    n = transfer.attempts
+                    raise DownloadError(
+                        f"Could not download '{url}' ({n} attempt"
+                        f"{'' if n == 1 else 's'}): {e}",
+                        url=url,
+                        status=e.code if isinstance(e, HTTPError) else None,
+                        attempts=n,
+                    ) from e
 
         # write_atomic moves the file into place only when complete, so a failed download
         # never leaves a partial file that a later call would reuse. Errors creating or
