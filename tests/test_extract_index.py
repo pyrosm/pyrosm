@@ -322,8 +322,9 @@ def _candidates(provider, rows):
     )
 
 
+@pytest.mark.parametrize("contains_only", [False, True])
 @pytest.mark.parametrize("movisda_up", [True, False])
-def test_covering_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up):
+def test_find_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up, contains_only):
     area = box(24.9, 60.1, 25.1, 60.3)
     geofabrik = _candidates(
         "Geofabrik",
@@ -334,6 +335,7 @@ def test_covering_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up):
         [
             ("Helsinki", None, box(24.5, 60.0, 25.5, 60.5)),
             ("Espoo", None, box(24.5, 60.0, 25.0, 60.5)),
+            ("Vantaa", None, box(25.1, 60.0, 25.5, 60.5)),
         ],
     )
     movisda = _candidates(
@@ -351,28 +353,47 @@ def test_covering_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up):
     monkeypatch.setattr(ei, "_bbbike_extracts", lambda: bbbike)
 
     def movisda_extracts(directory, update=False):
+        refreshed.append(update)
         if not movisda_up:
             raise URLError("down")
         return movisda
 
     monkeypatch.setattr(ei, "_movisda_extracts", movisda_extracts)
-    # finland has no readable size, so it comes last.
-    sizes = {"https://BBBike/Helsinki": 50}
-    monkeypatch.setattr(
-        ei,
-        "_download_sizes",
-        lambda urls, directory, update=False: {u: sizes[u] for u in urls if u in sizes},
-    )
+    # finland has no readable size, so it comes last among the extracts containing the area.
+    sizes = {"https://BBBike/Helsinki": 50, "https://BBBike/Espoo": 40}
+    asked = []
 
-    if movisda_up:
-        got = ei._covering_extracts(area, tmp_path, update=True)
-        assert got["id"].tolist() == ["Helsinki", "FI", "N60E020-10", "finland"]
-    else:
-        with pytest.warns(UserWarning, match="Movisda"):
-            got = ei._covering_extracts(area, tmp_path, update=True)
-        assert got["id"].tolist() == ["Helsinki", "finland"]
-    assert got["bytes"].isna().tolist()[-1]
-    assert refreshed == [True]
+    def download_sizes(urls, directory, update=False):
+        refreshed.append(update)
+        asked.extend(urls)
+        return {u: sizes[u] for u in urls if u in sizes}
+
+    monkeypatch.setattr(ei, "_download_sizes", download_sizes)
+
+    warns = contextlib.nullcontext() if movisda_up else pytest.warns(UserWarning)
+    with warns:
+        got = pyrosm.find_extracts(
+            area, contains_only=contains_only, update=True, directory=tmp_path
+        )
+    containing = ["Helsinki", "FI", "N60E020-10", "finland"]
+    # Espoo and N60E024 only overlap the area; Vantaa and sweden only touch or miss it.
+    overlapping = [] if contains_only else ["Espoo", "N60E024"]
+    if not movisda_up:
+        containing = ["Helsinki", "finland"]
+        overlapping = overlapping[:1]
+    assert got["id"].tolist() == containing + overlapping
+    assert got["contains"].tolist() == [True] * len(containing) + [False] * len(
+        overlapping
+    )
+    assert list(got.columns) == ei._COLUMNS and got.crs == "EPSG:4326"
+    assert got["bytes"].isna().tolist()[len(containing) - 1]
+    assert sorted(asked) == sorted(
+        "https://%s/%s" % (p, i)
+        for p, i in zip(got["provider"], got["id"])
+        if p != "Movisda"
+    )
+    # Geofabrik's index, Movisda's indexes and the download sizes are all refreshed.
+    assert refreshed == [True, True, True]
 
 
 HELSINKI = [24.93, 60.16, 24.96, 60.18]
@@ -381,7 +402,7 @@ MOVISDA = ("Movisda", "N60E024", "https://m/grid/N60W024-latest.osm.pbf", 66)
 
 
 def _ranked(*rows):
-    """Candidates in the shape ``_covering_extracts`` returns."""
+    """Candidates in the shape ``find_extracts(..., contains_only=True)`` returns."""
     return gpd.GeoDataFrame(
         {
             "provider": [r[0] for r in rows],
@@ -389,6 +410,7 @@ def _ranked(*rows):
             "name": [r[1] for r in rows],
             "url": [r[2] for r in rows],
             "bytes": pd.array([r[3] for r in rows], dtype="Int64"),
+            "contains": [True] * len(rows),
         },
         geometry=[box(*HELSINKI)] * len(rows),
         crs="EPSG:4326",
@@ -398,7 +420,7 @@ def _ranked(*rows):
 @pytest.mark.parametrize("crop", [True, False])
 def test_get_data_by_area_falls_back_to_next_extract(tmp_path, monkeypatch, crop):
     helsinki = pyrosm.get_data("helsinki_pbf")
-    monkeypatch.setattr(ei, "_covering_extracts", lambda *a: _ranked(BBBIKE, MOVISDA))
+    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: _ranked(BBBIKE, MOVISDA))
     tried = []
 
     def download(url, filename, update, directory):
@@ -423,7 +445,7 @@ def test_get_data_by_area_falls_back_to_next_extract(tmp_path, monkeypatch, crop
 
 def test_get_data_by_area_retries_network_errors(tmp_path, monkeypatch):
     helsinki = pyrosm.get_data("helsinki_pbf")
-    monkeypatch.setattr(ei, "_covering_extracts", lambda *a: _ranked(BBBIKE, MOVISDA))
+    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: _ranked(BBBIKE, MOVISDA))
     outcomes = [OSError("reset"), OSError("reset"), helsinki]
 
     def download(url, filename, update, directory):
@@ -442,7 +464,7 @@ def test_get_data_by_area_retries_network_errors(tmp_path, monkeypatch):
     [((), ValueError), ((BBBIKE,), ExtractDownloadError)],
 )
 def test_get_data_by_area_errors(monkeypatch, candidates, error):
-    monkeypatch.setattr(ei, "_covering_extracts", lambda *a: _ranked(*candidates))
+    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: _ranked(*candidates))
 
     def download(url, filename, update, directory):
         raise OSError("down")
@@ -467,11 +489,13 @@ def test_get_data_by_area_errors(monkeypatch, candidates, error):
 def test_get_data_by_area_accepts_area_forms(monkeypatch, area):
     seen = []
     monkeypatch.setattr(
-        ei, "_covering_extracts", lambda geom, *a: seen.append(geom) or _ranked()
+        ei, "find_extracts", lambda geom, **k: seen.append((geom, k)) or _ranked()
     )
     with pytest.raises(ValueError, match="No Geofabrik"):
         pyrosm.get_data_by_area(area)
-    assert seen[0].bounds == pytest.approx(HELSINKI, abs=1e-6)
+    geom, options = seen[0]
+    assert geom.bounds == pytest.approx(HELSINKI, abs=1e-6)
+    assert options == {"contains_only": True, "update": False, "directory": None}
 
 
 @pytest.mark.parametrize(

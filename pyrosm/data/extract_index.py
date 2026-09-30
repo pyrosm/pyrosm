@@ -1,15 +1,17 @@
-"""Download the smallest single OSM extract that contains an area.
+"""Find and download the smallest single OSM extract that contains an area.
 
-Public entry point: :func:`get_data_by_area`. Candidates come from three providers:
+Public entry points: :func:`find_extracts` lists the candidates, :func:`get_data_by_area`
+downloads the best one. Candidates come from three providers:
 
 - Geofabrik, from the vendored ``geofabrik_index.geojson.gz``;
 - BBBike city extracts, from the vendored ``bbbike_index.geojson.gz``;
 - Movisda administrative areas and 1°/10° grid tiles, from the index files published at
   https://osm.download.movisda.io (fetched and cached next to the downloads).
 
-Extracts are never merged, so the answer is always one file. Candidates are ranked by download
-size: Movisda's index lists sizes; for the others a HEAD request asks the server, and the answer
-is cached for a week. Refresh the vendored snapshots with ``scripts/update_extract_indexes.py``.
+``get_data_by_area`` never merges extracts, so its answer is always one file. Candidates are
+ranked by download size: Movisda's index lists sizes; for the others a HEAD request asks the
+server, and the answer is cached for a week. Refresh the vendored snapshots with
+``scripts/update_extract_indexes.py``.
 """
 
 import gzip
@@ -47,7 +49,7 @@ _MOVISDA_INDEXES = {
 }
 _INDEX_MAX_AGE = 24 * 3600
 _SIZE_MAX_AGE = 7 * 24 * 3600
-_COLUMNS = ["provider", "id", "name", "url", "bytes", "geometry"]
+_COLUMNS = ["provider", "id", "name", "url", "bytes", "contains", "geometry"]
 _FETCH_ERRORS = (OSError, http.client.HTTPException)
 _TIMEOUT = 60
 _ATTEMPTS = 3
@@ -319,14 +321,47 @@ def _download_sizes(urls, directory, update=False):
     return sizes
 
 
-def _covering_extracts(area, directory=None, update=False):
-    """Return the extracts that fully contain ``area``, smallest download first.
+def find_extracts(area, contains_only=False, update=False, directory=None):
+    """List the OSM extracts that overlap ``area``, best download first, without downloading.
 
-    ``area`` is a Shapely geometry in lon/lat. The result is a GeoDataFrame with the columns
-    ``provider``, ``id``, ``name``, ``url``, ``bytes`` and ``geometry``. Extracts whose size cannot
-    be read have no ``bytes`` and come last, smallest area first. Movisda's extracts are left out
-    when its index cannot be fetched.
+    Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and
+    1°/10° grid tiles. Extracts that contain the whole area come first, then those that only
+    overlap it; within each group the smallest download comes first. Extracts whose size cannot
+    be read come last in their group, smallest extent first. :func:`get_data_by_area` downloads
+    the first extract that contains the area.
+
+    Movisda's extracts are left out, with a warning, when its index cannot be fetched.
+
+    Parameters
+    ----------
+    area : shapely geometry | GeoDataFrame | GeoSeries | list | tuple | numpy.ndarray
+        The area of interest in lon/lat: a (Multi)Polygon, a GeoDataFrame/GeoSeries (its
+        geometries are combined) or ``[minx, miny, maxx, maxy]``.
+
+    contains_only : bool
+        When ``True``, list only the extracts that contain the whole area.
+
+    update : bool
+        When ``True``, refresh the provider indexes and download sizes.
+
+    directory : str, optional
+        Directory for the cached provider indexes and download sizes. ``None`` (default) uses
+        the pyrosm temp directory, as :func:`get_data_by_area` does.
+
+    Returns
+    -------
+    GeoDataFrame
+        One row per extract with the columns ``provider`` (``"Geofabrik"``, ``"BBBike"`` or
+        ``"Movisda"``), ``id``, ``name``, ``url``, ``bytes`` (the download size, ``<NA>`` when
+        it cannot be read), ``contains`` (whether the extract contains the whole area) and
+        ``geometry`` (the extract's extent, EPSG:4326).
+
+    Raises
+    ------
+    ValueError
+        If the area is empty, or has no width or no height.
     """
+    area = _area_geometry(area)
     directory = Path(directory) if directory is not None else download_dir()
     frames = [_geofabrik_extracts(update), _bbbike_extracts()]
     try:
@@ -334,19 +369,27 @@ def _covering_extracts(area, directory=None, update=False):
     except (*_FETCH_ERRORS, ValueError) as e:
         warnings.warn("Movisda's extract index is unavailable (%s); skipping it." % e)
     candidates = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs="EPSG:4326")
-    covering = candidates[candidates.covers(area)].copy()
-    unknown = covering["bytes"].isna()
-    sizes = _download_sizes(covering.loc[unknown, "url"], directory, update)
-    covering["bytes"] = pd.array(
+    candidates["contains"] = candidates.covers(area)
+    if contains_only:
+        found = candidates[candidates["contains"]].copy()
+    else:
+        overlaps = candidates.intersects(area) & ~candidates.touches(area)
+        found = candidates[overlaps].copy()
+    unknown = found["bytes"].isna()
+    sizes = _download_sizes(found.loc[unknown, "url"], directory, update)
+    found["bytes"] = pd.array(
         [
             sizes.get(url) if pd.isna(size) else int(size)
-            for size, url in zip(covering["bytes"], covering["url"])
+            for size, url in zip(found["bytes"], found["url"])
         ],
         dtype="Int64",
     )
-    covering["_area"] = covering.geometry.to_crs(_EQUAL_AREA_CRS).area
-    ranked = covering.sort_values(
-        ["bytes", "_area", "provider", "id"], na_position="last", kind="stable"
+    found["_area"] = found.geometry.to_crs(_EQUAL_AREA_CRS).area
+    ranked = found.sort_values(
+        ["contains", "bytes", "_area", "provider", "id"],
+        ascending=[False, True, True, True, True],
+        na_position="last",
+        kind="stable",
     )
     return ranked[_COLUMNS].reset_index(drop=True)
 
@@ -418,9 +461,10 @@ def get_data_by_area(area, crop=True, update=False, directory=None, output_path=
 
     Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and 1°/10°
     grid tiles, keeps those that contain the whole area, and downloads the one with the smallest
-    file. Extracts are never merged. A download interrupted by a network error is retried twice;
-    when it still fails, the next smallest extract is tried.
-    By default the extract is then cropped to the area's bounding box.
+    file (the first row of ``find_extracts(area, contains_only=True)``). Extracts are never
+    merged. A download interrupted by a network error is retried twice; when it still fails, the
+    next smallest extract is tried. By default the extract is then cropped to the area's
+    bounding box.
 
     Movisda cuts its extracts exactly at their edges, so features crossing the edge of a Movisda
     extract are clipped or missing there. The extract contains the whole area, so this only
@@ -462,7 +506,9 @@ def get_data_by_area(area, crop=True, update=False, directory=None, output_path=
     from pyrosm.utils.download import download as _download_file
 
     geom = _area_geometry(area)
-    candidates = _covering_extracts(geom, directory, update)
+    candidates = find_extracts(
+        geom, contains_only=True, update=update, directory=directory
+    )
     if candidates.empty:
         raise ValueError(
             "No Geofabrik, BBBike or Movisda extract contains the whole area."

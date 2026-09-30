@@ -70,6 +70,7 @@ Downloading data
    :toctree: api/
 
    get_data
+   find_extracts
    get_data_by_area
    get_data_by_bbox
    geocode

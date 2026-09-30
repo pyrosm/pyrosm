@@ -10,6 +10,7 @@ except PackageNotFoundError:  # running from a source tree without an install
 # need protobuf + numpy) do not pay that cost when importing a pyrosm submodule.
 __all__ = [
     "OSM",
+    "find_extracts",
     "geocode",
     "get_data",
     "get_data_by_area",
@@ -29,10 +30,10 @@ def __getattr__(name):
         from pyrosm.data import get_data, get_path
 
         return get_data if name == "get_data" else get_path
-    if name == "get_data_by_area":
-        from pyrosm.data import get_data_by_area
+    if name in ("find_extracts", "get_data_by_area"):
+        from pyrosm.data import find_extracts, get_data_by_area
 
-        return get_data_by_area
+        return find_extracts if name == "find_extracts" else get_data_by_area
     if name == "get_data_by_bbox":
         from pyrosm.data import get_data_by_bbox
 

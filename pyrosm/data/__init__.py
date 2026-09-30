@@ -29,6 +29,7 @@ import warnings
 
 __all__ = [
     "available",
+    "find_extracts",
     "geocode",
     "get_data",
     "get_data_by_area",
@@ -297,10 +298,10 @@ def get_path(dataset, update=False, directory=None):
 def __getattr__(name):
     # Loaded lazily so importing pyrosm.data (and the lightweight get_data
     # download path) does not pull in geopandas/shapely.
-    if name == "get_data_by_area":
-        from pyrosm.data.extract_index import get_data_by_area
+    if name in ("find_extracts", "get_data_by_area"):
+        from pyrosm.data.extract_index import find_extracts, get_data_by_area
 
-        return get_data_by_area
+        return find_extracts if name == "find_extracts" else get_data_by_area
     if name == "get_data_by_bbox":
         from pyrosm.data.geofabrik_index import get_data_by_bbox
 
