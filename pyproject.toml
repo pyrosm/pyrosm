@@ -23,5 +23,5 @@ environment = { CFLAGS = "-g0" }
 [tool.cibuildwheel.macos]
 # Intel (macos-13) runners are retired, so build both macOS architectures on the
 # arm64 runner: arm64 natively, x86_64 cross-compiled. cibuildwheel runs the
-# test-command only on the native (arm64) slice and skips it for x86_64.
+# test-command on both, the x86_64 wheels under Rosetta.
 archs = ["x86_64", "arm64"]
