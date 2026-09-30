@@ -944,6 +944,7 @@ def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):
         ("short", b"old", "stopped after 5 of 100 bytes"),
         ("empty", b"old", "was empty"),
         ("503", b"old", "HTTP Error 503"),
+        ("loop", b"old", "infinite loop"),
     ],
 )
 def test_failed_download_leaves_no_partial_file(
@@ -951,7 +952,8 @@ def test_failed_download_leaves_no_partial_file(
 ):
     """A download that breaks midway, ends before the announced size or is empty must
     not leave a partial file that later calls would reuse, and a failed update keeps
-    the previous copy. Each is tried three times, then raised as a DownloadError."""
+    the previous copy. A network failure or busy server is tried three times, a redirect
+    loop once, and the last error is raised as a DownloadError."""
     import io
     from urllib.error import HTTPError
 
@@ -970,6 +972,10 @@ def test_failed_download_leaves_no_partial_file(
         calls.append(request.full_url)
         if response == "503":
             raise HTTPError(request.full_url, 503, "Service Unavailable", {}, None)
+        if response == "loop":
+            # What urllib raises when a server keeps redirecting a URL to itself.
+            reason = "The HTTP server returned a redirect error that would lead to an infinite loop."
+            raise HTTPError(request.full_url, 301, reason, {}, None)
         if response == "reset":
             return Reset()
         body = io.BytesIO(b"x" * 5 if response == "short" else b"")
@@ -987,7 +993,9 @@ def test_failed_download_leaves_no_partial_file(
     assert isinstance(info.value, ValueError) and isinstance(info.value, OSError)
     assert isinstance(info.value, ExtractDownloadError)
     got = (info.value.url, info.value.status, info.value.attempts, len(calls))
-    assert got == (url, 503 if response == "503" else None, 3, 3)
+    # A redirect loop is not retried; the other failures are tried three times.
+    status, tries = {"503": (503, 3), "loop": (301, 1)}.get(response, (None, 3))
+    assert got == (url, status, tries, tries)
     assert sorted(p.name for p in tmp_path.iterdir()) == (
         ["x.osm.pbf"] if previous else []
     )

@@ -66,6 +66,7 @@ _COLUMNS = ["provider", "id", "name", "url", "bytes", "contains", "geometry"]
 logger = logging.getLogger(__name__)
 
 _bbbike_cache = None
+_vendored_sizes_cache = None
 _movisda_cache = {}
 
 
@@ -280,14 +281,46 @@ def _cached_size(record, now):
     return None
 
 
-def _download_sizes(urls, directory, update=False, net=None):
+def _vendored_geofabrik_sizes():
+    """``{pbf URL: (bytes, day read)}`` recorded in pyrosm's Geofabrik index snapshot (read
+    once)."""
+    global _vendored_sizes_cache
+    if _vendored_sizes_cache is not None:
+        return _vendored_sizes_cache
+    gdf = _load_geofabrik_index(False).reindex(columns=["pbf", "bytes", "bytes_date"])
+    _vendored_sizes_cache = {
+        url: (int(size), day)
+        for url, size, day in zip(gdf["pbf"], gdf["bytes"], gdf["bytes_date"])
+        if isinstance(url, str) and pd.notna(size) and 0 <= size < 2**63
+    }
+    return _vendored_sizes_cache
+
+
+def _download_sizes(urls, directory, update=False, net=None, fallback=None):
     """Return ``{url: bytes}`` for ``urls``, from a week-long cache or a HEAD request.
 
-    URLs whose size cannot be read (the server is down or sends no valid ``Content-Length``) are
-    left out of the result, with a warning.
+    When a URL's size cannot be read (the server is down, loops, or sends no valid
+    ``Content-Length``), its ``(bytes, day)`` in ``fallback`` is used, with a warning; without
+    one the URL is left out of the result, with a warning. Only sizes read from the server are
+    cached.
     """
     sizes = {}
     net = net or _Net()
+    fallback = fallback or {}
+
+    def unreadable(url, reason):
+        recorded = fallback.get(url)
+        if recorded is None:
+            warnings.warn(
+                "Could not get the size of %s (%s); it is ranked last." % (url, reason)
+            )
+            return
+        sizes[url] = recorded[0]
+        warnings.warn(
+            "Could not get the size of %s (%s); using the size recorded in pyrosm's "
+            "Geofabrik index on %s." % (url, reason, recorded[1])
+        )
+
     for url in urls:
         record = _size_record(directory, url)
         cached = None if update else _cached_size(record, time.time())
@@ -302,13 +335,11 @@ def _download_sizes(urls, directory, update=False, net=None):
         try:
             length = _retry(head)
         except _FETCH_ERRORS as e:
-            warnings.warn(
-                "Could not get the size of %s (%s); it is ranked last." % (url, e)
-            )
+            unreadable(url, e)
             continue
         size = _content_length(length)
         if size is None:
-            warnings.warn("%s sends no valid size; it is ranked last." % url)
+            unreadable(url, "no valid Content-Length")
             continue
         sizes[url] = size
         payload = json.dumps([sizes[url], time.time()]).encode()
@@ -392,7 +423,9 @@ def find_extracts(
         overlaps = candidates.intersects(area) & ~candidates.touches(area)
         found = candidates[overlaps].copy()
     unknown = found["bytes"].isna()
-    sizes = _download_sizes(found.loc[unknown, "url"], directory, update, net)
+    sizes = _download_sizes(
+        found.loc[unknown, "url"], directory, update, net, _vendored_geofabrik_sizes()
+    )
     found["bytes"] = pd.array(
         [
             sizes.get(url) if pd.isna(size) else int(size)

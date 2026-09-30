@@ -5,7 +5,13 @@ Run this to update the extract lists used by ``pyrosm.get_data_by_bbox`` and the
 lookup::
 
     python scripts/update_extract_indexes.py            # both
-    python scripts/update_extract_indexes.py geofabrik  # or: bbbike
+    python scripts/update_extract_indexes.py geofabrik  # or: bbbike, geofabrik-sizes
+
+``geofabrik-sizes``: adds each extract's download size (``bytes``, with the day it was read as
+``bytes_date``) to the existing ``pyrosm/data/geofabrik_index.geojson.gz`` without changing
+anything else. A size comes from a HEAD request, else from the ``File size`` on the extract's
+page, else the previous snapshot's size is kept. The ``geofabrik`` target reads sizes the same
+way. pyrosm uses these sizes when the server does not answer a HEAD request.
 
 ``geofabrik``: downloads Geofabrik's ``index-v1.json`` (one GeoJSON FeatureCollection holding
 every extract's extent polygon and download URLs), trims each feature to the fields pyrosm uses
@@ -19,6 +25,7 @@ city and the download date as ``bbbike_snapshot_date``.
 """
 
 import gzip
+import http.client
 import json
 import re
 import ssl
@@ -31,17 +38,117 @@ from pathlib import Path
 
 import certifi
 
+from pyrosm.utils.download import _content_length
+
 DATA_DIR = Path(__file__).resolve().parents[1] / "pyrosm" / "data"
 GEOFABRIK_URL = "https://download.geofabrik.de/index-v1.json"
 BBBIKE_URL = "https://download.bbbike.org/osm/bbbike"
 USER_AGENT = "pyrosm index update (+https://github.com/pyrosm/pyrosm)"
 
 
-def fetch(url):
+PAGE_SIZE = re.compile(
+    r"File size:(?:\s|&nbsp;)*([0-9]{1,6}(?:\.[0-9]{1,3})?)(?:\s|&nbsp;)*([KMG]B)"
+)
+# The pages give binary units: "333 MB" is Belarus at 349,606,795 bytes (333.4 MiB).
+PAGE_UNITS = {"KB": 2**10, "MB": 2**20, "GB": 2**30}
+
+
+GEOFABRIK_DOWNLOADS = "https://download.geofabrik.de/"
+LATEST_PBF = "-latest.osm.pbf"
+
+
+def fetch(url, method="GET", limit=None):
+    """GET (or HEAD) ``url``: ``(body, Last-Modified)``, or the headers for HEAD. ``limit``
+    caps the bytes read."""
     context = ssl.create_default_context(cafile=certifi.where())
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, context=context) as response:
-        return response.read(), response.headers.get("Last-Modified")
+    request = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT}, method=method
+    )
+    with urllib.request.urlopen(request, context=context, timeout=60) as response:
+        if method == "HEAD":
+            return response.headers
+        body = response.read() if limit is None else response.read(limit)
+        return body, response.headers.get("Last-Modified")
+
+
+def page_size(html):
+    """The size an extract page states for its ``.osm.pbf`` ("File size: 521 MB"), or None."""
+    match = PAGE_SIZE.search(html)
+    if match is None:
+        return None
+    size = round(float(match[1]) * PAGE_UNITS[match[2]])
+    return size if size < 2**63 else None
+
+
+def read_size(pbf_url):
+    """``(bytes, source)`` of a Geofabrik extract: its HEAD ``Content-Length``, else the size
+    on its page; ``(None, None)`` when neither can be read. Only Geofabrik's own
+    ``https://download.geofabrik.de/...-latest.osm.pbf`` URLs are asked."""
+    if not (pbf_url.startswith(GEOFABRIK_DOWNLOADS) and pbf_url.endswith(LATEST_PBF)):
+        return None, None
+    try:
+        size = _content_length(fetch(pbf_url, "HEAD").get("Content-Length"))
+        if size is not None:
+            return size, "head"
+    except (OSError, http.client.HTTPException):
+        pass
+    try:
+        page_url = pbf_url[: -len(LATEST_PBF)] + ".html"
+        html, _ = fetch(page_url, limit=2**20)
+        size = page_size(html.decode("utf-8", "replace"))
+        if size is not None:
+            return size, "page"
+    except (OSError, http.client.HTTPException):
+        pass
+    return None, None
+
+
+def add_sizes(features, previous):
+    """Set ``bytes`` and ``bytes_date`` on every feature with a ``pbf`` URL; a size that
+    cannot be read keeps the ``(bytes, bytes_date)`` in ``previous``, else both are None.
+    """
+    today = date.today().isoformat()
+    counts = {"head": 0, "page": 0, "kept": 0, "none": 0}
+    for feature in features:
+        props = feature["properties"]
+        url = props.get("pbf")
+        if not url:
+            continue
+        size, source = read_size(url)
+        time.sleep(0.2)
+        props["bytes"], props["bytes_date"] = None, None
+        if size is not None:
+            props["bytes"], props["bytes_date"] = size, today
+        elif url in previous:
+            props["bytes"], props["bytes_date"] = previous[url]
+            source = "kept"
+        counts[source or "none"] += 1
+    print("Geofabrik sizes: %s" % ", ".join("%s %d" % item for item in counts.items()))
+    return today
+
+
+def previous_sizes():
+    """``{pbf URL: (bytes, bytes_date)}`` from the vendored Geofabrik index, if it has any."""
+    path = DATA_DIR / "geofabrik_index.geojson.gz"
+    if not path.exists():
+        return {}
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        features = json.load(f)["features"]
+    return {
+        p["pbf"]: (p["bytes"], p.get("bytes_date"))
+        for p in (feature["properties"] for feature in features)
+        if p.get("pbf") and isinstance(p.get("bytes"), int)
+    }
+
+
+def geofabrik_sizes():
+    path = DATA_DIR / "geofabrik_index.geojson.gz"
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        collection = json.load(f)
+    collection["geofabrik_sizes_date"] = add_sizes(
+        collection["features"], previous_sizes()
+    )
+    write("geofabrik_index.geojson.gz", collection)
 
 
 def write(name, collection):
@@ -83,11 +190,13 @@ def geofabrik():
                 },
             }
         )
+    sizes_date = add_sizes(features, previous_sizes())
     write(
         "geofabrik_index.geojson.gz",
         {
             "type": "FeatureCollection",
             "geofabrik_snapshot_date": snapshot_date,
+            "geofabrik_sizes_date": sizes_date,
             "features": features,
         },
     )
@@ -155,4 +264,9 @@ def bbbike():
 if __name__ == "__main__":
     targets = sys.argv[1:] or ["geofabrik", "bbbike"]
     for target in targets:
-        {"geofabrik": geofabrik, "bbbike": bbbike}[target]()
+        commands = {
+            "geofabrik": geofabrik,
+            "geofabrik-sizes": geofabrik_sizes,
+            "bbbike": bbbike,
+        }
+        commands[target]()

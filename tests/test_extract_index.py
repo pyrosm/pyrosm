@@ -271,6 +271,111 @@ def test_download_sizes(tmp_path, monkeypatch):
     assert len(calls) == 8
 
 
+LOOP = HTTPError(
+    "u",
+    301,
+    "The HTTP server returned a redirect error that would lead to an infinite loop.",
+    {},
+    None,
+)
+
+
+def test_download_sizes_fall_back_to_recorded_sizes(tmp_path, monkeypatch):
+    """A size that cannot be read (a redirect loop, a server that is down, a bad
+    Content-Length) comes from the recorded sizes when there is one; it is not cached.
+    """
+    answers = {
+        "https://loop": [LOOP],
+        "https://down": [DOWN] * 3,
+        "https://bad": [_Response(headers={"Content-Length": "x"})],
+    }
+    calls = []
+
+    def fake(url, method="GET", headers=None, timeout=None, opener=None):
+        calls.append(url)
+        answer = answers[url].pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(dl, "open_url", fake)
+    recorded = {"https://loop": (10, "2026-10-01"), "https://bad": (30, "2026-10-01")}
+    with pytest.warns(UserWarning) as record:
+        sizes = ei._download_sizes(list(answers), tmp_path, fallback=recorded)
+    assert sizes == {"https://loop": 10, "https://bad": 30}
+    # The loop is not retried; the server that is down is tried three times.
+    assert calls == ["https://loop"] + ["https://down"] * 3 + ["https://bad"]
+    messages = sorted(str(w.message) for w in record)
+    assert (
+        sum("recorded in pyrosm's Geofabrik index on 2026-10-01" in m for m in messages)
+        == 2
+    )
+    assert sum("ranked last" in m for m in messages) == 1
+    assert not (tmp_path / "extract_sizes").exists()
+
+
+def test_vendored_geofabrik_sizes():
+    """The vendored Geofabrik index records a size and the day it was read for its
+    extracts, and the date of the refresh."""
+    import gzip
+
+    path = Path(ei.__file__).parent / "geofabrik_index.geojson.gz"
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        collection = json.load(f)
+    assert len(collection["geofabrik_sizes_date"]) == 10
+    extracts = [
+        f["properties"] for f in collection["features"] if f["properties"].get("pbf")
+    ]
+    recorded = [props for props in extracts if props["bytes"] is not None]
+    assert len(recorded) > 400
+    for props in extracts:
+        if props["bytes"] is None:
+            assert props["bytes_date"] is None
+        else:
+            assert type(props["bytes"]) is int and 0 <= props["bytes"] < 2**63
+            assert len(props["bytes_date"]) == 10
+    sizes = ei._vendored_geofabrik_sizes()
+    size, day = sizes["https://download.geofabrik.de/europe/finland-latest.osm.pbf"]
+    assert 100 * 2**20 < size < 10 * 2**30 and len(day) == 10
+    assert ei._vendored_geofabrik_sizes() is sizes
+
+
+def test_find_extracts_ranks_by_recorded_size(tmp_path, monkeypatch):
+    """When Geofabrik gives no size, its recorded size ranks the extract."""
+    area = box(24.9, 60.1, 25.1, 60.3)
+    geofabrik = _candidates("Geofabrik", [("finland", None, box(19, 59, 32, 71))])
+    movisda = _candidates("Movisda", [("FI", 700, box(19, 59, 32, 71))])
+    monkeypatch.setattr(ei, "_geofabrik_extracts", lambda update: geofabrik)
+    monkeypatch.setattr(ei, "_bbbike_extracts", lambda: _candidates("BBBike", []))
+    monkeypatch.setattr(ei, "_movisda_extracts", lambda *a: movisda)
+    monkeypatch.setattr(
+        ei,
+        "_vendored_geofabrik_sizes",
+        lambda: {"https://Geofabrik/finland": (600, "2026-10-01")},
+    )
+    monkeypatch.setattr(dl, "open_url", _fake_open_url([LOOP], []))
+    with pytest.warns(UserWarning, match="recorded in pyrosm's Geofabrik index"):
+        got = pyrosm.find_extracts(area, contains_only=True, directory=tmp_path)
+    assert list(zip(got["id"], got["bytes"])) == [("finland", 600), ("FI", 700)]
+
+
+def test_page_size_parser():
+    """The refresh script reads an extract page's "File size" in binary units."""
+    import importlib.util
+
+    script = Path(__file__).parents[1] / "scripts" / "update_extract_indexes.py"
+    spec = importlib.util.spec_from_file_location("update_extract_indexes", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.page_size("up to 2026. File size: 521&nbsp;MB. ") == 521 * 2**20
+    assert module.page_size("File size: 1.3 GB") == round(1.3 * 2**30)
+    assert module.page_size("no size here") is None
+    assert module.page_size("File size: 9999999999 GB") is None
+    assert module.page_size("File size: 1" + "0" * 400 + " GB") is None
+    # Only Geofabrik's own latest-extract URLs are asked for a size.
+    assert module.read_size("https://example.invalid/x.osm.pbf") == (None, None)
+
+
 def test_movisda_extracts(tmp_path, monkeypatch):
     admin = gpd.GeoDataFrame(
         {
@@ -358,7 +463,7 @@ def test_find_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up, contain
     )
     monkeypatch.setattr(ei, "_bbbike_extracts", lambda: bbbike)
 
-    nets = []
+    nets, fallbacks = [], []
 
     def movisda_extracts(directory, update=False, net=None):
         refreshed.append(update)
@@ -372,8 +477,9 @@ def test_find_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up, contain
     sizes = {"https://BBBike/Helsinki": 50, "https://BBBike/Espoo": 40}
     asked = []
 
-    def download_sizes(urls, directory, update=False, net=None):
+    def download_sizes(urls, directory, update=False, net=None, fallback=None):
         refreshed.append(update)
+        fallbacks.append(fallback)
         nets.append(net)
         asked.extend(urls)
         return {u: sizes[u] for u in urls if u in sizes}
@@ -410,6 +516,8 @@ def test_find_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up, contain
     )
     # Geofabrik's index, Movisda's indexes and the download sizes are all refreshed.
     assert refreshed == [True, True, True]
+    # The sizes recorded in pyrosm's Geofabrik index back up the size requests.
+    assert fallbacks == [ei._vendored_geofabrik_sizes()]
     # The caller's network options reach the Movisda index and the size requests.
     assert [(n.headers, n.timeout, n.opener) for n in nets] == [
         ({"User-Agent": "transitio/1"}, 30, OPENER)
