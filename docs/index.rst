@@ -41,6 +41,7 @@ Current features
 
 - download PBF data easily from any location in the world
 - find and download the right extract for a bounding box or a place name (NEW in v0.9.0)
+- download the smallest single extract that contains an area, comparing Geofabrik, BBBike and Movisda extracts (NEW in v0.14.0)
 - read street networks (separately for driving, cycling, walking and all-combined)
 - read buildings from PBF
 - read Points of Interest (POI) from PBF
@@ -52,6 +53,7 @@ Current features
 - filter data based on bounding box
 - control which OSM tags are parsed into columns
 - crop a PBF to a smaller area and write modified OSM data back to PBF (NEW in v0.9.0), or export only selected layers (NEW in v0.11.0)
+- merge overlapping PBF extracts, such as two country extracts around a border town, into one file (NEW in v0.14.0)
 - edit the geometry of an OSM network -- move nodes, reshape ways, delete elements -- and write it back to PBF (NEW in v0.12.0)
 - export networks as a directed graph to ``igraph``, ``networkx`` and ``pandarm``, optionally with topological simplification (NEW in v0.11.0)
 
