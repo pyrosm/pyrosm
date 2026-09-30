@@ -35,15 +35,19 @@ Download an extract by place name (geocoded) or by bounding box, then read it â€
 only a sub-area of a file with `bounding_box`:
 
 ```python
-from pyrosm import OSM, get_data, get_data_by_bbox
+from pyrosm import OSM, get_data, get_data_by_area, get_data_by_bbox
 
 fp = get_data("Helsinki")                              # an extract by place name
 # fp = get_data_by_bbox(bbox=[minx, miny, maxx, maxy]) # an extract for a bounding box
+# fp = get_data_by_area(area)                          # the smallest extract containing an area
 
 osm = OSM(fp, bounding_box=[minx, miny, maxx, maxy])   # read only this area of the file
 ```
 
-See [Downloading data](downloading_data.ipynb) for more.
+For an area on a national border, `get_data_by_area()` finds the smallest single extract that
+contains it, and `merge_pbf()` combines overlapping extracts into one file. See
+[Downloading data](downloading_data.ipynb) and
+[Saving, cropping and merging data](saving_and_cropping.ipynb) for more.
 :::
 
 :::{dropdown} How does `bounding_box` keep features that are at the edge of the box ("intersects" or "within")?
