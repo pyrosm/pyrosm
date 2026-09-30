@@ -1782,3 +1782,45 @@ def test_simplify_keeps_one_of_duplicate_ways(monkeypatch, kernel):
     assert sorted(
         zip(simplified["u"], simplified["v"], simplified["id"], simplified["length"])
     ) == [(1, 3, 10, 2.0), (3, 5, 10, 2.0)]
+
+
+def test_merge_pbf_ignores_metadata_only_changes(tmp_path, monkeypatch):
+    """A sync client such as OneDrive touches a file's metadata soon after it is
+    written, which changes its ctime but not its contents; merge_pbf must not
+    reject such an input as changed during the merge."""
+    import os
+    import shutil
+    import time
+
+    import pyrosm.pbf_export as pbf_export
+    from pyrosm import get_data, merge_pbf
+
+    def touch_metadata(path):
+        mode = os.stat(path).st_mode
+        os.chmod(path, mode ^ 0o040)
+        os.chmod(path, mode)
+
+    source = tmp_path / "a.osm.pbf"
+    shutil.copy(get_data("helsinki_pbf"), source)
+    before = os.stat(source).st_ctime_ns
+    touch_metadata(source)
+    if os.stat(source).st_ctime_ns == before:
+        pytest.skip("chmod does not change the ctime on this platform")
+
+    touched = []
+
+    class TouchedInput(pbf_export._SortedInput):
+        def __init__(self, filepath):
+            # Repeat until the ctime moves, for filesystems with coarse timestamps.
+            before = os.stat(filepath).st_ctime_ns
+            deadline = time.monotonic() + 3
+            while os.stat(filepath).st_ctime_ns == before and time.monotonic() < deadline:
+                touch_metadata(filepath)
+                time.sleep(0.01)
+            touched.append(os.stat(filepath).st_ctime_ns != before)
+            super().__init__(filepath)
+
+    monkeypatch.setattr(pbf_export, "_SortedInput", TouchedInput)
+    out = merge_pbf([str(source)], str(tmp_path / "out.osm.pbf"))
+    assert touched and all(touched)
+    assert os.path.getsize(out) > 0
