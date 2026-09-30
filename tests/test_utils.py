@@ -122,15 +122,18 @@ def test_write_atomic_keeps_target_when_write_fails(tmp_path):
     assert target.read_text() == "old" and sorted(tmp_path.iterdir()) == [target]
 
 
-def _http_error(code, retry_after=None):
+def _http_error(code, retry_after=None, body=None):
     headers = {} if retry_after is None else {"Retry-After": retry_after}
-    return HTTPError("https://example.invalid", code, "status", headers, None)
+    fp = None if body is None else io.BytesIO(body)
+    return HTTPError("https://example.invalid", code, "status", headers, fp)
 
 
 @pytest.mark.parametrize(
     "outcomes, waits, raised",
     [
         ([_http_error(503), "ok"], [1], None),
+        # An error with a response body is closed before the next attempt.
+        ([_http_error(502, body=b"Bad gateway"), "ok"], [1], None),
         ([_http_error(429, "5"), "ok"], [5], None),
         ([_http_error(503, "in 10 s"), "ok"], [10], None),
         ([_http_error(503, "soon"), "ok"], [1], None),
@@ -167,6 +170,7 @@ def test_retry(monkeypatch, outcomes, waits, raised):
             dl._retry(fetch)
         assert getattr(info.value, "code", str(info.value)) == raised
     assert len(calls) == len(outcomes)
+    assert all(e.fp.closed for e in outcomes if isinstance(e, HTTPError))
     # An HTTP-date is read against the clock, so its wait is a little under 10 s.
     assert waited == pytest.approx(waits, abs=1)
 

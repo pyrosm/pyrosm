@@ -94,22 +94,23 @@ def _retry(fetch, attempts=_ATTEMPTS):
     ``Retry-After`` above 60 s is not waited for: the error is raised at once. Other HTTP errors
     and the last failure propagate.
     """
-    for attempt in range(attempts):
+    attempt = 0
+    while True:
         try:
             return fetch()
         except _FETCH_ERRORS as e:
             wait = None
             if isinstance(e, HTTPError):
-                if getattr(e, "fp", None) is not None:
-                    e.close()
+                e.close()  # its response body is a temporary file
                 wait = _retry_after(e)
-            if not _retryable(e) or attempt == attempts - 1:
+            if not _retryable(e) or attempt + 1 >= attempts:
                 raise
             if wait is None:
                 wait = _BACKOFF * 2**attempt
             elif wait > _MAX_RETRY_AFTER:
                 raise
             _sleep(wait)
+            attempt += 1
 
 
 def _validator(headers):
