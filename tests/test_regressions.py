@@ -1021,15 +1021,24 @@ def test_download_does_not_retry_a_full_disk(tmp_path, monkeypatch):
     assert calls == [1]
 
 
-def test_download_rejects_nonexistent_target_dir(tmp_path):
-    """download(target_dir=...) raises when the given directory does not exist."""
+def test_download_creates_missing_target_dir(tmp_path, monkeypatch):
+    """download(target_dir=...) creates a directory that does not exist yet."""
+    import io
+
     from pyrosm.utils import download as dl
 
-    missing = tmp_path / "does_not_exist"
-    with pytest.raises(ValueError, match="does not exist"):
-        dl.download(
-            "https://example.invalid/x.osm.pbf", "x.osm.pbf", False, str(missing)
-        )
+    monkeypatch.setattr(
+        dl.urllib.request,
+        "urlopen",
+        lambda url, context=None, timeout=None: _headered(io.BytesIO(b"x" * 100)),
+    )
+    missing = tmp_path / "does" / "not" / "exist"
+    out = dl.download(
+        "https://example.invalid/x.osm.pbf", "x.osm.pbf", False, str(missing)
+    )
+    assert (
+        Path(out) == missing.resolve() / "x.osm.pbf" and Path(out).stat().st_size == 100
+    )
 
 
 def _headered(response, headers=None):
@@ -1319,7 +1328,7 @@ def test_get_data_disambiguates_ambiguous_region_name(monkeypatch):
     # get_data routes a region-qualified name to the resolved file (download stubbed).
     captured = {}
 
-    def fake_retrieve(d, update, directory):
+    def fake_retrieve(d, update, directory, **net):
         captured["url"] = d["url"]
         return "/fake/path"
 
@@ -1357,7 +1366,7 @@ def test_get_data_dispatch_and_lazy_attrs(monkeypatch):
     # offline; capture the resolved filename for each.
     seen = []
 
-    def fake_download(url, filename, update, target_dir):
+    def fake_download(url, filename, update, target_dir, **net):
         seen.append(filename)
         return "/fake/" + filename
 

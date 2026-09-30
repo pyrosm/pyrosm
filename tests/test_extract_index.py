@@ -17,6 +17,7 @@ from shapely.geometry import Point, box
 
 import pyrosm
 from pyrosm.data import extract_index as ei
+from pyrosm.utils import download as dl
 from pyrosm.exceptions import (
     DownloadError,
     ExtractDownloadError,
@@ -39,7 +40,7 @@ def _fake_open_url(responses, calls):
     """An ``open_url`` stand-in that returns or raises the next queued response; the last
     one is repeated once the queue is down to it."""
 
-    def fake(url, method="GET", headers=None, timeout=None):
+    def fake(url, method="GET", headers=None, timeout=None, opener=None):
         assert timeout == ei._TIMEOUT
         calls.append((url, method, headers or {}))
         response = responses.pop(0) if len(responses) > 1 else responses[0]
@@ -130,7 +131,7 @@ def test_cached_index(
     check = _check if response is _bad_index else None
     if callable(response):
         response = response()
-    monkeypatch.setattr(ei, "open_url", _fake_open_url([response], calls))
+    monkeypatch.setattr(dl, "open_url", _fake_open_url([response], calls))
 
     def cached_index():
         return ei._cached_index("https://x/index.geojson", path, update, check)
@@ -167,11 +168,11 @@ def test_cached_index_304_after_the_copy_changed(tmp_path, monkeypatch):
     meta_path.write_text(json.dumps({"etag": '"1"', "bytes": 3, "sha256": digest}))
     _age(meta_path, STALE)
 
-    def replaced_meanwhile(url, method="GET", headers=None, timeout=None):
+    def replaced_meanwhile(url, method="GET", headers=None, timeout=None, opener=None):
         path.write_bytes(b"new")
         raise NOT_MODIFIED
 
-    monkeypatch.setattr(ei, "open_url", replaced_meanwhile)
+    monkeypatch.setattr(dl, "open_url", replaced_meanwhile)
     assert ei._cached_index("https://x/index.geojson", path) == path
     # The 304 vouches for the old bytes only, so the check time is not refreshed.
     assert time.time() - meta_path.stat().st_mtime > 86400
@@ -242,7 +243,7 @@ def test_download_sizes(tmp_path, monkeypatch):
     ]
     responses = [size("0100")] + bad
     urls = ["https://%s" % c for c in "abcdefg"]
-    monkeypatch.setattr(ei, "open_url", _fake_open_url(responses, calls))
+    monkeypatch.setattr(dl, "open_url", _fake_open_url(responses, calls))
     with pytest.warns(UserWarning) as record:
         sizes = ei._download_sizes(urls, tmp_path)
     assert sizes == {"https://a": 100} and len(record) == 6
@@ -357,8 +358,11 @@ def test_find_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up, contain
     )
     monkeypatch.setattr(ei, "_bbbike_extracts", lambda: bbbike)
 
-    def movisda_extracts(directory, update=False):
+    nets = []
+
+    def movisda_extracts(directory, update=False, net=None):
         refreshed.append(update)
+        nets.append(net)
         if not movisda_up:
             raise URLError("down")
         return movisda
@@ -368,8 +372,9 @@ def test_find_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up, contain
     sizes = {"https://BBBike/Helsinki": 50, "https://BBBike/Espoo": 40}
     asked = []
 
-    def download_sizes(urls, directory, update=False):
+    def download_sizes(urls, directory, update=False, net=None):
         refreshed.append(update)
+        nets.append(net)
         asked.extend(urls)
         return {u: sizes[u] for u in urls if u in sizes}
 
@@ -378,7 +383,13 @@ def test_find_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up, contain
     warns = contextlib.nullcontext() if movisda_up else pytest.warns(UserWarning)
     with warns:
         got = pyrosm.find_extracts(
-            area, contains_only=contains_only, update=True, directory=tmp_path
+            area,
+            contains_only=contains_only,
+            update=True,
+            directory=tmp_path,
+            headers={"User-Agent": "transitio/1"},
+            timeout=30,
+            opener=OPENER,
         )
     containing = ["Helsinki", "FI", "N60E020-10", "finland"]
     # Espoo and N60E024 only overlap the area; Vantaa and sweden only touch or miss it.
@@ -399,9 +410,14 @@ def test_find_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up, contain
     )
     # Geofabrik's index, Movisda's indexes and the download sizes are all refreshed.
     assert refreshed == [True, True, True]
+    # The caller's network options reach the Movisda index and the size requests.
+    assert [(n.headers, n.timeout, n.opener) for n in nets] == [
+        ({"User-Agent": "transitio/1"}, 30, OPENER)
+    ] * 2
 
 
 HELSINKI = [24.93, 60.16, 24.96, 60.18]
+OPENER = object()
 BBBIKE = ("BBBike", "Helsinki", "https://b/Helsinki/Helsinki.osm.pbf", 50)
 MOVISDA = ("Movisda", "N60E024", "https://m/grid/N60W024-latest.osm.pbf", 66)
 
@@ -427,11 +443,14 @@ def test_get_data_by_area_falls_back_to_next_extract(
     tmp_path, monkeypatch, caplog, capsys, crop
 ):
     helsinki = pyrosm.get_data("helsinki_pbf")
-    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: _ranked(BBBIKE, MOVISDA))
+    found = []
+    monkeypatch.setattr(
+        ei, "find_extracts", lambda *a, **k: found.append(k) or _ranked(BBBIKE, MOVISDA)
+    )
     tried = []
 
-    def download(url, filename, update, directory):
-        tried.append(filename)
+    def download(url, filename, update, directory, **net):
+        tried.append((filename, net))
         if "Helsinki" in url:
             raise DownloadError("unavailable", url=url, status=503, attempts=3)
         return helsinki
@@ -439,8 +458,20 @@ def test_get_data_by_area_falls_back_to_next_extract(
     monkeypatch.setattr("pyrosm.utils.download.download", download)
     caplog.set_level(logging.INFO, logger="pyrosm")
     with pytest.warns(UserWarning, match="next smallest"):
-        got = pyrosm.get_data_by_area(box(*HELSINKI), crop=crop, directory=tmp_path)
-    assert tried == ["bbbike_Helsinki.osm.pbf", "movisda_N60W024-latest.osm.pbf"]
+        got = pyrosm.get_data_by_area(
+            box(*HELSINKI),
+            crop=crop,
+            directory=tmp_path,
+            headers={"User-Agent": "t"},
+            timeout=30,
+            opener=OPENER,
+        )
+    net = {"headers": {"User-Agent": "t"}, "timeout": 30, "opener": OPENER}
+    assert {k: found[0][k] for k in net} == net
+    assert tried == [
+        ("bbbike_Helsinki.osm.pbf", net),
+        ("movisda_N60W024-latest.osm.pbf", net),
+    ]
     assert "Movisda 'N60E024'" in caplog.text and capsys.readouterr().out == ""
     assert (got.provider, got.extract, got.bytes) == ("Movisda", "N60E024", 66)
     assert got.failed == [(BBBIKE[2], "unavailable")]
@@ -459,7 +490,7 @@ def test_get_data_by_area_falls_back_to_next_extract(
 def test_get_data_by_area_errors(monkeypatch, candidates, error):
     monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: _ranked(*candidates))
 
-    def download(url, filename, update, directory):
+    def download(url, filename, update, directory, **net):
         raise DownloadError("down", url=url, attempts=3)
 
     monkeypatch.setattr("pyrosm.utils.download.download", download)
@@ -492,7 +523,14 @@ def test_get_data_by_area_accepts_area_forms(monkeypatch, area):
         pyrosm.get_data_by_area(area)
     geom, options = seen[0]
     assert geom.bounds == pytest.approx(HELSINKI, abs=1e-6)
-    assert options == {"contains_only": True, "update": False, "directory": None}
+    assert options == {
+        "contains_only": True,
+        "update": False,
+        "directory": None,
+        "headers": None,
+        "timeout": 60,
+        "opener": None,
+    }
 
 
 @pytest.mark.parametrize(

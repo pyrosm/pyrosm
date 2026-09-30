@@ -46,10 +46,10 @@ from pyrosm.exceptions import (
 from pyrosm.utils.download import (
     _FETCH_ERRORS,
     _TIMEOUT,
+    _Net,
     _content_length,
     _retry,
     download_dir,
-    open_url,
     write_atomic,
 )
 
@@ -159,7 +159,7 @@ def _check_movisda_index(data, kind):
         raise ValueError("the response is not a Movisda %s index" % kind)
 
 
-def _cached_index(url, path, update=False, check=None):
+def _cached_index(url, path, update=False, check=None, net=None):
     """Return ``path`` holding the file at ``url``, fetching it when needed.
 
     ``<path>.etag`` records the ETag, size and SHA-256 of the copy, and its time stamp the last
@@ -184,9 +184,10 @@ def _cached_index(url, path, update=False, check=None):
     if checked and meta.get("sha256") == hashlib.sha256(path.read_bytes()).hexdigest():
         etag = meta.get("etag") or ""
     headers = {"If-None-Match": etag} if etag else None
+    net = net or _Net()
 
     def fetch():
-        with open_url(url, headers=headers, timeout=_TIMEOUT) as response:
+        with net.open(url, headers=headers) as response:
             return response.read(), response.headers.get("ETag") or ""
 
     try:
@@ -239,7 +240,7 @@ def _movisda_frame(source, kind):
         raise ValueError("could not read the Movisda %s index (%s)" % (kind, e)) from e
 
 
-def _movisda_extracts(directory, update=False):
+def _movisda_extracts(directory, update=False, net=None):
     frames = []
     for kind, rel in _MOVISDA_INDEXES.items():
         path = _cached_index(
@@ -248,6 +249,7 @@ def _movisda_extracts(directory, update=False):
             update,
             check=lambda data, kind=kind: _check_movisda_index(data, kind)
             or _movisda_frame(io.BytesIO(data), kind),
+            net=net,
         )
         key = (str(path), path.stat().st_mtime_ns)
         cached = _movisda_cache.get(kind)
@@ -278,13 +280,14 @@ def _cached_size(record, now):
     return None
 
 
-def _download_sizes(urls, directory, update=False):
+def _download_sizes(urls, directory, update=False, net=None):
     """Return ``{url: bytes}`` for ``urls``, from a week-long cache or a HEAD request.
 
     URLs whose size cannot be read (the server is down or sends no valid ``Content-Length``) are
     left out of the result, with a warning.
     """
     sizes = {}
+    net = net or _Net()
     for url in urls:
         record = _size_record(directory, url)
         cached = None if update else _cached_size(record, time.time())
@@ -293,7 +296,7 @@ def _download_sizes(urls, directory, update=False):
             continue
 
         def head(url=url):
-            with open_url(url, method="HEAD", timeout=_TIMEOUT) as response:
+            with net.open(url, method="HEAD") as response:
                 return response.headers.get("Content-Length")
 
         try:
@@ -313,7 +316,15 @@ def _download_sizes(urls, directory, update=False):
     return sizes
 
 
-def find_extracts(area, contains_only=False, update=False, directory=None):
+def find_extracts(
+    area,
+    contains_only=False,
+    update=False,
+    directory=None,
+    headers=None,
+    timeout=_TIMEOUT,
+    opener=None,
+):
     """List the OSM extracts that overlap ``area``, best download first, without downloading.
 
     Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and
@@ -340,6 +351,18 @@ def find_extracts(area, contains_only=False, update=False, directory=None):
         Directory for the cached provider indexes and download sizes. ``None`` (default) uses
         the pyrosm temp directory, as :func:`get_data_by_area` does.
 
+    headers : dict, optional
+        Extra HTTP headers for the Movisda index and size requests, e.g. a ``User-Agent``
+        (not for the refresh of the vendored Geofabrik index with ``update=True``).
+
+    timeout : float | tuple
+        Seconds to wait for a server, for the connect and each read, or a ``(connect, read)``
+        pair. Default 60.
+
+    opener : object, optional
+        An object with ``open(request, timeout=...)``, e.g. from
+        ``urllib.request.build_opener()``, that makes the requests instead of pyrosm.
+
     Returns
     -------
     GeoDataFrame
@@ -355,9 +378,10 @@ def find_extracts(area, contains_only=False, update=False, directory=None):
     """
     area = _area_geometry(area)
     directory = Path(directory) if directory is not None else download_dir()
+    net = _Net(headers, timeout, opener)
     frames = [_geofabrik_extracts(update), _bbbike_extracts()]
     try:
-        frames.append(_movisda_extracts(directory, update))
+        frames.append(_movisda_extracts(directory, update, net))
     except (*_FETCH_ERRORS, ValueError) as e:
         warnings.warn("Movisda's extract index is unavailable (%s); skipping it." % e)
     candidates = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs="EPSG:4326")
@@ -368,7 +392,7 @@ def find_extracts(area, contains_only=False, update=False, directory=None):
         overlaps = candidates.intersects(area) & ~candidates.touches(area)
         found = candidates[overlaps].copy()
     unknown = found["bytes"].isna()
-    sizes = _download_sizes(found.loc[unknown, "url"], directory, update)
+    sizes = _download_sizes(found.loc[unknown, "url"], directory, update, net)
     found["bytes"] = pd.array(
         [
             sizes.get(url) if pd.isna(size) else int(size)
@@ -448,7 +472,16 @@ def _area_geometry(area):
     return geom
 
 
-def get_data_by_area(area, crop=True, update=False, directory=None, output_path=None):
+def get_data_by_area(
+    area,
+    crop=True,
+    update=False,
+    directory=None,
+    output_path=None,
+    headers=None,
+    timeout=_TIMEOUT,
+    opener=None,
+):
     """Download the smallest single OSM extract that contains ``area``.
 
     Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and 1°/10°
@@ -484,6 +517,11 @@ def get_data_by_area(area, crop=True, update=False, directory=None, output_path=
     output_path : str, optional
         Path for the cropped file when ``crop=True`` (overrides the automatic name).
 
+    headers, timeout, opener
+        Network options for the Movisda index, size and download requests, as for
+        :func:`find_extracts`. The refresh of the vendored Geofabrik index (``update=True``)
+        does not use them.
+
     Returns
     -------
     AreaExtract
@@ -502,8 +540,9 @@ def get_data_by_area(area, crop=True, update=False, directory=None, output_path=
     from pyrosm.utils.download import download as _download_file
 
     geom = _area_geometry(area)
+    net = dict(headers=headers, timeout=timeout, opener=opener)
     candidates = find_extracts(
-        geom, contains_only=True, update=update, directory=directory
+        geom, contains_only=True, update=update, directory=directory, **net
     )
     if candidates.empty:
         raise ExtractNotFoundError(
@@ -525,7 +564,7 @@ def get_data_by_area(area, crop=True, update=False, directory=None, output_path=
         filename = "%s_%s" % (extract.provider.lower(), Path(extract.url).name)
         start = time.perf_counter()
         try:
-            full_path = _download_file(extract.url, filename, update, directory)
+            full_path = _download_file(extract.url, filename, update, directory, **net)
         except DownloadError as e:
             failed.append((extract.url, str(e)))
             errors.append(e)

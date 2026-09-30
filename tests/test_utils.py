@@ -1,4 +1,5 @@
 import email.utils
+import urllib.request
 import io
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -341,3 +342,116 @@ def test_download_resumes(
         assert info.value.attempts == attempts
         assert list(tmp_path.iterdir()) == []
     assert seen == requests
+
+
+class _Opener:
+    """An ``OpenerDirector`` stand-in that records requests and returns ``responses``."""
+
+    def __init__(self, *responses):
+        self.responses, self.requests = list(responses), []
+
+    def open(self, request, timeout=None):
+        self.requests.append((request, timeout))
+        return self.responses[len(self.requests) - 1]
+
+
+def test_open_url_opener_and_timeouts(monkeypatch):
+    """An injected opener gets the request and timeout; a (connect, read) pair builds
+    pyrosm's own opener; an opener with a pair is refused."""
+    from pyrosm.utils import download as dl
+
+    url = "https://example.invalid/x"
+    opener = _Opener("response", "response")
+    # The caller's opener needs no certificates from pyrosm and always gets the timeout.
+    monkeypatch.setattr(dl.ssl, "create_default_context", lambda **k: 1 / 0)
+    assert dl.open_url(url, headers={"User-Agent": "t/1"}, timeout=7, opener=opener)
+    assert dl.open_url(url, opener=opener)
+    sent = [(r.get_header("User-agent"), t) for r, t in opener.requests]
+    assert sent == [("t/1", 7), (dl.USER_AGENT, None)]
+    monkeypatch.undo()
+
+    built, own = [], _Opener("response")
+    monkeypatch.setattr(
+        dl.urllib.request,
+        "build_opener",
+        lambda *handlers: built.append(handlers) or own,
+    )
+    assert dl.open_url(url, timeout=(3, 30)) == "response"
+    assert [type(h) for h in built[0]] == [dl._HTTPSHandler, dl._HTTPHandler]
+    assert own.requests[0][1] == 3
+
+    with pytest.raises(ValueError, match="connect, read"):
+        dl.open_url(url, timeout=(3, 30), opener=opener)
+
+
+def test_timed_connection_sets_read_timeout(monkeypatch):
+    import http.client
+
+    from pyrosm.utils import download as dl
+
+    class Socket:
+        timeout = None
+
+        def settimeout(self, value):
+            self.timeout = value
+
+    def connect(self):
+        self.sock = Socket()
+
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", connect)
+    connection = dl._timed(http.client.HTTPConnection, 30)("example.invalid", timeout=3)
+    connection.connect()
+    assert (connection.timeout, connection.sock.timeout) == (3, 30)
+
+
+def test_download_with_caller_options(tmp_path):
+    """download() creates a missing directory, sends the caller's User-Agent through the
+    caller's opener, and keeps its own Range when it resumes."""
+    from pyrosm.utils import download as dl
+
+    etag = {"ETag": '"v1"', "Content-Length": "100"}
+    ranged = {"ETag": '"v1"', "Content-Range": "bytes 40-99/100"}
+    opener = _Opener(_Served(_BODY, 200, etag, 40), _Served(_BODY[40:], 206, ranged))
+    target = tmp_path / "new" / "dir"
+    path = dl.download(
+        "https://example.invalid/x.osm.pbf",
+        "x.osm.pbf",
+        True,
+        target,
+        headers={
+            "User-Agent": "t/1",
+            "range": "bytes=0-",
+            "Accept-Encoding": "gzip",
+            "accept-encoding": "br",
+        },
+        timeout=9,
+        opener=opener,
+    )
+    assert Path(path).read_bytes() == _BODY and Path(path).parent == target.resolve()
+    sent = [
+        (r.get_header("User-agent"), r.get_header("Range"), t)
+        for r, t in opener.requests
+    ]
+    assert sent == [("t/1", "bytes=0-", 9), ("t/1", "bytes=40-", 9)]
+    # The file is always asked for unencoded, whatever the caller accepts.
+    codings = {r.get_header("Accept-encoding") for r, _ in opener.requests}
+    assert codings == {"identity"}
+
+
+def test_open_url_keeps_credentials_on_their_origin():
+    """Credentials and cookies from the caller are not sent on after a redirect."""
+    import email.message
+
+    from pyrosm.utils import download as dl
+
+    opener = _Opener("response")
+    caller = {"User-Agent": "t/1", "Authorization": "Bearer x", "Cookie": "c=1"}
+    dl.open_url("https://example.invalid/x", headers=caller, opener=opener)
+    request = opener.requests[0][0]
+    assert request.get_header("Authorization") == "Bearer x"
+    moved = urllib.request.HTTPRedirectHandler().redirect_request(
+        request, None, 302, "Found", email.message.Message(), "https://other.invalid/x"
+    )
+    assert moved.get_header("User-agent") == "t/1"
+    assert moved.get_header("Authorization") is None
+    assert moved.get_header("Cookie") is None

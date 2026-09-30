@@ -27,29 +27,107 @@ _ATTEMPTS = 3
 _BACKOFF = 1.0
 _MAX_RETRY_AFTER = 60
 _CHUNK = 1 << 20
+# Headers that belong to the URL they were given for and are not sent on after a redirect.
+_ORIGIN_BOUND = ("authorization", "cookie", "proxy-authorization", "host")
 _STRONG_ETAG = re.compile(r'"[\x21\x23-\x7e\x80-\xff]*"')
 _CONTENT_RANGE = re.compile(r"bytes (\d{1,19})-(\d{1,19})/(\d{1,19})")
 _sleep = time.sleep
 
 
-def open_url(url, method="GET", headers=None, timeout=None):
+def _timed(connection_class, read_timeout):
+    """``connection_class`` with ``read_timeout`` set on its socket once it is connected."""
+
+    class Connection(connection_class):
+        def connect(self):
+            super().connect()
+            self.sock.settimeout(read_timeout)
+
+    return Connection
+
+
+class _HTTPSHandler(urllib.request.HTTPSHandler):
+    """Opens HTTPS connections that use one timeout to connect and another to read."""
+
+    def __init__(self, context, read_timeout):
+        super().__init__(context=context)
+        self.tls_context = context
+        self.connection = _timed(http.client.HTTPSConnection, read_timeout)
+
+    def https_open(self, req):
+        return self.do_open(self.connection, req, context=self.tls_context)
+
+
+class _HTTPHandler(urllib.request.HTTPHandler):
+    """Opens HTTP connections that use one timeout to connect and another to read."""
+
+    def __init__(self, read_timeout):
+        super().__init__()
+        self.connection = _timed(http.client.HTTPConnection, read_timeout)
+
+    def http_open(self, req):
+        return self.do_open(self.connection, req)
+
+
+def open_url(url, method="GET", headers=None, timeout=None, opener=None):
     """Open ``url`` with pyrosm's User-Agent and certifi's CA bundle.
 
-    ``headers`` are added to (or override) the default ``User-Agent`` header. ``timeout`` (in
-    seconds) limits each blocking network operation; ``None`` waits indefinitely. Returns the
-    response, usable as a context manager.
+    ``headers`` are added to (or override) the default ``User-Agent`` header; credentials,
+    cookies and ``Host`` are not sent on to the target of a redirect. ``timeout`` (in
+    seconds) limits the connect and each read; a ``(connect, read)`` pair sets them apart;
+    ``None`` waits indefinitely. ``opener`` is an object with ``open(request, timeout=...)``,
+    such as ``urllib.request.build_opener(...)``, that makes the request instead of pyrosm; it
+    takes one timeout, so a pair with an opener raises ``ValueError``. Returns the response,
+    usable as a context manager.
     """
+    split = isinstance(timeout, tuple)
+    if split and opener is not None:
+        raise ValueError(
+            "A (connect, read) timeout needs pyrosm's own opener; give one number with "
+            "an opener."
+        )
+    connect, read = timeout if split else (timeout, timeout)
+    headers = {"User-Agent": USER_AGENT, **(headers or {})}
+    bound = {k: v for k, v in headers.items() if k.lower() in _ORIGIN_BOUND}
+    request = urllib.request.Request(
+        url,
+        headers={k: v for k, v in headers.items() if k not in bound},
+        method=method,
+    )
+    for name, value in bound.items():
+        request.add_unredirected_header(name, value)
+    if opener is not None:
+        return opener.open(request, timeout=connect)
     # Build the HTTPS context from certifi's CA bundle instead of the OS trust store. On
     # Windows, loading the system certificate store can raise ssl.SSLError [ASN1:
     # NOT_ENOUGH_DATA] (a CPython bug triggered by a malformed entry in the store); certifi
     # avoids it and works the same across platforms.
     context = ssl.create_default_context(cafile=certifi.where())
-    request = urllib.request.Request(
-        url, headers={"User-Agent": USER_AGENT, **(headers or {})}, method=method
-    )
+    if split:
+        opener = urllib.request.build_opener(
+            _HTTPSHandler(context, read), _HTTPHandler(read)
+        )
+        return opener.open(request, timeout=connect)
     if timeout is None:
         return urllib.request.urlopen(request, context=context)
     return urllib.request.urlopen(request, context=context, timeout=timeout)
+
+
+class _Net:
+    """The caller's network options for pyrosm's requests: extra headers, the timeout and an
+    opener (see :func:`open_url`)."""
+
+    def __init__(self, headers=None, timeout=_TIMEOUT, opener=None):
+        self.headers = dict(headers or {})
+        self.timeout = timeout
+        self.opener = opener
+
+    def open(self, url, method="GET", headers=None):
+        """Open ``url``; pyrosm's own ``headers`` win over caller headers of the same name,
+        in any letter case."""
+        own = headers or {}
+        names = {name.lower() for name in own}
+        merged = {k: v for k, v in self.headers.items() if k.lower() not in names}
+        return open_url(url, method, {**merged, **own}, self.timeout, self.opener)
 
 
 def _content_length(value):
@@ -146,10 +224,11 @@ class _Transfer:
     partial answer that does not fit the copy, the rest of the call starts over every time.
     """
 
-    def __init__(self, url, filename, out_file):
+    def __init__(self, url, filename, out_file, net):
         self.url = url
         self.filename = filename
         self.out_file = out_file
+        self.net = net
         self.written = 0
         self.validator = None
         self.total = None
@@ -189,12 +268,14 @@ class _Transfer:
     def attempt(self):
         self.attempts += 1
         resume = self.written > 0 and self.validator is not None
-        headers = None
+        # The file's own bytes, whatever encodings the caller's headers would accept.
+        headers = {"Accept-Encoding": "identity"}
         if resume:
-            headers = {"Range": f"bytes={self.written}-", "If-Range": self.validator}
+            headers["Range"] = f"bytes={self.written}-"
+            headers["If-Range"] = self.validator
         else:
             self._restart()
-        with open_url(self.url, headers=headers, timeout=_TIMEOUT) as response:
+        with self.net.open(self.url, headers=headers) as response:
             if getattr(response, "status", 200) == 206:
                 if not resume:
                     raise self._mismatch("partial content it was not asked for")
@@ -314,18 +395,20 @@ def clear_downloads(filepath=None):
     return removed
 
 
-def download(url, filename, update, target_dir):
-    if target_dir is None:
-        target_dir = download_dir()
-    else:
-        target_dir = Path(target_dir)
-        if not target_dir.is_dir():
-            raise ValueError(f"The provided directory does not exist: " f"{target_dir}")
+def download(
+    url, filename, update, target_dir, headers=None, timeout=_TIMEOUT, opener=None
+):
+    """Download ``url`` to ``<target_dir>/<filename>`` unless it is there (or ``update``).
 
+    ``target_dir`` defaults to pyrosm's temp directory and is created when missing.
+    ``headers``, ``timeout`` and ``opener`` go to every request (see :func:`open_url`). A
+    dropped connection is resumed or retried; a failure raises
+    :class:`~pyrosm.exceptions.DownloadError`. Returns the file path as a string.
+    """
+    target_dir = download_dir() if target_dir is None else Path(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
     filepath = target_dir.resolve() / Path(filename).name
-
-    if not target_dir.exists():
-        target_dir.mkdir(parents=True)
+    net = _Net(headers, timeout, opener)
 
     # Check if file exists
     file_exists = False
@@ -336,7 +419,7 @@ def download(url, filename, update, target_dir):
     if update or file_exists is False:
 
         def fetch(out_file):
-            transfer = _Transfer(url, filename, out_file)
+            transfer = _Transfer(url, filename, out_file, net)
             while True:
                 kept = transfer.written
                 try:

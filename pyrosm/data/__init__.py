@@ -152,9 +152,15 @@ available = {
 }
 
 
-def retrieve(data, update, directory):
+def retrieve(data, update, directory, headers=None, timeout=60, opener=None):
     return download(
-        url=data["url"], filename=data["name"], update=update, target_dir=directory
+        url=data["url"],
+        filename=data["name"],
+        update=update,
+        target_dir=directory,
+        headers=headers,
+        timeout=timeout,
+        opener=opener,
     )
 
 
@@ -221,7 +227,9 @@ def search_source(name):
     return found[0][1]
 
 
-def get_data(dataset, update=False, directory=None):
+def get_data(
+    dataset, update=False, directory=None, headers=None, timeout=60, opener=None
+):
     """
     Get the path to a PBF data file, and download the data if needed.
 
@@ -236,9 +244,21 @@ def get_data(dataset, update=False, directory=None):
         with the same name exists in the temp.
 
     directory : str (optional)
-        Path to a directory where the PBF data will be downloaded.
+        Path to a directory where the PBF data will be downloaded, created when missing
         (does not apply for test data sets bundled with the package).
+
+    headers : dict (optional)
+        Extra HTTP headers for the download, e.g. ``{"User-Agent": "my-app/1.0"}``.
+
+    timeout : float | tuple
+        Seconds to wait for the server, for the connect and each read, or a
+        ``(connect, read)`` pair. Default 60.
+
+    opener : object (optional)
+        An object with ``open(request, timeout=...)``, e.g. from
+        ``urllib.request.build_opener()``, that makes the requests instead of pyrosm.
     """
+    net = dict(headers=headers, timeout=timeout, opener=opener)
 
     if not isinstance(dataset, str):
         raise ValueError(f"'dataset' should be text. Got {dataset}.")
@@ -248,36 +268,42 @@ def get_data(dataset, update=False, directory=None):
         return str((_module_path / _package_files[dataset]).resolve())
 
     elif dataset == "helsinki_region_pbf":
-        return retrieve(_helsinki_region_pbf, update, directory)
+        return retrieve(_helsinki_region_pbf, update, directory, **net)
 
     elif dataset == "helsinki_history_pbf":
-        return retrieve(_helsinki_history_pbf, update, directory)
+        return retrieve(_helsinki_history_pbf, update, directory, **net)
 
     elif dataset == "helsinki_test_history_pbf":
-        return retrieve(_helsinki_test_history_pbf, update, directory)
+        return retrieve(_helsinki_test_history_pbf, update, directory, **net)
 
     elif dataset == "ulanbator_test_pbf":
-        return retrieve(_ulanbator_test_pbf, update, directory)
+        return retrieve(_ulanbator_test_pbf, update, directory, **net)
 
     # A region-qualified name ("usa/georgia") disambiguates a name shared by
     # multiple regions; route it straight to the resolver (#162).
     elif "/" in dataset:
-        return retrieve(search_source(dataset), update, directory)
+        return retrieve(search_source(dataset), update, directory, **net)
 
     elif dataset in sources._all_sources:
-        return retrieve(search_source(dataset), update, directory)
+        return retrieve(search_source(dataset), update, directory, **net)
 
     # Users might pass city names with spaces (e.g. Rio De Janeiro)
     elif dataset.replace(" ", "") in sources._all_sources:
-        return retrieve(search_source(dataset.replace(" ", "")), update, directory)
+        return retrieve(
+            search_source(dataset.replace(" ", "")), update, directory, **net
+        )
 
     # Users might pass country names without underscores (e.g. North America)
     elif dataset.replace(" ", "_") in sources._all_sources:
-        return retrieve(search_source(dataset.replace(" ", "_")), update, directory)
+        return retrieve(
+            search_source(dataset.replace(" ", "_")), update, directory, **net
+        )
 
     # Users might pass country names with dashes instead of underscores (e.g. canary-islands)
     elif dataset.replace("-", "_") in sources._all_sources:
-        return retrieve(search_source(dataset.replace("-", "_")), update, directory)
+        return retrieve(
+            search_source(dataset.replace("-", "_")), update, directory, **net
+        )
 
     else:
         msg = "The dataset '{data}' is not available. ".format(data=dataset)
