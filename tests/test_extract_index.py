@@ -56,6 +56,7 @@ def test_vendored_indexes(loader, point, expected):
     assert gdf["id"].is_unique and gdf.geometry.is_valid.all()
     assert gdf["url"].str.match(r"https://download\.(bbbike\.org|geofabrik\.de)/").all()
     assert sorted(gdf[gdf.covers(point)]["id"]) == expected
+    assert ei._bbbike_extracts() is ei._bbbike_extracts()
 
 
 NOT_MODIFIED = HTTPError("u", 304, "Not Modified", {}, None)
@@ -115,12 +116,13 @@ def test_cached_index(
         meta_path.write_text(json.dumps(record))
         _age(meta_path, copy_age)
     calls = []
+    check = _check if response is _bad_index else None
     if callable(response):
         response = response()
     monkeypatch.setattr(ei, "open_url", _fake_open_url([response], calls))
 
     def cached_index():
-        return ei._cached_index("https://x/index.geojson", path, update, _check)
+        return ei._cached_index("https://x/index.geojson", path, update, check)
 
     if content is None:
         with pytest.raises((OSError, ValueError)):
@@ -144,6 +146,24 @@ def _index(**props):
     geometry = props.pop("geometry", {"type": "Polygon", "coordinates": square})
     feature = {"geometry": geometry, "properties": {**base, **props}}
     return json.dumps({"features": [feature]}).encode()
+
+
+def test_cached_index_304_after_the_copy_changed(tmp_path, monkeypatch):
+    path = tmp_path / "index.geojson"
+    meta_path = tmp_path / "index.geojson.etag"
+    path.write_bytes(b"old")
+    digest = hashlib.sha256(b"old").hexdigest()
+    meta_path.write_text(json.dumps({"etag": '"1"', "bytes": 3, "sha256": digest}))
+    _age(meta_path, STALE)
+
+    def replaced_meanwhile(url, method="GET", headers=None, timeout=None):
+        path.write_bytes(b"new")
+        raise NOT_MODIFIED
+
+    monkeypatch.setattr(ei, "open_url", replaced_meanwhile)
+    assert ei._cached_index("https://x/index.geojson", path) == path
+    # The 304 vouches for the old bytes only, so the check time is not refreshed.
+    assert time.time() - meta_path.stat().st_mtime > 86400
 
 
 @pytest.mark.parametrize(
@@ -201,14 +221,21 @@ def test_download_sizes(tmp_path, monkeypatch):
         return _Response(headers={"Content-Length": str(n)})
 
     calls = []
-    bad = [DOWN, _Response(), size("-5"), size("\u00b2"), size("9" * 19)]
+    bad = [
+        DOWN,
+        _Response(),
+        size("-5"),
+        size("\u00b2"),
+        size("9" * 19),
+        size("9" * 5000),
+    ]
     responses = [size("0100")] + bad
-    urls = ["https://%s" % c for c in "abcdef"]
+    urls = ["https://%s" % c for c in "abcdefg"]
     monkeypatch.setattr(ei, "open_url", _fake_open_url(responses, calls))
     with pytest.warns(UserWarning) as record:
         sizes = ei._download_sizes(urls, tmp_path)
     assert sizes == {"https://a": 100} and len(record) == len(bad)
-    assert [c[1] for c in calls] == ["HEAD"] * 6
+    assert [c[1] for c in calls] == ["HEAD"] * 7
 
     # A size is reused for a week, then asked again; update=True always asks, and a
     # malformed record counts as missing.
@@ -266,6 +293,9 @@ def test_movisda_extracts(tmp_path, monkeypatch):
         "https://osm.download.movisda.io/grid/S40E080-10-latest.osm.pbf",
     ]
     assert got["bytes"].tolist() == [188, 66, 203]
+    without_en = admin.drop(columns="name_en").to_json().encode()
+    frame = ei._movisda_frame(io.BytesIO(without_en), "admin")
+    assert frame["name"].tolist() == ["Noord-Brabant"]
     # An unchanged index file is parsed once; an unreadable one raises ValueError.
     monkeypatch.setattr(ei.gpd, "read_file", lambda *a, **k: pytest.fail("re-read"))
     assert ei._movisda_extracts(tmp_path).equals(got)

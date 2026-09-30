@@ -99,3 +99,18 @@ def test_open_url_timeout(monkeypatch, timeout, expected):
     monkeypatch.setattr(dl.urllib.request, "urlopen", urlopen)
     dl.open_url("https://example.invalid", timeout=timeout)
     assert seen == expected
+
+
+def test_write_atomic_keeps_target_when_write_fails(tmp_path):
+    from pyrosm.utils.download import write_atomic
+
+    target = tmp_path / "x.json"
+    target.write_text("old")
+
+    def fail(out_file):
+        out_file.write(b"partial")
+        raise OSError("disk full")
+
+    with pytest.raises(OSError, match="disk full"):
+        write_atomic(target, fail)
+    assert target.read_text() == "old" and sorted(tmp_path.iterdir()) == [target]
