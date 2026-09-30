@@ -625,7 +625,7 @@ def test_get_data_by_area_falls_back_to_next_extract(
 
     monkeypatch.setattr("pyrosm.utils.download.download", download)
     caplog.set_level(logging.INFO, logger="pyrosm")
-    with pytest.warns(UserWarning, match="next smallest"):
+    with pytest.warns(UserWarning, match="choosing again without it"):
         got = pyrosm.get_data_by_area(
             box(*HELSINKI),
             crop=crop,
@@ -727,3 +727,248 @@ def test_get_data_by_area_downloads_smallest_extract(tmp_path):
     # Movisda's Monaco extract (~0.5 MB) is smaller than Geofabrik's; no BBBike city covers it.
     assert (got.provider, got.extract) == ("Movisda", "MC") and got.bytes < 5_000_000
     assert len(pyrosm.OSM(got).get_buildings()) > 0
+
+
+def _rows(*rows):
+    """Candidates in ranking order from ``(provider, id, bytes, geometry, contains)``;
+    Movisda ids starting with "N" are grid tiles, the others administrative areas."""
+    urls = []
+    for provider, id_, *_ in rows:
+        kind = "grid" if provider == "Movisda" and id_.startswith("N") else "admin"
+        urls.append("https://%s/%s/%s-latest.osm.pbf" % (provider, kind, id_))
+    return gpd.GeoDataFrame(
+        {
+            "provider": [r[0] for r in rows],
+            "id": [r[1] for r in rows],
+            "name": [r[1] for r in rows],
+            "url": urls,
+            "bytes": pd.array([r[2] for r in rows], dtype="Int64"),
+            "contains": [r[4] for r in rows],
+        },
+        geometry=[r[3] for r in rows],
+        crs="EPSG:4326",
+    )
+
+
+ZERMATT = box(7.5, 45.7, 8.0, 46.1)
+WEST, EAST = box(7.4, 45.6, 7.75, 46.2), box(7.75, 45.6, 8.1, 46.2)
+ALPS = ("Geofabrik", "alps", 2360, box(5, 43, 17, 49), True)
+SWITZERLAND = ("Geofabrik", "switzerland", 521, box(5.9, 45.8, 10.5, 47.8), False)
+NORD_OVEST = ("Geofabrik", "nord-ovest", 450, box(6.6, 44.0, 9.5, 45.9), False)
+
+
+@pytest.mark.parametrize(
+    "rows, expected",
+    [
+        # A border area: two neighbouring regions are smaller than the one containing it.
+        ([ALPS, NORD_OVEST, SWITZERLAND], ["nord-ovest", "switzerland"]),
+        # Los Angeles: the containing extract (670 MB) beats eight pieces (750 MB).
+        (
+            [("Geofabrik", "socal", 670, box(7, 45, 9, 47), True)]
+            + [
+                ("BBBike", "la-%d" % n, size, box(x, 45.6, x + 0.075, 46.2), False)
+                for n, (x, size) in enumerate(
+                    zip([7.45 + 0.075 * k for k in range(8)], [90] + [95] * 6 + [90])
+                )
+            ],
+            ["socal"],
+        ),
+        # Réunion and Tenerife: the single Movisda extract is smaller than any set.
+        (
+            [
+                ("Movisda", "FR-974", 38, box(7, 45, 9, 47), True),
+                ("BBBike", "west", 30, WEST, False),
+                ("BBBike", "east", 30, EAST, False),
+            ],
+            ["FR-974"],
+        ),
+        (
+            [
+                ("Movisda", "N45E007", 23, box(7, 45, 8, 46.2), True),
+                ("Geofabrik", "west", 20, WEST, False),
+                ("Geofabrik", "east", 20, EAST, False),
+            ],
+            ["N45E007"],
+        ),
+        # Grid tiles and extracts of unknown size never join a set.
+        (
+            [
+                ALPS,
+                ("Movisda", "N45E007", 5, box(7, 45, 8, 45.9), False),
+                ("BBBike", "Zermatt", None, box(7.4, 45.9, 8.1, 46.2), False),
+                NORD_OVEST,
+                SWITZERLAND,
+            ],
+            ["nord-ovest", "switzerland"],
+        ),
+        # One Movisda extract at most, and it goes last in the merge order.
+        (
+            [
+                ALPS,
+                ("Movisda", "IT-21", 100, WEST, False),
+                ("Movisda", "IT-23", 100, EAST, False),
+                ("Geofabrik", "east", 300, EAST, False),
+            ],
+            ["east", "IT-21"],
+        ),
+        # The cheapest Movisda extract leads nowhere; another one completes a cover.
+        (
+            [
+                ALPS,
+                ("Movisda", "IT-21", 50, WEST, False),
+                ("Movisda", "IT-23", 60, EAST, False),
+                ("Geofabrik", "west", 100, WEST, False),
+            ],
+            ["west", "IT-23"],
+        ),
+        # A containing extract of unknown size loses to a set of known size.
+        (
+            [
+                ("Geofabrik", "alps", None, box(5, 43, 17, 49), True),
+                NORD_OVEST,
+                SWITZERLAND,
+            ],
+            ["nord-ovest", "switzerland"],
+        ),
+        # Nothing covers the area: the containing extract, or nothing at all.
+        ([ALPS, NORD_OVEST], ["alps"]),
+        ([NORD_OVEST], None),
+    ],
+)
+def test_choose_smallest_total(rows, expected):
+    got = ei._choose(ZERMATT, _rows(*rows), "smallest_total")
+    assert (None if got is None else got["id"].tolist()) == expected
+
+
+def test_smallest_cover_of_a_tiny_area():
+    # Smaller than the sliver the cover may leave; still one extract, not none.
+    tiny = box(7.5, 45.7, 7.500001, 45.700001)
+    assert ei._smallest_cover(tiny, _rows(NORD_OVEST))["id"].tolist() == ["nord-ovest"]
+
+
+def test_smallest_cover_prunes_redundant_extracts():
+    # Cheapest per area first takes the small piece, then the extract covering everything,
+    # which makes the small piece redundant.
+    rows = _rows(
+        ("BBBike", "piece", 10, box(7.5, 45.7, 7.55, 46.1), False),
+        ("Geofabrik", "all", 100, box(7.4, 45.6, 8.1, 46.2), False),
+    )
+    assert ei._smallest_cover(ZERMATT, rows)["id"].tolist() == ["all"]
+
+
+@pytest.fixture(scope="module")
+def helsinki_halves(tmp_path_factory):
+    """Overlapping west and east crops of the bundled Helsinki extract."""
+    folder = tmp_path_factory.mktemp("halves")
+    helsinki = pyrosm.get_data("helsinki_pbf")
+    halves = {}
+    for name, bounds in (
+        ("west", [24.935, 60.164, 24.946, 60.179]),
+        ("east", [24.942, 60.164, 24.953, 60.179]),
+    ):
+        out = str(folder / ("%s.osm.pbf" % name))
+        pyrosm.OSM(helsinki, bounding_box=bounds).to_pbf(output_path=out)
+        halves[name] = out
+    return halves
+
+
+def _buildings(path):
+    return pyrosm.OSM(str(path)).get_buildings().set_index("id").geometry
+
+
+@pytest.mark.parametrize("crop", [False, True])
+def test_get_data_by_area_merges_a_smaller_set(
+    tmp_path, monkeypatch, helsinki_halves, crop
+):
+    area = box(24.938, 60.165, 24.950, 60.178)
+    candidates = _rows(
+        ("Geofabrik", "finland", 10_000, box(19, 59, 32, 71), True),
+        ("Movisda", "east", 100, box(24.942, 60.164, 24.953, 60.179), False),
+        ("Geofabrik", "west", 100, box(24.935, 60.164, 24.946, 60.179), False),
+    )
+    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: candidates)
+    paths = dict(
+        zip(candidates["url"], ["", *reversed(list(helsinki_halves.values()))])
+    )
+    monkeypatch.setattr(
+        "pyrosm.utils.download.download", lambda url, *a, **k: paths[url]
+    )
+    merged_inputs = []
+    real_merge = pyrosm.pbf_export.merge_pbf
+    monkeypatch.setattr(
+        pyrosm.pbf_export,
+        "merge_pbf",
+        lambda inputs, *a, **k: merged_inputs.append(inputs)
+        or real_merge(inputs, *a, **k),
+    )
+    got = pyrosm.get_data_by_area(
+        area, crop=crop, directory=tmp_path, strategy="smallest_total"
+    )
+    assert (got.provider, got.extract, got.url, got.bytes) == (
+        "Geofabrik+Movisda",
+        "west+east",
+        None,
+        200,
+    )
+    # Movisda's extract goes last, so complete copies win ties in the merge.
+    assert merged_inputs == [[helsinki_halves["west"], helsinki_halves["east"]]]
+    assert [s.extract for s in got.sources] == ["west", "east"]
+    west, east = (_buildings(helsinki_halves[k]) for k in ("west", "east"))
+    merged = set(_buildings(got.path).index)
+    # A building inside the area found in only one input, for each input, and a building
+    # wholly outside the area's bounding box.
+    inside = west.index[west.within(area) & ~west.index.isin(east.index)][0]
+    inside_east = east.index[east.within(area) & ~east.index.isin(west.index)][0]
+    both = pd.concat([west, east])
+    outside = both.index[both.disjoint(box(*area.bounds))][0]
+    assert {inside, inside_east} <= merged
+    assert (outside in merged) is not crop
+    if crop:
+        assert Path(got).name == "bbox_24.938_60.165_24.95_60.178.osm.pbf"
+    else:
+        urls = "\n".join(s.url for s in got.sources).encode()
+        name = "merged_%s.osm.pbf" % hashlib.sha1(urls).hexdigest()[:12]
+        assert Path(got).name == name and merged == set(west.index) | set(east.index)
+        # The merge result depends on the input order, and so does the name.
+        reverse = ei._write_area_file(area, got.sources[::-1], False, None, tmp_path)
+        assert merged_inputs[1] == [helsinki_halves["east"], helsinki_halves["west"]]
+        assert Path(reverse).name != Path(got).name
+
+
+def test_get_data_by_area_chooses_again_after_a_failed_set_member(
+    tmp_path, monkeypatch
+):
+    # The containing extract's size is unknown, so the set is tried first.
+    alps = ("Geofabrik", "alps", None, box(5, 43, 17, 49), True)
+    candidates = _rows(alps, NORD_OVEST, SWITZERLAND)
+    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: candidates)
+    helsinki = pyrosm.get_data("helsinki_pbf")
+    tried = []
+
+    def download(url, filename, update, directory, **net):
+        tried.append(filename)
+        if "switzerland" in url:
+            raise DownloadError("down", url=url, attempts=3)
+        return helsinki
+
+    monkeypatch.setattr("pyrosm.utils.download.download", download)
+    with pytest.warns(UserWarning, match="choosing again"):
+        got = pyrosm.get_data_by_area(
+            ZERMATT, crop=False, directory=tmp_path, strategy="smallest_total"
+        )
+    # Without switzerland there is no set, so the containing extract is used.
+    assert tried == [
+        "geofabrik_nord-ovest-latest.osm.pbf",
+        "geofabrik_switzerland-latest.osm.pbf",
+        "geofabrik_alps-latest.osm.pbf",
+    ]
+    assert (got.extract, got.bytes, [f[0] for f in got.failed]) == (
+        "alps",
+        None,
+        [candidates["url"][2]],
+    )
+
+
+def test_get_data_by_area_rejects_unknown_strategy():
+    with pytest.raises(ValueError, match="strategy must be one of single"):
+        pyrosm.get_data_by_area(ZERMATT, strategy="cheapest")

@@ -1,4 +1,5 @@
-"""Find and download the smallest single OSM extract that contains an area.
+"""Find and download the OSM extract(s) for an area: the smallest single extract that
+contains it, or a smaller set of extracts merged into one file.
 
 Public entry points: :func:`find_extracts` lists the candidates, :func:`get_data_by_area`
 downloads the best one. Candidates come from three providers:
@@ -10,8 +11,8 @@ downloads the best one. Candidates come from three providers:
   index cannot be fetched and nothing is cached, the copy vendored as
   ``movisda_grid_index.geojson.gz`` is used).
 
-``get_data_by_area`` never merges extracts, so its answer is always one file. Candidates are
-ranked by download size: Movisda's index lists sizes; for the others a HEAD request asks the
+``get_data_by_area`` returns one extract, or with ``strategy="smallest_total"`` a smaller set of
+extracts merged into one file. Candidates are ranked by download size: Movisda's index lists sizes; for the others a HEAD request asks the
 server, and the answer is cached for a week. Refresh the vendored snapshots with
 ``scripts/update_extract_indexes.py``.
 """
@@ -38,6 +39,7 @@ from pyrosm.data.geofabrik_index import (
     _bbox_filename,
     _bbox_to_polygon,
     _crop,
+    _default_target_dir,
 )
 from pyrosm.data.geofabrik_index import _load_index as _load_geofabrik_index
 from pyrosm.exceptions import (
@@ -65,6 +67,10 @@ _MOVISDA_INDEXES = {
 _INDEX_MAX_AGE = 24 * 3600
 _SIZE_MAX_AGE = 7 * 24 * 3600
 _COLUMNS = ["provider", "id", "name", "url", "bytes", "contains", "geometry"]
+_STRATEGIES = ("single", "smallest_total")
+# Uncovered area (m²) below which a set of extracts counts as covering the area; provider
+# outlines are simplified, so their edges leave slivers.
+_SLIVER_M2 = 1.0
 
 logger = logging.getLogger(__name__)
 
@@ -476,29 +482,129 @@ def find_extracts(
     return ranked[_COLUMNS].reset_index(drop=True)
 
 
+def _prune(target, chosen, shapes, sizes):
+    """Drop extracts from ``chosen``, largest first, while the rest still cover ``target``."""
+    for i in sorted(chosen, key=lambda i: -sizes[i]):
+        rest = [j for j in chosen if j != i]
+        uncovered = target.difference(shapely.union_all(shapes.loc[rest]))
+        if rest and uncovered.area < _SLIVER_M2:
+            chosen = rest
+    return chosen
+
+
+def _greedy_cover(target, shapes, sizes, chosen, pool):
+    """Extend ``chosen`` with extracts from ``pool`` until they cover ``target``, each time
+    taking the lowest ``bytes`` per area newly covered; ``None`` when no cover is found.
+    """
+    chosen, pool = list(chosen), list(pool)
+    remaining = target.difference(shapely.union_all(shapes.loc[chosen]))
+    # At least one extract, even for an area smaller than a sliver.
+    while not chosen or remaining.area >= _SLIVER_M2:
+        gains = {i: shapes[i].intersection(remaining).area for i in pool}
+        useful = [i for i in pool if gains[i] > 0]
+        if not useful:
+            return None
+        pick = min(useful, key=lambda i: (sizes[i] / gains[i], sizes[i], i))
+        chosen.append(pick)
+        pool.remove(pick)
+        remaining = remaining.difference(shapes[pick])
+    return chosen
+
+
+def _smallest_cover(area, candidates):
+    """The extracts that together cover ``area`` with a small total download, in merge order,
+    or ``None`` when they cannot cover it.
+
+    Candidates are rows of :func:`find_extracts`, in its ranking order. Geofabrik and BBBike
+    extracts and Movisda administrative extracts with a known size may be used, at most one of
+    them from Movisda; Movisda grid tiles never are (they drop closed ways at tile edges). The
+    set is found greedily (lowest bytes per area newly covered), once without Movisda and once
+    starting from each Movisda extract, then pruned; the cheapest result wins. It is a good
+    set, not necessarily the smallest possible. Movisda comes last in the merge order, so a
+    complete copy of a way that crosses its border wins :func:`pyrosm.merge_pbf`'s ties.
+    """
+    known = candidates[candidates["bytes"].notna()]
+    movisda = known["provider"] == "Movisda"
+    admin = movisda & known["url"].str.contains("/admin/", regex=False)
+    known = known[~movisda | admin]
+    target = gpd.GeoSeries([area], crs="EPSG:4326").to_crs(_EQUAL_AREA_CRS).iloc[0]
+    # Clipped to the area once, so the greedy steps work on small shapes; sizes stay exact
+    # Python integers.
+    shapes = known.geometry.to_crs(_EQUAL_AREA_CRS).intersection(target)
+    sizes = {i: int(size) for i, size in known["bytes"].items()}
+    others = list(known.index[known["provider"] != "Movisda"])
+    best = None
+    for seed in [None] + list(known.index[known["provider"] == "Movisda"]):
+        start = [] if seed is None else [seed]
+        chosen = _greedy_cover(target, shapes, sizes, start, others)
+        if chosen is None:
+            continue
+        chosen = _prune(target, chosen, shapes, sizes)
+        key = (sum(sizes[i] for i in chosen), len(chosen))
+        if best is None or key < best[0]:
+            best = (key, chosen)
+    if best is None:
+        return None
+    order = sorted(best[1], key=lambda i: (known.at[i, "provider"] == "Movisda", i))
+    return known.loc[order]
+
+
+def _choose(area, candidates, strategy):
+    """The extract(s) to download, or ``None``: the first containing extract; with
+    ``strategy="smallest_total"`` a set of extracts when its total is smaller than that
+    extract, or when that extract's size is unknown."""
+    single = candidates[candidates["contains"]].iloc[:1]
+    if strategy == "single":
+        return single if len(single) else None
+    cover = _smallest_cover(area, candidates)
+    if cover is None:
+        return single if len(single) else None
+    size = single["bytes"].iloc[0] if len(single) else pd.NA
+    if pd.notna(size) and int(size) <= sum(int(b) for b in cover["bytes"]):
+        return single
+    return cover
+
+
+@dataclass
+class ExtractSource:
+    """One downloaded extract that went into an :class:`AreaExtract`."""
+
+    provider: str
+    extract: str
+    url: str
+    bytes: object
+    path: str
+
+
 @dataclass
 class AreaExtract:
-    """The file :func:`get_data_by_area` wrote and the extract it came from.
+    """The file :func:`get_data_by_area` wrote and the extract(s) it came from.
 
     It can be used as a path, e.g. ``OSM(get_data_by_area(area))``.
 
     Attributes
     ----------
     path : str
-        The cropped file (or the full extract with ``crop=False``).
+        The cropped file; with ``crop=False`` the full extract, or the merged extracts.
     provider : str
-        ``"Geofabrik"``, ``"BBBike"`` or ``"Movisda"``.
+        ``"Geofabrik"``, ``"BBBike"`` or ``"Movisda"``; for merged extracts their providers
+        joined with ``"+"`` in merge order.
     extract : str
         The extract's id at the provider, e.g. ``"finland"``, ``"Basel"``, ``"NL-NB"`` or a grid
-        tile such as ``"N60E024"`` (south-west corner; ``"-10"`` marks a 10° tile).
-    url : str
-        The extract's download URL.
+        tile such as ``"N60E024"`` (south-west corner; ``"-10"`` marks a 10° tile); for merged
+        extracts their ids joined with ``"+"``.
+    url : str or None
+        The extract's download URL; ``None`` for merged extracts (see ``sources``).
     bytes : int or None
         The extract's download size, if the provider reported it.
     download_seconds, crop_seconds : float
         Time spent downloading (near zero when the extract was already downloaded) and cropping.
     failed : list of (str, str)
         ``(url, error message)`` for smaller extracts whose download failed before this one.
+    sources : list of ExtractSource
+        The downloaded extracts, in merge order: one for a single extract, several for a merged
+        one. For a merged file ``provider`` and ``extract`` join theirs with ``"+"``, ``url``
+        is ``None`` and ``bytes`` is their total; ``crop_seconds`` then covers the merge.
     """
 
     path: str
@@ -509,6 +615,7 @@ class AreaExtract:
     download_seconds: float
     crop_seconds: float
     failed: list = field(default_factory=list)
+    sources: list = field(default_factory=list)
 
     def __fspath__(self):
         return self.path
@@ -538,6 +645,35 @@ def _area_geometry(area):
     return geom
 
 
+def _write_area_file(area, sources, crop, output_path, directory):
+    """The file for :class:`AreaExtract`: the one extract, cropped to the area's bounding box
+    when ``crop``; several extracts merged (and cropped) with :func:`pyrosm.merge_pbf`.
+    """
+    envelope = box(*area.bounds)
+    if len(sources) == 1:
+        if not crop:
+            return sources[0].path
+        return _crop(
+            sources[0].path,
+            envelope,
+            _bbox_filename(envelope.bounds),
+            output_path,
+            directory,
+        )
+    from pyrosm.pbf_export import merge_pbf
+
+    if crop:
+        name = _bbox_filename(envelope.bounds)
+    else:
+        urls = "\n".join(s.url for s in sources).encode()
+        name = "merged_%s.osm.pbf" % hashlib.sha1(urls).hexdigest()[:12]
+    target = output_path or str(_default_target_dir(directory) / name)
+    Path(target).resolve().parent.mkdir(parents=True, exist_ok=True)
+    return merge_pbf(
+        [s.path for s in sources], target, bounding_box=envelope if crop else None
+    )
+
+
 def get_data_by_area(
     area,
     crop=True,
@@ -547,20 +683,25 @@ def get_data_by_area(
     headers=None,
     timeout=_TIMEOUT,
     opener=None,
+    strategy="single",
 ):
-    """Download the smallest single OSM extract that contains ``area``.
+    """Download the OSM data for ``area``: the smallest single extract that contains it, or a
+    smaller set of extracts merged into one file.
 
     Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and 1°/10°
     grid tiles, keeps those that contain the whole area, and downloads the one with the smallest
-    file (the first row of ``find_extracts(area, contains_only=True)``). Extracts are never
-    merged. A download that fails with a network error or HTTP status 408, 425, 429 or 5xx is
+    file (the first row of ``find_extracts(area, contains_only=True)``). With
+    ``strategy="smallest_total"`` it may instead download several extracts that together cover
+    the area and merge them into one file (see ``strategy``). A download that fails with a network error or HTTP status 408, 425, 429 or 5xx is
     tried up to three times, waiting 1 s, 2 s or the server's ``Retry-After`` in between; when it
-    still fails, the next smallest extract is tried. By default the extract is then cropped to
+    still fails, the choice is made again without it. By default the file is then cropped to
     the area's bounding box.
 
     Movisda cuts its extracts exactly at their edges, so features crossing the edge of a Movisda
-    extract are clipped or missing there. The extract contains the whole area, so this only
-    affects the part of the bounding box outside the area.
+    extract are clipped or missing there. A single Movisda extract contains the whole area, so
+    this only affects the part of the bounding box outside the area; in a merged set the
+    Movisda extract goes last, so where another extract holds a complete copy of such a
+    feature, that copy is kept.
 
     Parameters
     ----------
@@ -581,12 +722,23 @@ def get_data_by_area(
         (default) uses a pyrosm temp directory.
 
     output_path : str, optional
-        Path for the cropped file when ``crop=True`` (overrides the automatic name).
+        Path for the file pyrosm writes (overrides the automatic name): the cropped file, or
+        with ``crop=False`` the merged file of a ``"smallest_total"`` set.
 
     headers, timeout, opener
         Network options for the Movisda index, size and download requests, as for
         :func:`find_extracts`. The refresh of the vendored Geofabrik index (``update=True``)
         does not use them.
+
+    strategy : str
+        ``"single"`` (default): the smallest extract that contains the area.
+        ``"smallest_total"``: when extracts that together cover the area are smaller in total
+        than that extract (or its size is unknown), download those and merge them with
+        :func:`pyrosm.merge_pbf`. The set is found greedily (lowest size per area newly
+        covered), so it is small but not guaranteed to be the smallest possible. Geofabrik,
+        BBBike and Movisda administrative extracts may be combined, at most one of them from
+        Movisda, which goes last in the merge; Movisda grid tiles are never combined. With
+        ``crop=False`` the merged file is named ``merged_<hash of the URLs>.osm.pbf``.
 
     Returns
     -------
@@ -605,64 +757,69 @@ def get_data_by_area(
     """
     from pyrosm.utils.download import download as _download_file
 
+    if strategy not in _STRATEGIES:
+        raise ValueError(
+            "strategy must be one of %s; got %r." % (", ".join(_STRATEGIES), strategy)
+        )
     geom = _area_geometry(area)
     net = dict(headers=headers, timeout=timeout, opener=opener)
     candidates = find_extracts(
-        geom, contains_only=True, update=update, directory=directory, **net
+        geom,
+        contains_only=strategy == "single",
+        update=update,
+        directory=directory,
+        **net,
     )
-    if candidates.empty:
+    failed, errors = [], []
+    while (chosen := _choose(geom, candidates, strategy)) is not None:
+        sources = []
+        start = time.perf_counter()
+        for extract in chosen.itertuples():
+            size = "unknown size"
+            if pd.notna(extract.bytes):
+                size = "%.1f MB" % (extract.bytes / 1e6)
+            logger.info(
+                "Downloading %s '%s' (%s)", extract.provider, extract.name, size
+            )
+            filename = "%s_%s" % (extract.provider.lower(), Path(extract.url).name)
+            try:
+                path = _download_file(extract.url, filename, update, directory, **net)
+            except DownloadError as e:
+                failed.append((extract.url, str(e)))
+                errors.append(e)
+                warnings.warn(
+                    "Could not download %s (%s); choosing again without it."
+                    % (extract.url, e)
+                )
+                candidates = candidates[candidates["url"] != extract.url]
+                break
+            bytes_ = None if pd.isna(extract.bytes) else int(extract.bytes)
+            sources.append(
+                ExtractSource(extract.provider, extract.id, extract.url, bytes_, path)
+            )
+        else:
+            download_seconds = time.perf_counter() - start
+            start = time.perf_counter()
+            path = _write_area_file(geom, sources, crop, output_path, directory)
+            merged = len(sources) > 1
+            total = [s.bytes for s in sources]
+            return AreaExtract(
+                path=path,
+                provider="+".join(s.provider for s in sources),
+                extract="+".join(s.extract for s in sources),
+                url=None if merged else sources[0].url,
+                bytes=sum(total) if None not in total else None,
+                download_seconds=download_seconds,
+                crop_seconds=time.perf_counter() - start,
+                failed=failed,
+                sources=sources,
+            )
+    if not failed:
         raise ExtractNotFoundError(
             "No Geofabrik, BBBike or Movisda extract contains the whole area."
         )
-    failed, errors = [], []
-    for extract in candidates.itertuples():
-        size = (
-            "unknown size"
-            if pd.isna(extract.bytes)
-            else "%.1f MB" % (extract.bytes / 1e6)
-        )
-        logger.info(
-            "Smallest extract containing the area: %s '%s' (%s)",
-            extract.provider,
-            extract.name,
-            size,
-        )
-        filename = "%s_%s" % (extract.provider.lower(), Path(extract.url).name)
-        start = time.perf_counter()
-        try:
-            full_path = _download_file(extract.url, filename, update, directory, **net)
-        except DownloadError as e:
-            failed.append((extract.url, str(e)))
-            errors.append(e)
-            warnings.warn(
-                "Could not download %s (%s); trying the next smallest extract."
-                % (extract.url, e)
-            )
-            continue
-        download_seconds = time.perf_counter() - start
-        start = time.perf_counter()
-        path = full_path
-        if crop:
-            envelope = box(*geom.bounds)
-            path = _crop(
-                full_path,
-                envelope,
-                _bbox_filename(envelope.bounds),
-                output_path,
-                directory,
-            )
-        return AreaExtract(
-            path=path,
-            provider=extract.provider,
-            extract=extract.id,
-            url=extract.url,
-            bytes=None if pd.isna(extract.bytes) else int(extract.bytes),
-            download_seconds=download_seconds,
-            crop_seconds=time.perf_counter() - start,
-            failed=failed,
-        )
     raise ExtractDownloadError(
-        "Could not download any of the %d extracts that contain the area: %s"
+        "Could not download any of the %d extracts tried for the area: %s"
         % (len(failed), "; ".join("%s (%s)" % f for f in failed)),
         failed,
         errors=errors,
