@@ -1831,11 +1831,16 @@ cdef _header_bounds(headers):
 
 
 cdef _fingerprint(path):
-    """Identity and change times of a path and of the file it resolves to."""
+    """Identity of a path and of the file it resolves to, and that file's size and
+    modification time.
+
+    Change times are left out: sync clients such as OneDrive update them when they
+    touch a file's metadata, which leaves its contents unchanged.
+    """
     link, stat = os.lstat(path), os.stat(path)
     return (
-        link.st_dev, link.st_ino, link.st_ctime_ns,
-        stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
+        link.st_dev, link.st_ino,
+        stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns,
     )
 
 
@@ -1895,7 +1900,8 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     ------
     ValueError
         When an input cannot be read as a PBF, is not supported, or is not sorted
-        by type then id. The message names the file.
+        by type then id, or when an input's size or modification time changes (or
+        the file is replaced) while the merge runs. The message names the file.
 
     Examples
     --------
