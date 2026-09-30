@@ -85,3 +85,32 @@ def test_OSH_file_without_timestamp(helsinki_history_pbf):
 
     # Should give warning and update the current_timestamp
     assert osm._current_timestamp > 0
+
+
+@pytest.mark.parametrize("timeout, expected", [(None, {}), (5, {"timeout": 5})])
+def test_open_url_timeout(monkeypatch, timeout, expected):
+    from pyrosm.utils import download as dl
+
+    seen = {}
+
+    def urlopen(request, context=None, **kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setattr(dl.urllib.request, "urlopen", urlopen)
+    dl.open_url("https://example.invalid", timeout=timeout)
+    assert seen == expected
+
+
+def test_write_atomic_keeps_target_when_write_fails(tmp_path):
+    from pyrosm.utils.download import write_atomic
+
+    target = tmp_path / "x.json"
+    target.write_text("old")
+
+    def fail(out_file):
+        out_file.write(b"partial")
+        raise OSError("disk full")
+
+    with pytest.raises(OSError, match="disk full"):
+        write_atomic(target, fail)
+    assert target.read_text() == "old" and sorted(tmp_path.iterdir()) == [target]

@@ -18,18 +18,14 @@ point at one.
 import json
 import os
 import re
-import ssl
 import urllib.parse
-import urllib.request
 from urllib.error import URLError
 
-import certifi
 from shapely.geometry import box, shape
 
-from pyrosm import __version__
+from pyrosm.utils.download import open_url
 
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org"
-_DEFAULT_USER_AGENT = "pyrosm/%s (+https://github.com/pyrosm/pyrosm)" % __version__
 
 
 def geocode(query, polygon=True, base_url=_NOMINATIM_URL, user_agent=None):
@@ -76,12 +72,9 @@ def geocode(query, polygon=True, base_url=_NOMINATIM_URL, user_agent=None):
         }
     )
     url = "%s/search?%s" % (base_url.rstrip("/"), params)
-    request = urllib.request.Request(
-        url, headers={"User-Agent": user_agent or _DEFAULT_USER_AGENT}
-    )
-    context = ssl.create_default_context(cafile=certifi.where())
+    headers = {"User-Agent": user_agent} if user_agent else None
     try:
-        with urllib.request.urlopen(request, context=context) as response:
+        with open_url(url, headers=headers) as response:
             results = json.loads(response.read())
     except URLError as e:
         raise ValueError(

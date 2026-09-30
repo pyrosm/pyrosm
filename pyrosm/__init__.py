@@ -12,9 +12,11 @@ __all__ = [
     "OSM",
     "geocode",
     "get_data",
+    "get_data_by_area",
     "get_data_by_bbox",
     "get_data_by_geocoding",
     "get_path",
+    "merge_pbf",
 ]
 
 
@@ -27,6 +29,10 @@ def __getattr__(name):
         from pyrosm.data import get_data, get_path
 
         return get_data if name == "get_data" else get_path
+    if name == "get_data_by_area":
+        from pyrosm.data import get_data_by_area
+
+        return get_data_by_area
     if name == "get_data_by_bbox":
         from pyrosm.data import get_data_by_bbox
 
@@ -35,4 +41,8 @@ def __getattr__(name):
         from pyrosm.data import geocode, get_data_by_geocoding
 
         return geocode if name == "geocode" else get_data_by_geocoding
+    if name == "merge_pbf":
+        from pyrosm.pbf_export import merge_pbf
+
+        return merge_pbf
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

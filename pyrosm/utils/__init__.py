@@ -1,11 +1,6 @@
 from shapely import ops
 from shapely.geometry import MultiLineString, Polygon, MultiPolygon, box
-from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
-from pyrosm.proto.osmformat_pb2 import HeaderBlock
-from pyrosm.exceptions import PBFNotImplemented, InvalidOSMFileError
-from google.protobuf.message import DecodeError
-import zlib
-from struct import unpack
+from pyrosm.exceptions import PBFNotImplemented
 import os
 from pathlib import Path
 import geopandas as gpd
@@ -227,74 +222,35 @@ def validate_edge_gdf(edges):
             )
 
 
-def valid_header_block(header_block):
+def valid_header_block(header_block, filepath=None):
     for feature in header_block.required_features:
         if not (feature in ("OsmSchema-V0.6", "DenseNodes", "HistoricalInformation")):
-            raise PBFNotImplemented("Required feature %s not implemented!", feature)
+            source = f"'{filepath}'" if filepath is not None else "The PBF file"
+            raise PBFNotImplemented(
+                f"{source} requires the PBF feature '{feature}', which pyrosm does "
+                "not support."
+            )
     return True
 
 
-# The OSM PBF spec caps a BlobHeader at 64 KiB; a larger declared size is a
-# strong signal the file is not an OSM PBF (matches osmium's check).
-_MAX_BLOB_HEADER_SIZE = 64 * 1024
-
-
 def get_bounding_box(filepath):
-    invalid = (
-        f"'{filepath}' is not a valid OSM PBF file. Pyrosm reads OpenStreetMap "
-        f"data in the OSM PBF format "
-        f"(https://wiki.openstreetmap.org/wiki/PBF_Format); this file does not "
-        f"follow the OSM PBF schema"
+    from pyrosm.pbf_export import read_header_block
+
+    header_block = read_header_block(filepath)
+    # Validate required features (raises PBFNotImplemented on unknown ones).
+    valid_header_block(header_block, filepath)
+
+    # Parse the optional data bounding box (in nano-degrees).
+    if not header_block.HasField("bbox"):
+        return None
+    bb = header_block.bbox
+    div = 1000000000
+    return box(
+        bb.left / div,
+        bb.bottom / div,
+        bb.right / div,
+        bb.top / div,
     )
-    with open(filepath, "rb") as f:
-        # The first fileblock of an OSM PBF is an 'OSMHeader' BlobHeader.
-        buf = f.read(4)
-        if len(buf) < 4:
-            raise InvalidOSMFileError(
-                invalid + " (file is too short to contain a header)."
-            )
-        msg_len = unpack("!L", buf)[0]
-        if msg_len > _MAX_BLOB_HEADER_SIZE:
-            raise InvalidOSMFileError(
-                invalid + f" (declared BlobHeader size {msg_len} exceeds the "
-                f"{_MAX_BLOB_HEADER_SIZE}-byte maximum)."
-            )
-        blob_header = BlobHeader()
-        try:
-            blob_header.ParseFromString(f.read(msg_len))
-        except DecodeError:
-            raise InvalidOSMFileError(
-                invalid + " (the BlobHeader could not be parsed)."
-            ) from None
-        if blob_header.type != "OSMHeader":
-            raise InvalidOSMFileError(
-                invalid
-                + f" (first block is '{blob_header.type}', expected 'OSMHeader')."
-            )
-
-        blob = Blob()
-        try:
-            blob.ParseFromString(f.read(blob_header.datasize))
-            blob_data = zlib.decompress(blob.zlib_data)
-            header_block = HeaderBlock()
-            header_block.ParseFromString(blob_data)
-        except (DecodeError, zlib.error) as e:
-            raise InvalidOSMFileError(invalid + f" ({e}).") from None
-
-        # Validate required features (raises PBFNotImplemented on unknown ones).
-        valid_header_block(header_block)
-
-        # Parse the optional data bounding box (in nano-degrees).
-        if not header_block.HasField("bbox"):
-            return None
-        bb = header_block.bbox
-        div = 1000000000
-        return box(
-            bb.left / div,
-            bb.bottom / div,
-            bb.right / div,
-            bb.top / div,
-        )
 
 
 def datetime_to_unix_time(dt):

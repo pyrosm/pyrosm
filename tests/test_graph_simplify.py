@@ -332,7 +332,7 @@ def test_osmnx_equivalence(bbox):
     from pyrosm.graphs import get_directed_edges
     import pyrosm.graph_simplify as gs
 
-    osm = OSM(get_data("helsinki", update=False), bounding_box=bbox)
+    osm = OSM(get_data("helsinki_region_pbf"), bounding_box=bbox)
     nodes, edges = osm.get_network("driving", nodes=True)
     _, directed = get_directed_edges(nodes, edges, network_type="driving")
     directed = directed.reset_index(drop=True)
@@ -404,7 +404,7 @@ def test_to_graph_simplify_integration():
     from pyrosm import OSM, get_data
 
     osm = OSM(
-        get_data("helsinki", update=False), bounding_box=[24.93, 60.16, 24.95, 60.17]
+        get_data("helsinki_region_pbf"), bounding_box=[24.93, 60.16, 24.95, 60.17]
     )
     nodes, edges = osm.get_network("driving", nodes=True)
     full = osm.to_graph(

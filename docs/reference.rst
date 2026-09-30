@@ -42,14 +42,15 @@ Exporting to a graph
 
    OSM.to_graph
 
-Saving and cropping to PBF
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Saving, cropping and merging PBF files
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. autosummary::
    :toctree: api/
 
    OSM.to_pbf
    OSM.write_pbf
+   merge_pbf
 
 Cache and downloads
 ~~~~~~~~~~~~~~~~~~~~~
@@ -69,6 +70,7 @@ Downloading data
    :toctree: api/
 
    get_data
+   get_data_by_area
    get_data_by_bbox
    geocode
    get_data_by_geocoding

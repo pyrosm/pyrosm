@@ -120,7 +120,9 @@ def _reference_walk(indptr, indices, edge_id, is_endpoint, src, remove_rings):
 
     Returns (chain_edge_ids, chain_ptr): chain ``k`` consists of the original
     directed-row indices ``chain_edge_ids[chain_ptr[k]:chain_ptr[k+1]]``, in walk
-    order. Each directed row is emitted in exactly one chain.
+    order. Each directed row is emitted in at most one chain: where several rows run
+    between the same two consecutive nodes of a chain that starts at an endpoint, the
+    chain keeps the first and the others are dropped, as in OSMnx.
     """
     m = indices.shape[0]
     n_nodes = indptr.shape[0] - 1
@@ -128,11 +130,18 @@ def _reference_walk(indptr, indices, edge_id, is_endpoint, src, remove_rings):
     chain_edge_ids = []
     chain_ptr = [0]
 
-    def _walk_from(start_pos, start_node):
+    def _drop_parallels(a, b):
+        for q in range(indptr[a], indptr[a + 1]):
+            if indices[q] == b:
+                visited[q] = True
+
+    def _walk_from(start_pos, start_node, drop_duplicates):
         visited[start_pos] = True
         chain = [int(edge_id[start_pos])]
         prev = start_node
         cur = int(indices[start_pos])
+        if drop_duplicates and not is_endpoint[cur]:
+            _drop_parallels(start_node, cur)
         while not is_endpoint[cur]:
             nxt = -1
             for q in range(indptr[cur], indptr[cur + 1]):
@@ -143,6 +152,8 @@ def _reference_walk(indptr, indices, edge_id, is_endpoint, src, remove_rings):
                 break  # OSM digitization quirk / one-way dead structure
             visited[nxt] = True
             chain.append(int(edge_id[nxt]))
+            if drop_duplicates:
+                _drop_parallels(cur, int(indices[nxt]))
             prev = cur
             cur = int(indices[nxt])
         chain_edge_ids.extend(chain)
@@ -150,18 +161,19 @@ def _reference_walk(indptr, indices, edge_id, is_endpoint, src, remove_rings):
 
     # Chains that start at an endpoint (interstitial chains + endpoint->endpoint edges).
     # A walk halts at endpoints, so an endpoint's out-edge is never consumed mid-chain;
-    # each is walked exactly once as a start, so no visited-check is needed here.
+    # it is visited already only when it duplicates the first step of an earlier chain.
     for e in range(n_nodes):
         if not is_endpoint[e]:
             continue
         for p in range(indptr[e], indptr[e + 1]):
-            _walk_from(p, e)
+            if not visited[p]:
+                _walk_from(p, e, True)
 
     # Remaining unvisited edges belong to endpoint-free rings.
     if not remove_rings:
         for p in range(m):
             if not visited[p]:
-                _walk_from(p, int(src[p]))
+                _walk_from(p, int(src[p]), False)
 
     return (
         np.asarray(chain_edge_ids, dtype=np.int64),
@@ -256,6 +268,10 @@ def simplify_graph(
     the semantics of ``osmnx.simplification.simplify_graph``. Operates on the *directed*
     representation pyrosm builds in ``get_directed_edges`` (two reciprocal rows per two-way
     street), before the data is handed to an exporter.
+
+    Where two or more edges run between the same two consecutive nodes of a chain
+    (typically duplicate OSM ways drawn over one street), only the first is kept, as in
+    OSMnx. Parallel edges between two endpoints stay separate.
 
     The implementation is graph-library free: it uses only numpy/pandas/shapely plus one
     Cython kernel (``pyrosm._simplify_walk``) for the inherently sequential chain walk. A

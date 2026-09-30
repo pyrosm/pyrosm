@@ -895,7 +895,8 @@ def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):
     """Downloads must build the HTTPS context from certifi's CA bundle, not the
     OS trust store: on Windows, loading the system certificate store can raise
     ssl.SSLError [ASN1: NOT_ENOUGH_DATA] (a CPython bug on a malformed store
-    entry), which aborted every download-backed test on the windows runners."""
+    entry), which aborted every download-backed test on the windows runners.
+    They also identify themselves with pyrosm's User-Agent."""
     import io
     import ssl
 
@@ -911,9 +912,12 @@ def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):
         # Windows ssl bug under test). fake_urlopen ignores the context anyway.
         return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
-    def fake_urlopen(url, context=None):
+    def fake_urlopen(request, context=None, timeout=None):
         captured["context"] = context
-        return io.BytesIO(b"x" * 50000)
+        captured["user_agent"] = request.get_header("User-agent")
+        response = io.BytesIO(b"x" * 50000)
+        response.headers = {}
+        return response
 
     monkeypatch.setattr(dl.ssl, "create_default_context", fake_create)
     monkeypatch.setattr(dl.urllib.request, "urlopen", fake_urlopen)
@@ -928,7 +932,55 @@ def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):
     # The CA bundle came from certifi, and that context was handed to urlopen.
     assert captured["cafile"] == certifi.where()
     assert isinstance(captured["context"], ssl.SSLContext)
+    assert captured["user_agent"] == dl.USER_AGENT
     assert Path(out).exists()
+
+
+@pytest.mark.parametrize(
+    "response, previous, error",
+    [
+        ("reset", None, "connection reset"),
+        ("reset", b"old", "connection reset"),
+        ("short", b"old", "stopped after 5 of 100 bytes"),
+        ("empty", b"old", "was empty"),
+    ],
+)
+def test_failed_download_leaves_no_partial_file(
+    tmp_path, monkeypatch, response, previous, error
+):
+    """A download that breaks midway, ends before the announced size or is empty must
+    not leave a partial file that later calls would reuse, and a failed update keeps
+    the previous copy."""
+    import io
+
+    from pyrosm.utils import download as dl
+
+    class Reset(io.BytesIO):
+        headers = {}
+
+        def read(self, *args):
+            raise OSError("connection reset")
+
+    def urlopen(request, context=None, timeout=None):
+        if response == "reset":
+            return Reset()
+        body = io.BytesIO(b"x" * 5 if response == "short" else b"")
+        body.headers = {"Content-Length": "100"} if response == "short" else {}
+        return body
+
+    monkeypatch.setattr(dl.urllib.request, "urlopen", urlopen)
+    target = tmp_path / "x.osm.pbf"
+    if previous:
+        target.write_bytes(previous)
+    with pytest.raises((OSError, ValueError), match=error):
+        dl.download(
+            "https://example.invalid/x.osm.pbf", "x.osm.pbf", True, str(tmp_path)
+        )
+    assert sorted(p.name for p in tmp_path.iterdir()) == (
+        ["x.osm.pbf"] if previous else []
+    )
+    if previous:
+        assert target.read_bytes() == previous
 
 
 def test_download_rejects_nonexistent_target_dir(tmp_path):
@@ -942,8 +994,13 @@ def test_download_rejects_nonexistent_target_dir(tmp_path):
         )
 
 
-def test_download_update_removes_existing_file(tmp_path, monkeypatch):
-    """download(update=True) unlinks the cached file before re-fetching."""
+def _headered(response, headers=None):
+    response.headers = headers or {}
+    return response
+
+
+def test_download_update_replaces_existing_file(tmp_path, monkeypatch):
+    """download(update=True) replaces the cached file with the new download."""
     import io
 
     from pyrosm.utils import download as dl
@@ -954,7 +1011,9 @@ def test_download_update_removes_existing_file(tmp_path, monkeypatch):
 
     monkeypatch.setattr(dl.ssl, "create_default_context", lambda *a, **k: None)
     monkeypatch.setattr(
-        dl.urllib.request, "urlopen", lambda url, context=None: io.BytesIO(fresh)
+        dl.urllib.request,
+        "urlopen",
+        lambda url, context=None, timeout=None: _headered(io.BytesIO(fresh)),
     )
 
     out = dl.download(
@@ -1689,3 +1748,37 @@ def test_network_filters_match_osmnx_way_filters():
         assert {
             k: set(v) for k, v in network_filter.items()
         } == exclusions, network_type
+
+
+@pytest.mark.parametrize("kernel", ["cython", "reference"])
+def test_simplify_keeps_one_of_duplicate_ways(monkeypatch, kernel):
+    """Two one-way OSM ways overlapping node for node (way 11 duplicates the end of
+    way 10 on 3->4->5, as on Vääksyntie, Helsinki, in 2018-2024) collapse into one
+    simplified edge built from the first way, as osmnx.simplification.simplify_graph
+    does, instead of two parallel copies."""
+    from geopandas import GeoDataFrame
+    from shapely.geometry import LineString, Point
+
+    import pyrosm.graph_simplify as gs
+
+    if kernel == "reference":
+        monkeypatch.setattr(gs, "_cython_walk_chains", None)
+    rows = [(1, 2, 10), (2, 3, 10), (3, 4, 10), (4, 5, 10), (3, 4, 11), (4, 5, 11)]
+    nodes = GeoDataFrame(
+        {"id": [1, 2, 3, 4, 5], "geometry": [Point(i - 1, 0) for i in range(1, 6)]},
+        crs="epsg:4326",
+    )
+    edges = GeoDataFrame(
+        {
+            "u": [u for u, _, _ in rows],
+            "v": [v for _, v, _ in rows],
+            "id": [way for _, _, way in rows],
+            "length": [1.0] * len(rows),
+            "geometry": [LineString([(u - 1, 0), (v - 1, 0)]) for u, v, _ in rows],
+        },
+        crs="epsg:4326",
+    )
+    _, simplified = gs.simplify_graph(nodes, edges)
+    assert sorted(
+        zip(simplified["u"], simplified["v"], simplified["id"], simplified["length"])
+    ) == [(1, 3, 10, 2.0), (3, 5, 10, 2.0)]

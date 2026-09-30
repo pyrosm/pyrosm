@@ -2,31 +2,6 @@ from pathlib import Path
 
 import pytest
 from pyrosm import get_data
-import sys
-import os
-
-# The download tests fetch real extracts from external services (BBBike and
-# Geofabrik). To avoid overloading those services from every OS/Python
-# combination in the CI matrix (and to stop a transient outage from reddening
-# unrelated jobs), download availability is exercised on a single runner only:
-# the workflow sets RUN_DOWNLOAD_TESTS=true for the windows-latest + Python 3.14
-# job. Elsewhere these tests skip. Set RUN_DOWNLOAD_TESTS=true to run locally.
-run_downloads_only_once = pytest.mark.skipif(
-    os.environ.get("RUN_DOWNLOAD_TESTS") != "true",
-    reason="Live download tests run on a single CI runner "
-    "(windows-latest + Python 3.14); set RUN_DOWNLOAD_TESTS=true to run locally.",
-)
-
-
-def get_source_url(name):
-    name = name.lower()
-    from pyrosm.data import sources
-
-    for source, available in sources.available.items():
-        if source == "cities":
-            available = [src.lower() for src in available]
-        if name in available:
-            return sources.__dict__[source].__dict__[name]["url"]
 
 
 @pytest.fixture
@@ -39,26 +14,6 @@ def test_pbf():
 def helsinki_pbf():
     pbf_path = get_data("helsinki_pbf")
     return pbf_path
-
-
-@pytest.fixture
-def geofabrik_urls():
-    from pyrosm.data import sources
-
-    geofabrik_sources = []
-    for k, v in sources.available.items():
-        if k == "cities":
-            continue
-        geofabrik_sources += v
-    return [get_source_url(name) for name in geofabrik_sources]
-
-
-@pytest.fixture
-def bbbike_urls():
-    from pyrosm.data import sources
-
-    cities = sources.available["cities"]
-    return [get_source_url(name) for name in cities]
 
 
 @pytest.fixture
@@ -106,7 +61,7 @@ def test_test_data():
     assert Path(fp5).exists()
 
 
-@run_downloads_only_once
+@pytest.mark.live_download
 def test_geofabrik_download_to_temp():
     from pyrosm import get_data
 
@@ -114,63 +69,9 @@ def test_geofabrik_download_to_temp():
     assert Path(fp).exists()
 
 
-@run_downloads_only_once
-def test_bbbike_download_to_temp():
-    from pyrosm import get_data
-
-    fp = get_data("UlanBator", update=True)
-    assert Path(fp).exists()
-
-
-@run_downloads_only_once
+@pytest.mark.live_download
 def test_geofabrik_download_to_directory(directory):
     from pyrosm import get_data
 
     fp = get_data("monaco", update=True, directory=directory)
     assert Path(fp).exists()
-
-
-@run_downloads_only_once
-def test_bbbike_download_to_directory(directory):
-    from pyrosm import get_data
-
-    fp = get_data("UlanBator", update=True, directory=directory)
-    assert Path(fp).exists()
-
-
-@pytest.mark.skipif("sys.version_info > (3,6)")
-def test_geofabrik_sources(geofabrik_urls):
-    import requests
-
-    # There might be some sources that are not available
-    not_successful = []
-    for url in geofabrik_urls:
-        conn = requests.head(url)
-        if not conn.ok:
-            not_successful.append(url)
-
-    if len(not_successful) > 20:
-        msg = (
-            "There were significant number of PBF sources unavailable: \n"
-            + "\n".join(not_successful)
-        )
-        raise ValueError(msg)
-
-
-@pytest.mark.skipif("sys.version_info > (3,6)")
-def test_bbbike_sources(bbbike_urls):
-    import requests
-
-    # There might be some sources that are not available
-    not_successful = []
-    for url in bbbike_urls:
-        conn = requests.head(url)
-        if not conn.ok:
-            not_successful.append(url)
-
-    if len(not_successful) > 20:
-        msg = (
-            "There were significant number of PBF sources unavailable: \n"
-            + "\n".join(not_successful)
-        )
-        raise ValueError(msg)
