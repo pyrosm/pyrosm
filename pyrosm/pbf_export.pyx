@@ -1831,7 +1831,8 @@ cdef _header_bounds(headers):
 
 
 cdef _fingerprint(path):
-    """Identity, size and modification time of a path and of the file it resolves to.
+    """Identity of a path and of the file it resolves to, and that file's size and
+    modification time.
 
     Change times are left out: sync clients such as OneDrive update them when they
     touch a file's metadata, which leaves its contents unchanged.

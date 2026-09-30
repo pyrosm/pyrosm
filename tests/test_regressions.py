@@ -1790,6 +1790,7 @@ def test_merge_pbf_ignores_metadata_only_changes(tmp_path, monkeypatch):
     reject such an input as changed during the merge."""
     import os
     import shutil
+    import time
 
     import pyrosm.pbf_export as pbf_export
     from pyrosm import get_data, merge_pbf
@@ -1806,11 +1807,20 @@ def test_merge_pbf_ignores_metadata_only_changes(tmp_path, monkeypatch):
     if os.stat(source).st_ctime_ns == before:
         pytest.skip("chmod does not change the ctime on this platform")
 
+    touched = []
+
     class TouchedInput(pbf_export._SortedInput):
         def __init__(self, filepath):
-            touch_metadata(filepath)
+            # Repeat until the ctime moves, for filesystems with coarse timestamps.
+            before = os.stat(filepath).st_ctime_ns
+            deadline = time.monotonic() + 3
+            while os.stat(filepath).st_ctime_ns == before and time.monotonic() < deadline:
+                touch_metadata(filepath)
+                time.sleep(0.01)
+            touched.append(os.stat(filepath).st_ctime_ns != before)
             super().__init__(filepath)
 
     monkeypatch.setattr(pbf_export, "_SortedInput", TouchedInput)
     out = merge_pbf([str(source)], str(tmp_path / "out.osm.pbf"))
+    assert touched and all(touched)
     assert os.path.getsize(out) > 0
