@@ -5,13 +5,18 @@ Run this to update the extract lists used by ``pyrosm.get_data_by_bbox`` and the
 lookup::
 
     python scripts/update_extract_indexes.py            # both
-    python scripts/update_extract_indexes.py geofabrik  # or: bbbike, geofabrik-sizes
+    python scripts/update_extract_indexes.py geofabrik  # or: bbbike, geofabrik-sizes, movisda-grid
 
 ``geofabrik-sizes``: adds each extract's download size (``bytes``, with the day it was read as
 ``bytes_date``) to the existing ``pyrosm/data/geofabrik_index.geojson.gz`` without changing
 anything else. A size comes from a HEAD request, else from the ``File size`` on the extract's
 page, else the previous snapshot's size is kept. The ``geofabrik`` target reads sizes the same
 way. pyrosm uses these sizes when the server does not answer a HEAD request.
+
+``movisda-grid``: downloads Movisda's grid index (the 1°/10° tiles), checks it the way pyrosm
+does, and writes ``pyrosm/data/movisda_grid_index.geojson.gz`` with the index's
+``Last-Modified`` day as ``movisda_snapshot_date``. pyrosm reads it when Movisda's index cannot
+be fetched and no downloaded copy exists.
 
 ``geofabrik``: downloads Geofabrik's ``index-v1.json`` (one GeoJSON FeatureCollection holding
 every extract's extent polygon and download URLs), trims each feature to the fields pyrosm uses
@@ -36,6 +41,8 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 
+import email.utils
+
 import certifi
 
 from pyrosm.utils.download import _content_length
@@ -43,6 +50,7 @@ from pyrosm.utils.download import _content_length
 DATA_DIR = Path(__file__).resolve().parents[1] / "pyrosm" / "data"
 GEOFABRIK_URL = "https://download.geofabrik.de/index-v1.json"
 BBBIKE_URL = "https://download.bbbike.org/osm/bbbike"
+MOVISDA_GRID_URL = "https://osm.download.movisda.io/grid/grid-latest.geojson"
 USER_AGENT = "pyrosm index update (+https://github.com/pyrosm/pyrosm)"
 
 
@@ -261,6 +269,24 @@ def bbbike():
     )
 
 
+def snapshot_day(last_modified):
+    """``YYYY-MM-DD`` of a ``Last-Modified`` header, or today when it is missing or unreadable."""
+    try:
+        return email.utils.parsedate_to_datetime(last_modified).date().isoformat()
+    except (TypeError, ValueError):
+        return date.today().isoformat()
+
+
+def movisda_grid():
+    from pyrosm.data.extract_index import _check_movisda_index
+
+    payload, last_modified = fetch(MOVISDA_GRID_URL)
+    _check_movisda_index(payload, "grid")
+    collection = json.loads(payload)
+    collection["movisda_snapshot_date"] = snapshot_day(last_modified)
+    write("movisda_grid_index.geojson.gz", collection)
+
+
 if __name__ == "__main__":
     targets = sys.argv[1:] or ["geofabrik", "bbbike"]
     for target in targets:
@@ -268,5 +294,6 @@ if __name__ == "__main__":
             "geofabrik": geofabrik,
             "geofabrik-sizes": geofabrik_sizes,
             "bbbike": bbbike,
+            "movisda-grid": movisda_grid,
         }
         commands[target]()

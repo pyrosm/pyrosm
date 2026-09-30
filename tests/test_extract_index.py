@@ -372,11 +372,15 @@ def test_page_size_parser():
     assert module.page_size("no size here") is None
     assert module.page_size("File size: 9999999999 GB") is None
     assert module.page_size("File size: 1" + "0" * 400 + " GB") is None
+    assert module.snapshot_day("Wed, 30 Sep 2026 10:00:00 GMT") == "2026-09-30"
+    assert len(module.snapshot_day(None)) == 10
     # Only Geofabrik's own latest-extract URLs are asked for a size.
     assert module.read_size("https://example.invalid/x.osm.pbf") == (None, None)
 
 
-def test_movisda_extracts(tmp_path, monkeypatch):
+@pytest.fixture
+def movisda_indexes(tmp_path, monkeypatch):
+    """Small admin and grid indexes, cached under ``tmp_path/movisda`` as if downloaded."""
     admin = gpd.GeoDataFrame(
         {
             "prefix": ["NL-NB-"],
@@ -400,7 +404,10 @@ def test_movisda_extracts(tmp_path, monkeypatch):
         meta = {"etag": '"1"', "bytes": (folder / name).stat().st_size}
         (folder / (name + ".etag")).write_text(json.dumps(meta))
     monkeypatch.setattr(ei, "_movisda_cache", {})
+    return admin
 
+
+def test_movisda_extracts(tmp_path, monkeypatch, movisda_indexes):
     got = ei._movisda_extracts(tmp_path)
     assert got["id"].tolist() == ["NL-NB", "N60E024", "S40W080-10"]
     assert got["name"].tolist()[0] == "North Brabant"
@@ -410,16 +417,69 @@ def test_movisda_extracts(tmp_path, monkeypatch):
         "https://osm.download.movisda.io/grid/S40E080-10-latest.osm.pbf",
     ]
     assert got["bytes"].tolist() == [188, 66, 203]
-    without_en = admin.drop(columns="name_en").to_json().encode()
+    without_en = movisda_indexes.drop(columns="name_en").to_json().encode()
     frame = ei._movisda_frame(io.BytesIO(without_en), "admin")
     assert frame["name"].tolist() == ["Noord-Brabant"]
     # An unchanged index file is parsed once; an unreadable one raises ValueError.
     monkeypatch.setattr(ei.gpd, "read_file", lambda *a, **k: pytest.fail("re-read"))
     assert ei._movisda_extracts(tmp_path).equals(got)
-    monkeypatch.setattr(ei, "_movisda_cache", {})
     monkeypatch.setattr(ei.gpd, "read_file", lambda *a, **k: 1 / 0)
     with pytest.raises(ValueError, match="could not read the Movisda admin index"):
-        ei._movisda_extracts(tmp_path)
+        ei._movisda_frame(io.BytesIO(b"{}"), "admin")
+
+
+@pytest.mark.parametrize(
+    "admin, grid", [("up", "down"), ("down", "up"), ("down", "down"), ("up", "bad")]
+)
+def test_movisda_extracts_fall_back(
+    tmp_path, monkeypatch, movisda_indexes, admin, grid
+):
+    """Without a fetched or cached index, the administrative areas are left out and the grid
+    tiles come from pyrosm's vendored copy, each with a warning."""
+    real = ei._cached_index
+    state = {"admin": admin, "grid": grid}
+
+    def cached_index(url, path, update=False, check=None, net=None):
+        kind = "admin" if "/admin/" in url else "grid"
+        if state[kind] == "down":
+            raise DOWN
+        if state[kind] == "bad":
+            path.write_text("not an index")
+            path.with_name(path.name + ".etag").unlink()
+            return path
+        return real(url, path, update, check, net)
+
+    monkeypatch.setattr(ei, "_cached_index", cached_index)
+    with pytest.warns(UserWarning) as record:
+        got = ei._movisda_extracts(tmp_path)
+    messages = [str(w.message) for w in record]
+    assert ("NL-NB" in got["id"].tolist()) == (admin == "up")
+    assert any("administrative index is unavailable" in m for m in messages) == (
+        admin == "down"
+    )
+    if grid == "up":
+        assert got["id"].tolist()[-2:] == ["N60E024", "S40W080-10"]
+    else:
+        # The vendored copy has every tile, e.g. the one holding Helsinki.
+        assert len(got) > 1000 and "N60E024" in got["id"].tolist()
+        date = ei._movisda_index_frame("grid", ei._MOVISDA_GRID_PATH).attrs
+        assert any(
+            "using pyrosm's copy of it from %s" % date["snapshot_date"] in m
+            for m in messages
+        )
+
+
+def test_vendored_movisda_grid_index():
+    import gzip
+
+    data = gzip.decompress(ei._MOVISDA_GRID_PATH.read_bytes())
+    ei._check_movisda_index(data, "grid")
+    frame = ei._movisda_index_frame("grid", ei._MOVISDA_GRID_PATH)
+    assert len(frame) > 1000 and len(frame.attrs["snapshot_date"]) == 10
+    assert frame["id"].str.fullmatch(r"[NS]\d{2}[EW]\d{3}(-10)?").all()
+    assert (frame["bytes"] >= 0).all()
+    helsinki = frame[frame.covers(Point(24.94, 60.17))]["id"]
+    assert set(helsinki) == {"N60E024", "N60E020-10"}
 
 
 def _candidates(provider, rows):

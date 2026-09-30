@@ -6,7 +6,9 @@ downloads the best one. Candidates come from three providers:
 - Geofabrik, from the vendored ``geofabrik_index.geojson.gz``;
 - BBBike city extracts, from the vendored ``bbbike_index.geojson.gz``;
 - Movisda administrative areas and 1°/10° grid tiles, from the index files published at
-  https://osm.download.movisda.io (fetched and cached next to the downloads).
+  https://osm.download.movisda.io (fetched and cached next to the downloads; when the grid
+  index cannot be fetched and nothing is cached, the copy vendored as
+  ``movisda_grid_index.geojson.gz`` is used).
 
 ``get_data_by_area`` never merges extracts, so its answer is always one file. Candidates are
 ranked by download size: Movisda's index lists sizes; for the others a HEAD request asks the
@@ -54,6 +56,7 @@ from pyrosm.utils.download import (
 )
 
 _BBBIKE_INDEX_PATH = Path(__file__).parent / "bbbike_index.geojson.gz"
+_MOVISDA_GRID_PATH = Path(__file__).parent / "movisda_grid_index.geojson.gz"
 _MOVISDA_URL = "https://osm.download.movisda.io"
 _MOVISDA_INDEXES = {
     "admin": "admin/Admin-latest.geojson",
@@ -241,25 +244,54 @@ def _movisda_frame(source, kind):
         raise ValueError("could not read the Movisda %s index (%s)" % (kind, e)) from e
 
 
+def _movisda_index_frame(kind, path):
+    """The candidate rows of the Movisda index at ``path``, parsed once while the file is
+    unchanged. A ``.gz`` file is pyrosm's vendored copy; its date is in ``attrs``."""
+    key = (str(path), path.stat().st_mtime_ns)
+    cached = _movisda_cache.get(kind)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    if path.suffix == ".gz":
+        data = gzip.decompress(path.read_bytes())
+        frame = _movisda_frame(io.BytesIO(data), kind)
+        frame.attrs["snapshot_date"] = json.loads(data).get("movisda_snapshot_date")
+    else:
+        frame = _movisda_frame(path, kind)
+    _movisda_cache[kind] = (key, frame)
+    return frame
+
+
 def _movisda_extracts(directory, update=False, net=None):
+    """Movisda's administrative areas and grid tiles as candidate rows.
+
+    When an index cannot be fetched and no copy is cached, the administrative areas are left
+    out and the grid tiles come from pyrosm's vendored copy, each with a warning.
+    """
     frames = []
     for kind, rel in _MOVISDA_INDEXES.items():
-        path = _cached_index(
-            "%s/%s" % (_MOVISDA_URL, rel),
-            Path(directory) / "movisda" / Path(rel).name,
-            update,
-            check=lambda data, kind=kind: _check_movisda_index(data, kind)
-            or _movisda_frame(io.BytesIO(data), kind),
-            net=net,
-        )
-        key = (str(path), path.stat().st_mtime_ns)
-        cached = _movisda_cache.get(kind)
-        if cached is not None and cached[0] == key:
-            frame = cached[1]
-        else:
-            frame = _movisda_frame(path, kind)
-            _movisda_cache[kind] = (key, frame)
-        frames.append(frame)
+        try:
+            path = _cached_index(
+                "%s/%s" % (_MOVISDA_URL, rel),
+                Path(directory) / "movisda" / Path(rel).name,
+                update,
+                check=lambda data, kind=kind: _check_movisda_index(data, kind)
+                or _movisda_frame(io.BytesIO(data), kind),
+                net=net,
+            )
+            frames.append(_movisda_index_frame(kind, path))
+        except (*_FETCH_ERRORS, ValueError) as e:
+            if kind == "admin":
+                warnings.warn(
+                    "Movisda's administrative index is unavailable (%s); skipping its "
+                    "administrative areas." % e
+                )
+                continue
+            frame = _movisda_index_frame(kind, _MOVISDA_GRID_PATH)
+            warnings.warn(
+                "Movisda's grid index is unavailable (%s); using pyrosm's copy of it "
+                "from %s." % (e, frame.attrs["snapshot_date"])
+            )
+            frames.append(frame)
     return pd.concat(frames, ignore_index=True)
 
 
@@ -364,7 +396,8 @@ def find_extracts(
     be read come last in their group, smallest extent first. :func:`get_data_by_area` downloads
     the first extract that contains the area.
 
-    Movisda's extracts are left out, with a warning, when its index cannot be fetched.
+    When Movisda's indexes cannot be fetched and no copy is cached, its administrative areas are
+    left out and its grid tiles come from the copy vendored with pyrosm, each with a warning.
 
     Parameters
     ----------
