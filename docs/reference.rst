@@ -76,6 +76,20 @@ Downloading data
    geocode
    get_data_by_geocoding
 
+Exceptions
+----------
+
+.. currentmodule:: pyrosm.exceptions
+
+.. autosummary::
+   :toctree: api/
+
+   ExtractNotFoundError
+   ExtractDownloadError
+   InvalidOSMFileError
+   PBFNotImplemented
+   PBFException
+
 Graph simplification
 --------------------
 

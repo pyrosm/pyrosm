@@ -1,3 +1,4 @@
+import logging
 import urllib.request
 import tempfile
 import enum
@@ -11,6 +12,8 @@ import certifi
 from pyrosm import __version__
 
 USER_AGENT = "pyrosm/%s (+https://github.com/pyrosm/pyrosm)" % __version__
+
+logger = logging.getLogger(__name__)
 
 
 def open_url(url, method="GET", headers=None, timeout=None):
@@ -156,9 +159,10 @@ def download(url, filename, update, target_dir):
                 f"PBF-file '{url}' is temporarily unavailable. " f"Try again later."
             )
 
-        filesize = get_file_size(filepath)
-        print(
-            f"Downloaded Protobuf data '{filepath.name}' "
-            f"({filesize} MB) to:\n'{filepath}'"
+        logger.info(
+            "Downloaded Protobuf data '%s' (%s MB) to '%s'",
+            filepath.name,
+            get_file_size(filepath),
+            filepath,
         )
     return str(filepath)

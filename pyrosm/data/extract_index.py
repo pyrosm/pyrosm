@@ -19,6 +19,7 @@ import hashlib
 import http.client
 import io
 import json
+import logging
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -38,7 +39,7 @@ from pyrosm.data.geofabrik_index import (
     _crop,
 )
 from pyrosm.data.geofabrik_index import _load_index as _load_geofabrik_index
-from pyrosm.exceptions import ExtractDownloadError
+from pyrosm.exceptions import ExtractDownloadError, ExtractNotFoundError
 from pyrosm.utils.download import download_dir, open_url, write_atomic
 
 _BBBIKE_INDEX_PATH = Path(__file__).parent / "bbbike_index.geojson.gz"
@@ -53,6 +54,8 @@ _COLUMNS = ["provider", "id", "name", "url", "bytes", "contains", "geometry"]
 _FETCH_ERRORS = (OSError, http.client.HTTPException)
 _TIMEOUT = 60
 _ATTEMPTS = 3
+
+logger = logging.getLogger(__name__)
 
 _bbbike_cache = None
 _movisda_cache = {}
@@ -499,7 +502,9 @@ def get_data_by_area(area, crop=True, update=False, directory=None, output_path=
     Raises
     ------
     ValueError
-        If no extract contains the whole area.
+        If the area is empty, or has no width or no height.
+    pyrosm.exceptions.ExtractNotFoundError
+        If no extract contains the whole area (a ``ValueError`` subclass).
     pyrosm.exceptions.ExtractDownloadError
         If every extract that contains the area failed to download.
     """
@@ -510,7 +515,7 @@ def get_data_by_area(area, crop=True, update=False, directory=None, output_path=
         geom, contains_only=True, update=update, directory=directory
     )
     if candidates.empty:
-        raise ValueError(
+        raise ExtractNotFoundError(
             "No Geofabrik, BBBike or Movisda extract contains the whole area."
         )
     failed = []
@@ -520,9 +525,11 @@ def get_data_by_area(area, crop=True, update=False, directory=None, output_path=
             if pd.isna(extract.bytes)
             else "%.1f MB" % (extract.bytes / 1e6)
         )
-        print(
-            "Smallest extract containing the area: %s '%s' (%s)"
-            % (extract.provider, extract.name, size)
+        logger.info(
+            "Smallest extract containing the area: %s '%s' (%s)",
+            extract.provider,
+            extract.name,
+            size,
         )
         filename = "%s_%s" % (extract.provider.lower(), Path(extract.url).name)
         start = time.perf_counter()

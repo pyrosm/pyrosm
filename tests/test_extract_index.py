@@ -3,6 +3,7 @@ import hashlib
 import http.client
 import io
 import json
+import logging
 import os
 import time
 import warnings
@@ -16,7 +17,7 @@ from shapely.geometry import Point, box
 
 import pyrosm
 from pyrosm.data import extract_index as ei
-from pyrosm.exceptions import ExtractDownloadError
+from pyrosm.exceptions import ExtractDownloadError, ExtractNotFoundError
 
 
 class _Response(io.BytesIO):
@@ -418,7 +419,9 @@ def _ranked(*rows):
 
 
 @pytest.mark.parametrize("crop", [True, False])
-def test_get_data_by_area_falls_back_to_next_extract(tmp_path, monkeypatch, crop):
+def test_get_data_by_area_falls_back_to_next_extract(
+    tmp_path, monkeypatch, caplog, capsys, crop
+):
     helsinki = pyrosm.get_data("helsinki_pbf")
     monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: _ranked(BBBIKE, MOVISDA))
     tried = []
@@ -430,9 +433,11 @@ def test_get_data_by_area_falls_back_to_next_extract(tmp_path, monkeypatch, crop
         return helsinki
 
     monkeypatch.setattr("pyrosm.utils.download.download", download)
+    caplog.set_level(logging.INFO, logger="pyrosm")
     with pytest.warns(UserWarning, match="next smallest"):
         got = pyrosm.get_data_by_area(box(*HELSINKI), crop=crop, directory=tmp_path)
     assert tried == ["bbbike_Helsinki.osm.pbf", "movisda_N60W024-latest.osm.pbf"]
+    assert "Movisda 'N60E024'" in caplog.text and capsys.readouterr().out == ""
     assert (got.provider, got.extract, got.bytes) == ("Movisda", "N60E024", 66)
     assert got.failed == [(BBBIKE[2], "unavailable")]
     if crop:
@@ -461,7 +466,7 @@ def test_get_data_by_area_retries_network_errors(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     "candidates, error",
-    [((), ValueError), ((BBBIKE,), ExtractDownloadError)],
+    [((), ExtractNotFoundError), ((BBBIKE,), ExtractDownloadError)],
 )
 def test_get_data_by_area_errors(monkeypatch, candidates, error):
     monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: _ranked(*candidates))
@@ -475,6 +480,8 @@ def test_get_data_by_area_errors(monkeypatch, candidates, error):
         pyrosm.get_data_by_area(box(*HELSINKI))
     if error is ExtractDownloadError:
         assert info.value.failed == [(BBBIKE[2], "down")]
+    else:
+        assert isinstance(info.value, ValueError)
 
 
 @pytest.mark.parametrize(
@@ -507,8 +514,10 @@ def test_get_data_by_area_accepts_area_forms(monkeypatch, area):
     ],
 )
 def test_get_data_by_area_rejects_flat_or_empty_area(area, message):
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match=message) as info:
         pyrosm.get_data_by_area(area)
+    # An invalid area is not reported as "no extract contains the area".
+    assert type(info.value) is ValueError
 
 
 @pytest.mark.live_download

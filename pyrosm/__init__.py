@@ -1,9 +1,13 @@
+import logging
 from importlib.metadata import version, PackageNotFoundError
 
 try:
     __version__ = version("pyrosm")
 except PackageNotFoundError:  # running from a source tree without an install
     __version__ = "unknown"
+
+# pyrosm reports progress through the "pyrosm" logger; the application decides what is shown.
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 # `OSM` pulls in geopandas/shapely (~2 s); import it lazily so that lightweight
 # entry points (e.g. the multiprocessing workers in pyrosm.pbf_export, which only

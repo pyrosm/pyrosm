@@ -999,8 +999,11 @@ def _headered(response, headers=None):
     return response
 
 
-def test_download_update_replaces_existing_file(tmp_path, monkeypatch):
-    """download(update=True) replaces the cached file with the new download."""
+def test_download_update_replaces_existing_file(tmp_path, monkeypatch, caplog, capsys):
+    """download(update=True) replaces the cached file with the new download, and reports it
+    through the pyrosm logger, not stdout."""
+    import logging
+
     import io
 
     from pyrosm.utils import download as dl
@@ -1016,10 +1019,13 @@ def test_download_update_replaces_existing_file(tmp_path, monkeypatch):
         lambda url, context=None, timeout=None: _headered(io.BytesIO(fresh)),
     )
 
+    caplog.set_level(logging.INFO, logger="pyrosm")
     out = dl.download(
         "https://example.invalid/x.osm.pbf", "x.osm.pbf", True, str(tmp_path)
     )
     assert Path(out).read_bytes() == fresh
+    assert "Downloaded Protobuf data 'x.osm.pbf'" in caplog.text
+    assert capsys.readouterr().out == ""
 
 
 def test_tags_to_keep_restricts_tag_columns():
@@ -1814,7 +1820,9 @@ def test_merge_pbf_ignores_metadata_only_changes(tmp_path, monkeypatch):
             # Repeat until the ctime moves, for filesystems with coarse timestamps.
             before = os.stat(filepath).st_ctime_ns
             deadline = time.monotonic() + 3
-            while os.stat(filepath).st_ctime_ns == before and time.monotonic() < deadline:
+            while (
+                os.stat(filepath).st_ctime_ns == before and time.monotonic() < deadline
+            ):
                 touch_metadata(filepath)
                 time.sleep(0.01)
             touched.append(os.stat(filepath).st_ctime_ns != before)

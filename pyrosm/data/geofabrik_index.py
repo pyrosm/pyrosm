@@ -8,6 +8,7 @@ snapshot with ``scripts/update_extract_indexes.py``.
 
 import gzip
 import json
+import logging
 import tempfile
 import warnings
 from pathlib import Path
@@ -18,6 +19,8 @@ from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 
 from pyrosm.utils.download import open_url
+
+logger = logging.getLogger(__name__)
 
 _INDEX_PATH = Path(__file__).parent / "geofabrik_index.geojson.gz"
 _INDEX_URL = "https://download.geofabrik.de/index-v1.json"
@@ -121,7 +124,7 @@ def _covering_extract_url(geom, update=False):
         label = "'%s'" % name
     else:
         label = "'%s' (id: %s)" % (name, best["id"])
-    print("Geofabrik extract covering the area: %s" % label)
+    logger.info("Geofabrik extract covering the area: %s", label)
     return best["pbf"]
 
 
