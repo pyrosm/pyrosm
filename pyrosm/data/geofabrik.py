@@ -10,17 +10,26 @@ north_america_url = "north-america/"
 south_america_url = "south-america/"
 
 baden_wuerttemberg_url = "europe/germany/baden-wuerttemberg/"
+australia_url = "australia-oceania/australia/"
 bayern_url = "europe/germany/bayern/"
 brazil_url = "south-america/brazil/"
+british_columbia_url = "north-america/canada/british-columbia/"
 canada_url = "north-america/canada/"
+china_url = "asia/china/"
+czech_republic_url = "europe/czech-republic/"
 england_url = "europe/united-kingdom/england/"
 france_url = "europe/france/"
 uk_url = "europe/united-kingdom/"
 germany_url = "europe/germany/"
+india_url = "asia/india/"
+indonesia_url = "asia/indonesia/"
 italy_url = "europe/italy/"
 japan_url = "asia/japan/"
+london_url = "europe/united-kingdom/england/london/"
 netherlands_url = "europe/netherlands/"
 nordrhein_wesfalen_url = "europe/germany/nordrhein-westfalen/"
+norway_url = "europe/norway/"
+nunavut_url = "north-america/canada/nunavut/"
 poland_url = "europe/poland/"
 russia_url = "russia/"
 spain_url = "europe/spain/"
@@ -75,6 +84,7 @@ class USA:
         "south_dakota",
         "tennessee",
         "texas",
+        "us_virgin_islands",
         "utah",
         "vermont",
         "virginia",
@@ -170,6 +180,33 @@ class France:
         return self.available
 
 
+class GreaterLondon:
+    # Geofabrik serves the Greater London boroughs under "england/london".
+    regions = [
+        "enfield",
+    ]
+
+    available = regions
+    available.sort()
+
+    # Create data sources
+    _sources = {
+        region: {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + london_url + region.replace("_", "-") + suffix,
+        }
+        for region in regions
+    }
+
+    __dict__ = _sources
+
+    def __getattr__(self, name):
+        return self.__dict__[name]
+
+    def __call__(self):
+        return self.available
+
+
 class England:
     regions = [
         "bedfordshire",
@@ -221,7 +258,9 @@ class England:
         "worcestershire",
     ]
 
-    available = regions
+    greater_london = GreaterLondon()
+
+    available = regions + greater_london.available
     available.sort()
 
     # Create data sources
@@ -233,6 +272,12 @@ class England:
         for region in regions
     }
 
+    for region in greater_london.available:
+        _sources[region] = {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + london_url + region.replace("_", "-") + suffix,
+        }
+
     __dict__ = _sources
 
     def __getattr__(self, name):
@@ -243,7 +288,7 @@ class England:
 
 
 class UnitedKingdom:
-    regions = ["england", "scotland", "wales"]
+    regions = ["bermuda", "england", "falklands", "scotland", "wales"]
     england = England()
 
     available = regions + england.available
@@ -264,10 +309,7 @@ class UnitedKingdom:
     }
 
     for region in england.available:
-        _sources[region] = {
-            "name": region.replace("_", "-") + suffix,
-            "url": URL + england_url + region.replace("_", "-") + suffix,
-        }
+        _sources[region] = england.__dict__[region]
 
     __dict__ = _sources
 
@@ -303,10 +345,7 @@ class GreatBritain:
     }
 
     for region in england.available:
-        _sources[region] = {
-            "name": region.replace("_", "-") + suffix,
-            "url": URL + england_url + region.replace("_", "-") + suffix,
-        }
+        _sources[region] = england.__dict__[region]
 
     __dict__ = _sources
 
@@ -625,6 +664,142 @@ class Netherlands:
         return self.available
 
 
+class CzechRepublic:
+    regions = [
+        "jihocesky",
+        "jihomoravsky",
+        "karlovarsky",
+        "kralovehradecky",
+        "liberecky",
+        "moravskoslezky",
+        "olomoucky",
+        "pardubicky",
+        "plzensky",
+        "praha",
+        "stredocesky",
+        "ustecky",
+        "vysocina",
+        "zlinsky",
+    ]
+
+    available = regions
+    available.sort()
+
+    country = {
+        "name": "czech-republic" + suffix,
+        "url": URL + europe_url + "czech-republic" + suffix,
+    }
+
+    # Create data sources
+    _sources = {
+        region: {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + czech_republic_url + region.replace("_", "-") + suffix,
+        }
+        for region in regions
+    }
+
+    __dict__ = _sources
+
+    def __getattr__(self, name):
+        return self.__dict__[name]
+
+    def __call__(self):
+        return self.available
+
+
+class Norway:
+    regions = [
+        "nord_norge",
+        "ostlandet",
+        "sorlandet",
+        "svalbard_janmayen",
+        "trondelag",
+        "vestlandet",
+    ]
+
+    available = regions
+    available.sort()
+
+    country = {"name": "norway" + suffix, "url": URL + europe_url + "norway" + suffix}
+
+    # Create data sources
+    _sources = {
+        region: {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + norway_url + region.replace("_", "-") + suffix,
+        }
+        for region in regions
+    }
+
+    __dict__ = _sources
+
+    def __getattr__(self, name):
+        return self.__dict__[name]
+
+    def __call__(self):
+        return self.available
+
+
+class BritishColumbia:
+    regions = [
+        "interior_admreg",
+        "island_admreg",
+        "kootenay_admreg",
+        "north_admreg",
+        "okanagan_admreg",
+        "southcoast_admreg",
+    ]
+
+    available = regions
+    available.sort()
+
+    # Create data sources
+    _sources = {
+        region: {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + british_columbia_url + region.replace("_", "-") + suffix,
+        }
+        for region in regions
+    }
+
+    __dict__ = _sources
+
+    def __getattr__(self, name):
+        return self.__dict__[name]
+
+    def __call__(self):
+        return self.available
+
+
+class Nunavut:
+    regions = [
+        "kitikmeot",
+        "kivalliq",
+        "qikiqtaaluk",
+    ]
+
+    available = regions
+    available.sort()
+
+    # Create data sources
+    _sources = {
+        region: {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + nunavut_url + region.replace("_", "-") + suffix,
+        }
+        for region in regions
+    }
+
+    __dict__ = _sources
+
+    def __getattr__(self, name):
+        return self.__dict__[name]
+
+    def __call__(self):
+        return self.available
+
+
 class Canada:
     regions = [
         "alberta",
@@ -641,7 +816,11 @@ class Canada:
         "saskatchewan",
         "yukon",
     ]
-    available = regions
+
+    british_columbia = BritishColumbia()
+    nunavut = Nunavut()
+
+    available = regions + british_columbia.available + nunavut.available
     available.sort()
 
     country = {
@@ -657,6 +836,18 @@ class Canada:
         }
         for region in regions
     }
+
+    for region in british_columbia.available:
+        _sources[region] = {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + british_columbia_url + region.replace("_", "-") + suffix,
+        }
+
+    for region in nunavut.available:
+        _sources[region] = {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + nunavut_url + region.replace("_", "-") + suffix,
+        }
 
     __dict__ = _sources
 
@@ -778,8 +969,183 @@ class Japan:
         return self.available
 
 
+class China:
+    regions = [
+        "anhui",
+        "beijing",
+        "chongqing",
+        "fujian",
+        "gansu",
+        "guangdong",
+        "guangxi",
+        "guizhou",
+        "hainan",
+        "hebei",
+        "heilongjiang",
+        "henan",
+        "hong_kong",
+        "hubei",
+        "hunan",
+        "inner_mongolia",
+        "jiangsu",
+        "jiangxi",
+        "jilin",
+        "liaoning",
+        "macau",
+        "ningxia",
+        "qinghai",
+        "shaanxi",
+        "shandong",
+        "shanghai",
+        "shanxi",
+        "sichuan",
+        "tianjin",
+        "tibet",
+        "xinjiang",
+        "yunnan",
+        "zhejiang",
+    ]
+
+    available = regions
+    available.sort()
+
+    country = {"name": "china" + suffix, "url": URL + asia_url + "china" + suffix}
+
+    # Create data sources
+    _sources = {
+        region: {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + china_url + region.replace("_", "-") + suffix,
+        }
+        for region in regions
+    }
+
+    __dict__ = _sources
+
+    def __getattr__(self, name):
+        return self.__dict__[name]
+
+    def __call__(self):
+        return self.available
+
+
+class India:
+    regions = [
+        "central_zone",
+        "eastern_zone",
+        "north_eastern_zone",
+        "northern_zone",
+        "southern_zone",
+        "western_zone",
+    ]
+
+    available = regions
+    available.sort()
+
+    country = {"name": "india" + suffix, "url": URL + asia_url + "india" + suffix}
+
+    # Create data sources
+    _sources = {
+        region: {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + india_url + region.replace("_", "-") + suffix,
+        }
+        for region in regions
+    }
+
+    __dict__ = _sources
+
+    def __getattr__(self, name):
+        return self.__dict__[name]
+
+    def __call__(self):
+        return self.available
+
+
+class Indonesia:
+    regions = [
+        "java",
+        "kalimantan",
+        "maluku",
+        "nusa_tenggara",
+        "papua",
+        "sulawesi",
+        "sumatra",
+    ]
+
+    available = regions
+    available.sort()
+
+    country = {
+        "name": "indonesia" + suffix,
+        "url": URL + asia_url + "indonesia" + suffix,
+    }
+
+    # Create data sources
+    _sources = {
+        region: {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + indonesia_url + region.replace("_", "-") + suffix,
+        }
+        for region in regions
+    }
+
+    __dict__ = _sources
+
+    def __getattr__(self, name):
+        return self.__dict__[name]
+
+    def __call__(self):
+        return self.available
+
+
+class Australia:
+    regions = [
+        "act",
+        "ashmore_cartier",
+        "christmas_island",
+        "cocos_islands",
+        "coral_sea_islands",
+        "heard_mcdonald",
+        "new_south_wales",
+        "norfolk_island",
+        "northern_territory",
+        "queensland",
+        "south_australia",
+        "tasmania",
+        "victoria",
+        "western_australia",
+    ]
+
+    available = regions
+    available.sort()
+
+    country = {
+        "name": "australia" + suffix,
+        "url": URL + australia_oceania_url + "australia" + suffix,
+    }
+
+    # Create data sources
+    _sources = {
+        region: {
+            "name": region.replace("_", "-") + suffix,
+            "url": URL + australia_url + region.replace("_", "-") + suffix,
+        }
+        for region in regions
+    }
+
+    __dict__ = _sources
+
+    def __getattr__(self, name):
+        return self.__dict__[name]
+
+    def __call__(self):
+        return self.available
+
+
 class AustraliaOceania:
     regions = [
+        "american_oceania",
         "australia",
         "cook_islands",
         "fiji",
@@ -803,6 +1169,8 @@ class AustraliaOceania:
         "vanuatu",
         "wallis-et-futuna",
     ]
+
+    australia = Australia()
 
     available = regions
     available.sort()
@@ -886,6 +1254,7 @@ class SouthAmerica:
         "chile",
         "colombia",
         "ecuador",
+        "guyana",
         "paraguay",
         "peru",
         "suriname",
@@ -965,11 +1334,13 @@ class CentralAmerica:
 
 class Europe:
     # Country specific subregions
+    czech_republic = CzechRepublic()
     france = France()
     germany = Germany()
     great_britain = GreatBritain()
     italy = Italy()
     netherlands = Netherlands()
+    norway = Norway()
     poland = Poland()
     russia = Russia()
     spain = Spain()
@@ -977,16 +1348,19 @@ class Europe:
 
     regions = [
         "albania",
+        "alps",
         "andorra",
         "austria",
         "azores",
         "belarus",
         "belgium",
         "bosnia_herzegovina",
+        "britain_and_ireland",
         "bulgaria",
         "croatia",
         "cyprus",
         "czech_republic",
+        "dach",
         "denmark",
         "estonia",
         "faroe_islands",
@@ -996,6 +1370,7 @@ class Europe:
         "germany",
         "great_britain",
         "greece",
+        "guernsey_jersey",
         "hungary",
         "iceland",
         "ireland_and_northern_ireland",
@@ -1167,6 +1542,7 @@ class Asia:
         "north_korea",
         "pakistan",
         "philippines",
+        "sea",
         "south_korea",
         "sri_lanka",
         "syria",
@@ -1179,6 +1555,9 @@ class Asia:
         "yemen",
     ]
 
+    china = China()
+    india = India()
+    indonesia = Indonesia()
     japan = Japan()
 
     available = regions
@@ -1229,14 +1608,20 @@ class Antarctica:
 class SubRegions:
     def __init__(self):
         self.regions = [
+            "australia",
             "brazil",
             "canada",
+            "china",
+            "czech_republic",
             "france",
             "germany",
             "great_britain",
+            "india",
+            "indonesia",
             "italy",
             "japan",
             "netherlands",
+            "norway",
             "poland",
             "russia",
             "spain",
@@ -1246,15 +1631,21 @@ class SubRegions:
         available = self.regions
         available.sort()
 
+        self.australia = Australia()
         self.brazil = Brazil()
         self.canada = Canada()
+        self.china = China()
+        self.czech_republic = CzechRepublic()
         self.france = France()
         self.germany = Germany()
         self.great_britain = GreatBritain()
         self.united_kingdom = UnitedKingdom()
+        self.india = India()
+        self.indonesia = Indonesia()
         self.italy = Italy()
         self.japan = Japan()
         self.netherlands = Netherlands()
+        self.norway = Norway()
         self.poland = Poland()
         self.russia = Russia()
         self.spain = Spain()
