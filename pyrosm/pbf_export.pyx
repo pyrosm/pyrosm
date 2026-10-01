@@ -15,7 +15,7 @@ so coordinates round-trip exactly (no rounding loss).
 
 ``merge_pbf`` merges several overlapping extracts into one file sorted by type
 then id, de-duplicating the elements they share, and applies the same crop rule
-to their union when a bounding box is given.
+to their union when a bounding box or a polygon is given.
 """
 
 import os

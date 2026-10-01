@@ -135,7 +135,14 @@ def test_crop_pbf_to_polygon(helsinki_pbf, tmp_path):
     out = crop_pbf(helsinki_pbf, str(tmp_path / "seq.osm.pbf"), polygon=polygon)
     node_ids, way_ids, rel_ids, _, _ = _read_elements(out)
     assert (way_ids, node_ids) == (expected_ways, expected_nodes)
-    assert len(rel_ids) > 0
+    # Relations are kept when they reference a kept node or way.
+    kept = {"node": node_ids, "way": way_ids}
+    expected_rels = {
+        rel_id
+        for rel_id, members in _relation_members(helsinki_pbf).items()
+        if any(mid in kept.get(kind, ()) for kind, mid, _ in members)
+    }
+    assert rel_ids == expected_rels and rel_ids
     # Nodes inside the envelope but outside both parts are left out.
     assert envelope_nodes - expected_nodes
     bbox = read_header_block(out).bbox
