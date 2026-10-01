@@ -1040,7 +1040,8 @@ _POOL_FALLBACK_WARNING = (
 
 
 class _PoolStartError(Exception):
-    """The pool could not start a worker process (an ``OSError`` from submitting a task)."""
+    """The pool could not start: an ``OSError`` from creating the executor or from submitting
+    a task (which starts a worker process)."""
 
 
 def _ordered_map(executor, func, items, window):
@@ -1062,9 +1063,12 @@ class _Pool:
     """Worker processes that map a function over blob payloads in order (``imap``)."""
 
     def __init__(self, workers, initargs):
-        self.executor = ProcessPoolExecutor(
-            int(workers), initializer=_winit, initargs=initargs
-        )
+        try:
+            self.executor = ProcessPoolExecutor(
+                int(workers), initializer=_winit, initargs=initargs
+            )
+        except OSError as err:
+            raise _PoolStartError(err) from err
         self.window = 2 * int(workers)
 
     def imap(self, func, items):
@@ -1077,7 +1081,7 @@ def _with_pool(func, args, workers, sources, region, compact):
     process."""
     try:
         pool, tmpdir = _open_pool(workers, sources, region, compact)
-    except (OSError, _PoolStartError):
+    except _PoolStartError:
         pool = tmpdir = None
         warnings.warn(_POOL_FALLBACK_WARNING, RuntimeWarning)
     if pool is None:
