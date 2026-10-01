@@ -919,8 +919,8 @@ def get_data_by_area(
     ------
     ValueError
         If the area is empty, or has no width or no height, or ``must_cover`` is empty, or
-        ``crop`` is not ``True``, ``False`` or ``"polygon"``, or ``crop="polygon"`` and the
-        area is not a (Multi)Polygon.
+        ``crop`` is a string other than ``"polygon"``, or ``crop="polygon"`` and the area is
+        not a (Multi)Polygon.
     pyrosm.exceptions.ExtractNotFoundError
         If no extract (or set of extracts) contains the whole area, or ``must_cover`` when
         given (a ``ValueError`` subclass).
@@ -934,7 +934,7 @@ def get_data_by_area(
         raise ValueError(
             "strategy must be one of %s; got %r." % (", ".join(_STRATEGIES), strategy)
         )
-    if crop not in (True, False, "polygon"):
+    if isinstance(crop, str) and crop != "polygon":
         raise ValueError('crop must be True, False or "polygon"; got %r.' % (crop,))
     geom = _area_geometry(area)
     if crop == "polygon" and geom.geom_type not in ("Polygon", "MultiPolygon"):

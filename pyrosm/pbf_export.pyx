@@ -280,9 +280,9 @@ cdef _unique_concat(arrays):
 # ---------------------------------------------------------------------------
 cdef _node_coords(pblock, g):
     """Absolute (ids, lons, lats) of the nodes of group `g` in degrees."""
-    cdef long granularity = pblock.granularity
-    cdef long lat_offset = pblock.lat_offset
-    cdef long lon_offset = pblock.lon_offset
+    granularity = pblock.granularity
+    lat_offset = pblock.lat_offset
+    lon_offset = pblock.lon_offset
     if len(g.dense.id) > 0:
         dense = g.dense
         ids = np.cumsum(np.fromiter(dense.id, dtype=np.int64, count=len(dense.id)))
