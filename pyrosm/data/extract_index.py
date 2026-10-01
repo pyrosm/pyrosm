@@ -22,6 +22,7 @@ import hashlib
 import io
 import json
 import logging
+import numbers
 import os
 import time
 import warnings
@@ -785,7 +786,7 @@ def _area_geometry(area):
     return geom
 
 
-def _write_area_file(area, sources, crop, output_path, directory):
+def _write_area_file(area, sources, crop, output_path, directory, workers=1):
     """The file for :class:`AreaExtract`: the one extract, cropped to the area's bounding box
     when ``crop`` (to the area itself when ``crop="polygon"``); several extracts merged (and
     cropped) with :func:`pyrosm.merge_pbf`.
@@ -808,11 +809,11 @@ def _write_area_file(area, sources, crop, output_path, directory):
     target = output_path or str(_default_target_dir(directory) / name)
     Path(target).resolve().parent.mkdir(parents=True, exist_ok=True)
     if len(paths) == 1:
-        return crop_pbf(paths[0], target, **region)
-    return merge_pbf(paths, target, **region)
+        return crop_pbf(paths[0], target, workers=workers, **region)
+    return merge_pbf(paths, target, workers=workers, **region)
 
 
-def _write_with_provenance(area, sources, crop, output_path, directory):
+def _write_with_provenance(area, sources, crop, output_path, directory, workers=1):
     """Write the area's file (:func:`_write_area_file`) and read the provenance of it and of
     its sources afterwards, so they describe the bytes that were used. When a source changed
     meanwhile, or the written file changed before its provenance was read, both are done
@@ -821,7 +822,7 @@ def _write_with_provenance(area, sources, crop, output_path, directory):
     """
     for _ in range(3):
         before = [_identity(s.path) for s in sources]
-        path = _write_area_file(area, sources, crop, output_path, directory)
+        path = _write_area_file(area, sources, crop, output_path, directory, workers)
         written = _identity(path)
         provenance = {p: _provenance(p) for p in {path, *(s.path for s in sources)}}
         unchanged = [_identity(s.path) for s in sources] == before
@@ -845,6 +846,7 @@ def get_data_by_area(
     opener=None,
     strategy="single",
     must_cover=None,
+    workers=1,
 ):
     """Download the OSM data for ``area``: the smallest single extract that contains it, or a
     smaller set of extracts merged into one file.
@@ -910,6 +912,15 @@ def get_data_by_area(
         Points and lines are covered exactly, polygons except for less than 1 m². The crop
         still follows ``area``, so parts of ``must_cover`` outside it are cropped away.
 
+    workers : int
+        Number of worker processes that crop (and merge) the downloaded file. ``1`` (default)
+        runs in one process. More workers are used only for a file with at least
+        ``2 * workers`` data blocks, and the written file is the same for every value. With
+        ``crop=False`` and a single extract nothing is cropped, so it has no effect. A script
+        that passes ``workers > 1`` on macOS or Windows needs the
+        ``if __name__ == "__main__":`` guard, as each worker process starts by importing the
+        script.
+
     Returns
     -------
     AreaExtract
@@ -920,7 +931,7 @@ def get_data_by_area(
     ValueError
         If the area is empty, or has no width or no height, or ``must_cover`` is empty, or
         ``crop`` is a string other than ``"polygon"``, or ``crop="polygon"`` and the area is
-        not a (Multi)Polygon.
+        not a (Multi)Polygon, or ``workers`` is not an integer of at least 1.
     pyrosm.exceptions.ExtractNotFoundError
         If no extract (or set of extracts) contains the whole area, or ``must_cover`` when
         given (a ``ValueError`` subclass).
@@ -936,6 +947,14 @@ def get_data_by_area(
         )
     if isinstance(crop, str) and crop != "polygon":
         raise ValueError('crop must be True, False or "polygon"; got %r.' % (crop,))
+    if (
+        isinstance(workers, bool)
+        or not isinstance(workers, numbers.Integral)
+        or workers < 1
+    ):
+        raise ValueError(
+            "workers must be an integer of at least 1; got %r." % (workers,)
+        )
     geom = _area_geometry(area)
     if crop == "polygon" and geom.geom_type not in ("Polygon", "MultiPolygon"):
         raise ValueError(
@@ -983,7 +1002,7 @@ def get_data_by_area(
             download_seconds = time.perf_counter() - start
             start = time.perf_counter()
             path, provenance = _write_with_provenance(
-                geom, sources, crop, output_path, directory
+                geom, sources, crop, output_path, directory, workers
             )
             merged = len(sources) > 1
             total = [s.bytes for s in sources]

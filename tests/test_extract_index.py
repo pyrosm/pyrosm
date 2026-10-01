@@ -708,22 +708,25 @@ def test_get_data_by_area_accepts_area_forms(monkeypatch, area):
 
 
 @pytest.mark.parametrize(
-    "area, crop, message",
+    "area, options, message",
     [
-        (gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), True, "empty"),
-        (Point(24.94, 60.17), True, "width and a height"),
-        ([24.93, 60.16, 24.93, 60.18], True, "width and a height"),
-        (box(*HELSINKI), "bbox", 'crop must be True, False or "polygon"'),
+        (gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), {}, "empty"),
+        (Point(24.94, 60.17), {}, "width and a height"),
+        ([24.93, 60.16, 24.93, 60.18], {}, "width and a height"),
+        (box(*HELSINKI), {"crop": "bbox"}, 'crop must be True, False or "polygon"'),
         (
             LineString([HELSINKI[:2], HELSINKI[2:]]),
-            "polygon",
+            {"crop": "polygon"},
             "Polygon or MultiPolygon",
         ),
+        (box(*HELSINKI), {"workers": 0}, "workers must be an integer"),
+        (box(*HELSINKI), {"workers": 1.5}, "workers must be an integer"),
+        (box(*HELSINKI), {"workers": True}, "workers must be an integer"),
     ],
 )
-def test_get_data_by_area_rejects_bad_area_or_crop(area, crop, message):
+def test_get_data_by_area_rejects_bad_options(area, options, message):
     with pytest.raises(ValueError, match=message) as info:
-        pyrosm.get_data_by_area(area, crop=crop)
+        pyrosm.get_data_by_area(area, **options)
     # An invalid area is not reported as "no extract contains the area".
     assert type(info.value) is ValueError
 
@@ -1012,9 +1015,25 @@ def test_get_data_by_area_crops_to_the_polygon(
     monkeypatch.setattr(
         "pyrosm.utils.download.download", lambda url, *a, **k: paths[url]
     )
+    workers = []
+    for name in ("crop_pbf", "merge_pbf"):
+        real = getattr(pyrosm.pbf_export, name)
+
+        def spy(*a, real=real, name=name, **k):
+            workers.append((name, k["workers"]))
+            return real(*a, **k)
+
+        monkeypatch.setattr(pyrosm.pbf_export, name, spy)
     got = pyrosm.get_data_by_area(
-        area, crop="polygon", directory=tmp_path, strategy=strategy
+        area, crop="polygon", directory=tmp_path, strategy=strategy, workers=2
     )
+    one = pyrosm.get_data_by_area(
+        area, crop="polygon", directory=tmp_path / "one", strategy=strategy
+    )
+    used = "crop_pbf" if strategy == "single" else "merge_pbf"
+    assert workers == [(used, 2), (used, 1)]
+    # The file is the same whatever the number of workers.
+    assert Path(got).read_bytes() == Path(one).read_bytes()
     assert len(got.sources) == (1 if strategy == "single" else 2)
     name = "area_%s.osm.pbf" % hashlib.sha1(area.wkb).hexdigest()[:12]
     assert Path(got).name == name
