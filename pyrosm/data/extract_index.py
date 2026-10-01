@@ -646,7 +646,7 @@ def _provenance(path):
     Both are read within one check of the file's identity (device, inode, size, mtime): when
     it changed while they were read, they are read again, up to three times, then ``OSError``.
     This is best effort against another process changing the file; pyrosm itself replaces its
-    downloads, crops and merges atomically.
+    downloads and merges atomically.
     """
     from pyrosm.pbf_export import read_header_block
 
