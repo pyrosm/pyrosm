@@ -16,6 +16,7 @@ point at one.
 """
 
 import json
+import logging
 import os
 import re
 import urllib.parse
@@ -24,6 +25,8 @@ from urllib.error import URLError
 from shapely.geometry import box, shape
 
 from pyrosm.utils.download import open_url
+
+logger = logging.getLogger(__name__)
 
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org"
 
@@ -85,7 +88,7 @@ def geocode(query, polygon=True, base_url=_NOMINATIM_URL, user_agent=None):
         raise ValueError("Could not geocode '%s'." % query)
 
     result = results[0]
-    print("Geocoded '%s' to: %s" % (query, result.get("display_name", query)))
+    logger.info("Geocoded '%s' to: %s", query, result.get("display_name", query))
 
     geojson = result.get("geojson") if polygon else None
     if geojson and geojson.get("type") in ("Polygon", "MultiPolygon"):

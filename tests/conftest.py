@@ -28,3 +28,11 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "live_download" in item.keywords:
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_wait(monkeypatch):
+    """Retried downloads do not wait between attempts during the tests."""
+    from pyrosm.utils import download
+
+    monkeypatch.setattr(download, "_sleep", lambda seconds: None)

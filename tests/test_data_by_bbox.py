@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 
 import geopandas as gpd
@@ -40,17 +41,16 @@ def test_download_false_picks_smallest_covering_extract():
     assert "illinois" in get_data_by_bbox(CHICAGO, download=False)
 
 
-def test_lookup_prints_matched_extract(capsys):
-    get_data_by_bbox(HELSINKI, download=False)
-    out = capsys.readouterr().out
-    assert "Finland" in out and "finland" in out
-
-
-def test_lookup_prints_name_without_redundant_id(capsys):
-    get_data_by_bbox(CHICAGO, download=False)
-    out = capsys.readouterr().out
-    assert "us/illinois" in out
-    assert "(id:" not in out
+@pytest.mark.parametrize(
+    "bbox, shown, hidden",
+    [(HELSINKI, "'Finland' (id: finland)", None), (CHICAGO, "'us/illinois'", "(id:")],
+)
+def test_lookup_logs_matched_extract(caplog, capsys, bbox, shown, hidden):
+    caplog.set_level(logging.INFO, logger="pyrosm")
+    get_data_by_bbox(bbox, download=False)
+    assert shown in caplog.text
+    assert hidden is None or hidden not in caplog.text
+    assert capsys.readouterr().out == ""
 
 
 @pytest.mark.parametrize(

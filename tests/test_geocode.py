@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -66,13 +67,16 @@ def _mock_urlopen(payload, captured=None):
     return fake
 
 
-def test_geocode_returns_boundary_polygon(monkeypatch):
+def test_geocode_returns_boundary_polygon(monkeypatch, caplog, capsys):
     monkeypatch.setattr("urllib.request.urlopen", _mock_urlopen(BRIGHTON))
+    caplog.set_level(logging.INFO, logger="pyrosm")
     geom = pyrosm.geocode("Brighton and Hove, UK")
     assert geom.geom_type == "Polygon"
     assert geom.bounds == pytest.approx(
         (-0.2450771, 50.7982097, -0.0160307, 50.8923741)
     )
+    assert "Brighton and Hove, England, United Kingdom" in caplog.text
+    assert capsys.readouterr().out == ""
 
 
 def test_geocode_bbox_fallback_without_geojson(monkeypatch):
