@@ -162,9 +162,9 @@ cdef _read_blob_header(f):
     return blob_header
 
 
-cdef _read_blob(f, blob_header):
-    """Read the raw or zlib Blob that follows `blob_header`."""
-    blob = _parse(Blob(), _read_exact(f, blob_header.datasize), f)
+cdef _read_blob(f, datasize):
+    """Read the raw or zlib Blob of `datasize` bytes at the position of `f`."""
+    blob = _parse(Blob(), _read_exact(f, datasize), f)
     if not (blob.HasField("raw") or blob.HasField("zlib_data")):
         raise ValueError(
             "'%s' uses a blob compression other than raw and zlib, which pyrosm "
@@ -202,7 +202,7 @@ cdef _read_next_blob(f):
     blob_header = _read_blob_header(f)
     if blob_header is None:
         return None, None
-    blob = _read_blob(f, blob_header)
+    blob = _read_blob(f, blob_header.datasize)
     if blob.HasField("raw"):
         return blob_header, blob.raw
     return blob_header, _decompress(blob.zlib_data, _raw_size(blob), f.name)
@@ -898,35 +898,32 @@ _W_CACHE = {}
 _W_COMPACT = False
 
 
-cdef _read_next_payload(f):
-    """Read one (blob_type, (filepath, is_raw, payload_bytes, raw_size)); (None, None)
-    at EOF."""
-    blob_header = _read_blob_header(f)
-    if blob_header is None:
-        return None, None
-    blob = _read_blob(f, blob_header)
-    if blob.HasField("raw"):
-        return blob_header.type, (f.name, True, blob.raw, None)
-    return blob_header.type, (f.name, False, blob.zlib_data, _raw_size(blob))
-
-
 def _iter_payloads(filepath):
-    """Yield each OSMData blob's raw (still-compressed) payload, skipping header."""
+    """Yield ``(filepath, offset, size)`` of each OSMData blob, skipping the header.
+
+    A worker reads the blob itself, so only these small tuples go through the pool's task
+    queue: a large write to it can hang Python 3.10 when a worker dies (CPython gh-94777).
+    """
     with open(filepath, "rb") as f:
-        _read_next_payload(f)  # header
         while True:
-            btype, payload = _read_next_payload(f)
-            if btype is None:
+            blob_header = _read_blob_header(f)
+            if blob_header is None:
                 break
-            if btype != "OSMData":
-                continue
-            yield payload
+            offset = f.tell()
+            f.seek(blob_header.datasize, 1)
+            if blob_header.type == "OSMData":
+                yield filepath, offset, blob_header.datasize
 
 
 cdef _payload_to_block(payload):
-    filepath, is_raw, data, raw_size = payload
-    if not is_raw:
-        data = _decompress(data, raw_size, filepath)
+    filepath, offset, size = payload
+    with open(filepath, "rb") as f:
+        f.seek(offset)
+        blob = _read_blob(f, size)
+    if blob.HasField("raw"):
+        data = blob.raw
+    else:
+        data = _decompress(blob.zlib_data, _raw_size(blob), filepath)
     pblock = PrimitiveBlock()
     try:
         pblock.ParseFromString(data)
