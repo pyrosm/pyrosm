@@ -5,8 +5,11 @@ import io
 import json
 import logging
 import os
+import shutil
 import time
 import warnings
+import zlib
+from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 
 import geopandas as gpd
@@ -861,6 +864,35 @@ def test_smallest_cover_prunes_redundant_extracts():
     assert ei._smallest_cover((ZERMATT, None), rows)["id"].tolist() == ["all"]
 
 
+WEST_TIME, EAST_TIME = 1790377200, 1790463600  # 2026-09-25 23:00 and a day later (UTC)
+
+
+def _stamp(path, timestamp):
+    """Rewrite the PBF at ``path`` with ``osmosis_replication_timestamp`` in its header."""
+    import struct
+
+    from pyrosm.proto.fileformat_pb2 import Blob, BlobHeader
+    from pyrosm.proto.osmformat_pb2 import HeaderBlock
+
+    data = Path(path).read_bytes()
+    size = struct.unpack(">I", data[:4])[0]
+    header = BlobHeader()
+    header.ParseFromString(data[4 : 4 + size])
+    rest = data[4 + size + header.datasize :]
+    blob = Blob()
+    blob.ParseFromString(data[4 + size : 4 + size + header.datasize])
+    raw = zlib.decompress(blob.zlib_data) if blob.HasField("zlib_data") else blob.raw
+    block = HeaderBlock()
+    block.ParseFromString(raw)
+    block.osmosis_replication_timestamp = timestamp
+    raw = block.SerializeToString()
+    blob = Blob(zlib_data=zlib.compress(raw), raw_size=len(raw)).SerializeToString()
+    header.datasize = len(blob)
+    header = header.SerializeToString()
+    Path(path).write_bytes(struct.pack(">I", len(header)) + header + blob + rest)
+    return path
+
+
 @pytest.fixture(scope="module")
 def helsinki_halves(tmp_path_factory):
     """Overlapping west and east crops of the bundled Helsinki extract."""
@@ -873,7 +905,7 @@ def helsinki_halves(tmp_path_factory):
     ):
         out = str(folder / ("%s.osm.pbf" % name))
         pyrosm.OSM(helsinki, bounding_box=bounds).to_pbf(output_path=out)
-        halves[name] = out
+        halves[name] = _stamp(out, WEST_TIME if name == "west" else EAST_TIME)
     return halves
 
 
@@ -918,6 +950,16 @@ def test_get_data_by_area_merges_a_smaller_set(
     # Movisda's extract goes last, so complete copies win ties in the merge.
     assert merged_inputs == [[helsinki_halves["west"], helsinki_halves["east"]]]
     assert [s.extract for s in got.sources] == ["west", "east"]
+    # Provenance: the merged file's own hash, and the older of the two snapshot times.
+    assert got.sha256 == hashlib.sha256(Path(got).read_bytes()).hexdigest()
+    assert [(s.sha256, s.snapshot) for s in got.sources] == [
+        (hashlib.sha256(Path(p).read_bytes()).hexdigest(), _utc(t))
+        for p, t in (
+            (helsinki_halves["west"], WEST_TIME),
+            (helsinki_halves["east"], EAST_TIME),
+        )
+    ]
+    assert got.snapshot == _utc(WEST_TIME)
     west, east = (_buildings(helsinki_halves[k]) for k in ("west", "east"))
     merged = set(_buildings(got.path).index)
     # A building inside the area found in only one input, for each input, and a building
@@ -1100,10 +1142,13 @@ def test_must_cover_points_and_lines_exactly(tmp_path, monkeypatch, extra):
     assert ei._choose(target, rows.iloc[:2], "smallest_total") is None
     # The public call downloads those three (the merge itself is tested elsewhere).
     monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: rows)
-    monkeypatch.setattr("pyrosm.utils.download.download", lambda url, *a, **k: url)
+    test_pbf = pyrosm.get_data("test_pbf")
+    monkeypatch.setattr("pyrosm.utils.download.download", lambda *a, **k: test_pbf)
     written = []
     monkeypatch.setattr(
-        ei, "_write_area_file", lambda area, sources, *a: written.append(sources) or "x"
+        ei,
+        "_write_area_file",
+        lambda area, sources, *a: written.append(sources) or test_pbf,
     )
     pyrosm.get_data_by_area(
         box(*shapely.union_all([L_SOUTH, L_WEST, CORNER]).bounds),
@@ -1173,3 +1218,113 @@ def test_must_cover_parts(must_cover, polygons, exact):
         polygons is None or got[0].equals(polygons)
     )
     assert shapely.normalize(got[1]).equals_exact(shapely.normalize(exact), 1e-9)
+
+
+def _utc(timestamp):
+    return datetime.fromtimestamp(timestamp, timezone.utc)
+
+
+def test_provenance(tmp_path, monkeypatch):
+    """A file's hash and snapshot time; a file that changes while they are read is read
+    again, and one that keeps changing raises OSError."""
+    stamped = _stamp(
+        shutil.copy(pyrosm.get_data("test_pbf"), tmp_path / "x.pbf"), WEST_TIME
+    )
+    digest = hashlib.sha256(Path(stamped).read_bytes()).hexdigest()
+    assert ei._provenance(stamped) == (
+        digest,
+        datetime(2026, 9, 25, 23, tzinfo=timezone.utc),
+    )
+    assert ei._provenance(pyrosm.get_data("test_pbf"))[1] is None
+
+    real = pyrosm.pbf_export.read_header_block
+    changes = []
+
+    def changing(path):
+        # Another process gives the file a new snapshot time after its header was read and
+        # before it is hashed.
+        header = real(path)
+        if len(changes) < changes_wanted:
+            changes.append(1)
+            _stamp(path, EAST_TIME if len(changes) % 2 else WEST_TIME)
+        return header
+
+    monkeypatch.setattr(pyrosm.pbf_export, "read_header_block", changing)
+    changes_wanted = 1
+    got = ei._provenance(stamped)
+    final = hashlib.sha256(Path(stamped).read_bytes()).hexdigest()
+    assert got == (final, _utc(EAST_TIME))
+    changes.clear()
+    changes_wanted = 3
+    with pytest.raises(OSError, match="kept changing"):
+        ei._provenance(stamped)
+
+
+def test_provenance_is_read_after_the_file_is_written(tmp_path, monkeypatch):
+    """A source replaced while the area's file is written is read again with the file, so
+    both describe the same bytes; one replaced every time raises OSError."""
+    source = _stamp(
+        shutil.copy(pyrosm.get_data("test_pbf"), tmp_path / "s.pbf"), WEST_TIME
+    )
+    sources = [ei.ExtractSource("BBBike", "s", "u", 1, str(source))]
+    replacements = []
+
+    output = tmp_path / "out.pbf"
+
+    def write(area, sources, crop, *a):
+        if len(replacements) < wanted:
+            replacements.append(1)
+            replacement = _stamp(shutil.copy(source, tmp_path / "new.pbf"), EAST_TIME)
+            os.replace(replacement, source)
+        if not crop:
+            return str(source)
+        shutil.copy(source, output)
+        return str(output)
+
+    monkeypatch.setattr(ei, "_write_area_file", write)
+    wanted = 1
+    path, provenance = ei._write_with_provenance(
+        box(0, 0, 1, 1), sources, False, None, tmp_path
+    )
+    final = (hashlib.sha256(Path(source).read_bytes()).hexdigest(), _utc(EAST_TIME))
+    assert provenance[path] == final == (sources[0].sha256, sources[0].snapshot)
+    replacements.clear()
+    wanted = 3
+    with pytest.raises(OSError, match="kept changing"):
+        ei._write_with_provenance(box(0, 0, 1, 1), sources, False, None, tmp_path)
+
+    # The written file replaced after it was written is read again too.
+    real_provenance = ei._provenance
+    touched = []
+
+    def provenance(path):
+        result = real_provenance(path)
+        if path == str(output) and not touched:
+            touched.append(1)
+            other = _stamp(shutil.copy(source, tmp_path / "other.pbf"), WEST_TIME)
+            os.replace(other, output)
+        return result
+
+    monkeypatch.setattr(ei, "_provenance", provenance)
+    wanted = 0
+    path, got = ei._write_with_provenance(
+        box(0, 0, 1, 1), sources, True, None, tmp_path
+    )
+    # Without the check the record would describe the bytes before the replacement.
+    assert touched and got[path] == real_provenance(str(output))
+
+
+@pytest.mark.parametrize("crop", [False, True])
+def test_get_data_by_area_records_provenance(tmp_path, monkeypatch, crop):
+    stamped = _stamp(
+        shutil.copy(pyrosm.get_data("helsinki_pbf"), tmp_path / "helsinki.osm.pbf"),
+        WEST_TIME,
+    )
+    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: _ranked(BBBIKE))
+    monkeypatch.setattr("pyrosm.utils.download.download", lambda *a, **k: str(stamped))
+    got = pyrosm.get_data_by_area(box(*HELSINKI), crop=crop, directory=tmp_path)
+    source = got.sources[0]
+    assert source.sha256 == hashlib.sha256(Path(stamped).read_bytes()).hexdigest()
+    assert got.sha256 == hashlib.sha256(Path(got).read_bytes()).hexdigest()
+    assert (got.sha256 == source.sha256) is not crop
+    assert got.snapshot == source.snapshot == _utc(WEST_TIME)

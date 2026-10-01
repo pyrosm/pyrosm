@@ -22,9 +22,11 @@ import hashlib
 import io
 import json
 import logging
+import os
 import time
 import warnings
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -631,15 +633,49 @@ def _choose(target, candidates, strategy):
     return cover
 
 
+def _identity(path):
+    """A file's device, inode, size and modification time, to notice it changing."""
+    st = os.stat(path)
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
+
+
+def _provenance(path):
+    """``(sha256, snapshot)`` of a file: its SHA-256 hex digest and the PBF header's
+    ``osmosis_replication_timestamp`` as a UTC datetime (``None`` when it has none).
+
+    Both are read within one check of the file's identity (device, inode, size, mtime): when
+    it changed while they were read, they are read again, up to three times, then ``OSError``.
+    This is best effort against another process changing the file; pyrosm itself replaces its
+    downloads, crops and merges atomically.
+    """
+    from pyrosm.pbf_export import read_header_block
+
+    for _ in range(3):
+        before = _identity(path)
+        stamp = read_header_block(str(path)).osmosis_replication_timestamp
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            while chunk := f.read(1 << 20):
+                digest.update(chunk)
+        if _identity(path) == before:
+            snapshot = datetime.fromtimestamp(stamp, timezone.utc) if stamp else None
+            return digest.hexdigest(), snapshot
+    raise OSError("'%s' kept changing while it was read." % path)
+
+
 @dataclass
 class ExtractSource:
-    """One downloaded extract that went into an :class:`AreaExtract`."""
+    """One downloaded extract that went into an :class:`AreaExtract`: where it came from, the
+    downloaded file, its SHA-256 and its snapshot time (``None`` when the file has none).
+    """
 
     provider: str
     extract: str
     url: str
     bytes: object
     path: str
+    sha256: str = None
+    snapshot: object = None
 
 
 @dataclass
@@ -671,6 +707,12 @@ class AreaExtract:
         The downloaded extracts, in merge order: one for a single extract, several for a merged
         one. For a merged file ``provider`` and ``extract`` join theirs with ``"+"``, ``url``
         is ``None`` and ``bytes`` is their total; ``crop_seconds`` then covers the merge.
+    sha256 : str
+        The SHA-256 hex digest of ``path``.
+    snapshot : datetime or None
+        The time the extract's data was taken, from its PBF header
+        (``osmosis_replication_timestamp``, UTC); ``None`` when it has none. For merged
+        extracts the oldest of the sources' times (each source's own is in ``sources``).
     """
 
     path: str
@@ -682,6 +724,8 @@ class AreaExtract:
     crop_seconds: float
     failed: list = field(default_factory=list)
     sources: list = field(default_factory=list)
+    sha256: str = None
+    snapshot: object = None
 
     def __fspath__(self):
         return self.path
@@ -768,6 +812,28 @@ def _write_area_file(area, sources, crop, output_path, directory):
     Path(target).resolve().parent.mkdir(parents=True, exist_ok=True)
     return merge_pbf(
         [s.path for s in sources], target, bounding_box=envelope if crop else None
+    )
+
+
+def _write_with_provenance(area, sources, crop, output_path, directory):
+    """Write the area's file (:func:`_write_area_file`) and read the provenance of it and of
+    its sources afterwards, so they describe the bytes that were used. When a source changed
+    meanwhile, or the written file changed before its provenance was read, both are done
+    again, up to three times, then ``OSError``. Fills in each source's
+    ``sha256`` and ``snapshot``; returns the file's path and ``{path: (sha256, snapshot)}``.
+    """
+    for _ in range(3):
+        before = [_identity(s.path) for s in sources]
+        path = _write_area_file(area, sources, crop, output_path, directory)
+        written = _identity(path)
+        provenance = {p: _provenance(p) for p in {path, *(s.path for s in sources)}}
+        unchanged = [_identity(s.path) for s in sources] == before
+        if unchanged and _identity(path) == written:
+            for s in sources:
+                s.sha256, s.snapshot = provenance[s.path]
+            return path, provenance
+    raise OSError(
+        "The downloaded extracts kept changing while the area's file was written."
     )
 
 
@@ -907,9 +973,13 @@ def get_data_by_area(
         else:
             download_seconds = time.perf_counter() - start
             start = time.perf_counter()
-            path = _write_area_file(geom, sources, crop, output_path, directory)
+            path, provenance = _write_with_provenance(
+                geom, sources, crop, output_path, directory
+            )
             merged = len(sources) > 1
             total = [s.bytes for s in sources]
+            sha256 = provenance[path][0]
+            snapshots = [s.snapshot for s in sources if s.snapshot is not None]
             return AreaExtract(
                 path=path,
                 provider="+".join(s.provider for s in sources),
@@ -920,6 +990,8 @@ def get_data_by_area(
                 crop_seconds=time.perf_counter() - start,
                 failed=failed,
                 sources=sources,
+                sha256=sha256,
+                snapshot=min(snapshots) if snapshots else None,
             )
     if not failed:
         what = "the whole area" if must_cover is None else "must_cover"
