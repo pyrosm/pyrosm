@@ -404,9 +404,9 @@ def find_extracts(
     Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and
     1°/10° grid tiles. Extracts that contain the whole area (or ``must_cover`` when given) come
     first, then those that only overlap it; within each group the smallest download comes
-    first. Extracts whose size cannot
-    be read come last in their group, smallest extent first. :func:`get_data_by_area` downloads
-    the first extract that contains the area (or ``must_cover``).
+    first. Extracts whose size cannot be read come last in their group, smallest extent first.
+    With its default ``strategy="single"``, :func:`get_data_by_area` downloads the first
+    extract that contains the area (or ``must_cover``).
 
     When Movisda's indexes cannot be fetched and no copy is cached, its administrative areas are
     left out and its grid tiles come from the copy vendored with pyrosm, each with a warning.
