@@ -861,10 +861,12 @@ def get_data_by_area(
     the area's bounding box, or with ``crop="polygon"`` to the area itself.
 
     Movisda cuts its extracts exactly at their edges, so features crossing the edge of a Movisda
-    extract are clipped or missing there. A single Movisda extract contains the whole area, so
-    this only affects the part of the bounding box outside the area; in a merged set the
-    Movisda extract goes last, so where another extract holds a complete copy of such a
-    feature, that copy is kept.
+    extract are clipped or missing there: open ways such as streets are cut at the edge and
+    kept. A grid tile can leave out a whole closed way that crosses its edge, such as a
+    building or a land-use area, including its part inside the area. To keep a grid tile's
+    edges at least N metres outside the area, pass the area buffered by N metres (in a local
+    metric CRS) as ``must_cover``. In a merged set the Movisda extract goes last, so where
+    another extract holds a complete copy of such a feature, that copy is kept.
 
     Parameters
     ----------
