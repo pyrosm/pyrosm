@@ -880,9 +880,9 @@ cdef _select(sources, region, keep_relations, pool, tmpdir):
 # internally parallel across blobs but the stages run in sequence because each
 # depends on the previous stage's *complete* result. A SINGLE pool is reused
 # across all four stages (re-spawning a pool per stage would re-pay the worker
-# startup cost four times). The main process reads raw (still-compressed) blob
-# payloads sequentially (cheap I/O) and feeds them to the pool through `_Pool.imap`
-# as they are read; workers do the heavy decompress + protobuf parse + (re-)encode.
+# startup cost four times). The main process reads the blob headers and feeds each
+# OSMData blob's position to the pool through `_Pool.imap`; workers read the blob from
+# the file and do the heavy decompress + protobuf parse + (re-)encode.
 # The growing kept-id arrays a stage needs are broadcast to the persistent workers
 # via small `.npy` files in a temp dir (written by the main process between stages,
 # memory-mapped + cached per worker on first use) rather than re-pickled per task.
@@ -898,26 +898,38 @@ _W_CACHE = {}
 _W_COMPACT = False
 
 
+cdef _identity(f):
+    """Device, inode, size and modification time of the open file `f`."""
+    st = os.fstat(f.fileno())
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
+
+
 def _iter_payloads(filepath):
-    """Yield ``(filepath, offset, size)`` of each OSMData blob, skipping the header.
+    """Yield ``(filepath, identity, offset, size)`` of each OSMData blob; other blobs are
+    read and checked here.
 
     A worker reads the blob itself, so only these small tuples go through the pool's task
     queue: a large write to it can hang Python 3.10 when a worker dies (CPython gh-94777).
     """
     with open(filepath, "rb") as f:
+        identity = _identity(f)
         while True:
             blob_header = _read_blob_header(f)
             if blob_header is None:
                 break
+            if blob_header.type != "OSMData":
+                _read_blob(f, blob_header.datasize)
+                continue
             offset = f.tell()
             f.seek(blob_header.datasize, 1)
-            if blob_header.type == "OSMData":
-                yield filepath, offset, blob_header.datasize
+            yield filepath, identity, offset, blob_header.datasize
 
 
 cdef _payload_to_block(payload):
-    filepath, offset, size = payload
+    filepath, identity, offset, size = payload
     with open(filepath, "rb") as f:
+        if _identity(f) != identity:
+            raise ValueError("'%s' changed while it was being read." % filepath)
         f.seek(offset)
         blob = _read_blob(f, size)
     if blob.HasField("raw"):
