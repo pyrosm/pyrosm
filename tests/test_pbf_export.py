@@ -1244,6 +1244,126 @@ def test_merge_pbf_rejects_bad_polygon(helsinki_pbf, case, match):
         merge_pbf([helsinki_pbf], **region)
 
 
+@pytest.mark.parametrize(
+    "executor, fallback",
+    [
+        ("threads", False),
+        ("submit fails", True),
+        ("worker dies", True),
+        ("task error", False),
+        ("file changes", False),
+    ],
+)
+def test_parallel_crop_falls_back_only_when_the_pool_breaks(
+    helsinki_pbf, tmp_path, monkeypatch, executor, fallback
+):
+    """A pool that cannot start a worker, or whose worker dies, makes the crop warn and run
+    in one process; an error raised by a task, or a source that changes while the workers
+    read it, propagates without a fallback."""
+    import os
+    import warnings
+    from concurrent.futures import Future, ThreadPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+
+    import pyrosm.pbf_export as pbf_export
+    from pyrosm.exceptions import InvalidOSMFileError
+    from pyrosm.pbf_export import _iter_primitive_blocks, crop_pbf
+    from pyrosm.proto.fileformat_pb2 import Blob
+
+    class Threads(ThreadPoolExecutor):
+        """Runs the worker functions in threads, so the parallel path runs anywhere."""
+
+        def submit(self, func, *args):
+            if executor == "submit fails":
+                raise OSError("cannot start a process")
+            if executor == "worker dies":
+                future = Future()
+                future.set_exception(BrokenProcessPool("a worker died"))
+                return future
+            if executor == "file changes":
+                os.utime(source, ns=(1, 1))
+            return super().submit(func, *args)
+
+    monkeypatch.setattr(pbf_export, "ProcessPoolExecutor", Threads)
+    source = helsinki_pbf
+    if executor == "file changes":
+        source = str(tmp_path / "source.osm.pbf")
+        Path(source).write_bytes(Path(helsinki_pbf).read_bytes())
+    if executor == "task error":
+        source = str(tmp_path / "bad.osm.pbf")
+        blocks = list(_iter_primitive_blocks(helsinki_pbf))[:3]
+        _pbf_file(source, *blocks, Blob(zlib_data=b"not zlib"))
+    expected = crop_pbf(helsinki_pbf, str(tmp_path / "one.osm.pbf"), CROP_BBOX)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        if executor in ("task error", "file changes"):
+            error = InvalidOSMFileError if executor == "task error" else ValueError
+            match = (
+                "not a valid OSM PBF" if executor == "task error" else "changed while"
+            )
+            with pytest.raises(error, match=match):
+                crop_pbf(source, str(tmp_path / "two.osm.pbf"), CROP_BBOX, workers=2)
+        else:
+            out = crop_pbf(source, str(tmp_path / "two.osm.pbf"), CROP_BBOX, workers=2)
+            assert Path(out).read_bytes() == Path(expected).read_bytes()
+    warned = [w for w in caught if "workers=1" in str(w.message)]
+    assert len(warned) == (1 if fallback else 0)
+
+
+_UNSTARTABLE_SCRIPT = """
+import multiprocessing
+import warnings
+
+multiprocessing.set_start_method("spawn", force=True)
+from pyrosm.pbf_export import crop_pbf, merge_pbf
+
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    {call}
+print("warnings:", sum("workers=1" in str(w.message) for w in caught))
+"""
+
+
+@pytest.mark.parametrize("form", ["crop read from stdin", "merge without main guard"])
+def test_parallel_crop_runs_when_workers_cannot_import_the_script(
+    helsinki_pbf, tmp_path, form
+):
+    """Spawned workers that cannot import the script used to hang the crop; it now runs in
+    one process with one warning and writes the same file as workers=1."""
+    import subprocess
+    import sys
+
+    from pyrosm import merge_pbf
+    from pyrosm.pbf_export import crop_pbf
+
+    out = tmp_path / "two.osm.pbf"
+    if form == "crop read from stdin":
+        expected = crop_pbf(helsinki_pbf, str(tmp_path / "one.osm.pbf"), CROP_BBOX)
+        call = "crop_pbf(%r, %r, %r, workers=2)" % (helsinki_pbf, str(out), CROP_BBOX)
+    else:
+        copy = str(tmp_path / "copy.osm.pbf")
+        Path(copy).write_bytes(Path(helsinki_pbf).read_bytes())
+        inputs = [helsinki_pbf, copy]
+        expected = merge_pbf(inputs, str(tmp_path / "one.osm.pbf"), CROP_BBOX)
+        call = "merge_pbf(%r, %r, %r, workers=2)" % (inputs, str(out), CROP_BBOX)
+    script = _UNSTARTABLE_SCRIPT.format(call=call)
+    command = [sys.executable, "-"]
+    if form == "merge without main guard":
+        command = [sys.executable, str(tmp_path / "unguarded.py")]
+        Path(command[1]).write_text(script)
+    result = subprocess.run(
+        command,
+        input=script if command[1] == "-" else None,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "warnings: 1" in result.stdout
+    assert out.read_bytes() == Path(expected).read_bytes()
+
+
 # ---------------------------------------------------------------------------
 # OSM.write_pbf (issue #285)
 # ---------------------------------------------------------------------------

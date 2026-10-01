@@ -402,10 +402,11 @@ def find_extracts(
     """List the OSM extracts that overlap ``area``, best download first, without downloading.
 
     Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and
-    1°/10° grid tiles. Extracts that contain the whole area come first, then those that only
-    overlap it; within each group the smallest download comes first. Extracts whose size cannot
-    be read come last in their group, smallest extent first. :func:`get_data_by_area` downloads
-    the first extract that contains the area.
+    1°/10° grid tiles. Extracts that contain the whole area (or ``must_cover`` when given) come
+    first, then those that only overlap it; within each group the smallest download comes
+    first. Extracts whose size cannot be read come last in their group, smallest extent first.
+    With its default ``strategy="single"``, :func:`get_data_by_area` downloads the first
+    extract that contains the area (or ``must_cover``).
 
     When Movisda's indexes cannot be fetched and no copy is cached, its administrative areas are
     left out and its grid tiles come from the copy vendored with pyrosm, each with a warning.
@@ -441,7 +442,11 @@ def find_extracts(
     must_cover : shapely geometry | GeoDataFrame | GeoSeries, optional
         What an extract must contain, in place of the whole area, e.g. the transit stops that
         routing needs. Any geometry type; points and lines must be contained exactly. Extracts
-        that only reach it (not the area) are listed too.
+        that only reach it (not the area) are listed too. To also require the streets around
+        each stop, pass the stops buffered in a local metric CRS, e.g.
+        ``stops.to_crs(stops.estimate_utm_crs()).buffer(300)``, or a hull of them to require
+        the streets between stops as well. A GeoDataFrame or GeoSeries in another CRS is
+        reprojected to lon/lat.
 
     Returns
     -------
@@ -852,8 +857,10 @@ def get_data_by_area(
     smaller set of extracts merged into one file.
 
     Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and 1°/10°
-    grid tiles, keeps those that contain the whole area, and downloads the one with the smallest
-    file (the first row of ``find_extracts(area, contains_only=True)``). With
+    grid tiles, keeps those that contain the whole area (or ``must_cover`` when given), and
+    downloads the one with the smallest
+    file (the first row of ``find_extracts(area, contains_only=True, must_cover=must_cover)``,
+    which shows the choice without downloading). With
     ``strategy="smallest_total"`` it may instead download several extracts that together cover
     the area and merge them into one file (see ``strategy``). A download that fails with a network error or HTTP status 408, 425, 429 or 5xx is
     tried up to three times, waiting 1 s, 2 s or the server's ``Retry-After`` in between; when it
@@ -861,10 +868,12 @@ def get_data_by_area(
     the area's bounding box, or with ``crop="polygon"`` to the area itself.
 
     Movisda cuts its extracts exactly at their edges, so features crossing the edge of a Movisda
-    extract are clipped or missing there. A single Movisda extract contains the whole area, so
-    this only affects the part of the bounding box outside the area; in a merged set the
-    Movisda extract goes last, so where another extract holds a complete copy of such a
-    feature, that copy is kept.
+    extract are clipped or missing there: open ways such as streets are cut at the edge and
+    kept. A grid tile can leave out a whole closed way that crosses its edge, such as a
+    building or a land-use area, including its part inside the area. To keep a grid tile's
+    edges at least N metres outside the area, pass the area buffered by N metres (in a local
+    metric CRS) as ``must_cover``. In a merged set the Movisda extract goes last, so where
+    another extract holds a complete copy of such a feature, that copy is kept.
 
     Parameters
     ----------
@@ -909,17 +918,21 @@ def get_data_by_area(
     must_cover : shapely geometry | GeoDataFrame | GeoSeries, optional
         What the download must cover, in place of the whole area, e.g. the transit stops that
         routing needs, so sea or unserved edges of the area do not force a larger extract.
-        Points and lines are covered exactly, polygons except for less than 1 m². The crop
-        still follows ``area``, so parts of ``must_cover`` outside it are cropped away.
+        Points and lines are covered exactly, polygons except for less than 1 m². To also
+        require the streets around each stop, pass the stops buffered in a local metric CRS,
+        e.g. ``stops.to_crs(stops.estimate_utm_crs()).buffer(300)``, or a hull of them to
+        require the streets between stops as well. A GeoDataFrame or GeoSeries in another CRS
+        is reprojected to lon/lat. The crop still follows ``area``, so parts of
+        ``must_cover`` outside it are cropped away.
 
     workers : int
         Number of worker processes that crop (and merge) the downloaded file. ``1`` (default)
         runs in one process. More workers are used only for a file with at least
         ``2 * workers`` data blocks, and the written file is the same for every value. With
-        ``crop=False`` and a single extract nothing is cropped, so it has no effect. A script
-        that passes ``workers > 1`` on macOS or Windows needs the
-        ``if __name__ == "__main__":`` guard, as each worker process starts by importing the
-        script.
+        ``crop=False`` and a single extract nothing is cropped, so it has no effect. On macOS
+        and Windows each worker process starts by importing the script, so a script that
+        passes ``workers > 1`` needs the ``if __name__ == "__main__":`` guard; without it, or
+        for a script read from stdin, the work runs in one process with a warning.
 
     Returns
     -------

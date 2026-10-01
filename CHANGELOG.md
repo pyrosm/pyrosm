@@ -1,8 +1,8 @@
 Changelog
 =========
 
-Unreleased
-----------
+v0.15.0
+-------
 
 This release extends `get_data_by_area` for callers that fetch the data of many areas: it can list the candidate extracts without downloading, merge a smaller set of extracts, require coverage only of what matters, crop to the area's polygon with several processes, and record the hash and snapshot time of the file it returns. Downloads are retried and resumed, and accept the caller's headers, timeouts and opener.
 
@@ -18,6 +18,8 @@ This release extends `get_data_by_area` for callers that fetch the data of many 
 - CHANGED: `get_data_by_area` raises `pyrosm.exceptions.ExtractNotFoundError`, a `ValueError` subclass, when no extract contains the area. `download`, `get_data_by_area`, `get_data_by_bbox` and `geocode` report their progress through the `pyrosm` logger at INFO level instead of printing it ([#402](https://github.com/pyrosm/pyrosm/pull/402))
 - FIXED: An extract whose size Geofabrik does not give (a failed or looping HEAD request) is ranked by the size recorded in pyrosm's Geofabrik index, with a warning, instead of last; a redirect loop is not retried. `scripts/update_extract_indexes.py geofabrik-sizes` refreshes the recorded sizes ([#406](https://github.com/pyrosm/pyrosm/pull/406))
 - FIXED: When Movisda's grid index cannot be fetched and no copy is cached, `find_extracts` and `get_data_by_area` read the copy that ships with pyrosm (28,350 tiles), with a warning, instead of leaving out every Movisda extract. When the administrative index cannot be fetched, only the administrative areas are left out ([#407](https://github.com/pyrosm/pyrosm/pull/407))
+- FIXED: A crop or merge with `workers > 1` (`OSM.to_pbf`, `merge_pbf`, `get_data_by_area`) no longer hangs when its worker processes cannot start, as on macOS and Windows for a script without an `if __name__ == "__main__":` guard or one read from stdin; it runs in one process with a `RuntimeWarning` ([#416](https://github.com/pyrosm/pyrosm/pull/416))
+- DOCS: The `get_data_by_area` docstring says which features a Movisda grid tile leaves out at its edges. The downloading guide and the docstrings show how to require the streets around transit stops (`must_cover` with buffered stops or a hull of them), how to see the extract `get_data_by_area` would download before downloading it, and how to download a large region resumably and crop it with `merge_pbf` ([#414](https://github.com/pyrosm/pyrosm/pull/414), [#415](https://github.com/pyrosm/pyrosm/pull/415))
 
 v0.14.0
 -------
