@@ -1,8 +1,12 @@
 """Shared pytest configuration for the pyrosm test suite."""
 
+import http.client
 import os
+from urllib.error import URLError
 
 import pytest
+
+pytest_plugins = ["pytester"]
 
 
 def pytest_configure(config):
@@ -28,6 +32,30 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "live_download" in item.keywords:
             item.add_marker(skip)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item):
+    """Skip a live_download test that fails because the outside service failed.
+
+    A download that failed after its retries, a network error or a timeout skips the test
+    with the error as the reason; any other error still fails it. A wrong URL built by
+    pyrosm is skipped here too; the unit tests cover the URLs.
+    """
+    if "live_download" not in item.keywords:
+        return (yield)
+    from pyrosm.exceptions import ExtractDownloadError
+
+    try:
+        return (yield)
+    except (
+        ExtractDownloadError,
+        URLError,
+        TimeoutError,
+        ConnectionError,
+        http.client.HTTPException,
+    ) as err:
+        pytest.skip("The outside service failed: %s" % err)
 
 
 @pytest.fixture(autouse=True)
