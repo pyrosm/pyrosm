@@ -71,6 +71,8 @@ _STRATEGIES = ("single", "smallest_total")
 # Uncovered area (m²) below which a set of extracts counts as covering the area; provider
 # outlines are simplified, so their edges leave slivers.
 _SLIVER_M2 = 1.0
+# Radius (m) that gives the points and lines of ``must_cover`` an area for the greedy steps.
+_POINT_RADIUS_M = 1.0
 
 logger = logging.getLogger(__name__)
 
@@ -393,6 +395,7 @@ def find_extracts(
     headers=None,
     timeout=_TIMEOUT,
     opener=None,
+    must_cover=None,
 ):
     """List the OSM extracts that overlap ``area``, best download first, without downloading.
 
@@ -412,7 +415,7 @@ def find_extracts(
         geometries are combined) or ``[minx, miny, maxx, maxy]``.
 
     contains_only : bool
-        When ``True``, list only the extracts that contain the whole area.
+        When ``True``, list only the extracts that contain the whole area (or ``must_cover``).
 
     update : bool
         When ``True``, refresh the provider indexes and download sizes.
@@ -433,20 +436,26 @@ def find_extracts(
         An object with ``open(request, timeout=...)``, e.g. from
         ``urllib.request.build_opener()``, that makes the requests instead of pyrosm.
 
+    must_cover : shapely geometry | GeoDataFrame | GeoSeries, optional
+        What an extract must contain, in place of the whole area, e.g. the transit stops that
+        routing needs. Any geometry type; points and lines must be contained exactly. Extracts
+        that only reach it (not the area) are listed too.
+
     Returns
     -------
     GeoDataFrame
         One row per extract with the columns ``provider`` (``"Geofabrik"``, ``"BBBike"`` or
         ``"Movisda"``), ``id``, ``name``, ``url``, ``bytes`` (the download size, ``<NA>`` when
-        it cannot be read), ``contains`` (whether the extract contains the whole area) and
-        ``geometry`` (the extract's extent, EPSG:4326).
+        it cannot be read), ``contains`` (whether the extract contains the whole area, or
+        ``must_cover`` when given) and ``geometry`` (the extract's extent, EPSG:4326).
 
     Raises
     ------
     ValueError
-        If the area is empty, or has no width or no height.
+        If the area is empty, or has no width or no height, or ``must_cover`` is empty.
     """
     area = _area_geometry(area)
+    parts = None if must_cover is None else _must_cover_parts(must_cover)
     directory = Path(directory) if directory is not None else download_dir()
     net = _Net(headers, timeout, opener)
     frames = [_geofabrik_extracts(update), _bbbike_extracts()]
@@ -455,11 +464,20 @@ def find_extracts(
     except (*_FETCH_ERRORS, ValueError) as e:
         warnings.warn("Movisda's extract index is unavailable (%s); skipping it." % e)
     candidates = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs="EPSG:4326")
-    candidates["contains"] = candidates.covers(area)
+    if parts is None:
+        candidates["contains"] = candidates.covers(area)
+    else:
+        candidates["contains"] = True
+        for part in parts:
+            if part is not None:
+                candidates["contains"] &= candidates.covers(part)
     if contains_only:
         found = candidates[candidates["contains"]].copy()
     else:
         overlaps = candidates.intersects(area) & ~candidates.touches(area)
+        for part in parts or ():
+            if part is not None:
+                overlaps |= candidates.intersects(part)
         found = candidates[overlaps].copy()
     unknown = found["bytes"].isna()
     sizes = _download_sizes(
@@ -482,20 +500,32 @@ def find_extracts(
     return ranked[_COLUMNS].reset_index(drop=True)
 
 
-def _prune(target, chosen, shapes, sizes):
-    """Drop extracts from ``chosen``, largest first, while the rest still cover ``target``."""
+def _covers(chosen, shapes, outlines, polygons, exact):
+    """Whether the extracts ``chosen`` cover the polygon part (all but a sliver, measured on
+    the projected ``shapes``) and the point and line part (exactly, on the lon/lat
+    ``outlines``) of a coverage target."""
+    if not chosen:
+        return False
+    if polygons is not None:
+        left = polygons.difference(shapely.union_all(shapes.loc[chosen]))
+        if left.area >= _SLIVER_M2:
+            return False
+    return exact is None or shapely.union_all(outlines.loc[chosen]).covers(exact)
+
+
+def _prune(chosen, sizes, covered):
+    """Drop extracts from ``chosen``, largest first, while ``covered(rest)`` holds."""
     for i in sorted(chosen, key=lambda i: -sizes[i]):
         rest = [j for j in chosen if j != i]
-        uncovered = target.difference(shapely.union_all(shapes.loc[rest]))
-        if rest and uncovered.area < _SLIVER_M2:
+        if covered(rest):
             chosen = rest
     return chosen
 
 
 def _greedy_cover(target, shapes, sizes, chosen, pool):
-    """Extend ``chosen`` with extracts from ``pool`` until they cover ``target``, each time
-    taking the lowest ``bytes`` per area newly covered; ``None`` when no cover is found.
-    """
+    """Extend ``chosen`` with extracts from ``pool`` while they leave a sliver or more of
+    ``target`` uncovered, each time taking the lowest ``bytes`` per area newly covered; stop
+    when no extract adds area. ``None`` when nothing at all was chosen."""
     chosen, pool = list(chosen), list(pool)
     remaining = target.difference(shapely.union_all(shapes.loc[chosen]))
     # At least one extract, even for an area smaller than a sliver.
@@ -503,18 +533,37 @@ def _greedy_cover(target, shapes, sizes, chosen, pool):
         gains = {i: shapes[i].intersection(remaining).area for i in pool}
         useful = [i for i in pool if gains[i] > 0]
         if not useful:
-            return None
+            break
         pick = min(useful, key=lambda i: (sizes[i] / gains[i], sizes[i], i))
         chosen.append(pick)
         pool.remove(pick)
         remaining = remaining.difference(shapes[pick])
+    return chosen or None
+
+
+def _repair(chosen, pool, sizes, outlines, exact):
+    """Add the cheapest extracts from ``pool`` until ``chosen`` covers the points and lines
+    ``exact`` exactly (lon/lat ``outlines`` and ``exact``, so points on an edge keep their
+    ``covers`` meaning); ``None`` when no extract holds what is left."""
+    chosen, pool = list(chosen), list(pool)
+    while exact is not None and not shapely.union_all(outlines.loc[chosen]).covers(
+        exact
+    ):
+        left = exact.difference(shapely.union_all(outlines.loc[chosen]))
+        options = [i for i in pool if i not in chosen and outlines[i].intersects(left)]
+        if not options:
+            return None
+        chosen.append(min(options, key=lambda i: (sizes[i], i)))
     return chosen
 
 
-def _smallest_cover(area, candidates):
-    """The extracts that together cover ``area`` with a small total download, in merge order,
-    or ``None`` when they cannot cover it.
+def _smallest_cover(target, candidates):
+    """The extracts that together cover ``target`` with a small total download, in merge
+    order, or ``None`` when they cannot cover it.
 
+    ``target`` is ``(polygons, points_and_lines)`` in lon/lat, either part ``None``: polygons
+    count as covered when less than 1 m² of them is left; points and lines must be covered
+    exactly (for the greedy steps they are buffered by 1 m, which only guides the choice).
     Candidates are rows of :func:`find_extracts`, in its ranking order. Geofabrik and BBBike
     extracts and Movisda administrative extracts with a known size may be used, at most one of
     them from Movisda; Movisda grid tiles never are (they drop closed ways at tile edges). The
@@ -527,19 +576,36 @@ def _smallest_cover(area, candidates):
     movisda = known["provider"] == "Movisda"
     admin = movisda & known["url"].str.contains("/admin/", regex=False)
     known = known[~movisda | admin]
-    target = gpd.GeoSeries([area], crs="EPSG:4326").to_crs(_EQUAL_AREA_CRS).iloc[0]
-    # Clipped to the area once, so the greedy steps work on small shapes; sizes stay exact
-    # Python integers.
-    shapes = known.geometry.to_crs(_EQUAL_AREA_CRS).intersection(target)
+
+    def project(geom):
+        if geom is None:
+            return None
+        return gpd.GeoSeries([geom], crs="EPSG:4326").to_crs(_EQUAL_AREA_CRS).iloc[0]
+
+    polygons, exact = project(target[0]), target[1]
+    guide = [polygons] if polygons is not None else []
+    if exact is not None:
+        guide.append(project(exact).buffer(_POINT_RADIUS_M))
+    guide = shapely.union_all(guide)
+    # Projected and clipped to the target once, so the greedy steps work on small shapes;
+    # the lon/lat outlines decide exact coverage; sizes stay exact Python integers.
+    outlines = known.geometry
+    shapes = outlines.to_crs(_EQUAL_AREA_CRS).intersection(guide)
     sizes = {i: int(size) for i, size in known["bytes"].items()}
     others = list(known.index[known["provider"] != "Movisda"])
     best = None
     for seed in [None] + list(known.index[known["provider"] == "Movisda"]):
         start = [] if seed is None else [seed]
-        chosen = _greedy_cover(target, shapes, sizes, start, others)
-        if chosen is None:
+        chosen = _greedy_cover(guide, shapes, sizes, start, others)
+        if chosen is not None:
+            chosen = _repair(chosen, others, sizes, outlines, exact)
+        if chosen is None or not _covers(chosen, shapes, outlines, polygons, exact):
             continue
-        chosen = _prune(target, chosen, shapes, sizes)
+        chosen = _prune(
+            chosen,
+            sizes,
+            lambda rest: _covers(rest, shapes, outlines, polygons, exact),
+        )
         key = (sum(sizes[i] for i in chosen), len(chosen))
         if best is None or key < best[0]:
             best = (key, chosen)
@@ -549,14 +615,14 @@ def _smallest_cover(area, candidates):
     return known.loc[order]
 
 
-def _choose(area, candidates, strategy):
-    """The extract(s) to download, or ``None``: the first containing extract; with
-    ``strategy="smallest_total"`` a set of extracts when its total is smaller than that
-    extract, or when that extract's size is unknown."""
+def _choose(target, candidates, strategy):
+    """The extract(s) to download, or ``None``: the first extract that contains ``target``
+    (see :func:`_smallest_cover`); with ``strategy="smallest_total"`` a set of extracts when
+    its total is smaller than that extract, or when that extract's size is unknown."""
     single = candidates[candidates["contains"]].iloc[:1]
     if strategy == "single":
         return single if len(single) else None
-    cover = _smallest_cover(area, candidates)
+    cover = _smallest_cover(target, candidates)
     if cover is None:
         return single if len(single) else None
     size = single["bytes"].iloc[0] if len(single) else pd.NA
@@ -619,6 +685,37 @@ class AreaExtract:
 
     def __fspath__(self):
         return self.path
+
+
+def _must_cover_parts(must_cover):
+    """``must_cover`` as ``(polygons, points_and_lines)`` in lon/lat, either part ``None``.
+
+    Accepts a Shapely geometry of any type or a GeoDataFrame/GeoSeries (reprojected to
+    EPSG:4326 when it has another CRS). The two kinds are united separately, so a point inside
+    a polygon keeps its own, exact coverage requirement. Raises ``ValueError`` when it is empty.
+    """
+    if isinstance(must_cover, (gpd.GeoDataFrame, gpd.GeoSeries)):
+        if must_cover.crs is not None:
+            must_cover = must_cover.to_crs("EPSG:4326")
+        geoms = list(must_cover.geometry.values)
+    else:
+        geoms = [must_cover]
+    parts = list(shapely.get_parts(geoms))
+    # Collections can hold multi-part geometries and further collections.
+    while any(
+        shapely.get_num_geometries(g) > 1 or g.geom_type.startswith(("Multi", "Geo"))
+        for g in parts
+    ):
+        parts = list(shapely.get_parts(parts))
+    parts = [g for g in parts if g is not None and not g.is_empty]
+    polygons = [g for g in parts if g.geom_type == "Polygon"]
+    others = [g for g in parts if g.geom_type != "Polygon"]
+    if not parts:
+        raise ValueError("must_cover is empty.")
+    return (
+        shapely.union_all(polygons) if polygons else None,
+        shapely.union_all(others) if others else None,
+    )
 
 
 def _area_geometry(area):
@@ -684,6 +781,7 @@ def get_data_by_area(
     timeout=_TIMEOUT,
     opener=None,
     strategy="single",
+    must_cover=None,
 ):
     """Download the OSM data for ``area``: the smallest single extract that contains it, or a
     smaller set of extracts merged into one file.
@@ -740,6 +838,12 @@ def get_data_by_area(
         Movisda, which goes last in the merge; Movisda grid tiles are never combined. With
         ``crop=False`` the merged file is named ``merged_<hash of the URLs>.osm.pbf``.
 
+    must_cover : shapely geometry | GeoDataFrame | GeoSeries, optional
+        What the download must cover, in place of the whole area, e.g. the transit stops that
+        routing needs, so sea or unserved edges of the area do not force a larger extract.
+        Points and lines are covered exactly, polygons except for less than 1 m². The crop
+        still follows ``area``, so parts of ``must_cover`` outside it are cropped away.
+
     Returns
     -------
     AreaExtract
@@ -748,9 +852,10 @@ def get_data_by_area(
     Raises
     ------
     ValueError
-        If the area is empty, or has no width or no height.
+        If the area is empty, or has no width or no height, or ``must_cover`` is empty.
     pyrosm.exceptions.ExtractNotFoundError
-        If no extract contains the whole area (a ``ValueError`` subclass).
+        If no extract (or set of extracts) contains the whole area, or ``must_cover`` when
+        given (a ``ValueError`` subclass).
     pyrosm.exceptions.ExtractDownloadError
         If every extract that contains the area failed to download; its ``errors`` hold the
         :class:`~pyrosm.exceptions.DownloadError` of each extract tried.
@@ -762,16 +867,18 @@ def get_data_by_area(
             "strategy must be one of %s; got %r." % (", ".join(_STRATEGIES), strategy)
         )
     geom = _area_geometry(area)
+    target = (geom, None) if must_cover is None else _must_cover_parts(must_cover)
     net = dict(headers=headers, timeout=timeout, opener=opener)
     candidates = find_extracts(
         geom,
         contains_only=strategy == "single",
         update=update,
         directory=directory,
+        must_cover=must_cover,
         **net,
     )
     failed, errors = [], []
-    while (chosen := _choose(geom, candidates, strategy)) is not None:
+    while (chosen := _choose(target, candidates, strategy)) is not None:
         sources = []
         start = time.perf_counter()
         for extract in chosen.itertuples():
@@ -815,8 +922,9 @@ def get_data_by_area(
                 sources=sources,
             )
     if not failed:
+        what = "the whole area" if must_cover is None else "must_cover"
         raise ExtractNotFoundError(
-            "No Geofabrik, BBBike or Movisda extract contains the whole area."
+            "No Geofabrik, BBBike or Movisda extract contains %s." % what
         )
     raise ExtractDownloadError(
         "Could not download any of the %d extracts tried for the area: %s"

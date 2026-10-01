@@ -13,7 +13,8 @@ import geopandas as gpd
 import pandas as pd
 import pytest
 from pathlib import Path
-from shapely.geometry import Point, box
+import shapely
+from shapely.geometry import LineString, MultiPoint, Point, Polygon, box
 
 import pyrosm
 from pyrosm.data import extract_index as ei
@@ -698,6 +699,7 @@ def test_get_data_by_area_accepts_area_forms(monkeypatch, area):
         "headers": None,
         "timeout": 60,
         "opener": None,
+        "must_cover": None,
     }
 
 
@@ -833,17 +835,20 @@ NORD_OVEST = ("Geofabrik", "nord-ovest", 450, box(6.6, 44.0, 9.5, 45.9), False)
         # Nothing covers the area: the containing extract, or nothing at all.
         ([ALPS, NORD_OVEST], ["alps"]),
         ([NORD_OVEST], None),
+        ([("Geofabrik", "far", 10, box(0, 0, 1, 1), False)], None),
     ],
 )
 def test_choose_smallest_total(rows, expected):
-    got = ei._choose(ZERMATT, _rows(*rows), "smallest_total")
+    got = ei._choose((ZERMATT, None), _rows(*rows), "smallest_total")
     assert (None if got is None else got["id"].tolist()) == expected
 
 
 def test_smallest_cover_of_a_tiny_area():
     # Smaller than the sliver the cover may leave; still one extract, not none.
     tiny = box(7.5, 45.7, 7.500001, 45.700001)
-    assert ei._smallest_cover(tiny, _rows(NORD_OVEST))["id"].tolist() == ["nord-ovest"]
+    assert ei._smallest_cover((tiny, None), _rows(NORD_OVEST))["id"].tolist() == [
+        "nord-ovest"
+    ]
 
 
 def test_smallest_cover_prunes_redundant_extracts():
@@ -853,7 +858,7 @@ def test_smallest_cover_prunes_redundant_extracts():
         ("BBBike", "piece", 10, box(7.5, 45.7, 7.55, 46.1), False),
         ("Geofabrik", "all", 100, box(7.4, 45.6, 8.1, 46.2), False),
     )
-    assert ei._smallest_cover(ZERMATT, rows)["id"].tolist() == ["all"]
+    assert ei._smallest_cover((ZERMATT, None), rows)["id"].tolist() == ["all"]
 
 
 @pytest.fixture(scope="module")
@@ -972,3 +977,199 @@ def test_get_data_by_area_chooses_again_after_a_failed_set_member(
 def test_get_data_by_area_rejects_unknown_strategy():
     with pytest.raises(ValueError, match="strategy must be one of single"):
         pyrosm.get_data_by_area(ZERMATT, strategy="cheapest")
+
+
+STOPS = gpd.GeoSeries.from_xy([24.95, 25.1], [60.15, 60.2], crs="EPSG:4326")
+
+
+def test_find_extracts_with_must_cover(tmp_path, monkeypatch):
+    """With must_cover, `contains` tells whether an extract holds every stop, and extracts
+    that only reach a stop are listed."""
+    area = box(24.9, 60.1, 25.1, 60.3)
+    geofabrik = _candidates("Geofabrik", [("finland", 700, box(19, 59, 32, 71))])
+    bbbike = _candidates(
+        "BBBike",
+        [
+            ("Espoo", 60, box(24.9, 60.1, 25.2, 60.2)),
+            ("Helsinki", 50, box(24.9, 60.1, 25.0, 60.2)),
+            ("Vantaa", 40, box(25.1, 60.0, 25.5, 60.5)),
+        ],
+    )
+    monkeypatch.setattr(ei, "_geofabrik_extracts", lambda update: geofabrik)
+    monkeypatch.setattr(ei, "_bbbike_extracts", lambda: bbbike)
+    monkeypatch.setattr(ei, "_movisda_extracts", lambda *a: _candidates("Movisda", []))
+    monkeypatch.setattr(ei, "_download_sizes", lambda *a, **k: {})
+    got = pyrosm.find_extracts(area, must_cover=STOPS, directory=tmp_path)
+    # Vantaa only touches the area, but holds the second stop on its edge.
+    assert list(zip(got["id"], got["contains"])) == [
+        ("Espoo", True),
+        ("finland", True),
+        ("Vantaa", False),
+        ("Helsinki", False),
+    ]
+    only = pyrosm.find_extracts(
+        area, contains_only=True, must_cover=STOPS, directory=tmp_path
+    )
+    assert only["id"].tolist() == ["Espoo", "finland"]
+
+
+@pytest.mark.parametrize(
+    "must_cover, expected",
+    [
+        # The stops sit in a small extract; the area also reaches into the sea.
+        (STOPS, "Espoo"),
+        (gpd.GeoDataFrame(geometry=STOPS).to_crs(3067), "Espoo"),
+        (Point(0, 0), ExtractNotFoundError),
+        (gpd.GeoSeries([], crs="EPSG:4326"), ValueError),
+    ],
+)
+def test_get_data_by_area_with_must_cover(tmp_path, monkeypatch, must_cover, expected):
+    candidates = _rows(
+        ("Geofabrik", "finland", 700, box(19, 59, 32, 71), True),
+        ("BBBike", "Espoo", 60, box(24.9, 60.1, 25.2, 60.2), True),
+    )
+    seen = []
+
+    def find_extracts(area, **options):
+        seen.append(options["must_cover"])
+        if isinstance(options["must_cover"], Point):
+            return candidates.iloc[:0]
+        ei._must_cover_parts(options["must_cover"])
+        return candidates.sort_values("bytes")
+
+    monkeypatch.setattr(ei, "find_extracts", find_extracts)
+    monkeypatch.setattr(
+        "pyrosm.utils.download.download", lambda *a, **k: pyrosm.get_data("test_pbf")
+    )
+    area = box(24.9, 60.1, 25.3, 60.3)
+    if isinstance(expected, str):
+        got = pyrosm.get_data_by_area(
+            area, crop=False, directory=tmp_path, must_cover=must_cover
+        )
+        assert got.extract == expected and seen[0] is must_cover
+    else:
+        with pytest.raises(expected) as info:
+            pyrosm.get_data_by_area(area, must_cover=must_cover)
+        assert "must_cover" in str(info.value) or expected is ValueError
+
+
+def _metres(*geoms):
+    """Geometries given in metres of the equal-area CRS, as lon/lat."""
+    return list(gpd.GeoSeries(list(geoms), crs=ei._EQUAL_AREA_CRS).to_crs("EPSG:4326"))
+
+
+X0, Y0 = 2_000_000, 3_000_000
+# Two cheap extracts form an L; the costly third fills the corner they leave open.
+L_SOUTH, L_WEST, CORNER = _metres(
+    box(X0, Y0, X0 + 100, Y0 + 50),
+    box(X0, Y0 + 50, X0 + 50, Y0 + 100),
+    box(X0 + 50, Y0 + 50, X0 + 100, Y0 + 100),
+)
+IN_SOUTH, IN_WEST, PAST_CORNER = _metres(
+    Point(X0 + 80, Y0 + 20), Point(X0 + 20, Y0 + 80), Point(X0 + 50.05, Y0 + 50.05)
+)
+LINE_TO_CORNER, NOTCH = _metres(
+    LineString([(X0 + 80, Y0 + 20), (X0 + 50.05, Y0 + 50.05)]),
+    Polygon([(X0 + 50, Y0 + 50), (X0 + 51, Y0 + 50), (X0 + 50, Y0 + 51)]),
+)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        # A stop a few centimetres into the corner: less than 1 m² of its 1 m disc is left,
+        # but the stop itself is not covered.
+        [PAST_CORNER],
+        # A line that ends there.
+        [LINE_TO_CORNER],
+        # A polygon whose uncovered sliver (0.5 m²) holds a stop.
+        [shapely.union_all([L_SOUTH, L_WEST, NOTCH]), PAST_CORNER],
+    ],
+)
+def test_must_cover_points_and_lines_exactly(tmp_path, monkeypatch, extra):
+    rows = _rows(
+        ("BBBike", "south", 1, L_SOUTH, False),
+        ("BBBike", "west", 1, L_WEST, False),
+        ("Geofabrik", "corner", 1000, CORNER, False),
+    )
+    must_cover = gpd.GeoSeries([IN_SOUTH, IN_WEST, *extra], crs="EPSG:4326")
+    target = ei._must_cover_parts(must_cover)
+    got = ei._choose(target, rows, "smallest_total")
+    assert got["id"].tolist() == ["south", "west", "corner"]
+    # Without the corner extract nothing holds the stop, so there is no cover.
+    assert ei._choose(target, rows.iloc[:2], "smallest_total") is None
+    # The public call downloads those three (the merge itself is tested elsewhere).
+    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: rows)
+    monkeypatch.setattr("pyrosm.utils.download.download", lambda url, *a, **k: url)
+    written = []
+    monkeypatch.setattr(
+        ei, "_write_area_file", lambda area, sources, *a: written.append(sources) or "x"
+    )
+    pyrosm.get_data_by_area(
+        box(*shapely.union_all([L_SOUTH, L_WEST, CORNER]).bounds),
+        directory=tmp_path,
+        strategy="smallest_total",
+        must_cover=must_cover,
+    )
+    assert [s.extract for s in written[0]] == ["south", "west", "corner"]
+
+
+def test_must_cover_stops_on_outer_edges():
+    """Stops on the outer edges of two extracts are covered exactly, although half of each
+    stop's 1 m guide disc lies outside every extract."""
+    rows = _rows(
+        ("BBBike", "west", 10, WEST, False), ("BBBike", "east", 10, EAST, False)
+    )
+    stops = MultiPoint([(7.4, 45.9), (8.1, 45.9)])
+    got = ei._choose(ei._must_cover_parts(stops), rows, "smallest_total")
+    assert got["id"].tolist() == ["west", "east"]
+
+
+def test_must_cover_stops_in_three_countries():
+    """Basel: stops in Switzerland, Germany and France come from three small extracts
+    rather than the large region holding them all."""
+    ch, de, fr = (
+        box(7.55, 47.5, 7.7, 47.585),
+        box(7.55, 47.585, 7.7, 47.62),
+        box(7.45, 47.5, 7.55, 47.62),
+    )
+    rows = _rows(
+        ("Geofabrik", "region", 2000, box(5, 45, 11, 49), True),
+        ("Geofabrik", "ch", 100, ch, False),
+        ("Geofabrik", "de", 100, de, False),
+        ("Geofabrik", "fr", 100, fr, False),
+    )
+    stops = MultiPoint([(7.6, 47.55), (7.65, 47.6), (7.5, 47.55)])
+    got = ei._choose(ei._must_cover_parts(stops), rows, "smallest_total")
+    assert got["id"].tolist() == ["ch", "de", "fr"]
+
+
+@pytest.mark.parametrize(
+    "must_cover, polygons, exact",
+    [
+        # A GeoSeries without a CRS is taken as lon/lat; one in another CRS is reprojected.
+        (gpd.GeoSeries([Point(1, 1), Point(2, 2)]), None, MultiPoint([(1, 1), (2, 2)])),
+        (
+            gpd.GeoDataFrame(geometry=STOPS).to_crs(3067),
+            None,
+            MultiPoint([(24.95, 60.15), (25.1, 60.2)]),
+        ),
+        # Nested collections and multi-part polygons are split into their parts.
+        (
+            shapely.GeometryCollection(
+                [
+                    shapely.GeometryCollection([Point(5, 5)]),
+                    shapely.MultiPolygon([box(0, 0, 1, 1), box(2, 0, 3, 1)]),
+                ]
+            ),
+            shapely.MultiPolygon([box(0, 0, 1, 1), box(2, 0, 3, 1)]),
+            Point(5, 5),
+        ),
+    ],
+)
+def test_must_cover_parts(must_cover, polygons, exact):
+    got = ei._must_cover_parts(must_cover)
+    assert (got[0] is None) == (polygons is None) and (
+        polygons is None or got[0].equals(polygons)
+    )
+    assert shapely.normalize(got[1]).equals_exact(shapely.normalize(exact), 1e-9)
