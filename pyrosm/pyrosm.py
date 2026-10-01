@@ -1237,7 +1237,9 @@ class OSM:
         workers : int
             Number of worker processes for the CPU-heavy per-block work. ``1``
             (default) runs sequentially; ``>1`` uses a multiprocessing pool and
-            produces a byte-identical output.
+            produces a byte-identical output. When the worker processes cannot run
+            (on macOS and Windows: a script without an ``if __name__ == "__main__":``
+            guard, or one read from stdin), the crop runs in one process and warns.
 
         compact : bool
             When ``False`` (default) each output block keeps its source block's
