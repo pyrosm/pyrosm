@@ -45,7 +45,8 @@ osm = OSM(fp, bounding_box=[minx, miny, maxx, maxy])   # read only this area of 
 ```
 
 For an area on a national border, `get_data_by_area()` finds the smallest single extract that
-contains it, and `merge_pbf()` combines overlapping extracts into one file. See
+contains it, or with `strategy="smallest_total"` a smaller set of extracts merged into one
+file, and `merge_pbf()` combines overlapping extracts yourself. See
 [Downloading data](downloading_data.ipynb) and
 [Saving, cropping and merging data](saving_and_cropping.ipynb) for more.
 :::

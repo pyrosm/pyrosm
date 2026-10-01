@@ -441,7 +441,10 @@ def find_extracts(
     must_cover : shapely geometry | GeoDataFrame | GeoSeries, optional
         What an extract must contain, in place of the whole area, e.g. the transit stops that
         routing needs. Any geometry type; points and lines must be contained exactly. Extracts
-        that only reach it (not the area) are listed too.
+        that only reach it (not the area) are listed too. To also require the streets around
+        each stop, pass the stops buffered in a local metric CRS, e.g.
+        ``stops.to_crs(stops.estimate_utm_crs()).buffer(300)``, or a hull of them to require
+        the streets between stops as well.
 
     Returns
     -------
@@ -853,7 +856,8 @@ def get_data_by_area(
 
     Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and 1°/10°
     grid tiles, keeps those that contain the whole area, and downloads the one with the smallest
-    file (the first row of ``find_extracts(area, contains_only=True)``). With
+    file (the first row of ``find_extracts(area, contains_only=True, must_cover=must_cover)``,
+    which shows the choice without downloading). With
     ``strategy="smallest_total"`` it may instead download several extracts that together cover
     the area and merge them into one file (see ``strategy``). A download that fails with a network error or HTTP status 408, 425, 429 or 5xx is
     tried up to three times, waiting 1 s, 2 s or the server's ``Retry-After`` in between; when it
@@ -911,8 +915,11 @@ def get_data_by_area(
     must_cover : shapely geometry | GeoDataFrame | GeoSeries, optional
         What the download must cover, in place of the whole area, e.g. the transit stops that
         routing needs, so sea or unserved edges of the area do not force a larger extract.
-        Points and lines are covered exactly, polygons except for less than 1 m². The crop
-        still follows ``area``, so parts of ``must_cover`` outside it are cropped away.
+        Points and lines are covered exactly, polygons except for less than 1 m². To also
+        require the streets around each stop, pass the stops buffered in a local metric CRS,
+        e.g. ``stops.to_crs(stops.estimate_utm_crs()).buffer(300)``, or a hull of them to
+        require the streets between stops as well. The crop still follows ``area``, so parts of
+        ``must_cover`` outside it are cropped away.
 
     workers : int
         Number of worker processes that crop (and merge) the downloaded file. ``1`` (default)
