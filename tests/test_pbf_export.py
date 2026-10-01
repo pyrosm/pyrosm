@@ -1034,7 +1034,9 @@ def test_merge_pbf_duplicate_ranking_and_cross_file_refs(
     assert _read_elements(merged)[1:3] == ({10}, set())
 
 
-@pytest.mark.parametrize("shape, workers", [("box", 1), ("box", 2), ("polygon", 2)])
+@pytest.mark.parametrize(
+    "shape, workers", [("box", 1), ("box", 2), ("polygon", 1), ("polygon", 2)]
+)
 def test_merge_pbf_crop_equals_crop_of_merge(helsinki_pbf, tmp_path, shape, workers):
     from shapely.geometry import Polygon, box
 

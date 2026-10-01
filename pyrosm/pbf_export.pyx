@@ -1877,8 +1877,8 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     packed blocks. The inputs are streamed block by block; only id sets are held
     in memory.
 
-    Without ``bounding_box`` the output holds everything the inputs hold. With
-    it, the crop rule of :meth:`OSM.to_pbf` is applied to the union of the
+    Without ``bounding_box`` or ``polygon`` the output holds everything the inputs
+    hold. With ``bounding_box``, the crop rule of :meth:`OSM.to_pbf` is applied to the union of the
     inputs: a node is kept when a copy of it lies inside the box, a way when its
     winning copy has a node inside the box, and a relation when its winning copy
     references a kept node or way. A kept way keeps its full node list, whichever
@@ -1900,11 +1900,13 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     bounding_box : list or shapely geometry, optional
         ``[minx, miny, maxx, maxy]`` in lon/lat, or a ``Polygon``/``MultiPolygon``,
         which is cropped by its envelope. The output's header bounding box is
-        this box, or else the union of the inputs' header boxes.
+        this box (the polygon's envelope with ``polygon``), or else the union of
+        the inputs' header boxes.
 
     keep_relations : bool
-        When ``True`` (default) relations are written (with ``bounding_box``,
-        those referencing a kept node or way); when ``False`` none are written.
+        When ``True`` (default) relations are written (with ``bounding_box`` or
+        ``polygon``, those referencing a kept node or way); when ``False`` none
+        are written.
 
     workers : int
         Number of worker processes for selecting the elements inside
