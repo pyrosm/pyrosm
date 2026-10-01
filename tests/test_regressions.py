@@ -943,6 +943,8 @@ def test_download_builds_ssl_context_from_certifi(tmp_path, monkeypatch):
         ("reset", b"old", "connection reset"),
         ("short", b"old", "stopped after 5 of 100 bytes"),
         ("empty", b"old", "was empty"),
+        ("503", b"old", "HTTP Error 503"),
+        ("loop", b"old", "infinite loop"),
     ],
 )
 def test_failed_download_leaves_no_partial_file(
@@ -950,9 +952,12 @@ def test_failed_download_leaves_no_partial_file(
 ):
     """A download that breaks midway, ends before the announced size or is empty must
     not leave a partial file that later calls would reuse, and a failed update keeps
-    the previous copy."""
+    the previous copy. A network failure or busy server is tried three times, a redirect
+    loop once, and the last error is raised as a DownloadError."""
     import io
+    from urllib.error import HTTPError
 
+    from pyrosm.exceptions import DownloadError, ExtractDownloadError
     from pyrosm.utils import download as dl
 
     class Reset(io.BytesIO):
@@ -961,7 +966,16 @@ def test_failed_download_leaves_no_partial_file(
         def read(self, *args):
             raise OSError("connection reset")
 
+    calls = []
+
     def urlopen(request, context=None, timeout=None):
+        calls.append(request.full_url)
+        if response == "503":
+            raise HTTPError(request.full_url, 503, "Service Unavailable", {}, None)
+        if response == "loop":
+            # What urllib raises when a server keeps redirecting a URL to itself.
+            reason = "The HTTP server returned a redirect error that would lead to an infinite loop."
+            raise HTTPError(request.full_url, 301, reason, {}, None)
         if response == "reset":
             return Reset()
         body = io.BytesIO(b"x" * 5 if response == "short" else b"")
@@ -972,10 +986,16 @@ def test_failed_download_leaves_no_partial_file(
     target = tmp_path / "x.osm.pbf"
     if previous:
         target.write_bytes(previous)
-    with pytest.raises((OSError, ValueError), match=error):
-        dl.download(
-            "https://example.invalid/x.osm.pbf", "x.osm.pbf", True, str(tmp_path)
-        )
+    url = "https://example.invalid/x.osm.pbf"
+    with pytest.raises(DownloadError, match=error) as info:
+        dl.download(url, "x.osm.pbf", True, str(tmp_path))
+    # Still caught by handlers of the ValueError and OSError download used to raise.
+    assert isinstance(info.value, ValueError) and isinstance(info.value, OSError)
+    assert isinstance(info.value, ExtractDownloadError)
+    got = (info.value.url, info.value.status, info.value.attempts, len(calls))
+    # A redirect loop is not retried; the other failures are tried three times.
+    status, tries = {"503": (503, 3), "loop": (301, 1)}.get(response, (None, 3))
+    assert got == (url, status, tries, tries)
     assert sorted(p.name for p in tmp_path.iterdir()) == (
         ["x.osm.pbf"] if previous else []
     )
@@ -983,15 +1003,50 @@ def test_failed_download_leaves_no_partial_file(
         assert target.read_bytes() == previous
 
 
-def test_download_rejects_nonexistent_target_dir(tmp_path):
-    """download(target_dir=...) raises when the given directory does not exist."""
+def test_download_does_not_retry_a_full_disk(tmp_path, monkeypatch):
+    """An error writing the local file (a full disk) propagates as itself after one
+    attempt; it is not retried or reported as a download failure."""
+    import errno
+    import io
+
     from pyrosm.utils import download as dl
 
-    missing = tmp_path / "does_not_exist"
-    with pytest.raises(ValueError, match="does not exist"):
-        dl.download(
-            "https://example.invalid/x.osm.pbf", "x.osm.pbf", False, str(missing)
-        )
+    class Full(io.BytesIO):
+        def write(self, data):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    calls = []
+    monkeypatch.setattr(
+        dl.urllib.request,
+        "urlopen",
+        lambda request, context=None, timeout=None: calls.append(1)
+        or _headered(io.BytesIO(b"x" * 50000)),
+    )
+    monkeypatch.setattr(dl, "write_atomic", lambda path, write: write(Full()))
+    with pytest.raises(OSError) as info:
+        dl.download("https://example.invalid/x.osm.pbf", "x.osm.pbf", True, tmp_path)
+    assert type(info.value) is OSError and info.value.errno == errno.ENOSPC
+    assert calls == [1]
+
+
+def test_download_creates_missing_target_dir(tmp_path, monkeypatch):
+    """download(target_dir=...) creates a directory that does not exist yet."""
+    import io
+
+    from pyrosm.utils import download as dl
+
+    monkeypatch.setattr(
+        dl.urllib.request,
+        "urlopen",
+        lambda url, context=None, timeout=None: _headered(io.BytesIO(b"x" * 100)),
+    )
+    missing = tmp_path / "does" / "not" / "exist"
+    out = dl.download(
+        "https://example.invalid/x.osm.pbf", "x.osm.pbf", False, str(missing)
+    )
+    assert (
+        Path(out) == missing.resolve() / "x.osm.pbf" and Path(out).stat().st_size == 100
+    )
 
 
 def _headered(response, headers=None):
@@ -999,8 +1054,15 @@ def _headered(response, headers=None):
     return response
 
 
-def test_download_update_replaces_existing_file(tmp_path, monkeypatch):
-    """download(update=True) replaces the cached file with the new download."""
+@pytest.mark.parametrize("length", [None, "50000", "9" * 5000, "\u00b2"])
+def test_download_update_replaces_existing_file(
+    tmp_path, monkeypatch, caplog, capsys, length
+):
+    """download(update=True) replaces the cached file with the new download, and reports it
+    through the pyrosm logger, not stdout. A Content-Length that is not a plain number is
+    ignored."""
+    import logging
+
     import io
 
     from pyrosm.utils import download as dl
@@ -1013,13 +1075,18 @@ def test_download_update_replaces_existing_file(tmp_path, monkeypatch):
     monkeypatch.setattr(
         dl.urllib.request,
         "urlopen",
-        lambda url, context=None, timeout=None: _headered(io.BytesIO(fresh)),
+        lambda url, context=None, timeout=None: _headered(
+            io.BytesIO(fresh), {"Content-Length": length} if length else None
+        ),
     )
 
+    caplog.set_level(logging.INFO, logger="pyrosm")
     out = dl.download(
         "https://example.invalid/x.osm.pbf", "x.osm.pbf", True, str(tmp_path)
     )
     assert Path(out).read_bytes() == fresh
+    assert "Downloaded Protobuf data 'x.osm.pbf'" in caplog.text
+    assert capsys.readouterr().out == ""
 
 
 def test_tags_to_keep_restricts_tag_columns():
@@ -1269,7 +1336,7 @@ def test_get_data_disambiguates_ambiguous_region_name(monkeypatch):
     # get_data routes a region-qualified name to the resolved file (download stubbed).
     captured = {}
 
-    def fake_retrieve(d, update, directory):
+    def fake_retrieve(d, update, directory, **net):
         captured["url"] = d["url"]
         return "/fake/path"
 
@@ -1307,7 +1374,7 @@ def test_get_data_dispatch_and_lazy_attrs(monkeypatch):
     # offline; capture the resolved filename for each.
     seen = []
 
-    def fake_download(url, filename, update, target_dir):
+    def fake_download(url, filename, update, target_dir, **net):
         seen.append(filename)
         return "/fake/" + filename
 
@@ -1814,7 +1881,9 @@ def test_merge_pbf_ignores_metadata_only_changes(tmp_path, monkeypatch):
             # Repeat until the ctime moves, for filesystems with coarse timestamps.
             before = os.stat(filepath).st_ctime_ns
             deadline = time.monotonic() + 3
-            while os.stat(filepath).st_ctime_ns == before and time.monotonic() < deadline:
+            while (
+                os.stat(filepath).st_ctime_ns == before and time.monotonic() < deadline
+            ):
                 touch_metadata(filepath)
                 time.sleep(0.01)
             touched.append(os.stat(filepath).st_ctime_ns != before)

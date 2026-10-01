@@ -75,3 +75,22 @@ def test_geofabrik_download_to_directory(directory):
 
     fp = get_data("monaco", update=True, directory=directory)
     assert Path(fp).exists()
+
+
+def test_get_data_passes_network_options(monkeypatch):
+    """get_data hands the caller's headers, timeout and opener to the download."""
+    import pyrosm.data as data
+
+    seen = []
+    monkeypatch.setattr(
+        data, "download", lambda **kwargs: seen.append(kwargs) or "/fake/Helsinki"
+    )
+    opener = object()
+    get_data("helsinki", headers={"User-Agent": "t/1"}, timeout=(5, 30), opener=opener)
+    assert seen[0]["filename"] == "Helsinki.osm.pbf"
+    net = {k: seen[0][k] for k in ("headers", "timeout", "opener")}
+    assert net == {
+        "headers": {"User-Agent": "t/1"},
+        "timeout": (5, 30),
+        "opener": opener,
+    }
