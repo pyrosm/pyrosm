@@ -1893,3 +1893,43 @@ def test_merge_pbf_ignores_metadata_only_changes(tmp_path, monkeypatch):
     out = merge_pbf([str(source)], str(tmp_path / "out.osm.pbf"))
     assert touched and all(touched)
     assert os.path.getsize(out) > 0
+
+
+@pytest.mark.parametrize(
+    "marked, error, outcome",
+    [
+        (
+            True,
+            'DownloadError("Geofabrik is down", url="u", status=404, attempts=1)',
+            "skipped",
+        ),
+        (True, "AssertionError('a real failure')", "failed"),
+        (
+            False,
+            'DownloadError("Geofabrik is down", url="u", status=404, attempts=1)',
+            "failed",
+        ),
+    ],
+)
+def test_live_download_test_skips_only_when_the_service_fails(
+    pytester, monkeypatch, marked, error, outcome
+):
+    """A live_download test that fails because the outside service failed is skipped; any
+    other failure, or the same error in an unmarked test, still fails."""
+    monkeypatch.setenv("RUN_DOWNLOAD_TESTS", "true")
+    pytester.makeconftest(
+        (Path(__file__).parent / "conftest.py")
+        .read_text()
+        .replace('pytest_plugins = ["pytester"]', "")
+    )
+    marker = "@pytest.mark.live_download\n" if marked else ""
+    pytester.makepyfile(
+        "import pytest\n"
+        "from pyrosm.exceptions import DownloadError\n\n"
+        f"{marker}def test_download():\n"
+        f"    raise {error}\n"
+    )
+    result = pytester.runpytest("-p", "no:cacheprovider", "-r", "s")
+    result.assert_outcomes(**{outcome: 1})
+    if outcome == "skipped":
+        result.stdout.fnmatch_lines(["*The outside service failed: Geofabrik is down*"])
