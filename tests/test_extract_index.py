@@ -2,6 +2,7 @@ import contextlib
 import hashlib
 import http.client
 import io
+import itertools
 import json
 import logging
 import os
@@ -1239,14 +1240,17 @@ def test_provenance(tmp_path, monkeypatch):
 
     real = pyrosm.pbf_export.read_header_block
     changes = []
+    ticks = itertools.count(1)
 
     def changing(path):
         # Another process gives the file a new snapshot time after its header was read and
-        # before it is hashed.
+        # before it is hashed; each rewrite gets its own modification time, as the rewrites
+        # here can fall within one tick of a coarse file system clock.
         header = real(path)
         if len(changes) < changes_wanted:
             changes.append(1)
             _stamp(path, EAST_TIME if len(changes) % 2 else WEST_TIME)
+            os.utime(path, ns=(next(ticks) * 10**9,) * 2)
         return header
 
     monkeypatch.setattr(pyrosm.pbf_export, "read_header_block", changing)
