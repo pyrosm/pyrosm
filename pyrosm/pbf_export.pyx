@@ -162,9 +162,9 @@ cdef _read_blob_header(f):
     return blob_header
 
 
-cdef _read_blob(f, blob_header):
-    """Read the raw or zlib Blob that follows `blob_header`."""
-    blob = _parse(Blob(), _read_exact(f, blob_header.datasize), f)
+cdef _read_blob(f, datasize):
+    """Read the raw or zlib Blob of `datasize` bytes at the position of `f`."""
+    blob = _parse(Blob(), _read_exact(f, datasize), f)
     if not (blob.HasField("raw") or blob.HasField("zlib_data")):
         raise ValueError(
             "'%s' uses a blob compression other than raw and zlib, which pyrosm "
@@ -202,7 +202,7 @@ cdef _read_next_blob(f):
     blob_header = _read_blob_header(f)
     if blob_header is None:
         return None, None
-    blob = _read_blob(f, blob_header)
+    blob = _read_blob(f, blob_header.datasize)
     if blob.HasField("raw"):
         return blob_header, blob.raw
     return blob_header, _decompress(blob.zlib_data, _raw_size(blob), f.name)
@@ -880,9 +880,9 @@ cdef _select(sources, region, keep_relations, pool, tmpdir):
 # internally parallel across blobs but the stages run in sequence because each
 # depends on the previous stage's *complete* result. A SINGLE pool is reused
 # across all four stages (re-spawning a pool per stage would re-pay the worker
-# startup cost four times). The main process reads raw (still-compressed) blob
-# payloads sequentially (cheap I/O) and feeds them to the pool through `_Pool.imap`
-# as they are read; workers do the heavy decompress + protobuf parse + (re-)encode.
+# startup cost four times). The main process reads the blob headers and feeds each
+# OSMData blob's position to the pool through `_Pool.imap`; workers read the blob from
+# the file and do the heavy decompress + protobuf parse + (re-)encode.
 # The growing kept-id arrays a stage needs are broadcast to the persistent workers
 # via small `.npy` files in a temp dir (written by the main process between stages,
 # memory-mapped + cached per worker on first use) rather than re-pickled per task.
@@ -898,35 +898,44 @@ _W_CACHE = {}
 _W_COMPACT = False
 
 
-cdef _read_next_payload(f):
-    """Read one (blob_type, (filepath, is_raw, payload_bytes, raw_size)); (None, None)
-    at EOF."""
-    blob_header = _read_blob_header(f)
-    if blob_header is None:
-        return None, None
-    blob = _read_blob(f, blob_header)
-    if blob.HasField("raw"):
-        return blob_header.type, (f.name, True, blob.raw, None)
-    return blob_header.type, (f.name, False, blob.zlib_data, _raw_size(blob))
+cdef _identity(f):
+    """Device, inode, size and modification time of the open file `f`."""
+    st = os.fstat(f.fileno())
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
 
 
 def _iter_payloads(filepath):
-    """Yield each OSMData blob's raw (still-compressed) payload, skipping header."""
+    """Yield ``(filepath, identity, offset, size)`` of each OSMData blob; other blobs are
+    read and checked here.
+
+    A worker reads the blob itself, so only these small tuples go through the pool's task
+    queue: a large write to it can hang Python 3.10 when a worker dies (CPython gh-94777).
+    """
     with open(filepath, "rb") as f:
-        _read_next_payload(f)  # header
+        identity = _identity(f)
         while True:
-            btype, payload = _read_next_payload(f)
-            if btype is None:
+            blob_header = _read_blob_header(f)
+            if blob_header is None:
                 break
-            if btype != "OSMData":
+            if blob_header.type != "OSMData":
+                _read_blob(f, blob_header.datasize)
                 continue
-            yield payload
+            offset = f.tell()
+            f.seek(blob_header.datasize, 1)
+            yield filepath, identity, offset, blob_header.datasize
 
 
 cdef _payload_to_block(payload):
-    filepath, is_raw, data, raw_size = payload
-    if not is_raw:
-        data = _decompress(data, raw_size, filepath)
+    filepath, identity, offset, size = payload
+    with open(filepath, "rb") as f:
+        if _identity(f) != identity:
+            raise ValueError("'%s' changed while it was being read." % filepath)
+        f.seek(offset)
+        blob = _read_blob(f, size)
+    if blob.HasField("raw"):
+        data = blob.raw
+    else:
+        data = _decompress(blob.zlib_data, _raw_size(blob), filepath)
     pblock = PrimitiveBlock()
     try:
         pblock.ParseFromString(data)

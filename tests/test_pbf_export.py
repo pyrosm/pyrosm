@@ -1251,13 +1251,16 @@ def test_merge_pbf_rejects_bad_polygon(helsinki_pbf, case, match):
         ("submit fails", True),
         ("worker dies", True),
         ("task error", False),
+        ("file changes", False),
     ],
 )
 def test_parallel_crop_falls_back_only_when_the_pool_breaks(
     helsinki_pbf, tmp_path, monkeypatch, executor, fallback
 ):
     """A pool that cannot start a worker, or whose worker dies, makes the crop warn and run
-    in one process; an error raised by a task propagates without a fallback."""
+    in one process; an error raised by a task, or a source that changes while the workers
+    read it, propagates without a fallback."""
+    import os
     import warnings
     from concurrent.futures import Future, ThreadPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
@@ -1277,10 +1280,15 @@ def test_parallel_crop_falls_back_only_when_the_pool_breaks(
                 future = Future()
                 future.set_exception(BrokenProcessPool("a worker died"))
                 return future
+            if executor == "file changes":
+                os.utime(source, ns=(1, 1))
             return super().submit(func, *args)
 
     monkeypatch.setattr(pbf_export, "ProcessPoolExecutor", Threads)
     source = helsinki_pbf
+    if executor == "file changes":
+        source = str(tmp_path / "source.osm.pbf")
+        Path(source).write_bytes(Path(helsinki_pbf).read_bytes())
     if executor == "task error":
         source = str(tmp_path / "bad.osm.pbf")
         blocks = list(_iter_primitive_blocks(helsinki_pbf))[:3]
@@ -1288,8 +1296,12 @@ def test_parallel_crop_falls_back_only_when_the_pool_breaks(
     expected = crop_pbf(helsinki_pbf, str(tmp_path / "one.osm.pbf"), CROP_BBOX)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        if executor == "task error":
-            with pytest.raises(InvalidOSMFileError, match="not a valid OSM PBF"):
+        if executor in ("task error", "file changes"):
+            error = InvalidOSMFileError if executor == "task error" else ValueError
+            match = (
+                "not a valid OSM PBF" if executor == "task error" else "changed while"
+            )
+            with pytest.raises(error, match=match):
                 crop_pbf(source, str(tmp_path / "two.osm.pbf"), CROP_BBOX, workers=2)
         else:
             out = crop_pbf(source, str(tmp_path / "two.osm.pbf"), CROP_BBOX, workers=2)
