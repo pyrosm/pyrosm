@@ -402,10 +402,11 @@ def find_extracts(
     """List the OSM extracts that overlap ``area``, best download first, without downloading.
 
     Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and
-    1°/10° grid tiles. Extracts that contain the whole area come first, then those that only
-    overlap it; within each group the smallest download comes first. Extracts whose size cannot
+    1°/10° grid tiles. Extracts that contain the whole area (or ``must_cover`` when given) come
+    first, then those that only overlap it; within each group the smallest download comes
+    first. Extracts whose size cannot
     be read come last in their group, smallest extent first. :func:`get_data_by_area` downloads
-    the first extract that contains the area.
+    the first extract that contains the area (or ``must_cover``).
 
     When Movisda's indexes cannot be fetched and no copy is cached, its administrative areas are
     left out and its grid tiles come from the copy vendored with pyrosm, each with a warning.
@@ -444,7 +445,8 @@ def find_extracts(
         that only reach it (not the area) are listed too. To also require the streets around
         each stop, pass the stops buffered in a local metric CRS, e.g.
         ``stops.to_crs(stops.estimate_utm_crs()).buffer(300)``, or a hull of them to require
-        the streets between stops as well.
+        the streets between stops as well. A GeoDataFrame or GeoSeries in another CRS is
+        reprojected to lon/lat.
 
     Returns
     -------
@@ -855,7 +857,8 @@ def get_data_by_area(
     smaller set of extracts merged into one file.
 
     Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and 1°/10°
-    grid tiles, keeps those that contain the whole area, and downloads the one with the smallest
+    grid tiles, keeps those that contain the whole area (or ``must_cover`` when given), and
+    downloads the one with the smallest
     file (the first row of ``find_extracts(area, contains_only=True, must_cover=must_cover)``,
     which shows the choice without downloading). With
     ``strategy="smallest_total"`` it may instead download several extracts that together cover
@@ -918,7 +921,8 @@ def get_data_by_area(
         Points and lines are covered exactly, polygons except for less than 1 m². To also
         require the streets around each stop, pass the stops buffered in a local metric CRS,
         e.g. ``stops.to_crs(stops.estimate_utm_crs()).buffer(300)``, or a hull of them to
-        require the streets between stops as well. The crop still follows ``area``, so parts of
+        require the streets between stops as well. A GeoDataFrame or GeoSeries in another CRS
+        is reprojected to lon/lat. The crop still follows ``area``, so parts of
         ``must_cover`` outside it are cropped away.
 
     workers : int
