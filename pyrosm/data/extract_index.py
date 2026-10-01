@@ -929,10 +929,10 @@ def get_data_by_area(
         Number of worker processes that crop (and merge) the downloaded file. ``1`` (default)
         runs in one process. More workers are used only for a file with at least
         ``2 * workers`` data blocks, and the written file is the same for every value. With
-        ``crop=False`` and a single extract nothing is cropped, so it has no effect. A script
-        that passes ``workers > 1`` on macOS or Windows needs the
-        ``if __name__ == "__main__":`` guard, as each worker process starts by importing the
-        script.
+        ``crop=False`` and a single extract nothing is cropped, so it has no effect. On macOS
+        and Windows each worker process starts by importing the script, so a script that
+        passes ``workers > 1`` needs the ``if __name__ == "__main__":`` guard; without it, or
+        for a script read from stdin, the work runs in one process with a warning.
 
     Returns
     -------

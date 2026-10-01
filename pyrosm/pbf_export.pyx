@@ -21,7 +21,11 @@ to their union when a bounding box or a polygon is given.
 import os
 import shutil
 import tempfile
+import warnings
 import zlib
+from collections import deque
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from struct import pack, unpack
 
@@ -773,35 +777,42 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     # Stage 0: header pre-flight (rejects unsupported inputs before any streaming).
     _read_header(source_path)
 
-    pool, tmpdir = _open_pool(workers, [source_path], region, compact)
-    try:
-        kept_nodes, kept_ways, kept_rel = _select(
-            [source_path], region, keep_relations, pool, tmpdir
-        )
-        kept_ways, kept_rel = kept_ways[0], kept_rel[0]
-        if repack:
-            _repack_write(
-                source_path, output_path, _to_set(kept_nodes), _to_set(kept_ways),
-                _to_set(kept_rel), bounds
-            )
-        elif pool is not None:
-            _broadcast(tmpdir, "kept_nodes", kept_nodes)
-            _broadcast(tmpdir, "kept_ways", kept_ways)
-            _broadcast(tmpdir, "kept_rel", kept_rel)
-            # imap preserves input order -> the same bytes as the sequential write.
-            with open(output_path, "wb") as out:
-                _write_header(out, bounds)
-                for blob_bytes in pool.imap(_w_write, _iter_payloads(source_path)):
-                    if blob_bytes is not None:
-                        out.write(blob_bytes)
-        else:
-            _write_pbf(
-                source_path, output_path, _to_set(kept_nodes), _to_set(kept_ways),
-                _to_set(kept_rel), bounds, compact
-            )
-    finally:
-        _close_pool(pool, tmpdir)
+    _with_pool(
+        _crop_run,
+        (source_path, output_path, region, keep_relations, compact, repack),
+        workers, [source_path], region, compact,
+    )
     return output_path
+
+
+def _crop_run(source_path, output_path, region, keep_relations, compact, repack, pool,
+              tmpdir):
+    """Select the elements to keep and write `output_path`; in parallel with `pool`."""
+    bounds = region[0]
+    kept_nodes, kept_ways, kept_rel = _select(
+        [source_path], region, keep_relations, pool, tmpdir
+    )
+    kept_ways, kept_rel = kept_ways[0], kept_rel[0]
+    if repack:
+        _repack_write(
+            source_path, output_path, _to_set(kept_nodes), _to_set(kept_ways),
+            _to_set(kept_rel), bounds
+        )
+    elif pool is not None:
+        _broadcast(tmpdir, "kept_nodes", kept_nodes)
+        _broadcast(tmpdir, "kept_ways", kept_ways)
+        _broadcast(tmpdir, "kept_rel", kept_rel)
+        # imap preserves input order -> the same bytes as the sequential write.
+        with open(output_path, "wb") as out:
+            _write_header(out, bounds)
+            for blob_bytes in pool.imap(_w_write, _iter_payloads(source_path)):
+                if blob_bytes is not None:
+                    out.write(blob_bytes)
+    else:
+        _write_pbf(
+            source_path, output_path, _to_set(kept_nodes), _to_set(kept_ways),
+            _to_set(kept_rel), bounds, compact
+        )
 
 
 cdef _select(sources, region, keep_relations, pool, tmpdir):
@@ -870,12 +881,12 @@ cdef _select(sources, region, keep_relations, pool, tmpdir):
 # depends on the previous stage's *complete* result. A SINGLE pool is reused
 # across all four stages (re-spawning a pool per stage would re-pay the worker
 # startup cost four times). The main process reads raw (still-compressed) blob
-# payloads sequentially (cheap I/O) and feeds them to the pool through `Pool.imap`
+# payloads sequentially (cheap I/O) and feeds them to the pool through `_Pool.imap`
 # as they are read; workers do the heavy decompress + protobuf parse + (re-)encode.
 # The growing kept-id arrays a stage needs are broadcast to the persistent workers
 # via small `.npy` files in a temp dir (written by the main process between stages,
 # memory-mapped + cached per worker on first use) rather than re-pickled per task.
-# Output blobs come back in input order (Pool.imap preserves order) so the written
+# Output blobs come back in input order (`_Pool.imap` preserves order) so the written
 # bytes are identical to the sequential path.
 
 # Per-worker globals populated by `_winit`; `_W_CACHE` memoizes the khash sets
@@ -1020,6 +1031,71 @@ cdef _broadcast(tmpdir, name, arr):
     np.save(Path(tmpdir) / (name + ".npy"), np.ascontiguousarray(arr, dtype=np.int64))
 
 
+_POOL_FALLBACK_WARNING = (
+    "The worker processes of the crop could not run, so it ran in one process instead. This "
+    'happens when they cannot re-import the program: a script without an `if __name__ == '
+    '"__main__":` guard, or one read from stdin. A worker process may also have died. Guard '
+    "the entry point, or pass workers=1 to silence this."
+)
+
+
+class _PoolStartError(Exception):
+    """The pool could not start a worker process (an ``OSError`` from submitting a task)."""
+
+
+def _ordered_map(executor, func, items, window):
+    """Yield ``func(item)`` for each of ``items`` in order, run by ``executor`` with at most
+    ``window`` items in flight."""
+    pending = deque()
+    for item in items:
+        if len(pending) >= window:
+            yield pending.popleft().result()
+        try:
+            pending.append(executor.submit(func, item))
+        except OSError as err:
+            raise _PoolStartError(err) from err
+    while pending:
+        yield pending.popleft().result()
+
+
+class _Pool:
+    """Worker processes that map a function over blob payloads in order (``imap``)."""
+
+    def __init__(self, workers, initargs):
+        self.executor = ProcessPoolExecutor(
+            int(workers), initializer=_winit, initargs=initargs
+        )
+        self.window = 2 * int(workers)
+
+    def imap(self, func, items):
+        return _ordered_map(self.executor, func, items, self.window)
+
+
+def _with_pool(func, args, workers, sources, region, compact):
+    """Return ``func(*args, pool, tmpdir)``, run with a worker pool when one is used (see
+    `_open_pool`). When the pool cannot start or breaks, warn and run ``func`` again in one
+    process."""
+    try:
+        pool, tmpdir = _open_pool(workers, sources, region, compact)
+    except (OSError, _PoolStartError):
+        pool = tmpdir = None
+        warnings.warn(_POOL_FALLBACK_WARNING, RuntimeWarning)
+    if pool is None:
+        return func(*args, None, None)
+    try:
+        return func(*args, pool, tmpdir)
+    except (BrokenProcessPool, _PoolStartError):
+        pass
+    finally:
+        _close_pool(pool, tmpdir)
+    warnings.warn(_POOL_FALLBACK_WARNING, RuntimeWarning)
+    return func(*args, None, None)
+
+
+def _merge_select(sources, region, keep_relations, pool, tmpdir):
+    return _select(sources, region, keep_relations, pool, tmpdir)
+
+
 cdef _open_pool(workers, sources, region, compact):
     """A worker pool and its broadcast temp dir, or (None, None) to run sequentially.
 
@@ -1030,21 +1106,19 @@ cdef _open_pool(workers, sources, region, compact):
         return None, None
     if sum([_count_data_blocks(p) for p in sources]) < 2 * int(workers):
         return None, None
-    import multiprocessing as mp
-
     tmpdir = tempfile.mkdtemp(prefix="pyrosm_crop_par_")
     bounds, polygon = region
     wkb = None if polygon is None else polygon.wkb
-    pool = mp.Pool(
-        int(workers), initializer=_winit, initargs=(bounds, wkb, tmpdir, compact)
-    )
-    return pool, tmpdir
+    try:
+        return _Pool(workers, (bounds, wkb, tmpdir, compact)), tmpdir
+    except BaseException:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
 
 
 cdef _close_pool(pool, tmpdir):
     if pool is not None:
-        pool.close()
-        pool.join()
+        pool.executor.shutdown(wait=True, cancel_futures=True)
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
@@ -1911,7 +1985,10 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     workers : int
         Number of worker processes for selecting the elements inside
         ``bounding_box`` or ``polygon``. ``1`` (default) runs sequentially. The
-        merged file is written sequentially either way.
+        merged file is written sequentially either way. When the worker processes
+        cannot run (on macOS and Windows: a script without an
+        ``if __name__ == "__main__":`` guard, or one read from stdin), the merge runs
+        in one process and warns.
 
     polygon : shapely Polygon or MultiPolygon, optional
         The area to crop to, in lon/lat, in place of ``bounding_box``: a node is
@@ -1963,13 +2040,10 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     else:
         region = _region(bounding_box, polygon)
         bounds = region[0]
-        pool, tmpdir = _open_pool(workers, sources, region, False)
-        try:
-            kept_nodes, kept_ways, kept_rel = _select(
-                sources, region, keep_relations, pool, tmpdir
-            )
-        finally:
-            _close_pool(pool, tmpdir)
+        kept_nodes, kept_ways, kept_rel = _with_pool(
+            _merge_select, (sources, region, keep_relations), workers, sources, region,
+            False,
+        )
         kept = (
             _to_set(kept_nodes),
             _to_set(_unique_concat(kept_ways)),
