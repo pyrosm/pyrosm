@@ -40,7 +40,6 @@ from pyrosm.data.geofabrik_index import (
     _EQUAL_AREA_CRS,
     _bbox_filename,
     _bbox_to_polygon,
-    _crop,
     _default_target_dir,
 )
 from pyrosm.data.geofabrik_index import _load_index as _load_geofabrik_index
@@ -788,31 +787,29 @@ def _area_geometry(area):
 
 def _write_area_file(area, sources, crop, output_path, directory):
     """The file for :class:`AreaExtract`: the one extract, cropped to the area's bounding box
-    when ``crop``; several extracts merged (and cropped) with :func:`pyrosm.merge_pbf`.
+    when ``crop`` (to the area itself when ``crop="polygon"``); several extracts merged (and
+    cropped) with :func:`pyrosm.merge_pbf`.
     """
-    envelope = box(*area.bounds)
-    if len(sources) == 1:
-        if not crop:
-            return sources[0].path
-        return _crop(
-            sources[0].path,
-            envelope,
-            _bbox_filename(envelope.bounds),
-            output_path,
-            directory,
-        )
-    from pyrosm.pbf_export import merge_pbf
+    from pyrosm.pbf_export import crop_pbf, merge_pbf
 
-    if crop:
-        name = _bbox_filename(envelope.bounds)
+    paths = [s.path for s in sources]
+    if not crop and len(paths) == 1:
+        return paths[0]
+    region = {}
+    if crop == "polygon":
+        region["polygon"] = area
+        name = "area_%s.osm.pbf" % hashlib.sha1(area.wkb).hexdigest()[:12]
+    elif crop:
+        region["bounding_box"] = box(*area.bounds)
+        name = _bbox_filename(area.bounds)
     else:
         urls = "\n".join(s.url for s in sources).encode()
         name = "merged_%s.osm.pbf" % hashlib.sha1(urls).hexdigest()[:12]
     target = output_path or str(_default_target_dir(directory) / name)
     Path(target).resolve().parent.mkdir(parents=True, exist_ok=True)
-    return merge_pbf(
-        [s.path for s in sources], target, bounding_box=envelope if crop else None
-    )
+    if len(paths) == 1:
+        return crop_pbf(paths[0], target, **region)
+    return merge_pbf(paths, target, **region)
 
 
 def _write_with_provenance(area, sources, crop, output_path, directory):
@@ -859,7 +856,7 @@ def get_data_by_area(
     the area and merge them into one file (see ``strategy``). A download that fails with a network error or HTTP status 408, 425, 429 or 5xx is
     tried up to three times, waiting 1 s, 2 s or the server's ``Retry-After`` in between; when it
     still fails, the choice is made again without it. By default the file is then cropped to
-    the area's bounding box.
+    the area's bounding box, or with ``crop="polygon"`` to the area itself.
 
     Movisda cuts its extracts exactly at their edges, so features crossing the edge of a Movisda
     extract are clipped or missing there. A single Movisda extract contains the whole area, so
@@ -873,9 +870,12 @@ def get_data_by_area(
         The area of interest in lon/lat: a (Multi)Polygon, a GeoDataFrame/GeoSeries (its
         geometries are combined) or ``[minx, miny, maxx, maxy]``.
 
-    crop : bool
+    crop : bool or "polygon"
         When ``True`` (default), crop the extract to the area's bounding box and return the
-        cropped file, named ``bbox_<minx>_<miny>_<maxx>_<maxy>.osm.pbf``. When ``False``, return
+        cropped file, named ``bbox_<minx>_<miny>_<maxx>_<maxy>.osm.pbf``. With ``"polygon"``,
+        crop it to the area itself, which must be a (Multi)Polygon: a node is kept when it
+        lies inside the area or on its boundary, and a way that has a kept node is kept
+        whole. The file is named ``area_<hash of the area>.osm.pbf``. When ``False``, return
         the full extract.
 
     update : bool
@@ -918,7 +918,9 @@ def get_data_by_area(
     Raises
     ------
     ValueError
-        If the area is empty, or has no width or no height, or ``must_cover`` is empty.
+        If the area is empty, or has no width or no height, or ``must_cover`` is empty, or
+        ``crop`` is not ``True``, ``False`` or ``"polygon"``, or ``crop="polygon"`` and the
+        area is not a (Multi)Polygon.
     pyrosm.exceptions.ExtractNotFoundError
         If no extract (or set of extracts) contains the whole area, or ``must_cover`` when
         given (a ``ValueError`` subclass).
@@ -932,7 +934,14 @@ def get_data_by_area(
         raise ValueError(
             "strategy must be one of %s; got %r." % (", ".join(_STRATEGIES), strategy)
         )
+    if crop not in (True, False, "polygon"):
+        raise ValueError('crop must be True, False or "polygon"; got %r.' % (crop,))
     geom = _area_geometry(area)
+    if crop == "polygon" and geom.geom_type not in ("Polygon", "MultiPolygon"):
+        raise ValueError(
+            'crop="polygon" needs a Polygon or MultiPolygon area; got %s.'
+            % geom.geom_type
+        )
     target = (geom, None) if must_cover is None else _must_cover_parts(must_cover)
     net = dict(headers=headers, timeout=timeout, opener=opener)
     candidates = find_extracts(

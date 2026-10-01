@@ -53,13 +53,18 @@ def _read_elements(path):
     return node_ids, way_ids, rel_ids, coords, way_refs
 
 
-def _expected_selection(path, bbox):
-    """Independently compute the complete-ways crop selection from the source."""
+def _expected_selection(path, bbox, polygon=None):
+    """Independently compute the complete-ways crop selection from the source, for the
+    box ``bbox`` or, when given, the shapely ``polygon``."""
+    from shapely.geometry import Point
+
     node_ids, way_ids, rel_ids, coords, way_refs = _read_elements(path)
-    xmin, ymin, xmax, ymax = bbox
+    xmin, ymin, xmax, ymax = bbox if polygon is None else polygon.bounds
     nodes_in = {
         nid for nid, (x, y) in coords.items() if xmin <= x <= xmax and ymin <= y <= ymax
     }
+    if polygon is not None:
+        nodes_in = {nid for nid in nodes_in if polygon.covers(Point(coords[nid]))}
     expected_ways = {
         wid for wid, refs in way_refs.items() if any(n in nodes_in for n in refs)
     }
@@ -111,6 +116,36 @@ def test_to_pbf_exact_selection_contract(helsinki_pbf):
         assert nodes_in <= node_ids
     finally:
         Path(out).unlink()
+
+
+def test_crop_pbf_to_polygon(helsinki_pbf, tmp_path):
+    from shapely.geometry import MultiPolygon, Polygon, box
+
+    from pyrosm.pbf_export import crop_pbf, read_header_block
+
+    # Two separate parts, as an area holding only the places that matter.
+    polygon = MultiPolygon(
+        [
+            Polygon([(24.9424, 60.1701), (24.9461, 60.1701), (24.9424, 60.1731)]),
+            box(24.9500, 60.1650, 24.9530, 60.1680),
+        ]
+    )
+    expected_ways, expected_nodes, _ = _expected_selection(helsinki_pbf, None, polygon)
+    _, envelope_nodes, _ = _expected_selection(helsinki_pbf, polygon.bounds)
+    out = crop_pbf(helsinki_pbf, str(tmp_path / "seq.osm.pbf"), polygon=polygon)
+    node_ids, way_ids, rel_ids, _, _ = _read_elements(out)
+    assert (way_ids, node_ids) == (expected_ways, expected_nodes)
+    assert len(rel_ids) > 0
+    # Nodes inside the envelope but outside both parts are left out.
+    assert envelope_nodes - expected_nodes
+    bbox = read_header_block(out).bbox
+    assert [bbox.left, bbox.bottom, bbox.right, bbox.top] == [
+        round(v * 1e9) for v in polygon.bounds
+    ]
+    parallel = crop_pbf(
+        helsinki_pbf, str(tmp_path / "par.osm.pbf"), polygon=polygon, workers=2
+    )
+    assert Path(parallel).read_bytes() == Path(out).read_bytes()
 
 
 def test_to_pbf_relation_selection(helsinki_pbf):
@@ -999,21 +1034,22 @@ def test_merge_pbf_duplicate_ranking_and_cross_file_refs(
     assert _read_elements(merged)[1:3] == ({10}, set())
 
 
-@pytest.mark.parametrize("workers", [1, 2])
-def test_merge_pbf_bounding_box_equals_crop_of_merge(helsinki_pbf, tmp_path, workers):
-    from shapely.geometry import box
+@pytest.mark.parametrize("shape, workers", [("box", 1), ("box", 2), ("polygon", 2)])
+def test_merge_pbf_crop_equals_crop_of_merge(helsinki_pbf, tmp_path, shape, workers):
+    from shapely.geometry import Polygon, box
 
     from pyrosm import merge_pbf
     from pyrosm.pbf_export import crop_pbf
 
+    xmin, ymin, xmax, ymax = MERGE_CROP
+    region = {"bounding_box": box(*MERGE_CROP)}
+    if shape == "polygon":
+        region = {"polygon": Polygon([(xmin, ymin), (xmax, ymin), (xmin, ymax)])}
     a, b = _merge_inputs(helsinki_pbf, tmp_path)
     merged = merge_pbf([a, b], str(tmp_path / "merged.osm.pbf"))
-    expected = crop_pbf(merged, str(tmp_path / "expected.osm.pbf"), MERGE_CROP)
+    expected = crop_pbf(merged, str(tmp_path / "expected.osm.pbf"), **region)
     cropped = merge_pbf(
-        [a, b],
-        str(tmp_path / "cropped.osm.pbf"),
-        bounding_box=box(*MERGE_CROP),
-        workers=workers,
+        [a, b], str(tmp_path / "cropped.osm.pbf"), workers=workers, **region
     )
     assert _read_elements(cropped)[:3] == _read_elements(expected)[:3]
     assert len(_read_elements(cropped)[2]) > 0
@@ -1174,6 +1210,29 @@ def test_merge_pbf_rejects_bad_input(
         assert not Path(output).exists()
     if inputs:
         assert str(bad) in str(err.value)
+
+
+@pytest.mark.parametrize(
+    "case, match",
+    [
+        ("box and polygon", "not both"),
+        ("line", "non-empty Shapely Polygon"),
+        ("empty polygon", "non-empty Shapely Polygon"),
+    ],
+)
+def test_merge_pbf_rejects_bad_polygon(helsinki_pbf, case, match):
+    from shapely.geometry import LineString, Polygon, box
+
+    from pyrosm import merge_pbf
+
+    bounds = [24.94, 60.16, 24.95, 60.17]
+    region = {
+        "box and polygon": {"bounding_box": bounds, "polygon": box(*bounds)},
+        "line": {"polygon": LineString([bounds[:2], bounds[2:]])},
+        "empty polygon": {"polygon": Polygon()},
+    }[case]
+    with pytest.raises(ValueError, match=match):
+        merge_pbf([helsinki_pbf], **region)
 
 
 # ---------------------------------------------------------------------------

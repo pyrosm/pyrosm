@@ -708,16 +708,22 @@ def test_get_data_by_area_accepts_area_forms(monkeypatch, area):
 
 
 @pytest.mark.parametrize(
-    "area, message",
+    "area, crop, message",
     [
-        (gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), "empty"),
-        (Point(24.94, 60.17), "width and a height"),
-        ([24.93, 60.16, 24.93, 60.18], "width and a height"),
+        (gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"), True, "empty"),
+        (Point(24.94, 60.17), True, "width and a height"),
+        ([24.93, 60.16, 24.93, 60.18], True, "width and a height"),
+        (box(*HELSINKI), "bbox", 'crop must be True, False or "polygon"'),
+        (
+            LineString([HELSINKI[:2], HELSINKI[2:]]),
+            "polygon",
+            "Polygon or MultiPolygon",
+        ),
     ],
 )
-def test_get_data_by_area_rejects_flat_or_empty_area(area, message):
+def test_get_data_by_area_rejects_bad_area_or_crop(area, crop, message):
     with pytest.raises(ValueError, match=message) as info:
-        pyrosm.get_data_by_area(area)
+        pyrosm.get_data_by_area(area, crop=crop)
     # An invalid area is not reported as "no extract contains the area".
     assert type(info.value) is ValueError
 
@@ -981,6 +987,43 @@ def test_get_data_by_area_merges_a_smaller_set(
         reverse = ei._write_area_file(area, got.sources[::-1], False, None, tmp_path)
         assert merged_inputs[1] == [helsinki_halves["east"], helsinki_halves["west"]]
         assert Path(reverse).name != Path(got).name
+
+
+@pytest.mark.parametrize("strategy", ["single", "smallest_total"])
+def test_get_data_by_area_crops_to_the_polygon(
+    tmp_path, monkeypatch, helsinki_halves, strategy
+):
+    # An L-shaped area: its bounding box without the north-east corner.
+    envelope = box(24.938, 60.165, 24.950, 60.178)
+    area = envelope.difference(box(24.944, 60.1715, 24.950, 60.178))
+    candidates = _rows(
+        ("Geofabrik", "finland", 10_000, box(19, 59, 32, 71), True),
+        ("Movisda", "east", 100, box(24.942, 60.164, 24.953, 60.179), False),
+        ("Geofabrik", "west", 100, box(24.935, 60.164, 24.946, 60.179), False),
+    )
+    helsinki = pyrosm.get_data("helsinki_pbf")
+    paths = dict(
+        zip(
+            candidates["url"],
+            [helsinki, helsinki_halves["east"], helsinki_halves["west"]],
+        )
+    )
+    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: candidates)
+    monkeypatch.setattr(
+        "pyrosm.utils.download.download", lambda url, *a, **k: paths[url]
+    )
+    got = pyrosm.get_data_by_area(
+        area, crop="polygon", directory=tmp_path, strategy=strategy
+    )
+    assert len(got.sources) == (1 if strategy == "single" else 2)
+    name = "area_%s.osm.pbf" % hashlib.sha1(area.wkb).hexdigest()[:12]
+    assert Path(got).name == name
+    source = _buildings(helsinki)
+    kept = set(_buildings(got.path).index)
+    inside = set(source.index[source.within(area)])
+    cut_off = set(source.index[source.within(envelope) & source.disjoint(area)])
+    assert inside and cut_off
+    assert inside <= kept and not cut_off & kept
 
 
 def test_get_data_by_area_chooses_again_after_a_failed_set_member(

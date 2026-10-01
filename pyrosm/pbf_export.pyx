@@ -7,7 +7,8 @@ never materializes the whole file: only compact id sets are held in memory.
 Selection is "complete ways" (like osmconvert ``--complete-ways``): a way is kept
 when at least one of its nodes is inside the box, and the kept way keeps its full
 node list so geometries are not cut at the box edge. Relations are kept when they
-reference a kept node or way.
+reference a kept node or way. A polygon can be given in place of the box; a node is
+then kept when it lies inside the polygon or on its boundary.
 
 The id/coordinate re-encoding works in the raw integer (delta) space of the PBF,
 so coordinates round-trip exactly (no rounding loss).
@@ -68,6 +69,31 @@ cdef _bounds_from_bbox(bounding_box):
     # shapely geometry -> use its envelope (matches how OSM() filters by bbox)
     xmin, ymin, xmax, ymax = bounding_box.bounds
     return float(xmin), float(ymin), float(xmax), float(ymax)
+
+
+cdef _region(bounding_box, polygon):
+    """The crop region: its box ``(xmin, ymin, xmax, ymax)`` and the prepared polygon
+    to crop to, or None to crop to the box. A polygon's box is its envelope."""
+    if polygon is None:
+        return _bounds_from_bbox(bounding_box), None
+    if bounding_box is not None:
+        raise ValueError("Give either a bounding box or a polygon to crop to, not both.")
+    if getattr(polygon, "geom_type", None) not in ("Polygon", "MultiPolygon") or \
+            polygon.is_empty:
+        raise ValueError(
+            "The polygon to crop to must be a non-empty Shapely Polygon or "
+            "MultiPolygon; got %r." % (polygon,)
+        )
+    return _bounds_from_bbox(polygon), _prepared(polygon.wkb)
+
+
+def _prepared(wkb):
+    """The polygon in `wkb`, prepared for fast point tests."""
+    import shapely
+
+    polygon = shapely.from_wkb(wkb)
+    shapely.prepare(polygon)
+    return polygon
 
 
 # ---------------------------------------------------------------------------
@@ -252,43 +278,50 @@ cdef _unique_concat(arrays):
 # ---------------------------------------------------------------------------
 # Selection stages (each re-streams the whole file, inspecting one element type)
 # ---------------------------------------------------------------------------
-cdef _node_coords(pblock, dense):
-    """Absolute (ids, lons, lats) of a dense group in degrees."""
+cdef _node_coords(pblock, g):
+    """Absolute (ids, lons, lats) of the nodes of group `g` in degrees."""
     cdef long granularity = pblock.granularity
     cdef long lat_offset = pblock.lat_offset
     cdef long lon_offset = pblock.lon_offset
-    ids = np.cumsum(np.fromiter(dense.id, dtype=np.int64, count=len(dense.id)))
-    lat_raw = np.cumsum(np.fromiter(dense.lat, dtype=np.int64, count=len(dense.lat)))
-    lon_raw = np.cumsum(np.fromiter(dense.lon, dtype=np.int64, count=len(dense.lon)))
+    if len(g.dense.id) > 0:
+        dense = g.dense
+        ids = np.cumsum(np.fromiter(dense.id, dtype=np.int64, count=len(dense.id)))
+        lat_raw = np.cumsum(np.fromiter(dense.lat, dtype=np.int64, count=len(dense.lat)))
+        lon_raw = np.cumsum(np.fromiter(dense.lon, dtype=np.int64, count=len(dense.lon)))
+    else:
+        n = len(g.nodes)
+        ids = np.fromiter((node.id for node in g.nodes), dtype=np.int64, count=n)
+        lat_raw = np.fromiter((node.lat for node in g.nodes), dtype=np.int64, count=n)
+        lon_raw = np.fromiter((node.lon for node in g.nodes), dtype=np.int64, count=n)
     lats = (lat_raw * granularity + lat_offset) / DIV
     lons = (lon_raw * granularity + lon_offset) / DIV
     return ids, lons, lats
 
 
-cdef _stage1_nodes_in_bbox(filepath, bounds):
+cdef _block_nodes_inside(pblock, bounds, polygon):
+    """Ids of the nodes in `pblock` inside the box `bounds` and, when `polygon` is
+    given, inside it or on its boundary."""
     xmin, ymin, xmax, ymax = bounds
     selected = []
-    for pblock in _iter_primitive_blocks(filepath):
-        granularity = pblock.granularity
-        lat_offset = pblock.lat_offset
-        lon_offset = pblock.lon_offset
-        for g in pblock.primitivegroup:
-            if len(g.dense.id) > 0:
-                ids, lons, lats = _node_coords(pblock, g.dense)
-                mask = (xmin <= lons) & (lons <= xmax) & (ymin <= lats) & (lats <= ymax)
-                if mask.any():
-                    selected.append(ids[mask])
-            elif len(g.nodes) > 0:
-                n = len(g.nodes)
-                ids = np.fromiter((node.id for node in g.nodes), dtype=np.int64, count=n)
-                lat_raw = np.fromiter((node.lat for node in g.nodes), dtype=np.int64, count=n)
-                lon_raw = np.fromiter((node.lon for node in g.nodes), dtype=np.int64, count=n)
-                lats = (lat_raw * granularity + lat_offset) / DIV
-                lons = (lon_raw * granularity + lon_offset) / DIV
-                mask = (xmin <= lons) & (lons <= xmax) & (ymin <= lats) & (lats <= ymax)
-                if mask.any():
-                    selected.append(ids[mask])
+    for g in pblock.primitivegroup:
+        if len(g.dense.id) == 0 and len(g.nodes) == 0:
+            continue
+        ids, lons, lats = _node_coords(pblock, g)
+        mask = (xmin <= lons) & (lons <= xmax) & (ymin <= lats) & (lats <= ymax)
+        if polygon is not None and mask.any():
+            import shapely
+
+            mask[mask] = shapely.intersects_xy(polygon, lons[mask], lats[mask])
+        if mask.any():
+            selected.append(ids[mask])
     return _unique_concat(selected)
+
+
+cdef _stage1_nodes_inside(filepath, region):
+    bounds, polygon = region
+    return _unique_concat(
+        [_block_nodes_inside(pb, bounds, polygon) for pb in _iter_primitive_blocks(filepath)]
+    )
 
 
 cdef _stage2_ways(filepath, nodes_in_bbox_set):
@@ -712,9 +745,10 @@ cdef _count_data_blocks(filepath):
     return n
 
 
-cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
-               workers=1, compact=False, repack=False):
-    """Crop `source_path` by `bounding_box`, writing a valid PBF to `output_path`.
+cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
+               workers=1, compact=False, repack=False, polygon=None):
+    """Crop `source_path` by `bounding_box`, or by the Shapely (Multi)Polygon
+    `polygon`, writing a valid PBF to `output_path`.
 
     Returns the output path. When ``workers > 1`` and the file has enough blocks
     to amortize pool startup (>= ``2 * workers`` OSMData blocks), the parallel
@@ -729,7 +763,8 @@ cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
     ``workers`` still parallelizes the selection. ``repack=True`` produces minimal
     string tables, so ``compact`` is irrelevant and ignored.
     """
-    bounds = _bounds_from_bbox(bounding_box)
+    region = _region(bounding_box, polygon)
+    bounds = region[0]
 
     if output_path is None:
         fd, output_path = tempfile.mkstemp(suffix=".osm.pbf", prefix="pyrosm_crop_")
@@ -738,10 +773,10 @@ cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
     # Stage 0: header pre-flight (rejects unsupported inputs before any streaming).
     _read_header(source_path)
 
-    pool, tmpdir = _open_pool(workers, [source_path], bounds, compact)
+    pool, tmpdir = _open_pool(workers, [source_path], region, compact)
     try:
         kept_nodes, kept_ways, kept_rel = _select(
-            [source_path], bounds, keep_relations, pool, tmpdir
+            [source_path], region, keep_relations, pool, tmpdir
         )
         kept_ways, kept_rel = kept_ways[0], kept_rel[0]
         if repack:
@@ -769,7 +804,7 @@ cpdef crop_pbf(source_path, output_path, bounding_box, keep_relations=True,
     return output_path
 
 
-cdef _select(sources, bounds, keep_relations, pool, tmpdir):
+cdef _select(sources, region, keep_relations, pool, tmpdir):
     """Run the crop selection stages over one or more PBF files.
 
     Returns the kept node ids of all files together, and a list with the kept way
@@ -778,10 +813,10 @@ cdef _select(sources, bounds, keep_relations, pool, tmpdir):
     With a `pool`, each stage spreads a file's blocks over the workers, which read
     the id sets the stage needs from `tmpdir`.
     """
-    # Stage 1: nodes inside the bbox.
+    # Stage 1: nodes inside the bbox (or polygon).
     if pool is None:
         nodes_in_bbox = _unique_concat(
-            [_stage1_nodes_in_bbox(p, bounds) for p in sources]
+            [_stage1_nodes_inside(p, region) for p in sources]
         )
         nib_set = _to_set(nodes_in_bbox)
     else:
@@ -846,6 +881,7 @@ cdef _select(sources, bounds, keep_relations, pool, tmpdir):
 # Per-worker globals populated by `_winit`; `_W_CACHE` memoizes the khash sets
 # built from the broadcast `.npy` files so each worker loads each set only once.
 _W_BOUNDS = None
+_W_POLYGON = None
 _W_TMPDIR = None
 _W_CACHE = {}
 _W_COMPACT = False
@@ -888,9 +924,10 @@ cdef _payload_to_block(payload):
     return pblock
 
 
-def _winit(bounds, tmpdir, compact):
-    global _W_BOUNDS, _W_TMPDIR, _W_CACHE, _W_COMPACT
+def _winit(bounds, polygon_wkb, tmpdir, compact):
+    global _W_BOUNDS, _W_POLYGON, _W_TMPDIR, _W_CACHE, _W_COMPACT
     _W_BOUNDS = bounds
+    _W_POLYGON = None if polygon_wkb is None else _prepared(polygon_wkb)
     _W_TMPDIR = tmpdir
     _W_CACHE = {}
     _W_COMPACT = compact
@@ -907,29 +944,7 @@ def _w_get_set(name):
 
 
 def _w_stage1(payload):
-    pblock = _payload_to_block(payload)
-    xmin, ymin, xmax, ymax = _W_BOUNDS
-    granularity = pblock.granularity
-    lat_offset = pblock.lat_offset
-    lon_offset = pblock.lon_offset
-    selected = []
-    for g in pblock.primitivegroup:
-        if len(g.dense.id) > 0:
-            ids, lons, lats = _node_coords(pblock, g.dense)
-            mask = (xmin <= lons) & (lons <= xmax) & (ymin <= lats) & (lats <= ymax)
-            if mask.any():
-                selected.append(ids[mask])
-        elif len(g.nodes) > 0:
-            n = len(g.nodes)
-            ids = np.fromiter((node.id for node in g.nodes), dtype=np.int64, count=n)
-            lat_raw = np.fromiter((node.lat for node in g.nodes), dtype=np.int64, count=n)
-            lon_raw = np.fromiter((node.lon for node in g.nodes), dtype=np.int64, count=n)
-            lats = (lat_raw * granularity + lat_offset) / DIV
-            lons = (lon_raw * granularity + lon_offset) / DIV
-            mask = (xmin <= lons) & (lons <= xmax) & (ymin <= lats) & (lats <= ymax)
-            if mask.any():
-                selected.append(ids[mask])
-    return _unique_concat(selected)
+    return _block_nodes_inside(_payload_to_block(payload), _W_BOUNDS, _W_POLYGON)
 
 
 def _w_stage2(payload):
@@ -1005,7 +1020,7 @@ cdef _broadcast(tmpdir, name, arr):
     np.save(Path(tmpdir) / (name + ".npy"), np.ascontiguousarray(arr, dtype=np.int64))
 
 
-cdef _open_pool(workers, sources, bounds, compact):
+cdef _open_pool(workers, sources, region, compact):
     """A worker pool and its broadcast temp dir, or (None, None) to run sequentially.
 
     Sequential when ``workers <= 1`` or the files have fewer than ``2 * workers``
@@ -1018,7 +1033,11 @@ cdef _open_pool(workers, sources, bounds, compact):
     import multiprocessing as mp
 
     tmpdir = tempfile.mkdtemp(prefix="pyrosm_crop_par_")
-    pool = mp.Pool(int(workers), initializer=_winit, initargs=(bounds, tmpdir, compact))
+    bounds, polygon = region
+    wkb = None if polygon is None else polygon.wkb
+    pool = mp.Pool(
+        int(workers), initializer=_winit, initargs=(bounds, wkb, tmpdir, compact)
+    )
     return pool, tmpdir
 
 
@@ -1845,10 +1864,10 @@ cdef _fingerprint(path):
 
 
 cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True,
-                workers=1):
+                workers=1, polygon=None):
     """
     Merge overlapping ``*.osm.pbf`` extracts into one PBF, optionally cropped
-    to a bounding box.
+    to a bounding box or a polygon.
 
     The inputs may come from different providers, have snapshots days apart and
     carry element metadata or not. An element found in several inputs is written
@@ -1863,7 +1882,8 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     inputs: a node is kept when a copy of it lies inside the box, a way when its
     winning copy has a node inside the box, and a relation when its winning copy
     references a kept node or way. A kept way keeps its full node list, whichever
-    input holds those nodes.
+    input holds those nodes. With ``polygon`` the same rule applies with the
+    polygon in place of the box. A single input is cropped the same way.
 
     Parameters
     ----------
@@ -1888,8 +1908,13 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
 
     workers : int
         Number of worker processes for selecting the elements inside
-        ``bounding_box``. ``1`` (default) runs sequentially. The merged file is
-        written sequentially either way.
+        ``bounding_box`` or ``polygon``. ``1`` (default) runs sequentially. The
+        merged file is written sequentially either way.
+
+    polygon : shapely Polygon or MultiPolygon, optional
+        The area to crop to, in lon/lat, in place of ``bounding_box``: a node is
+        kept when it lies inside the polygon or on its boundary. The output's
+        header bounding box is the polygon's envelope.
 
     Returns
     -------
@@ -1901,7 +1926,9 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     ValueError
         When an input cannot be read as a PBF, is not supported, or is not sorted
         by type then id, or when an input's size or modification time changes (or
-        the file is replaced) while the merge runs. The message names the file.
+        the file is replaced) while the merge runs; the message names the file.
+        When both ``bounding_box`` and ``polygon`` are given, or ``polygon`` is not
+        a non-empty Polygon or MultiPolygon.
 
     Examples
     --------
@@ -1927,16 +1954,17 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
                 "The output path '%s' is the input '%s'." % (output_path, clash[0])
             )
 
-    if bounding_box is None:
+    if bounding_box is None and polygon is None:
         bounds = _header_bounds(headers)
         kept = (None, None, None if keep_relations else Int64Set())
         won = (None, None, None)
     else:
-        bounds = _bounds_from_bbox(bounding_box)
-        pool, tmpdir = _open_pool(workers, sources, bounds, False)
+        region = _region(bounding_box, polygon)
+        bounds = region[0]
+        pool, tmpdir = _open_pool(workers, sources, region, False)
         try:
             kept_nodes, kept_ways, kept_rel = _select(
-                sources, bounds, keep_relations, pool, tmpdir
+                sources, region, keep_relations, pool, tmpdir
             )
         finally:
             _close_pool(pool, tmpdir)
