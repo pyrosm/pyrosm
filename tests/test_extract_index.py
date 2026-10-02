@@ -385,7 +385,8 @@ def test_page_size_parser():
 
 @pytest.fixture
 def movisda_indexes(tmp_path, monkeypatch):
-    """Small admin and grid indexes, cached under ``tmp_path/movisda`` as if downloaded."""
+    """Small admin and grid indexes, cached under ``tmp_path/movisda`` as if downloaded a
+    minute ago; any network access fails."""
     admin = gpd.GeoDataFrame(
         {
             "prefix": ["NL-NB-"],
@@ -408,6 +409,14 @@ def movisda_indexes(tmp_path, monkeypatch):
         gdf.to_file(folder / name, driver="GeoJSON")
         meta = {"etag": '"1"', "bytes": (folder / name).stat().st_size}
         (folder / (name + ".etag")).write_text(json.dumps(meta))
+        # A time stamp of "now" can be later than time.time() at the check, which makes the
+        # copy stale.
+        _age(folder / (name + ".etag"), 60)
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("network access in a test that uses the fixture indexes")
+
+    monkeypatch.setattr(dl, "open_url", no_network)
     monkeypatch.setattr(ei, "_movisda_cache", {})
     return admin
 
