@@ -369,6 +369,10 @@ def test_page_size_parser():
     import importlib.util
 
     script = Path(__file__).parents[1] / "scripts" / "update_extract_indexes.py"
+    if not script.exists():
+        pytest.skip(
+            "The maintainer script %s is not in this source tree." % script.name
+        )
     spec = importlib.util.spec_from_file_location("update_extract_indexes", script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
