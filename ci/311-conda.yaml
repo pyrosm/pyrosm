@@ -7,6 +7,8 @@ dependencies:
   - python=3.11
   # required
   - cython
+  - pip
+  - setuptools
   - cykhash>=2
   - geopandas
   - protobuf>=6.33.5
