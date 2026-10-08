@@ -11,6 +11,7 @@ dependencies:
   - geopandas
   - protobuf>=6.33.5
   - python-rapidjson
+  - tqdm>=4.66
   # optional
   - networkx
   # NOTE: pandana has no Python 3.13+ build on conda-forge yet; the pandana

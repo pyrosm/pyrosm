@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- NEW: Downloads show a progress bar on stderr, drawn as a widget in Jupyter when ``ipywidgets`` is installed (``pip install "pyrosm[notebook]"``) and as a text bar elsewhere. Without a terminal, as in logs and CI, only a line naming the file is printed. ``get_data``, ``get_data_by_area``, ``get_data_by_bbox``, ``get_data_by_geocoding`` and ``download`` accept ``progress``: ``True`` (default), ``False`` for no output, or a function called as ``progress(written, total)`` after each chunk, so a calling library can draw its own bar. pyrosm now requires ``tqdm`` (`#424 <https://github.com/pyrosm/pyrosm/pull/424>`__)
+
 v0.15.0 (Oct 1, 2026)
 ---------------------
 

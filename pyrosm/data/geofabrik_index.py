@@ -143,7 +143,7 @@ def _default_target_dir(directory):
 
 
 def _download_optionally_crop(
-    geom, crop, download, cropped_name, output_path, update, directory
+    geom, crop, download, cropped_name, output_path, update, directory, progress
 ):
     """Look up the covering extract, then optionally download and crop it.
 
@@ -157,7 +157,9 @@ def _download_optionally_crop(
     # Aliased so the ``download`` flag does not shadow the download function.
     from pyrosm.utils.download import download as _download_file
 
-    full_path = _download_file(url, Path(url).name, update, directory)
+    full_path = _download_file(
+        url, Path(url).name, update, directory, progress=progress
+    )
     if not crop:
         return full_path
     return _crop(full_path, geom, cropped_name, output_path, directory)
@@ -173,7 +175,13 @@ def _crop(full_path, geom, cropped_name, output_path, directory):
 
 
 def get_data_by_bbox(
-    bbox, crop=True, download=True, update=False, directory=None, output_path=None
+    bbox,
+    crop=True,
+    download=True,
+    update=False,
+    directory=None,
+    output_path=None,
+    progress=True,
 ):
     """Download (and by default crop) the OSM data covering a bounding box.
 
@@ -208,6 +216,13 @@ def get_data_by_bbox(
         Path for the cropped file when ``crop=True`` (overrides the automatic
         name). Ignored when ``crop=False`` or ``download=False``.
 
+    progress : bool | callable
+        ``True`` (default) shows the download as a bar on stderr, a widget in Jupyter when
+        ipywidgets is installed (``pip install "pyrosm[notebook]"``); without a terminal,
+        only a line naming the file is printed. ``False`` shows nothing. A callable is called
+        as ``progress(written, total)`` after each chunk, with the bytes written so far and
+        the file size, ``None`` when the server does not give it.
+
     Returns
     -------
     str
@@ -222,5 +237,5 @@ def get_data_by_bbox(
     geom = _bbox_to_polygon(bbox)
     cropped_name = _bbox_filename(geom.bounds)
     return _download_optionally_crop(
-        geom, crop, download, cropped_name, output_path, update, directory
+        geom, crop, download, cropped_name, output_path, update, directory, progress
     )

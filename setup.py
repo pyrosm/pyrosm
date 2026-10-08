@@ -32,6 +32,7 @@ requirements = [
     "cykhash",
     "protobuf>=6.33.5",
     "certifi",
+    "tqdm>=4.66",
 ]
 
 # Optional line-trace build for measuring Cython (.pyx) test coverage. Enabled
@@ -109,5 +110,6 @@ setup(
     ],
     python_requires=">=3.10",
     install_requires=requirements,
+    extras_require={"notebook": ["ipywidgets>=8"]},
     ext_modules=_ext_modules,
 )

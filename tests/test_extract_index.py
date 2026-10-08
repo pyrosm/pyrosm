@@ -651,12 +651,13 @@ def test_get_data_by_area_falls_back_to_next_extract(
             headers={"User-Agent": "t"},
             timeout=30,
             opener=OPENER,
+            progress=False,
         )
     net = {"headers": {"User-Agent": "t"}, "timeout": 30, "opener": OPENER}
     assert {k: found[0][k] for k in net} == net
     assert tried == [
-        ("bbbike_Helsinki.osm.pbf", net),
-        ("movisda_N60W024-latest.osm.pbf", net),
+        ("bbbike_Helsinki.osm.pbf", {**net, "progress": False}),
+        ("movisda_N60W024-latest.osm.pbf", {**net, "progress": False}),
     ]
     assert "Movisda 'N60E024'" in caplog.text and capsys.readouterr().out == ""
     assert (got.provider, got.extract, got.bytes) == ("Movisda", "N60E024", 66)

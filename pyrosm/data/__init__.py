@@ -152,7 +152,9 @@ available = {
 }
 
 
-def retrieve(data, update, directory, headers=None, timeout=60, opener=None):
+def retrieve(
+    data, update, directory, headers=None, timeout=60, opener=None, progress=True
+):
     return download(
         url=data["url"],
         filename=data["name"],
@@ -161,6 +163,7 @@ def retrieve(data, update, directory, headers=None, timeout=60, opener=None):
         headers=headers,
         timeout=timeout,
         opener=opener,
+        progress=progress,
     )
 
 
@@ -228,7 +231,13 @@ def search_source(name):
 
 
 def get_data(
-    dataset, update=False, directory=None, headers=None, timeout=60, opener=None
+    dataset,
+    update=False,
+    directory=None,
+    headers=None,
+    timeout=60,
+    opener=None,
+    progress=True,
 ):
     """
     Get the path to a PBF data file, and download the data if needed.
@@ -257,8 +266,15 @@ def get_data(
     opener : object (optional)
         An object with ``open(request, timeout=...)``, e.g. from
         ``urllib.request.build_opener()``, that makes the requests instead of pyrosm.
+
+    progress : bool | callable
+        ``True`` (default) shows the download as a bar on stderr, a widget in Jupyter when
+        ipywidgets is installed (``pip install "pyrosm[notebook]"``); without a terminal,
+        only a line naming the file is printed. ``False`` shows nothing. A callable is called
+        as ``progress(written, total)`` after each chunk, with the bytes written so far and
+        the file size, ``None`` when the server does not give it.
     """
-    net = dict(headers=headers, timeout=timeout, opener=opener)
+    net = dict(headers=headers, timeout=timeout, opener=opener, progress=progress)
 
     if not isinstance(dataset, str):
         raise ValueError(f"'dataset' should be text. Got {dataset}.")

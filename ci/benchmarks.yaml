@@ -29,6 +29,7 @@ dependencies:
   - shapely>=2.1
   - protobuf>=6.33.5
   - python-rapidjson
+  - tqdm>=4.66
   - certifi
   - setuptools>=18.0
   - pip
