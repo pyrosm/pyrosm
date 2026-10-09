@@ -7,10 +7,13 @@ dependencies:
   - python=3.12
   # required
   - cython
+  - pip
+  - setuptools
   - cykhash>=2
   - geopandas
   - protobuf>=6.33.5
   - python-rapidjson
+  - tqdm>=4.66
   # optional
   - networkx
   - pandana

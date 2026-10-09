@@ -852,6 +852,7 @@ def get_data_by_area(
     strategy="single",
     must_cover=None,
     workers=1,
+    progress=True,
 ):
     """Download the OSM data for ``area``: the smallest single extract that contains it, or a
     smaller set of extracts merged into one file.
@@ -934,6 +935,13 @@ def get_data_by_area(
         passes ``workers > 1`` needs the ``if __name__ == "__main__":`` guard; without it, or
         for a script read from stdin, the work runs in one process with a warning.
 
+    progress : bool | callable
+        ``True`` (default) shows the download as a bar on stderr, a widget in Jupyter when
+        ipywidgets is installed (``pip install "pyrosm[notebook]"``); without a terminal,
+        only a line naming the file is printed. ``False`` shows nothing. A callable is called
+        as ``progress(written, total)`` after each chunk of each download, with the bytes
+        written so far and the file size, ``None`` when the server does not give it.
+
     Returns
     -------
     AreaExtract
@@ -997,7 +1005,9 @@ def get_data_by_area(
             )
             filename = "%s_%s" % (extract.provider.lower(), Path(extract.url).name)
             try:
-                path = _download_file(extract.url, filename, update, directory, **net)
+                path = _download_file(
+                    extract.url, filename, update, directory, progress=progress, **net
+                )
             except DownloadError as e:
                 failed.append((extract.url, str(e)))
                 errors.append(e)

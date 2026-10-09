@@ -7,10 +7,13 @@ dependencies:
   - python=3.14
   # required
   - cython
+  - pip
+  - setuptools
   - cykhash>=2
   - geopandas
   - protobuf>=6.33.5
   - python-rapidjson
+  - tqdm>=4.66
   # optional
   - networkx
   # NOTE: pandana has no Python 3.13+ build on conda-forge yet; the pandana

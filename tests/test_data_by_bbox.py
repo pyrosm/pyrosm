@@ -22,7 +22,7 @@ def mock_download(monkeypatch):
     helsinki = pyrosm.get_data("helsinki_pbf")
     monkeypatch.setattr(
         "pyrosm.utils.download.download",
-        lambda url, filename, update, directory: helsinki,
+        lambda url, filename, update, directory, progress: helsinki,
     )
     return helsinki
 
@@ -78,8 +78,15 @@ def test_crop_default_writes_bbox_named_file(mock_download):
     assert pyrosm.OSM(out).get_buildings() is not None
 
 
-def test_crop_false_returns_full_extract(mock_download):
-    assert get_data_by_bbox(HELSINKI, crop=False) == mock_download
+def test_crop_false_returns_full_extract(mock_download, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        "pyrosm.utils.download.download",
+        lambda url, filename, update, directory, progress: seen.append(progress)
+        or mock_download,
+    )
+    assert get_data_by_bbox(HELSINKI, crop=False, progress=False) == mock_download
+    assert seen == [False]
 
 
 def test_output_path_overrides_name(mock_download, tmp_path):

@@ -15,6 +15,7 @@ import certifi
 
 from pyrosm import __version__
 from pyrosm.exceptions import DownloadError
+from pyrosm.utils.progress import Bar
 
 USER_AGENT = "pyrosm/%s (+https://github.com/pyrosm/pyrosm)" % __version__
 
@@ -223,13 +224,15 @@ class _Transfer:
     An attempt after a dropped connection asks for the rest of the file with ``Range`` and
     ``If-Range`` when the server gave a strong validator, and starts over otherwise. After a
     partial answer that does not fit the copy, the rest of the call starts over every time.
+    ``progress``, when given, is called as ``progress(written, total)`` after each chunk.
     """
 
-    def __init__(self, url, filename, out_file, net):
+    def __init__(self, url, filename, out_file, net, progress=None):
         self.url = url
         self.filename = filename
         self.out_file = out_file
         self.net = net
+        self.progress = progress
         self.written = 0
         self.validator = None
         self.total = None
@@ -297,6 +300,8 @@ class _Transfer:
                     raise self._mismatch("more bytes than its range")
                 _local(self.out_file.write, chunk)
                 self.written += len(chunk)
+                if self.progress is not None:
+                    _local(self.progress, self.written, self.total)
         if self.total is not None and self.written != self.total:
             raise OSError(
                 f"The download of '{self.url}' stopped after {self.written} of "
@@ -307,11 +312,13 @@ class _Transfer:
 
 
 class _LocalWriteError(Exception):
-    """Carries an ``OSError`` of the local file out of :func:`_retry` without a retry."""
+    """Carries an ``OSError`` of the local file or the progress callback out of
+    :func:`_retry` without a retry."""
 
 
 def _local(call, *args):
-    """Call a method of the local file, marking its ``OSError`` as not a network failure."""
+    """Call a method of the local file or the progress callback, marking its ``OSError`` as
+    not a network failure."""
     try:
         return call(*args)
     except OSError as e:
@@ -397,7 +404,14 @@ def clear_downloads(filepath=None):
 
 
 def download(
-    url, filename, update, target_dir, headers=None, timeout=_TIMEOUT, opener=None
+    url,
+    filename,
+    update,
+    target_dir,
+    headers=None,
+    timeout=_TIMEOUT,
+    opener=None,
+    progress=True,
 ):
     """Download ``url`` to ``<target_dir>/<filename>`` unless it is there (or ``update``).
 
@@ -405,7 +419,17 @@ def download(
     ``headers``, ``timeout`` and ``opener`` go to every request (see :func:`open_url`). A
     dropped connection is resumed or retried; a failure raises
     :class:`~pyrosm.exceptions.DownloadError`. Returns the file path as a string.
+
+    ``progress`` shows the download: ``True`` draws a bar on stderr (a widget in Jupyter when
+    ipywidgets is installed; without a terminal, only a line naming the file), ``False``
+    shows nothing, and a callable is called as ``progress(written, total)`` after each chunk
+    with the bytes of the file written so far and its size, ``None`` when the server does not
+    give it. A resumed download counts on from the bytes it kept, a restarted one from 0.
     """
+    if not (isinstance(progress, bool) or callable(progress)):
+        raise ValueError(
+            "progress must be True, False or a callable; got %r." % (progress,)
+        )
     target_dir = download_dir() if target_dir is None else Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     filepath = target_dir.resolve() / Path(filename).name
@@ -418,17 +442,19 @@ def download(
 
     # Download data to temp if it does not exist or if update is requested
     if update or file_exists is False:
+        bar = Bar("Downloading %s" % filepath.name) if progress is True else None
+        report = progress if callable(progress) else bar
 
         def fetch(out_file):
-            transfer = _Transfer(url, filename, out_file, net)
+            transfer = _Transfer(url, filename, out_file, net, report)
             while True:
                 kept = transfer.written
                 try:
                     return _retry(transfer.attempt)
                 except _FETCH_ERRORS as e:
                     # A resumable round that kept more of the file earns another round.
-                    progress = transfer.written > kept
-                    if _retryable(e) and transfer.validator is not None and progress:
+                    gained = transfer.written > kept
+                    if _retryable(e) and transfer.validator is not None and gained:
                         continue
                     n = transfer.attempts
                     raise DownloadError(
@@ -446,6 +472,9 @@ def download(
             write_atomic(filepath, fetch)
         except _LocalWriteError as e:
             raise e.__cause__
+        finally:
+            if bar is not None:
+                bar.close()
 
         logger.info(
             "Downloaded Protobuf data '%s' (%s MB) to '%s'",

@@ -111,6 +111,7 @@ def get_data_by_geocoding(
     output_path=None,
     base_url=_NOMINATIM_URL,
     user_agent=None,
+    progress=True,
 ):
     """Download (and by default crop) the OSM data for a geocoded place name.
 
@@ -149,6 +150,13 @@ def get_data_by_geocoding(
     user_agent : str, optional
         The ``User-Agent`` header sent to Nominatim (see :func:`geocode`).
 
+    progress : bool | callable
+        ``True`` (default) shows the download as a bar on stderr, a widget in Jupyter when
+        ipywidgets is installed (``pip install "pyrosm[notebook]"``); without a terminal,
+        only a line naming the file is printed. ``False`` shows nothing. A callable is called
+        as ``progress(written, total)`` after each chunk, with the bytes written so far and
+        the file size, ``None`` when the server does not give it.
+
     Returns
     -------
     str
@@ -160,5 +168,5 @@ def get_data_by_geocoding(
     geom = geocode(query, base_url=base_url, user_agent=user_agent)
     cropped_name = _slug_filename(query)
     return _download_optionally_crop(
-        geom, crop, download, cropped_name, output_path, update, directory
+        geom, crop, download, cropped_name, output_path, update, directory, progress
     )

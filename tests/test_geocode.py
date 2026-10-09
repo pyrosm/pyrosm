@@ -135,14 +135,17 @@ def test_get_data_by_geocoding_crop_false_returns_full_extract(monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", _mock_urlopen(BRIGHTON))
     captured = {}
 
-    def fake_download(url, filename, update, directory):
-        captured["url"] = url
+    def fake_download(url, filename, update, directory, progress):
+        captured.update(url=url, progress=progress)
         return "/tmp/fake-england-latest.osm.pbf"
 
     monkeypatch.setattr("pyrosm.utils.download.download", fake_download)
-    out = pyrosm.get_data_by_geocoding("Brighton and Hove, UK", crop=False)
+    out = pyrosm.get_data_by_geocoding(
+        "Brighton and Hove, UK", crop=False, progress=False
+    )
     assert out == "/tmp/fake-england-latest.osm.pbf"
     assert "england-latest.osm.pbf" in captured["url"]
+    assert captured["progress"] is False
 
 
 def test_get_data_by_geocoding_crop_default_names_by_place(monkeypatch):
@@ -154,7 +157,7 @@ def test_get_data_by_geocoding_crop_default_names_by_place(monkeypatch):
     )
     monkeypatch.setattr(
         "pyrosm.utils.download.download",
-        lambda url, filename, update, directory: helsinki,
+        lambda url, filename, update, directory, progress: helsinki,
     )
     out = pyrosm.get_data_by_geocoding("Brighton and Hove, UK")
     assert Path(out).name == "brighton-and-hove-uk.osm.pbf"

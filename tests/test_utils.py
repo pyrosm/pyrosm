@@ -469,6 +469,122 @@ def test_download_with_caller_options(tmp_path):
     assert codings == {"identity"}
 
 
+@pytest.mark.parametrize(
+    "served, calls",
+    [
+        (
+            [_Served(_BODY, 200, {"Content-Length": "100"})],
+            [(30, 100), (60, 100), (90, 100), (100, 100)],
+        ),
+        ([_Served(_BODY, 200, {})], [(30, None), (60, None), (90, None), (100, None)]),
+        # A resumed download counts on from the bytes it kept, a restarted one from 0.
+        (
+            [
+                _Served(_BODY, 200, {**_STRONG, "Content-Length": "100"}, 40),
+                _Served(_BODY[40:], 206, {"Content-Range": "bytes 40-99/100"}),
+            ],
+            [(30, 100), (40, 100), (70, 100), (100, 100)],
+        ),
+        (
+            [
+                _Served(_BODY, 200, {"Content-Length": "100"}, 40),
+                _Served(_BODY, 200, {"Content-Length": "100"}),
+            ],
+            [(30, 100), (40, 100), (30, 100), (60, 100), (90, 100), (100, 100)],
+        ),
+    ],
+)
+def test_download_reports_progress(tmp_path, monkeypatch, capsys, served, calls):
+    """A progress callback gets the bytes written and the file size after each chunk, and
+    replaces pyrosm's own bar."""
+    from pyrosm.utils import download as dl
+
+    monkeypatch.setattr(dl, "_CHUNK", 30)
+    monkeypatch.setattr(dl, "_sleep", lambda seconds: None)
+    seen = []
+    path = dl.download(
+        "https://example.invalid/x.osm.pbf",
+        "x.osm.pbf",
+        True,
+        tmp_path,
+        opener=_Opener(*served),
+        progress=lambda *args: seen.append(args),
+    )
+    assert Path(path).read_bytes() == _BODY
+    assert seen == calls
+    assert capsys.readouterr() == ("", "")
+
+
+def test_download_progress_without_terminal(tmp_path, capsys):
+    """Without a terminal, progress=True prints the bar's description once as a line, its
+    control characters as spaces; progress=False prints nothing; other values are refused.
+    """
+    from pyrosm.utils import download as dl
+    from pyrosm.utils.progress import Bar
+
+    url = "https://example.invalid/x.osm.pbf"
+    for progress, err in ((True, "Downloading x.osm.pbf\n"), (False, "")):
+        opener = _Opener(_Served(_BODY, 200, {"Content-Length": "100"}))
+        dl.download(url, "x.osm.pbf", True, tmp_path, opener=opener, progress=progress)
+        assert capsys.readouterr() == ("", err)
+    bar = Bar("a\r\nb\x1b[2J\x85\x7f")
+    bar(1, None)
+    bar.close()
+    assert capsys.readouterr().err == "a  b [2J  \n"
+    # Refused before the existing file is returned.
+    with pytest.raises(ValueError, match="progress must be"):
+        dl.download(url, "x.osm.pbf", False, tmp_path, progress="yes")
+
+
+def test_bar_follows_a_restart(monkeypatch, capsys):
+    """pyrosm's bar goes back with a restarted download and takes its new size, also an
+    unknown one."""
+    from tqdm import std
+
+    from pyrosm.utils import progress
+
+    monkeypatch.setattr(progress, "_bar_class", lambda: (std.tqdm, False))
+    bar = progress.Bar("x.osm.pbf")
+    shown = []
+    for written, total in ((40, 100), (30, 100), (60, None), (90, None)):
+        bar(written, total)
+        shown.append((bar.bar.n, bar.bar.total))
+    bar.close()
+    assert shown == [(40, 100), (30, 100), (60, None), (90, None)]
+    assert "x.osm.pbf: " in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "shell, widgets, expected",
+    [
+        (None, True, ("std", None)),
+        ("TerminalInteractiveShell", True, ("std", None)),
+        ("ZMQInteractiveShell", True, ("notebook", False)),
+        ("ZMQInteractiveShell", False, ("std", False)),
+    ],
+)
+def test_bar_class(monkeypatch, shell, widgets, expected):
+    """In a Jupyter kernel the bar is the widget when ipywidgets is installed, else the text
+    bar, shown either way; elsewhere it is the text bar, hidden without a terminal."""
+    import sys
+    import types
+
+    from tqdm import notebook, std
+
+    from pyrosm.utils import progress
+
+    if shell is None:
+        monkeypatch.delitem(sys.modules, "IPython", raising=False)
+    else:
+        kernel = type(shell, (), {})()
+        ipython = types.SimpleNamespace(get_ipython=lambda: kernel)
+        monkeypatch.setitem(sys.modules, "IPython", ipython)
+    found = object() if widgets else None
+    monkeypatch.setattr(progress.importlib.util, "find_spec", lambda name: found)
+    classes = {"std": std.tqdm, "notebook": notebook.tqdm}
+    assert progress._bar_class() == (classes[expected[0]], expected[1])
+
+
 def test_open_url_keeps_credentials_on_their_origin():
     """Credentials and cookies from the caller are not sent on after a redirect."""
     import email.message
