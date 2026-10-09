@@ -1933,3 +1933,17 @@ def test_live_download_test_skips_only_when_the_service_fails(
     result.assert_outcomes(**{outcome: 1})
     if outcome == "skipped":
         result.stdout.fnmatch_lines(["*The outside service failed: Geofabrik is down*"])
+
+
+def test_get_mask_by_osmid_without_np_bool(monkeypatch):
+    """#377: get_mask_by_osmid (used by create_nodes_gdf with osmids_to_keep) works where
+    NumPy has no ``np.bool`` (NumPy 1.24-1.26)."""
+    import numpy as np
+
+    from pyrosm.data_filter import get_mask_by_osmid
+
+    monkeypatch.delattr(np, "bool", raising=False)
+    mask = get_mask_by_osmid(
+        np.array([1, 2, 3], dtype=np.int64), np.array([2], dtype=np.int64)
+    )
+    assert mask.tolist() == [False, True, False]
