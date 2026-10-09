@@ -1,6 +1,8 @@
 """Out-of-core engine buildings reader: parity vs the in-memory OSM(fp).get_buildings()
 way and relation rows, plus the output= GeoParquet path and the worker-count policy."""
 
+import shutil
+import threading
 import zlib
 from struct import pack, unpack
 
@@ -237,9 +239,9 @@ def test_engine_output_requires_pyarrow(helsinki_pbf, tmp_path, monkeypatch):
 
 
 def _fake_executor(raise_init=None, raise_map=None):
-    """A ProcessPoolExecutor stand-in that runs map() in-process, optionally raising at
-    construction or at map() to exercise the parallel branch and its fallback without real
-    worker processes."""
+    """A ProcessPoolExecutor stand-in that runs map() and submit() in-process, optionally
+    raising at construction or at map()/submit() to exercise the parallel branch and its
+    fallback without real worker processes."""
 
     class _F:
         def __init__(self, max_workers=None, initializer=None, initargs=()):
@@ -258,6 +260,15 @@ def _fake_executor(raise_init=None, raise_map=None):
             if raise_map is not None:
                 raise raise_map("simulated")
             return [fn(t) for t in tasks]
+
+        def submit(self, fn, *args):
+            from concurrent.futures import Future
+
+            if raise_map is not None:
+                raise raise_map("simulated")
+            future = Future()
+            future.set_result(fn(*args))
+            return future
 
     return _F
 
@@ -380,6 +391,149 @@ def test_engine_collect_stays_serial_after_decode_fallback(
     fallbacks = [w for w in caught if "single process" in str(w.message)]
     assert len(fallbacks) == 1
     _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
+
+
+class _ThreadValue:
+    """A ``multiprocessing.Value`` stand-in shared by thread workers."""
+
+    def __init__(self, typecode, value):
+        self.value = value
+        self._lock = threading.Lock()
+
+    def get_lock(self):
+        return self._lock
+
+
+@pytest.mark.parametrize("case", ["runs", "start fails", "breaks", "callback fails"])
+def test_engine_run_pool_progress(monkeypatch, case):
+    """While a pool runs, the bytes its workers add are reported from this process, and the
+    results keep task order. A pool that cannot start, or breaks midway, falls back to one
+    process that reports from 0 again and after each addition. An error of the callback
+    itself, even an OSError, propagates as is instead of falling back."""
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+
+    seen, state = [], {}
+    release = threading.Event()
+
+    def report(done, total):
+        seen.append(done)
+        if 0 < done < total:
+            release.set()
+            if case == "callback fails":
+                raise OSError("stderr closed")
+
+    def init(target):
+        state["target"] = target
+
+    def task(n):
+        target = state["target"]
+        if callable(target):
+            target(n)
+            return n * 2
+        with target.get_lock():
+            target.value += n
+        release.wait(5)
+        if case == "breaks":
+            raise BrokenProcessPool("simulated")
+        return n * 2
+
+    class Threads(ThreadPoolExecutor):
+        def __init__(self, max_workers, initializer, initargs):
+            if case == "start fails":
+                raise OSError("simulated")
+            super().__init__(max_workers, initializer=initializer, initargs=initargs)
+
+    monkeypatch.setattr(pool, "ProcessPoolExecutor", Threads)
+    monkeypatch.setattr(pool.multiprocessing, "Value", _ThreadValue)
+    monkeypatch.setattr(pool, "_PROGRESS_INTERVAL", 0.01)
+    if case == "callback fails":
+        with pytest.raises(OSError, match="stderr closed"):
+            pool._run_pool(task, [1, 2, 3], 3, init, (), progress=(report, 4, 20))
+        assert not callable(state["target"])  # no fallback to one process
+        return
+    results, pool_ok = pool._run_pool(
+        task, [1, 2, 3], 3, init, (), progress=(report, 4, 20)
+    )
+    assert results == [2, 4, 6]
+    assert pool_ok is (case == "runs")
+    assert seen[0] == 0 and seen[-1] == 20
+    if case == "start fails":
+        assert seen == [0, 5, 7, 10, 20]
+    else:
+        restart = seen.index(0, 1) if case == "breaks" else len(seen) - 1
+        assert any(4 < done < 20 for done in seen[1:restart])
+        if case == "breaks":
+            assert seen[restart:] == [0, 5, 7, 10, 20]
+
+
+def test_engine_read_progress(test_pbf, fresh_cache):
+    """The engine reports the bytes of the file decoded, from (0, size) to (size, size), and
+    get_network(nodes=True) reports its second pass over the file too. The header and the data
+    blob spans cover the file exactly; progress values other than True, False or a callable
+    are refused before reading, by OSM and by the engine readers."""
+    from pathlib import Path
+
+    from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
+
+    size = Path(test_pbf).stat().st_size
+    data, header = _data_blob_spans(_index_blobs(test_pbf))
+    assert header + sum(span for _, _, span in data) == size
+    reads = [
+        (get_buildings, 1),
+        (lambda fp, **kw: get_network(fp, nodes=True, **kw), 2),
+    ]
+    frames = []
+    for read, passes in reads:
+        seen = []
+        frames.append(read(test_pbf, workers=1, progress=lambda *r: seen.append(r)))
+        assert all(done <= total == size for done, total in seen)
+        starts = [i for i, (done, _) in enumerate(seen) if done == 0]
+        assert len(starts) == passes
+        for start, end in zip(starts, starts[1:] + [len(seen)]):
+            done = [d for d, _ in seen[start:end]]
+            assert done == sorted(done) and done[-1] == size
+    # The frame equals one decoded again without progress (not served from the cache).
+    shutil.rmtree(fresh_cache)
+    fresh_cache.mkdir()
+    _assert_full_parity(frames[0], get_buildings(test_pbf, workers=1, progress=False))
+    for refused in (
+        lambda: OSM(test_pbf, progress="yes"),
+        lambda: get_buildings(test_pbf, progress="yes"),
+    ):
+        with pytest.raises(ValueError, match="progress must be"):
+            refused()
+
+
+def test_engine_read_progress_in_a_process_pool(test_pbf, monkeypatch, fresh_cache):
+    """A read in worker processes reports from (0, size) to (size, size)."""
+    import os
+    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+    from pathlib import Path
+
+    if (os.cpu_count() or 1) < 2:
+        pytest.skip("workers=2 runs in one process on a single-core host")
+    try:
+        with ProcessPoolExecutor(1) as executor:
+            executor.submit(int).result()
+    except (OSError, BrokenProcessPool) as e:
+        pytest.skip("process pools cannot start here: %s" % e)
+    ran = []
+    real = pool._decode_all
+
+    def spy(*args, **kwargs):
+        shards, pool_ok = real(*args, **kwargs)
+        ran.append(pool_ok)
+        return shards, pool_ok
+
+    monkeypatch.setattr(pool, "_decode_all", spy)
+    seen = []
+    get_buildings(test_pbf, workers=2, progress=lambda *report: seen.append(report))
+    size = Path(test_pbf).stat().st_size
+    assert ran == [True]
+    assert seen[0] == (0, size) and seen[-1] == (size, size)
+    assert all(done <= total for done, total in seen)
 
 
 def test_engine_run_pool_silent_fallback_without_warning(monkeypatch):
@@ -631,14 +785,14 @@ def test_engine_stream_parquet_chunk_table_branches(
     from pyrosm.config import Conf
     from pyrosm.data_manager import parse_custom_filter
     from pyrosm.engine import geoparquet
-    from pyrosm.engine.blobs import _index_blobs
+    from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
     from pyrosm.engine.pool import _decode_all
     from pyrosm.engine.collect import _collect_layer
 
     data_filter, osm_keys = parse_custom_filter({"building": [True]})
     filter_spec = (osm_keys, data_filter, "keep")
     tac = Conf.tags.building
-    data_blobs = [(o, s) for (t, o, s) in _index_blobs(helsinki_pbf) if t == "OSMData"]
+    data_blobs, _ = _data_blob_spans(_index_blobs(helsinki_pbf))
     shard_dir = tempfile.mkdtemp()
     try:
         shards, _ = _decode_all(

@@ -554,6 +554,23 @@ def test_bar_follows_a_restart(monkeypatch, capsys):
     assert "x.osm.pbf: " in capsys.readouterr().err
 
 
+def test_timed_bar_waits_and_clears(monkeypatch, capsys):
+    """A bar with a delay draws nothing before the delay, also when a second pass starts it
+    over, is cleared when it closes, and a shown bar prints no time line."""
+    from tqdm import std
+
+    from pyrosm.utils import progress
+
+    monkeypatch.setattr(progress, "_bar_class", lambda: (std.tqdm, False))
+    monkeypatch.setattr(progress, "_clock", iter([0.0, 0.5, 5.0]).__next__)
+    bar = progress.Bar("Reading x.osm.pbf", delay=2.0, leave=False, timed=True)
+    for done in (0, 10, 0, 10):
+        bar(done, 10)
+    assert (bar.bar.delay, bar.bar.leave) == (2.0, False)
+    bar.close()
+    assert "Reading" not in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     "shell, widgets, expected",
     [

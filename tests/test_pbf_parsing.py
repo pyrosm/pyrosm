@@ -201,3 +201,44 @@ def test_id_tag_does_not_overwrite_osm_id():
     # A way without an 'id' tag is unaffected (no spurious id_tag key)
     assert exploded[1]["id"] == 67890
     assert "id_tag" not in exploded[1]
+
+
+@pytest.mark.parametrize(
+    "bounding_box, passes", [(None, 1), ([26.94, 60.525, 26.96, 60.535], 2)]
+)
+def test_read_progress(test_pbf, bounding_box, passes):
+    """A progress callback gets the bytes of the file read in each pass over it, from
+    (0, size) to (size, size), and does not change what is read. A bounding box that ways
+    cross makes a second pass for their vertices outside the box."""
+    from pathlib import Path
+
+    from pyrosm import OSM
+
+    size = Path(test_pbf).stat().st_size
+    seen = []
+    osm = OSM(
+        test_pbf, bounding_box=bounding_box, progress=lambda *report: seen.append(report)
+    )
+    buildings = osm.get_buildings()
+    assert {total for _, total in seen} == {size}
+    starts = [i for i, (done, _) in enumerate(seen) if done == 0]
+    assert len(starts) == passes
+    for start, end in zip(starts, starts[1:] + [len(seen)]):
+        done = [d for d, _ in seen[start:end]]
+        assert done == sorted(done) and done[-1] == size
+    expected = OSM(test_pbf, bounding_box=bounding_box, progress=False).get_buildings()
+    assert buildings.equals(expected)
+
+
+@pytest.mark.parametrize(
+    "elapsed, err", [(1.9, ""), (2.0, "Reading test.osm.pbf took 00:02\n")]
+)
+def test_read_progress_without_terminal(test_pbf, monkeypatch, capsys, elapsed, err):
+    """Without a terminal the default read shows no bar; a read that took 2 s or more
+    prints one line with the time it took."""
+    from pyrosm import OSM
+    from pyrosm.utils import progress
+
+    monkeypatch.setattr(progress, "_clock", iter([0.0, elapsed]).__next__)
+    OSM(test_pbf).get_buildings()
+    assert capsys.readouterr() == ("", err)

@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- NEW: Reading a PBF shows progress. `OSM(..., progress=True)` (the default) shows a bar on stderr once a read has run 2 seconds, a widget in Jupyter when `ipywidgets` is installed, and clears it when the read finishes; without a terminal, a read that took 2 seconds or more prints one line with the time it took. `progress=False` shows nothing, and a function is called as `progress(done, total)` with the bytes of the file read so far, from `(0, total)` to `(total, total)` for each pass over the file. Both the in-memory reader and the out-of-core engine report it, including the second pass of `get_network(nodes=True)`; the `pyrosm.engine` readers take `progress` too ([#426](https://github.com/pyrosm/pyrosm/pull/426), [#202](https://github.com/pyrosm/pyrosm/issues/202))
+
 v0.16.0
 -------
 

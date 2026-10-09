@@ -39,19 +39,38 @@ _BBOX_BOUNDS = None
 # When not None, the only tag keys (utf-8 bytes) to resolve into the element tag dicts
 # (the ``keep_other_tags=False`` minimal-tags mode); None resolves every tag.
 _REQUESTED_TAG_KEYS = None
+# When not None, where each decoded blob's length in the file is added (see ``_advance``).
+_PROGRESS = None
 
 
 def _init_worker(
-    filepath, shard_dir, osm_keys, include_nodes, bbox_bounds, requested_tag_keys=None
+    filepath,
+    shard_dir,
+    osm_keys,
+    include_nodes,
+    bbox_bounds,
+    requested_tag_keys=None,
+    progress=None,
 ):
     global _FILEPATH, _SHARD_DIR, _OSM_KEYS, _INCLUDE_NODES, _BBOX_BOUNDS
-    global _REQUESTED_TAG_KEYS
+    global _REQUESTED_TAG_KEYS, _PROGRESS
     _FILEPATH = filepath
     _SHARD_DIR = shard_dir
     _OSM_KEYS = osm_keys
     _INCLUDE_NODES = include_nodes
     _BBOX_BOUNDS = bbox_bounds
     _REQUESTED_TAG_KEYS = requested_tag_keys
+    _PROGRESS = progress
+
+
+def _advance(span):
+    """Add ``span`` decoded bytes to the progress target: a callable in this process, or the
+    pool's shared counter."""
+    if callable(_PROGRESS):
+        _PROGRESS(span)
+    else:
+        with _PROGRESS.get_lock():
+            _PROGRESS.value += span
 
 
 def _key_indices(string_table, osm_keys):
@@ -452,12 +471,14 @@ def _decode_batch(task):
         pending, pending_bytes = [], 0
 
     with open(_FILEPATH, "rb") as f:
-        for offset, size in blobs:
+        for offset, size, span in blobs:
             data = _read_block(f, offset, size)
             arrays = _decode_one_block(*decode_primitive_block(data))
             pending.append(arrays)
             pending_bytes += sum(v.nbytes for v in arrays.values())
             if pending_bytes >= _SHARD_TARGET_BYTES:
                 flush()
+            if _PROGRESS is not None:
+                _advance(span)
     flush()
     return paths

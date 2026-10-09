@@ -1,4 +1,4 @@
-cpdef parse_osm_data(filepath, bounding_box, exclude_relations, unix_time_filter, bint keep_metadata=*, bint complete_relations=*)
+cpdef parse_osm_data(filepath, bounding_box, exclude_relations, unix_time_filter, bint keep_metadata=*, bint complete_relations=*, progress=*)
 cdef parse_dense(pblock, data, string_table, bounding_box, unix_time_filter, node_id_filter=*, bint keep_metadata=*)
 cdef parse_nodes(pblock, data, string_table, bounding_box, unix_time_filter=*, node_id_filter=*, bint keep_metadata=*)
 cdef parse_ways(data, stringtable, node_lookup, unix_time_filter, way_id_filter=*)

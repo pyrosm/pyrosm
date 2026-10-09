@@ -6,6 +6,8 @@ need off disk, and refining the worker's key-presence candidates by pyrosm's exa
 filter so peak memory stays bounded by the working set.
 """
 
+import os
+
 import numpy as np
 from rapidjson import dumps
 
@@ -240,12 +242,14 @@ _NODE_RECORD_DTYPES = {
 }
 
 
-def _gather_node_records(filepath, node_ids, keep_metadata):
+def _gather_node_records(filepath, node_ids, keep_metadata, progress=None):
     """Second pass over the file gathering the full records (coordinates + tags + metadata)
     of ``node_ids``, returned as a rich ``NodeLocations`` -- the coordinate store the
     graph-export node frame is built from (its records carry the node tags and metadata the
     lean coordinate lookup omits). Only the requested (network) nodes are materialised, so
-    peak memory stays bounded by the graph's node set rather than the whole file."""
+    peak memory stays bounded by the graph's node set rather than the whole file.
+    ``progress(done, file_size)``, when given, gets the bytes of the file read: 0 first, then
+    after each data blob, and the file size at the end."""
     import pandas as pd
 
     from pyrosm.node_lookup import NodeLocations
@@ -260,6 +264,9 @@ def _gather_node_records(filepath, node_ids, keep_metadata):
     arrays = {c: [] for c in cols}
     tags = []
     with open(filepath, "rb") as f:
+        file_size = os.fstat(f.fileno()).st_size
+        if progress is not None:
+            progress(0, file_size)
         for blob_type, offset, size in _index_blobs(filepath):
             if blob_type != "OSMData":
                 continue
@@ -271,6 +278,10 @@ def _gather_node_records(filepath, node_ids, keep_metadata):
                 for c in cols:
                     arrays[c].append(rec[c])
                 tags.extend(rec["tags"])
+            if progress is not None:
+                progress(offset + size, file_size)
+        if progress is not None:
+            progress(file_size, file_size)
     frame = {
         c: (
             np.concatenate(arrays[c])

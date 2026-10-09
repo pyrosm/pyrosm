@@ -110,6 +110,7 @@ def _assemble_network(
     bounding_box,
     filepath=None,
     workers=1,
+    progress=None,
 ):
     """Assemble the matching highway ways as a network (LineString edges + a ``length``
     column) through pyrosm's ``parse_network`` path. Returns ``(edges, nodes)``; ``nodes``
@@ -118,7 +119,8 @@ def _assemble_network(
     store is gathered with a second pass over ``filepath`` rather than the lean shard lookup.
     A ``None`` ``data_filter`` (network types ``all`` / ``driving_psv``) keeps every highway
     way. ``workers > 1`` runs the way read and (when ``segments`` is False) the node gather
-    across a process pool."""
+    across a process pool. ``progress`` is passed to the second pass (see
+    :func:`~pyrosm.engine.collect._gather_node_records`)."""
     from pyrosm.frames import prepare_geodataframe
     from pyrosm.engine.collect import _keep_fn
 
@@ -137,7 +139,9 @@ def _assemble_network(
         return None, None
     needed = _needed_node_ids(kept, None)
     if segments:
-        node_coordinates = _gather_node_records(filepath, needed, keep_metadata)
+        node_coordinates = _gather_node_records(
+            filepath, needed, keep_metadata, progress
+        )
     else:
         node_coordinates = _node_lookup(shard_paths, needed, workers)
     ways = _ways_arrays(kept, tags_as_columns, keep_metadata)
