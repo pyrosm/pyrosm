@@ -15,7 +15,7 @@ import pytest
 from shapely.geometry import box
 
 import pyrosm
-from pyrosm import get_data, recipes
+from pyrosm import OSM, get_data, recipes
 from pyrosm.data import extract_index
 from pyrosm.exceptions import ExtractDownloadError
 from pyrosm.proto.fileformat_pb2 import BlobHeader
@@ -256,11 +256,55 @@ def test_run_extract(tmp_path, offline, extract):
         assert list(record["inputs"]) == [(tmp_path / "stops.geojson").as_posix()]
 
 
+
+def test_run_layers(tmp_path, monkeypatch):
+    """Each layer is written as GeoParquet as read directly, an empty read as an empty layer;
+    a run whose second layer fails leaves the previous outputs and record as they were."""
+    recipe = _recipe(
+        tmp_path,
+        f"""
+        recipe: pyrosm
+        pbf: {{file: '{PBF}'}}
+        layers:
+          walk: {{read: network, network_type: walking}}
+          buildings: {{read: buildings}}
+          none: {{read: custom, custom_filter: {{amenity: [no_such_value]}}}}
+        outputs:
+          layers: {{walk: walk.parquet, buildings: b/buildings.parquet, none: none.parquet}}
+        """,
+    )
+    with pytest.warns(UserWarning, match="Could not find any OSM data"):
+        written = recipes.run(recipe)
+    osm = OSM(PBF)
+    expected = [osm.get_network(network_type="walking"), osm.get_buildings()]
+    for path, frame in zip(written, expected):
+        assert list(gpd.read_parquet(path).columns) == list(frame.columns)
+        assert len(gpd.read_parquet(path)) == len(frame)
+    empty = gpd.read_parquet(written[2])
+    assert (len(empty), empty.crs.to_epsg()) == (0, 4326)
+    record = json.loads(written[3].read_text(encoding="utf-8"))
+    counts = {"walk": len(expected[0]), "buildings": len(expected[1]), "none": 0}
+    assert record["layers"] == {name: {"features": n} for name, n in counts.items()}
+    assert record["inputs"] == {PBF: extract_index._sha256(PBF)}
+    assert sorted(record["outputs"]) == ["b/buildings.parquet", "none.parquet", "walk.parquet"]
+
+    before = {path: path.read_bytes() for path in written}
+
+    def broken(self, *args, **kwargs):
+        raise RuntimeError("cannot read buildings")
+
+    monkeypatch.setattr(OSM, "get_buildings", functools.wraps(OSM.get_buildings)(broken))
+    with pytest.raises(RuntimeError, match="cannot read buildings"):
+        recipes.run(recipe)
+    assert {path: path.read_bytes() for path in written} == before
+
+
 @pytest.mark.parametrize(
     "case, message",
     [
-        ("layers", "running layers and graph is not supported"),
+        ("graph", "running the graph stage is not supported"),
         ("escape", "resolves outside"),
+        ("alias", "'x/p.parquet' and 'link/p.parquet' resolve to one file"),
         ("input", "would overwrite the recipe or one of its inputs"),
         ("bundled", "would overwrite the recipe or one of its inputs"),
         ("changed", "an input file changed while the recipe ran"),
@@ -283,14 +327,19 @@ def test_run_refuses(tmp_path, offline, monkeypatch, case, message):
     area = gpd.GeoDataFrame(geometry=[box(24.9, 60.1, 25.0, 60.2)], crs="EPSG:4326")
     area.to_file(tmp_path / "area.json", driver="GeoJSON")
     extract, outputs = "{area: {bbox: [0, 0, 1, 1]}}", "{extract: a.pbf}"
-    if case == "layers":
-        outputs = "{extract: a.pbf, layers: {a: a.parquet}}\nlayers: {a: {read: pois}}"
-    elif case == "escape":
+    if case == "graph":
+        outputs = "{extract: a.pbf, graph: {nodes: n.parquet, edges: e.parquet}}\ngraph: {}"
+    elif case in ("escape", "alias"):
+        (out / "x").mkdir()
         try:
-            os.symlink(tmp_path, out / "link", target_is_directory=True)
+            link = tmp_path if case == "escape" else out / "x"
+            os.symlink(link, out / "link", target_is_directory=True)
         except OSError:
             pytest.skip("symbolic links cannot be made here")
         outputs = "{extract: link/a.pbf}"
+        if case == "alias":
+            outputs = "{extract: a.pbf, layers: {p: x/p.parquet, q: link/p.parquet}}\n"
+            outputs += "layers: {p: {read: pois}, q: {read: pois}}"
     elif case == "input":
         out = tmp_path
         extract = "{area: {file: area.json}}"
@@ -332,7 +381,7 @@ def test_run_refuses(tmp_path, offline, monkeypatch, case, message):
     with pytest.raises((ValueError, OSError), match=re.escape(message)):
         recipes.run(_recipe(tmp_path, text), out)
     if case not in ("input", "bundled"):
-        left = sorted(p.name for p in out.iterdir() if p.name != "link")
+        left = sorted(p.name for p in out.iterdir() if p.name not in ("link", "x"))
         lock = [".recipe.provenance.json.lock"] if case in ("lock", "lock garbled") else []
         assert left == lock + ["recipe.provenance.json"]
         assert (out / "recipe.provenance.json").read_text() == "old"

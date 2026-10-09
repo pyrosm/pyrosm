@@ -577,13 +577,15 @@ def _out_root(recipe, out_dir):
     from pyrosm.utils.download import download_dir
 
     root = _resolve(recipe["recipe_dir"] if out_dir is None else out_dir, "out_dir")
-    outputs = recipe["outputs"]
+    outputs, extract = recipe["outputs"], recipe["extract"]
     protected = [recipe["recipe_path"], *_input_files(recipe)]
-    if "name" in recipe["extract"]["area"]:
-        kind, found = _resolve_dataset(recipe["extract"]["area"]["name"])
+    if extract is not None and "name" in extract["area"]:
+        kind, found = _resolve_dataset(extract["area"]["name"])
         protected += [pathlib.Path(found)] if kind == "package" else []
     lock = root / (".%s.lock" % pathlib.PurePosixPath(outputs["provenance"]).name)
-    for name in filter(None, (outputs["extract"], outputs["provenance"])):
+    names = [outputs["extract"], outputs["provenance"], *outputs["layers"].values()]
+    targets = {}
+    for name in filter(None, names):
         target = _resolve(root / name, "outputs")
         if root not in target.parents:
             raise ValueError("outputs: %r resolves outside %s" % (name, root))
@@ -593,13 +595,21 @@ def _out_root(recipe, out_dir):
             raise ValueError(
                 "outputs: %r would overwrite the recipe or one of its inputs" % name
             )
-    directory = recipe["extract"]["keywords"].get("directory") or download_dir()
-    cache = _resolve(directory, "extract.directory")
-    if cache == root or root in cache.parents or cache in root.parents:
-        raise ValueError(
-            "extract.directory: the download folder %s and the output folder %s must "
-            "lie apart (neither inside the other)" % (cache, root)
-        )
+        for other, path in targets.items():
+            if path == target or path in target.parents or target in path.parents:
+                raise ValueError(
+                    "outputs: %r and %r resolve to one file, or one inside the other"
+                    % (other, name)
+                )
+        targets[name] = target
+    if extract is not None:
+        directory = extract["keywords"].get("directory") or download_dir()
+        cache = _resolve(directory, "extract.directory")
+        if cache == root or root in cache.parents or cache in root.parents:
+            raise ValueError(
+                "extract.directory: the download folder %s and the output folder %s must "
+                "lie apart (neither inside the other)" % (cache, root)
+            )
     return root
 
 
@@ -679,18 +689,42 @@ def run(path, out_dir=None):
 def _recorded(recipe):
     """The resolved recipe for the record, without the extract's ``headers``, which can hold
     credentials."""
-    keywords = dict(recipe["extract"]["keywords"])
-    if "headers" in keywords:
-        keywords["headers"] = "<not recorded>"
-    return dict(recipe, extract=dict(recipe["extract"], keywords=keywords))
+    extract = recipe["extract"]
+    if extract is None or "headers" not in extract["keywords"]:
+        return recipe
+    keywords = dict(extract["keywords"], headers="<not recorded>")
+    return dict(recipe, extract=dict(extract, keywords=keywords))
+
+
+def _run_layers(recipe, pbf, staging):
+    """Read each layer from ``pbf`` and write it as GeoParquet into ``staging``; returns the
+    record's layers entry and ``{output: sha256}``. A read that finds nothing is written as
+    an empty layer."""
+    import geopandas as gpd
+    from pyrosm import OSM
+    from pyrosm.data.extract_index import _sha256
+
+    osm = OSM(str(pbf), **recipe["reader"])
+    entries, written = {}, {}
+    for name, layer in recipe["layers"].items():
+        frame = getattr(osm, _READS[layer["read"]])(**layer["keywords"])
+        if frame is None:
+            frame = gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+        output = recipe["outputs"]["layers"][name]
+        target = pathlib.Path(staging, output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        frame.to_parquet(target)
+        entries[name] = {"features": len(frame)}
+        written[output] = _sha256(target)
+    return entries, written
 
 
 def _run(path, out_dir, invocation):
     from pyrosm.data.extract_index import _identity, _sha256
 
     recipe = validate(path)
-    if recipe["layers"] or recipe["graph"] is not None:
-        raise ValueError("recipe: running layers and graph is not supported yet")
+    if recipe["graph"] is not None:
+        raise ValueError("recipe: running the graph stage is not supported yet")
     root = _out_root(recipe, out_dir)
     outputs = recipe["outputs"]
     provenance = root / outputs["provenance"]
@@ -709,10 +743,16 @@ def _run(path, out_dir, invocation):
                     invocation, recipe=recipe["recipe_path"], out_dir=root
                 ),
             }
-            target = pathlib.Path(staging, outputs["extract"])
-            target.parent.mkdir(parents=True, exist_ok=True)
-            record["extract"] = _run_extract(recipe["extract"], target)
-            record["outputs"] = {outputs["extract"]: record["extract"]["sha256"]}
+            record["outputs"] = {}
+            pbf = recipe["pbf"] and recipe["pbf"]["file"]
+            if recipe["extract"] is not None:
+                pbf = pathlib.Path(staging, outputs["extract"])
+                pbf.parent.mkdir(parents=True, exist_ok=True)
+                record["extract"] = _run_extract(recipe["extract"], pbf)
+                record["outputs"][outputs["extract"]] = record["extract"]["sha256"]
+            if recipe["layers"]:
+                record["layers"], written = _run_layers(recipe, pbf, staging)
+                record["outputs"].update(written)
             if [_identity(p) for p in inputs] != identities:
                 raise OSError("an input file changed while the recipe ran")
             record["written_at"] = datetime.now(timezone.utc).isoformat()
