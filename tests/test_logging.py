@@ -93,7 +93,7 @@ def test_log_event_and_timed(pyrosm_logger, caplog):
         "share=0.123",
         "flag=True",
         "none=None",
-        "path=a b/it's.pbf",
+        "path=%s" % Path("a b/it's.pbf"),  # the native separator, \ on Windows
         "query=x  y  [2J z",
     ]
     with _log.timed(pyrosm_logger, "phase", logging.INFO, blobs=3) as fields:
