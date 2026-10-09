@@ -1933,3 +1933,36 @@ def test_live_download_test_skips_only_when_the_service_fails(
     result.assert_outcomes(**{outcome: 1})
     if outcome == "skipped":
         result.stdout.fnmatch_lines(["*The outside service failed: Geofabrik is down*"])
+
+
+def test_get_mask_by_osmid_without_np_bool(monkeypatch):
+    """#377: get_mask_by_osmid (used by create_nodes_gdf with osmids_to_keep) works where
+    NumPy has no ``np.bool`` (NumPy 1.24-1.26)."""
+    import numpy as np
+
+    from pyrosm.data_filter import get_mask_by_osmid
+
+    monkeypatch.delattr(np, "bool", raising=False)
+    mask = get_mask_by_osmid(
+        np.array([1, 2, 3], dtype=np.int64), np.array([2], dtype=np.int64)
+    )
+    assert mask.tolist() == [False, True, False]
+
+
+def test_node_locations_gather_from_an_empty_store():
+    """#378: gather on an empty coordinate store marks every id absent (-1, NaN) instead of
+    raising IndexError, and leaves found ids' coordinates unchanged."""
+    import numpy as np
+    import pandas as pd
+
+    from pyrosm.node_lookup import NodeLocations
+
+    def store(ids, lon, lat):
+        frame = {"id": np.array(ids, dtype=np.int64), "lon": lon, "lat": lat}
+        return NodeLocations(pd.DataFrame(frame).astype({"lon": float, "lat": float}))
+
+    idx, lon, lat = store([], [], []).gather(np.array([123], dtype=np.int64))
+    assert idx.tolist() == [-1] and np.isnan(lon).all() and np.isnan(lat).all()
+    idx, lon, lat = store([7], [24.9], [60.2]).gather(np.array([7, 8], dtype=np.int64))
+    assert idx.tolist() == [0, -1]
+    assert lon[0] == 24.9 and lat[0] == 60.2 and np.isnan(lon[1]) and np.isnan(lat[1])

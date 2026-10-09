@@ -224,7 +224,7 @@ cpdef get_mask_by_osmid(src_array, osm_ids):
     """
     n = len(src_array)
     lookup = Int64Set_from_buffer(osm_ids)
-    result = np.empty(src_array.size, dtype=np.bool)
+    result = np.empty(src_array.size, dtype=np.bool_)
     isin_int64(src_array, lookup, result)
     return result
 

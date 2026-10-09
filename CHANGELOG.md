@@ -1,10 +1,14 @@
 Changelog
 =========
 
-Unreleased
-----------
+v0.17.0
+-------
+
+This release shows progress while pyrosm reads a PBF, and fixes a failure of `get_mask_by_osmid` on NumPy 1.24–1.26 and of `NodeLocations.gather` on an empty coordinate store.
 
 - NEW: Reading a PBF shows progress. `OSM(..., progress=True)` (the default) shows a bar on stderr once a read has run 2 seconds, a widget in Jupyter when `ipywidgets` is installed, and clears it when the read finishes; without a terminal, a read that took 2 seconds or more prints one line with the time it took. `progress=False` shows nothing, and a function is called as `progress(done, total)` with the bytes of the file read so far, from `(0, total)` to `(total, total)` for each pass over the file. Both the in-memory reader and the out-of-core engine report it, including the second pass of `get_network(nodes=True)`; the `pyrosm.engine` readers take `progress` too ([#426](https://github.com/pyrosm/pyrosm/pull/426), [#202](https://github.com/pyrosm/pyrosm/issues/202))
+- FIXED: `pyrosm.data_filter.get_mask_by_osmid`, which `pyrosm.frames.create_nodes_gdf` uses to filter nodes by `osmids_to_keep`, no longer fails with `AttributeError: module 'numpy' has no attribute 'bool'` on NumPy 1.24–1.26 ([#427](https://github.com/pyrosm/pyrosm/pull/427), [#377](https://github.com/pyrosm/pyrosm/issues/377))
+- FIXED: `NodeLocations.gather`, which looks up node coordinates while geometries are built, returns `-1` (absent) and NaN coordinates for every id when no node coordinates were read, instead of raising `IndexError`. Ids that are absent from a non-empty store now get NaN coordinates instead of those of the store's first node ([#428](https://github.com/pyrosm/pyrosm/pull/428), [#378](https://github.com/pyrosm/pyrosm/issues/378))
 
 v0.16.0
 -------
