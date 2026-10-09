@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- NEW: ``pyrosm.enable_logging(level="INFO", to_file=None)`` shows pyrosm's log messages on stderr or in a file. At INFO each ``OSM`` object logs its options, and each read (``get_network``, ``get_buildings``, ..., ``to_graph``) logs one line with its arguments, the number of features and the seconds it took; DEBUG adds the time of reading the PBF, the out-of-core engine's phases and its cache hits and misses. Messages are ``op key=value ...`` lines, and the existing download, geocoding and extract messages now use the same form (`#431 <https://github.com/pyrosm/pyrosm/pull/431>`__)
+
 v0.17.0 (Oct 9, 2026)
 ---------------------
 

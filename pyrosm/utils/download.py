@@ -14,6 +14,7 @@ from urllib.error import HTTPError
 import certifi
 
 from pyrosm import __version__
+from pyrosm._log import log_event
 from pyrosm.exceptions import DownloadError
 from pyrosm.utils.progress import reporting, validate_progress
 
@@ -463,16 +464,20 @@ def download(
         # write_atomic moves the file into place only when complete, so a failed download
         # never leaves a partial file that a later call would reuse. Errors creating or
         # replacing the local file propagate as they are.
+        start = time.perf_counter()
         with reporting(progress, "Downloading %s" % filepath.name) as report:
             try:
                 write_atomic(filepath, fetch)
             except _LocalWriteError as e:
                 raise e.__cause__
 
-        logger.info(
-            "Downloaded Protobuf data '%s' (%s MB) to '%s'",
-            filepath.name,
-            get_file_size(filepath),
-            filepath,
+        log_event(
+            logger,
+            logging.INFO,
+            "download",
+            file=filepath.name,
+            megabytes=get_file_size(filepath),
+            seconds=time.perf_counter() - start,
+            path=filepath,
         )
     return str(filepath)

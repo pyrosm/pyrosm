@@ -75,7 +75,7 @@ def test_geocode_returns_boundary_polygon(monkeypatch, caplog, capsys):
     assert geom.bounds == pytest.approx(
         (-0.2450771, 50.7982097, -0.0160307, 50.8923741)
     )
-    assert "Brighton and Hove, England, United Kingdom" in caplog.text
+    assert "result='Brighton and Hove, England, United Kingdom'" in caplog.text
     assert capsys.readouterr().out == ""
 
 

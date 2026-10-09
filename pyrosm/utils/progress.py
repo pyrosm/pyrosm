@@ -3,18 +3,12 @@ ipywidgets is installed."""
 
 import contextlib
 import importlib.util
-import re
 import sys
 import time
 
-# C0 and C1 control characters and DEL, which could move the cursor or forge a line.
-_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+from pyrosm._log import _printable
+
 _clock = time.monotonic
-
-
-def _printable(text):
-    """``text`` with each control character replaced by a space."""
-    return _CONTROL.sub(" ", text)
 
 
 def _bar_class():

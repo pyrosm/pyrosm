@@ -24,6 +24,7 @@ from urllib.error import URLError
 
 from shapely.geometry import box, shape
 
+from pyrosm._log import log_event
 from pyrosm.utils.download import open_url
 
 logger = logging.getLogger(__name__)
@@ -88,7 +89,13 @@ def geocode(query, polygon=True, base_url=_NOMINATIM_URL, user_agent=None):
         raise ValueError("Could not geocode '%s'." % query)
 
     result = results[0]
-    logger.info("Geocoded '%s' to: %s", query, result.get("display_name", query))
+    log_event(
+        logger,
+        logging.INFO,
+        "geocode",
+        query=query,
+        result=result.get("display_name", query),
+    )
 
     geojson = result.get("geojson") if polygon else None
     if geojson and geojson.get("type") in ("Polygon", "MultiPolygon"):

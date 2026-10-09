@@ -11,11 +11,16 @@ no cache.
 """
 
 import hashlib
+import logging
 import os
 import tempfile
 from pathlib import Path
 
 from rapidjson import dumps
+
+from pyrosm._log import log_event
+
+logger = logging.getLogger(__name__)
 
 
 def cache_dir():
@@ -126,8 +131,12 @@ def materialize(cache_path, build):
     already-marked-empty) result."""
     empty_marker = cache_path.with_name(cache_path.name + ".empty")
     if empty_marker.exists():
+        log_event(logger, logging.DEBUG, "cache", status="empty", path=empty_marker)
         return None
-    if not cache_path.exists():
+    if cache_path.exists():
+        log_event(logger, logging.DEBUG, "cache", status="hit", path=cache_path)
+    else:
+        log_event(logger, logging.DEBUG, "cache", status="miss", path=cache_path)
         tmp_path = _temp_in(cache_path)
         try:
             if not build(tmp_path):
@@ -149,8 +158,12 @@ def materialize_pair(edges_path, nodes_path, build, read_nodes=read_result):
     empty (or already-marked-empty) result."""
     empty_marker = edges_path.with_name(edges_path.name + ".empty")
     if empty_marker.exists():
+        log_event(logger, logging.DEBUG, "cache", status="empty", path=empty_marker)
         return None, None
-    if not (edges_path.exists() and nodes_path.exists()):
+    if edges_path.exists() and nodes_path.exists():
+        log_event(logger, logging.DEBUG, "cache", status="hit", path=edges_path)
+    else:
+        log_event(logger, logging.DEBUG, "cache", status="miss", path=edges_path)
         edges_tmp = _temp_in(edges_path)
         nodes_tmp = _temp_in(nodes_path)
         try:
