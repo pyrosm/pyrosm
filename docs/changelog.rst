@@ -1,10 +1,17 @@
 Changelog
 =========
 
-Unreleased
-----------
+v0.16.0 (Oct 9, 2026)
+---------------------
+
+This release shows the progress of downloads in terminals and in Jupyter, and lets a calling library draw its own progress bar. pyrosm now requires ``tqdm``.
 
 - NEW: Downloads show a progress bar on stderr, drawn as a widget in Jupyter when ``ipywidgets`` is installed (``pip install "pyrosm[notebook]"``) and as a text bar elsewhere. Without a terminal, as in logs and CI, only a line naming the file is printed. ``get_data``, ``get_data_by_area``, ``get_data_by_bbox``, ``get_data_by_geocoding`` and ``download`` accept ``progress``: ``True`` (default), ``False`` for no output, or a function called as ``progress(written, total)`` after each chunk, so a calling library can draw its own bar. pyrosm now requires ``tqdm`` (`#424 <https://github.com/pyrosm/pyrosm/pull/424>`__)
+- FIXED: The test suite runs from the source package. ``test_page_size_parser`` tests a maintainer script that the source package does not include; it is now skipped when the script is missing instead of failing with ``FileNotFoundError`` (`#423 <https://github.com/pyrosm/pyrosm/pull/423>`__)
+
+Thanks for all the contributors who helped to improve the library either via PRs, or by raising or participating in an issue:
+
+- christophfink (`#421 <https://github.com/pyrosm/pyrosm/issues/421>`__, `#422 <https://github.com/pyrosm/pyrosm/pull/422>`__)
 
 v0.15.0 (Oct 1, 2026)
 ---------------------
