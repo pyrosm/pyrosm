@@ -309,12 +309,18 @@ def _layers(section):
 
 def _graph(section):
     from pyrosm import OSM
+    from pyrosm.graphs import graph_tables
 
     _mapping(section, "graph")
-    _reject_foreign(section, ("network",), "graph")
+    if "network_type" in section:
+        raise ValueError("graph.network_type: set it as graph.network.network_type")
     network = _mapping(section.get("network", {}), "graph.network")
+    fixed = ("nodes", "edges", "network_type")
     return {
         "network": _keywords(network, OSM.get_network, ("nodes",), "graph.network"),
+        "keywords": _keywords(
+            section, graph_tables, fixed, "graph", extra=("network",)
+        ),
     }
 
 
@@ -584,6 +590,7 @@ def _out_root(recipe, out_dir):
         protected += [pathlib.Path(found)] if kind == "package" else []
     lock = root / (".%s.lock" % pathlib.PurePosixPath(outputs["provenance"]).name)
     names = [outputs["extract"], outputs["provenance"], *outputs["layers"].values()]
+    names += list((outputs["graph"] or {}).values())
     targets = {}
     for name in filter(None, names):
         target = _resolve(root / name, "outputs")
@@ -696,35 +703,82 @@ def _recorded(recipe):
     return dict(recipe, extract=dict(extract, keywords=keywords))
 
 
-def _run_layers(recipe, pbf, staging):
-    """Read each layer from ``pbf`` and write it as GeoParquet into ``staging``; returns the
-    record's layers entry and ``{output: sha256}``. A read that finds nothing is written as
-    an empty layer."""
-    import geopandas as gpd
-    from pyrosm import OSM
+def _as_text(value):
+    """A value of a column that holds lists or mappings, as text: a list or mapping as JSON,
+    a missing item of a list as null, a missing value left missing."""
+    import pandas as pd
+
+    def missing(item):
+        return pd.api.types.is_scalar(item) and pd.isna(item)
+
+    if isinstance(value, list):
+        value = [None if missing(item) else item for item in value]
+    if isinstance(value, (list, dict)):
+        return json.dumps(
+            value, default=lambda v: v.item() if hasattr(v, "item") else str(v)
+        )
+    return value if missing(value) else str(value)
+
+
+def _write_parquet(frame, staging, output):
+    """Write ``frame`` as GeoParquet to ``output`` in ``staging``; returns its SHA-256. A
+    column holding lists or mappings (such as the attributes of merged graph edges) is
+    written as text, they as JSON."""
     from pyrosm.data.extract_index import _sha256
 
-    osm = OSM(str(pbf), **recipe["reader"])
+    frame = frame.copy()
+    for column in frame.columns[frame.dtypes == object]:
+        if frame[column].map(lambda value: isinstance(value, (list, dict))).any():
+            frame[column] = frame[column].map(_as_text)
+    target = pathlib.Path(staging, output)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(target)
+    return _sha256(target)
+
+
+def _run_layers(recipe, osm, staging):
+    """Read each layer and write it as GeoParquet into ``staging``; returns the record's
+    layers entry and ``{output: sha256}``. A read that finds nothing is written as an empty
+    layer."""
+    import geopandas as gpd
+
     entries, written = {}, {}
     for name, layer in recipe["layers"].items():
         frame = getattr(osm, _READS[layer["read"]])(**layer["keywords"])
         if frame is None:
             frame = gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
         output = recipe["outputs"]["layers"][name]
-        target = pathlib.Path(staging, output)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        frame.to_parquet(target)
         entries[name] = {"features": len(frame)}
-        written[output] = _sha256(target)
+        written[output] = _write_parquet(frame, staging, output)
     return entries, written
 
 
+def _run_graph(recipe, osm, staging):
+    """Build the graph's node and edge tables with :func:`pyrosm.graphs.graph_tables` and
+    write them as GeoParquet into ``staging``; returns the record's graph entry and
+    ``{output: sha256}``."""
+    from pyrosm.graphs import graph_tables
+
+    network = recipe["graph"]["network"]
+    nodes, edges = osm.get_network(nodes=True, **network)
+    if edges is None:
+        raise ValueError("graph.network: the PBF holds no such network")
+    network_type = network.get("network_type", "walking")
+    keywords = recipe["graph"]["keywords"]
+    tables = graph_tables(nodes, edges, network_type=network_type, **keywords)
+    entry, written = {}, {}
+    for key, frame in zip(("nodes", "edges"), tables):
+        output = recipe["outputs"]["graph"][key]
+        entry[key] = len(frame)
+        written[output] = _write_parquet(frame, staging, output)
+    return entry, written
+
+
 def _run(path, out_dir, invocation):
+    from pyrosm import OSM
     from pyrosm.data.extract_index import _identity, _sha256
 
     recipe = validate(path)
-    if recipe["graph"] is not None:
-        raise ValueError("recipe: running the graph stage is not supported yet")
     root = _out_root(recipe, out_dir)
     outputs = recipe["outputs"]
     provenance = root / outputs["provenance"]
@@ -750,8 +804,13 @@ def _run(path, out_dir, invocation):
                 pbf.parent.mkdir(parents=True, exist_ok=True)
                 record["extract"] = _run_extract(recipe["extract"], pbf)
                 record["outputs"][outputs["extract"]] = record["extract"]["sha256"]
+            if recipe["layers"] or recipe["graph"] is not None:
+                osm = OSM(str(pbf), **recipe["reader"])
             if recipe["layers"]:
-                record["layers"], written = _run_layers(recipe, pbf, staging)
+                record["layers"], written = _run_layers(recipe, osm, staging)
+                record["outputs"].update(written)
+            if recipe["graph"] is not None:
+                record["graph"], written = _run_graph(recipe, osm, staging)
                 record["outputs"].update(written)
             if [_identity(p) for p in inputs] != identities:
                 raise OSError("an input file changed while the recipe ran")

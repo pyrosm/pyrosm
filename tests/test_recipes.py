@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
+from geopandas.testing import assert_geodataframe_equal
 import pytest
 from shapely.geometry import box
 
@@ -18,6 +20,7 @@ import pyrosm
 from pyrosm import OSM, get_data, recipes
 from pyrosm.data import extract_index
 from pyrosm.exceptions import ExtractDownloadError
+from pyrosm.graphs import graph_tables
 from pyrosm.proto.fileformat_pb2 import BlobHeader
 
 PBF = Path(get_data("test_pbf")).as_posix()
@@ -44,6 +47,7 @@ def test_validate_resolves_a_recipe(tmp_path):
           shops: {{read: pois, custom_filter: {{shop: true}}}}
         graph:
           network: {{network_type: driving}}
+          simplify: true
         outputs:
           layers: {{walk: out/walk.parquet, shops: shops.parquet}}
           graph: {{nodes: nodes.parquet, edges: edges.parquet}}
@@ -57,7 +61,10 @@ def test_validate_resolves_a_recipe(tmp_path):
         "read": "pois",
         "keywords": {"custom_filter": {"shop": True}},
     }
-    assert resolved["graph"]["network"] == {"network_type": "driving"}
+    assert resolved["graph"] == {
+        "network": {"network_type": "driving"},
+        "keywords": {"simplify": True},
+    }
     assert resolved["outputs"]["layers"]["walk"] == "out/walk.parquet"
     assert resolved["outputs"]["provenance"] == "study.provenance.json"
 
@@ -149,7 +156,9 @@ def _keyword(text):
         (_EXTRACT + "{area: {name: test_pbf}, opener: {}}\n", "extract.opener: set by the recipe"),
         (_GOOD.replace("read: network", "read: rivers"), "layers.walk.read: must be one of"),
         (_keyword("nodes: true"), "set by the recipe"),
-        (_GOOD + "graph: {simplify: true}\n", "graph: unknown key 'simplify'"),
+        (_GOOD + "graph: {colour: red}\n", "graph: unknown keyword 'colour'"),
+        (_GOOD + "graph: {network_type: walking}\n", "set it as graph.network.network_type"),
+        (_GOOD + "graph: {edges: e}\n", "graph.edges: set by the recipe"),
         (_keyword("timestamp: 2020-01-01"), "is not a text, number"),
         (_GOOD + "reader: {filepath: x.pbf}\n", "reader.filepath: set by the recipe"),
         (_GOOD.replace("walk: walk.parquet", "run: run.parquet"), "needs a file for layer"),
@@ -299,10 +308,52 @@ def test_run_layers(tmp_path, monkeypatch):
     assert {path: path.read_bytes() for path in written} == before
 
 
+
+@pytest.mark.parametrize(
+    "graph, two_way",
+    [
+        ("{network: {network_type: walking}, simplify: true}", True),
+        ("{network: {network_type: driving}}", False),
+        ("{network: {network_type: driving}, force_bidirectional: true}", True),
+    ],
+)
+def test_run_graph(tmp_path, graph, two_way):
+    """The graph stage writes the node and edge tables ``graph_tables`` builds: a walking
+    graph runs both ways, a driving graph keeps one-way streets one-way unless
+    ``force_bidirectional``."""
+    text = f"recipe: pyrosm\npbf: {{file: '{PBF}'}}\ngraph: {graph}\n"
+    text += "outputs: {graph: {nodes: n.parquet, edges: e.parquet}}\n"
+    recipe = _recipe(tmp_path, text)
+    nodes_path, edges_path, record_path = recipes.run(recipe)
+    resolved = recipes.validate(recipe)["graph"]
+    network = resolved["network"]
+    read = OSM(PBF).get_network(nodes=True, **network)
+    expected = graph_tables(*read, network_type=network["network_type"], **resolved["keywords"])
+    nodes, edges = gpd.read_parquet(nodes_path), gpd.read_parquet(edges_path)
+    for written, frame in zip((nodes, edges), expected):
+        nested = frame.map(lambda value: isinstance(value, (list, dict)))
+        plain = frame.columns[~nested.any()]
+        assert_geodataframe_equal(written[plain], frame[plain], check_dtype=False)
+        for column in frame.columns[nested.any()]:  # written as text
+            for text, value in zip(written[column], frame[column]):
+                if isinstance(value, list):  # a missing item is written as null
+                    value = [item if item == item else None for item in value]
+                if isinstance(value, (list, dict)):
+                    assert json.loads(text) == value
+                elif pd.isna(value):
+                    assert pd.isna(text)
+                else:
+                    assert text == str(value)
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["graph"] == {"nodes": len(nodes), "edges": len(edges)}
+    pairs = set(zip(edges["u"], edges["v"]))
+    assert all((v, u) in pairs for u, v in pairs) == two_way
+
+
 @pytest.mark.parametrize(
     "case, message",
     [
-        ("graph", "running the graph stage is not supported"),
+        ("no network", "graph.network: the PBF holds no such network"),
         ("escape", "resolves outside"),
         ("alias", "'x/p.parquet' and 'link/p.parquet' resolve to one file"),
         ("input", "would overwrite the recipe or one of its inputs"),
@@ -327,8 +378,9 @@ def test_run_refuses(tmp_path, offline, monkeypatch, case, message):
     area = gpd.GeoDataFrame(geometry=[box(24.9, 60.1, 25.0, 60.2)], crs="EPSG:4326")
     area.to_file(tmp_path / "area.json", driver="GeoJSON")
     extract, outputs = "{area: {bbox: [0, 0, 1, 1]}}", "{extract: a.pbf}"
-    if case == "graph":
-        outputs = "{extract: a.pbf, graph: {nodes: n.parquet, edges: e.parquet}}\ngraph: {}"
+    if case == "no network":
+        outputs = "{extract: a.pbf, graph: {nodes: n.parquet, edges: e.parquet}}\ngraph: {}\n"
+        outputs += "reader: {bounding_box: [0, 0, 0.1, 0.1]}"
     elif case in ("escape", "alias"):
         (out / "x").mkdir()
         try:
