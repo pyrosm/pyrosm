@@ -1,4 +1,5 @@
 import warnings
+from pathlib import Path
 
 import pandas as pd
 from pyrosm.config import Conf
@@ -23,6 +24,7 @@ from pyrosm.utils import (
     warn_about_single_core,
 )
 from pyrosm.utils.download import get_file_size
+from pyrosm.utils.progress import reporting, validate_progress
 from shapely.geometry import (
     Polygon,
     MultiPolygon,
@@ -123,6 +125,17 @@ class OSM:
         reads need the `if __name__ == "__main__":` guard on macOS/Windows; pass
         `workers=1` to read on a single core silently. Has no effect on the
         `'in_memory'` engine.
+
+    progress : bool | callable (default: True)
+        `True` shows a bar on stderr while the file is read, once the read has run
+        2 seconds, and clears it when the read finishes; in Jupyter it is a widget
+        when ipywidgets is installed (`pip install "pyrosm[notebook]"`). Without a
+        terminal, a read that took 2 seconds or more prints one line with the time it
+        took instead. `False` shows nothing. A callable is called as
+        `progress(done, total)` with the bytes of the file read so far and the file
+        size: `(0, total)` when a pass over the file starts and `(total, total)` when
+        it ends, with reports in between. A read can make more than one pass, for
+        example with a `bounding_box`.
     """
 
     allowed_bbox_types = [
@@ -142,6 +155,7 @@ class OSM:
         keep_node_info=False,
         engine="in_memory",
         workers=None,
+        progress=True,
     ):
         # Check input file
         self.filepath = validate_input_file(filepath)
@@ -159,6 +173,8 @@ class OSM:
 
         self.engine = validate_engine(engine)
         self.workers = validate_workers(workers)
+        validate_progress(progress)
+        self.progress = progress
         self._single_core_notice_emitted = False
 
         # Check if file contains history
@@ -238,25 +254,31 @@ class OSM:
         kwargs["bounding_box"] = self.bounding_box
         kwargs["keep_metadata"] = self.keep_metadata
         kwargs["workers"] = workers
+        kwargs["progress"] = self.progress
         if with_relations:
             kwargs["complete_relations"] = self.complete_relations
         return reader(self.filepath, **kwargs)
 
     def _get_pbf_elements(self, bounding_box):
-        (
-            nodes,
-            ways,
-            relations,
-            node_coordinates,
-            relation_member_ways,
-        ) = parse_osm_data(
-            self.filepath,
-            bounding_box,
-            exclude_relations=False,
-            unix_time_filter=self._current_timestamp,
-            keep_metadata=self.keep_metadata,
-            complete_relations=self.complete_relations,
-        )
+        desc = "Reading %s" % Path(self.filepath).name
+        with reporting(
+            self.progress, desc, delay=2.0, leave=False, timed=True
+        ) as report:
+            (
+                nodes,
+                ways,
+                relations,
+                node_coordinates,
+                relation_member_ways,
+            ) = parse_osm_data(
+                self.filepath,
+                bounding_box,
+                exclude_relations=False,
+                unix_time_filter=self._current_timestamp,
+                keep_metadata=self.keep_metadata,
+                complete_relations=self.complete_relations,
+                progress=report,
+            )
 
         self._nodes = nodes
         self._way_records = ways

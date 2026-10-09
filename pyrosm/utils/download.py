@@ -15,7 +15,7 @@ import certifi
 
 from pyrosm import __version__
 from pyrosm.exceptions import DownloadError
-from pyrosm.utils.progress import Bar
+from pyrosm.utils.progress import reporting, validate_progress
 
 USER_AGENT = "pyrosm/%s (+https://github.com/pyrosm/pyrosm)" % __version__
 
@@ -426,10 +426,7 @@ def download(
     with the bytes of the file written so far and its size, ``None`` when the server does not
     give it. A resumed download counts on from the bytes it kept, a restarted one from 0.
     """
-    if not (isinstance(progress, bool) or callable(progress)):
-        raise ValueError(
-            "progress must be True, False or a callable; got %r." % (progress,)
-        )
+    validate_progress(progress)
     target_dir = download_dir() if target_dir is None else Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     filepath = target_dir.resolve() / Path(filename).name
@@ -442,8 +439,6 @@ def download(
 
     # Download data to temp if it does not exist or if update is requested
     if update or file_exists is False:
-        bar = Bar("Downloading %s" % filepath.name) if progress is True else None
-        report = progress if callable(progress) else bar
 
         def fetch(out_file):
             transfer = _Transfer(url, filename, out_file, net, report)
@@ -468,13 +463,11 @@ def download(
         # write_atomic moves the file into place only when complete, so a failed download
         # never leaves a partial file that a later call would reuse. Errors creating or
         # replacing the local file propagate as they are.
-        try:
-            write_atomic(filepath, fetch)
-        except _LocalWriteError as e:
-            raise e.__cause__
-        finally:
-            if bar is not None:
-                bar.close()
+        with reporting(progress, "Downloading %s" % filepath.name) as report:
+            try:
+                write_atomic(filepath, fetch)
+            except _LocalWriteError as e:
+                raise e.__cause__
 
         logger.info(
             "Downloaded Protobuf data '%s' (%s MB) to '%s'",

@@ -1,4 +1,5 @@
 from pyrosm.exceptions import PBFNotImplemented
+import os
 from struct import unpack
 import warnings
 import zlib
@@ -45,11 +46,16 @@ cdef _warn_if_slow_protobuf_backend():
         )
 
 
-def iter_primitive_blocks_and_string_tables(filepath):
+def iter_primitive_blocks_and_string_tables(filepath, progress=None):
     # Generator: yield one (PrimitiveBlock, string_table) at a time so the parser
     # can process and discard each block instead of holding the whole decompressed
     # file in a list. A def function (not cdef) is required because it yields.
+    # progress(done, size) gets the bytes of the file read: 0 first, then after each
+    # block, and the file size at the end.
     with open(filepath, 'rb') as f:
+        size = os.fstat(f.fileno()).st_size
+        if progress is not None:
+            progress(0, size)
 
         # Check that the data stream is valid OSM
         # =======================================
@@ -95,7 +101,12 @@ def iter_primitive_blocks_and_string_tables(filepath):
             # Get string table and decode
             str_table = [tounicode(s) for s in pblock.stringtable.s]
 
+            if progress is not None:
+                progress(f.tell(), size)
             yield pblock, str_table
+
+        if progress is not None:
+            progress(size, size)
 
 
 cdef parse_dense(
@@ -462,10 +473,12 @@ cpdef parse_osm_data(
         unix_time_filter,
         bint keep_metadata=True,
         bint complete_relations=False,
+        progress=None,
 ):
     _warn_if_slow_protobuf_backend()
     return _parse_osm_data(filepath, bounding_box, exclude_relations,
-                           unix_time_filter, keep_metadata, complete_relations)
+                           unix_time_filter, keep_metadata, complete_relations,
+                           progress)
 
 
 cdef _parse_osm_data(
@@ -475,13 +488,14 @@ cdef _parse_osm_data(
         unix_time_filter,
         bint keep_metadata=True,
         bint complete_relations=False,
+        progress=None,
 ):
     all_ways = []
     all_nodes = []
     all_relations = []
     node_lookup_created = False
 
-    for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath):
+    for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath, progress):
         for pgroup in pblock.primitivegroup:
             if len(pgroup.dense.id) > 0:
                 all_nodes += parse_dense(pblock, pgroup.dense, str_table, bounding_box,
@@ -581,7 +595,7 @@ cdef _parse_osm_data(
                     missing_way_ids.add(wid)
 
         if len(missing_way_ids) > 0:
-            for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath):
+            for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath, progress):
                 for pgroup in pblock.primitivegroup:
                     if len(pgroup.ways) > 0:
                         completed_relation_ways += parse_ways(
@@ -619,7 +633,7 @@ cdef _parse_osm_data(
         if len(missing_ids) > 0:
             node_id_filter = np.array(sorted(missing_ids), dtype=np.int64)
             boundary_nodes = []
-            for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath):
+            for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath, progress):
                 for pgroup in pblock.primitivegroup:
                     if len(pgroup.dense.id) > 0:
                         boundary_nodes += parse_dense(pblock, pgroup.dense, str_table,

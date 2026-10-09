@@ -25,6 +25,22 @@ def _index_blobs(filepath):
     return blobs
 
 
+def _data_blob_spans(blobs):
+    """The data blobs of ``blobs`` (from :func:`_index_blobs`) as ``(offset, size, span)``,
+    with ``span`` the blob's length in the file (its length prefix, header and payload), and
+    the summed span of the other blobs. All the spans together cover the indexed bytes.
+    """
+    data, other, end = [], 0, 0
+    for blob_type, offset, size in blobs:
+        span = offset + size - end
+        end = offset + size
+        if blob_type == "OSMData":
+            data.append((offset, size, span))
+        else:
+            other += span
+    return data, other
+
+
 def _read_block(f, offset, size):
     """Read and decompress one ``Blob`` payload into the raw ``PrimitiveBlock`` bytes."""
     f.seek(offset)

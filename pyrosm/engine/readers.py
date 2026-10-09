@@ -13,6 +13,7 @@ from pyrosm.engine.pool import _decode_and_run
 from pyrosm.engine.bounding_box import _bbox_bounds, _normalize_bounding_box
 from pyrosm.engine.assemble import _assemble_layer, _assemble_network
 from pyrosm.engine import cache, geoparquet
+from pyrosm.utils.progress import validate_progress
 
 # Tags the geometry assembly reads straight from an element's tag dict (not from the exploded
 # columns): ``relations.pyx`` consults ``type`` and ``area`` plus the linestring keys
@@ -47,6 +48,7 @@ def _get_layer(
     bounding_box=None,
     complete_relations=False,
     keep_other_tags=True,
+    progress=True,
 ):
     """Read a layer: decode the file in parallel selecting the elements that carry any of
     the filter keys (``osm_keys`` if given, else ``custom_filter``'s keys; and, when
@@ -63,8 +65,11 @@ def _get_layer(
     ``workers`` defaults to a single process; pass ``workers=N`` for N processes or
     ``workers="auto"`` to choose automatically by file size (on macOS/Windows a parallel read
     must run under an ``if __name__ == "__main__":`` guard, otherwise it falls back to one
-    process with a warning) -- see the package docstring.
+    process with a warning) -- see the package docstring. ``progress`` (``True``, ``False``
+    or a callable) shows the read as for ``OSM(..., progress=...)``; a cached read has nothing
+    to show.
     """
+    validate_progress(progress)
     if output is not None:
         _compat.require_pyarrow()
     data_filter, derived_keys = parse_custom_filter(custom_filter)
@@ -107,7 +112,7 @@ def _get_layer(
                 osm_key_bytes,
                 include_nodes,
                 workers,
-                lambda shard_paths, collect_workers: geoparquet._stream_layer_to_parquet(
+                lambda shard_paths, collect_workers, report: geoparquet._stream_layer_to_parquet(
                     shard_paths,
                     tmp_path,
                     geoparquet._OUTPUT_CHUNK_SIZE,
@@ -123,11 +128,12 @@ def _get_layer(
                 ),
                 bbox_bounds=bounds,
                 requested_tag_keys=requested_tag_keys,
+                progress=progress,
             )
             is not None,
         )
 
-    def run(shard_paths, collect_workers):
+    def run(shard_paths, collect_workers, report):
         if output is None:
             return _assemble_layer(
                 shard_paths,
@@ -164,6 +170,7 @@ def _get_layer(
         run,
         bbox_bounds=bounds,
         requested_tag_keys=requested_tag_keys,
+        progress=progress,
     )
 
 
@@ -203,12 +210,14 @@ def get_buildings(
     workers=None,
     output=None,
     keep_metadata=True,
+    progress=True,
 ):
     """Read building geometries (ways + relations) from ``filepath`` with the out-of-core
     engine, with the same columns as ``OSM(...).get_buildings()``. ``custom_filter`` refines
     which buildings to keep (the ``building`` key is always ensured); ``extra_attributes`` /
     ``tags_to_keep`` adjust the tag columns. See :func:`_get_layer` for ``bounding_box`` /
-    ``complete_relations`` / ``output`` / ``workers`` / ``keep_metadata``."""
+    ``complete_relations`` / ``output`` / ``workers`` / ``keep_metadata`` / ``progress``.
+    """
     from pyrosm.config import Conf
 
     return _get_layer(
@@ -222,6 +231,7 @@ def get_buildings(
         include_nodes=False,
         bounding_box=bounding_box,
         complete_relations=complete_relations,
+        progress=progress,
     )
 
 
@@ -235,6 +245,7 @@ def get_landuse(
     workers=None,
     output=None,
     keep_metadata=True,
+    progress=True,
 ):
     """Read landuse geometries (ways + relations) from ``filepath`` with the out-of-core
     engine, with the same columns as ``OSM(...).get_landuse()``. ``custom_filter`` refines
@@ -252,6 +263,7 @@ def get_landuse(
         keep_metadata,
         bounding_box=bounding_box,
         complete_relations=complete_relations,
+        progress=progress,
     )
 
 
@@ -265,6 +277,7 @@ def get_natural(
     workers=None,
     output=None,
     keep_metadata=True,
+    progress=True,
 ):
     """Read natural features (nodes + ways + relations) from ``filepath`` with the
     out-of-core engine, with the same columns as ``OSM(...).get_natural()``. ``custom_filter``
@@ -283,6 +296,7 @@ def get_natural(
         keep_metadata,
         bounding_box=bounding_box,
         complete_relations=complete_relations,
+        progress=progress,
     )
 
 
@@ -296,6 +310,7 @@ def get_pois(
     workers=None,
     output=None,
     keep_metadata=True,
+    progress=True,
 ):
     """Read points of interest (nodes + ways + relations) from ``filepath`` with the
     out-of-core engine, with the same columns as ``OSM(...).get_pois(custom_filter=...)``.
@@ -324,6 +339,7 @@ def get_pois(
         keep_metadata,
         bounding_box=bounding_box,
         complete_relations=complete_relations,
+        progress=progress,
     )
 
 
@@ -339,6 +355,7 @@ def get_boundaries(
     workers=None,
     output=None,
     keep_metadata=True,
+    progress=True,
 ):
     """Read boundaries (ways + relations) from ``filepath`` with the out-of-core engine,
     with the same columns as ``OSM(...).get_boundaries()``. ``boundary_type`` selects the
@@ -377,6 +394,7 @@ def get_boundaries(
         include_nodes=False,
         bounding_box=bounding_box,
         complete_relations=complete_relations,
+        progress=progress,
     )
     # Name post-filter (substring match), as OSM.get_boundaries does. The output= + name
     # combination is rejected above, so reaching here means an in-memory frame.
@@ -407,6 +425,7 @@ def get_data_by_custom_criteria(
     output=None,
     keep_metadata=True,
     keep_other_tags=True,
+    progress=True,
 ):
     """Read OSM elements matching an arbitrary ``custom_filter`` from ``filepath`` with the
     out-of-core engine, with the same columns as
@@ -458,6 +477,7 @@ def get_data_by_custom_criteria(
         bounding_box=bounding_box,
         complete_relations=complete_relations,
         keep_other_tags=keep_other_tags,
+        progress=progress,
     )
 
 
@@ -536,6 +556,7 @@ def get_network(
     workers=None,
     output=None,
     keep_metadata=True,
+    progress=True,
 ):
     """Read a street network (``highway=*`` ways as LineString edges + a ``length`` column)
     from ``filepath`` with the out-of-core engine, with the same columns as
@@ -555,10 +576,13 @@ def get_network(
     GeoParquet and returns the path; with ``nodes=True`` it writes ``edges.parquet`` +
     ``nodes.parquet`` into the ``path`` directory and returns the directory (both require
     ``pyarrow``). With ``pyarrow`` absent the default read returns the in-memory result with no
-    cache."""
+    cache. ``progress`` shows the read as for ``OSM(..., progress=...)``, including the second
+    pass of ``nodes=True``; a cached read has nothing to show."""
     from pyrosm.config import Conf
     from pyrosm.utils import validate_custom_filter, validate_tags_as_columns
     from pyrosm.filter_compiler import CompiledFilter
+
+    validate_progress(progress)
 
     tags_as_columns = list(Conf.tags.highway)
     if tags_to_keep is not None:
@@ -604,7 +628,7 @@ def get_network(
     if output is not None:
         _compat.require_pyarrow()
 
-    def assemble(shard_paths, collect_workers):
+    def assemble(shard_paths, collect_workers, report):
         edges, node_gdf = _assemble_network(
             shard_paths,
             tags_as_columns,
@@ -614,6 +638,7 @@ def get_network(
             bounding_box,
             filepath=filepath,
             workers=collect_workers,
+            progress=report,
         )
         return (node_gdf, edges) if nodes else edges
 
@@ -621,7 +646,13 @@ def get_network(
 
     def decode():
         return _decode_and_run(
-            filepath, decode_keys, False, workers, assemble, bbox_bounds=bounds
+            filepath,
+            decode_keys,
+            False,
+            workers,
+            assemble,
+            bbox_bounds=bounds,
+            progress=progress,
         )
 
     # A user-supplied output writes the result there and returns it: a GeoParquet file for the
