@@ -5,6 +5,7 @@ is the reproducible method."""
 
 import contextlib
 import dataclasses
+import functools
 import hashlib
 import inspect
 import json
@@ -17,12 +18,13 @@ import socket
 import struct
 import tempfile
 import unicodedata
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 _VERSIONS = (1,)
 _TOP_KEYS = tuple("recipe version extract pbf reader layers graph outputs".split())
 _AREA_KINDS = ("bbox", "file", "place", "name")
 _VECTOR_SUFFIXES = (".gpkg", ".geojson", ".json", ".parquet")
+_SHA256 = re.compile("[0-9a-f]{64}")
 # The packages whose versions a provenance record lists.
 _PACKAGES = ("pyrosm", "geopandas", "shapely", "pandas", "numpy", "pyarrow", "protobuf")
 # The read methods a layer can name, as OSM methods.
@@ -182,11 +184,47 @@ def _pbf_first_blob(path):
     return header.type
 
 
+def _pin_sha256(value, where):
+    if not isinstance(value, str) or not _SHA256.fullmatch(value):
+        raise ValueError("%s: must be 64 lowercase hexadecimal characters" % where)
+    return value
+
+
+def _pin_snapshot(value, where):
+    """A snapshot pin as ISO text that keeps its kind: ``"2026-10-01"`` for a date,
+    ``"2026-10-01T12:00:00+00:00"`` (UTC) for a date and time, which is taken as UTC when
+    it has no offset."""
+    if isinstance(value, str):
+        if value.endswith("Z"):  # read as UTC by every supported Python
+            value = value[:-1] + "+00:00"
+        for parse in (date.fromisoformat, datetime.fromisoformat):
+            try:
+                value = parse(value)
+                break
+            except ValueError:
+                pass
+        else:
+            raise ValueError(
+                "%s: %r is not an ISO date or date and time" % (where, value)
+            )
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        try:
+            return value.astimezone(timezone.utc).isoformat()
+        except OverflowError:
+            raise ValueError("%s: %r is out of range" % (where, value)) from None
+    if isinstance(value, date):
+        return value.isoformat()
+    raise ValueError("%s: must be a date or a date and time" % where)
+
+
 def _file_source(value, where, recipe_dir, suffixes, pbf=False):
-    """A file input ``{file: path, layer: name}``, its path resolved against the
-    recipe's folder and checked to exist, to be non-empty and of an accepted type."""
+    """A file input ``{file: path, sha256: hex, layer: name}``, its path resolved against
+    the recipe's folder and checked to exist, to be non-empty and of an accepted type.
+    """
     _mapping(value, where)
-    allowed = ("file",) if pbf else ("file", "layer")
+    allowed = ("file", "sha256") if pbf else ("file", "sha256", "layer")
     _reject_foreign(value, allowed, where)
     name = value.get("file")
     if not isinstance(name, str) or not name:
@@ -205,6 +243,8 @@ def _file_source(value, where, recipe_dir, suffixes, pbf=False):
             "%s.file: %r does not start with an OSM PBF header" % (where, name)
         )
     source = {"file": path}
+    if "sha256" in value:
+        source["sha256"] = _pin_sha256(value["sha256"], where + ".sha256")
     if "layer" in value:
         if not isinstance(value["layer"], str) or not value["layer"]:
             raise ValueError("%s.layer: must be a layer name" % where)
@@ -269,7 +309,8 @@ def _extract(section, recipe_dir):
         function, fixed = get_data, ("dataset", "opener")
     else:
         function, fixed = get_data_by_area, ("area", "output_path", "opener")
-    keywords = _keywords(section, function, fixed, "extract", extra=("area",))
+    extra = ("area", "snapshot", "sha256")
+    keywords = _keywords(section, function, fixed, "extract", extra=extra)
     if keywords.get("directory") is not None:
         if not isinstance(keywords["directory"], str) or not keywords["directory"]:
             raise ValueError("extract.directory: must be a folder path")
@@ -280,7 +321,12 @@ def _extract(section, recipe_dir):
         keywords["must_cover"] = _file_source(
             keywords["must_cover"], "extract.must_cover", recipe_dir, _VECTOR_SUFFIXES
         )
-    return {"area": area, "call": function.__name__, "keywords": keywords}
+    resolved = {"area": area, "call": function.__name__, "keywords": keywords}
+    if "snapshot" in section:
+        resolved["snapshot"] = _pin_snapshot(section["snapshot"], "extract.snapshot")
+    if "sha256" in section:
+        resolved["sha256"] = _pin_sha256(section["sha256"], "extract.sha256")
+    return resolved
 
 
 def _layers(section):
@@ -512,15 +558,15 @@ def _versions():
     return found
 
 
-def _input_files(recipe):
-    """The recipe's input files: its PBF, its area file and its ``must_cover`` file."""
+def _input_sources(recipe):
+    """The recipe's file inputs: its PBF, its area file and its ``must_cover`` file."""
     extract = recipe["extract"] or {"area": {}, "keywords": {}}
     sources = [
         recipe["pbf"],
         extract["area"].get("file"),
         extract["keywords"].get("must_cover"),
     ]
-    return [source["file"] for source in sources if source]
+    return [source for source in sources if source]
 
 
 def _read_vector(source):
@@ -584,7 +630,8 @@ def _out_root(recipe, out_dir):
 
     root = _resolve(recipe["recipe_dir"] if out_dir is None else out_dir, "out_dir")
     outputs, extract = recipe["outputs"], recipe["extract"]
-    protected = [recipe["recipe_path"], *_input_files(recipe)]
+    protected = [recipe["recipe_path"]]
+    protected += [source["file"] for source in _input_sources(recipe)]
     if extract is not None and "name" in extract["area"]:
         kind, found = _resolve_dataset(extract["area"]["name"])
         protected += [pathlib.Path(found)] if kind == "package" else []
@@ -665,7 +712,7 @@ def _publish(root, staging, staged, record, provenance):
     os.replace(temporary, provenance)
 
 
-def run(path, out_dir=None):
+def run(path, out_dir=None, force=False):
     """Run a recipe and write its outputs and provenance record; returns their paths.
 
     The outputs are written into ``out_dir`` (default: the recipe's folder) under the names
@@ -673,7 +720,13 @@ def run(path, out_dir=None):
     every stage has succeeded, so a failed stage leaves the previous outputs and record as they
     were; a run interrupted while moving them leaves no record. A lock file
     ``.<record name>.lock`` keeps two runs of a recipe from writing at once, and a run is
-    refused when an input file changes while it runs.
+    refused when an input file changes while it runs, or when an input or the extract
+    differs from a ``sha256`` or ``snapshot`` pin of the recipe.
+
+    A stage whose recipe section, reader keywords, output names, inputs and package
+    versions are those of the previous run, and whose outputs are in place unchanged, is not
+    run again: its outputs and its part of the record are kept. An extract stage with
+    ``update: true`` always runs.
 
     The provenance record (JSON) holds the package versions, the resolved recipe, the SHA-256
     of each input and output, where the extract came from, how the run was invoked and when.
@@ -684,13 +737,16 @@ def run(path, out_dir=None):
         The recipe YAML file.
     out_dir : str | pathlib.Path, optional
         The output folder, created when missing.
+    force : bool
+        Run every stage, whether or not it changed.
 
     Returns
     -------
     list of pathlib.Path
-        The outputs written, the provenance record last.
+        The paths of the outputs, written or reused, in the recipe's order, and the
+        provenance record last.
     """
-    return _run(path, out_dir, {"entry_point": "python", "argv": None})
+    return list(_run(path, out_dir, {"entry_point": "python", "argv": None}, force))
 
 
 def _recorded(recipe):
@@ -736,94 +792,216 @@ def _write_parquet(frame, staging, output):
     return _sha256(target)
 
 
-def _run_layers(recipe, osm, staging):
-    """Read each layer and write it as GeoParquet into ``staging``; returns the record's
-    layers entry and ``{output: sha256}``. A read that finds nothing is written as an empty
-    layer."""
+def _run_layer(osm, layer, output, staging):
+    """Read a layer with the reader ``osm()`` and write it as GeoParquet to ``output`` in
+    ``staging``; returns its record entry and ``{output: sha256}``. A read that finds
+    nothing is written as an empty layer."""
     import geopandas as gpd
 
-    entries, written = {}, {}
-    for name, layer in recipe["layers"].items():
-        frame = getattr(osm, _READS[layer["read"]])(**layer["keywords"])
-        if frame is None:
-            frame = gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
-        output = recipe["outputs"]["layers"][name]
-        entries[name] = {"features": len(frame)}
-        written[output] = _write_parquet(frame, staging, output)
-    return entries, written
+    frame = getattr(osm(), _READS[layer["read"]])(**layer["keywords"])
+    if frame is None:
+        frame = gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+    return {"features": len(frame)}, {output: _write_parquet(frame, staging, output)}
 
 
-def _run_graph(recipe, osm, staging):
-    """Build the graph's node and edge tables with :func:`pyrosm.graphs.graph_tables` and
-    write them as GeoParquet into ``staging``; returns the record's graph entry and
-    ``{output: sha256}``."""
+def _run_graph(graph, files, osm, staging):
+    """Build the graph's node and edge tables with :func:`pyrosm.graphs.graph_tables` from
+    the reader ``osm()`` and write them as GeoParquet to ``files`` in ``staging``; returns
+    the record's graph entry and ``{output: sha256}``."""
     from pyrosm.graphs import graph_tables
 
-    network = recipe["graph"]["network"]
-    nodes, edges = osm.get_network(nodes=True, **network)
+    nodes, edges = osm().get_network(nodes=True, **graph["network"])
     if edges is None:
         raise ValueError("graph.network: the PBF holds no such network")
-    network_type = network.get("network_type", "walking")
-    keywords = recipe["graph"]["keywords"]
-    tables = graph_tables(nodes, edges, network_type=network_type, **keywords)
+    network_type = graph["network"].get("network_type", "walking")
+    tables = graph_tables(nodes, edges, network_type=network_type, **graph["keywords"])
     entry, written = {}, {}
     for key, frame in zip(("nodes", "edges"), tables):
-        output = recipe["outputs"]["graph"][key]
         entry[key] = len(frame)
-        written[output] = _write_parquet(frame, staging, output)
+        written[files[key]] = _write_parquet(frame, staging, files[key])
     return entry, written
 
 
-def _run(path, out_dir, invocation):
+def _check_pins(extract, entry):
+    """Refuse an extract whose SHA-256 or snapshot differs from the recipe's pins. A date
+    pin matches the snapshot's UTC date, a date and time pin the snapshot itself."""
+    if extract.get("sha256", entry["sha256"]) != entry["sha256"]:
+        raise ValueError(
+            "extract.sha256: the extract's SHA-256 is %s, not the pinned %s"
+            % (entry["sha256"], extract["sha256"])
+        )
+    pin, snapshot = extract.get("snapshot"), entry["snapshot"]
+    if isinstance(snapshot, datetime):
+        snapshot = snapshot.astimezone(timezone.utc).isoformat()
+    if pin is None:
+        return
+    found = snapshot[:10] if snapshot and len(pin) == 10 else snapshot
+    if found != pin:
+        raise ValueError(
+            "extract.snapshot: the extract's snapshot is %s, not the pinned %s"
+            % (snapshot, pin)
+        )
+
+
+def _get(record, *keys):
+    """``record[key][...]``, ``None`` where a level is missing or not a mapping."""
+    for key in keys:
+        record = record.get(key) if isinstance(record, dict) else None
+    return record
+
+
+def _previous(provenance):
+    """The previous provenance record, ``{}`` when there is none that can be read."""
+    try:
+        record = json.loads(provenance.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def _reusable(work, previous, fingerprint, files):
+    """Whether ``previous``, a stage's entry in the previous record, has ``fingerprint`` and
+    lists ``files`` as its outputs, each in place with the SHA-256 it records. Notes each
+    output's identity, taken before it is hashed, in ``work["reused"]``."""
+    from pyrosm.data.extract_index import _identity, _sha256
+
+    old = _get(previous, "outputs")
+    if (
+        _get(previous, "fingerprint") != fingerprint
+        or not isinstance(old, dict)
+        or sorted(old) != sorted(files)
+    ):
+        return False
+    identities = {}
+    for name, sha256 in old.items():
+        path = work["root"] / name
+        if not path.is_file():
+            return False
+        identities[name] = _identity(path)
+        if _sha256(path) != sha256:
+            return False
+    work["reused"].update(identities)
+    return True
+
+
+def _stage(work, previous, inputs, files, run, reusable=True):
+    """The record entry of one stage: ``previous``, its entry in the previous record, when
+    it can be reused (:func:`_reusable`); else the entry ``run`` makes. The fingerprint
+    covers ``inputs`` (the stage's section and what it reads), the output names and the
+    package versions. ``work["status"]`` notes whether each output was written or reused.
+    """
+    key = {"inputs": inputs, "outputs": files, "versions": work["versions"]}
+    text = json.dumps(key, sort_keys=True, default=_jsonable)
+    fingerprint = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if reusable and _reusable(work, previous, fingerprint, files):
+        work["status"].update(dict.fromkeys(files, "reused"))
+        return previous
+    entry, written = run()
+    work["status"].update(dict.fromkeys(written, "written"))
+    return dict(entry, fingerprint=fingerprint, outputs=written)
+
+
+def _run(path, out_dir, invocation, force=False):
     from pyrosm import OSM
     from pyrosm.data.extract_index import _identity, _sha256
 
     recipe = validate(path)
     root = _out_root(recipe, out_dir)
-    outputs = recipe["outputs"]
+    outputs, reader = recipe["outputs"], recipe["reader"]
     provenance = root / outputs["provenance"]
     root.mkdir(parents=True, exist_ok=True)
     with _locked(root / (".%s.lock" % provenance.name)):
+        previous = {} if force else _previous(provenance)
         staging = tempfile.mkdtemp(prefix=".pyrosm-staging-", dir=root)
         try:
-            inputs = _input_files(recipe)
-            identities = [_identity(p) for p in inputs]
+            sources = _input_sources(recipe)
+            identities = [_identity(source["file"]) for source in sources]
             record = {
                 "pyrosm_recipe_provenance": 1,
                 "versions": _versions(),
                 "recipe": _recorded(recipe),
-                "inputs": {p.as_posix(): _sha256(p) for p in inputs},
+                "inputs": {s["file"].as_posix(): _sha256(s["file"]) for s in sources},
                 "invocation": dict(
                     invocation, recipe=recipe["recipe_path"], out_dir=root
                 ),
             }
-            record["outputs"] = {}
+            for source in sources:
+                found = record["inputs"][source["file"].as_posix()]
+                if source.get("sha256", found) != found:
+                    raise ValueError(
+                        "%s: its SHA-256 is %s, not the pinned %s"
+                        % (source["file"], found, source["sha256"])
+                    )
+            work = {"root": root, "versions": record["versions"]}
+            work.update(status={}, reused={})
             pbf = recipe["pbf"] and recipe["pbf"]["file"]
+            upstream = pbf and record["inputs"][pbf.as_posix()]
+            entries = []
             if recipe["extract"] is not None:
-                pbf = pathlib.Path(staging, outputs["extract"])
-                pbf.parent.mkdir(parents=True, exist_ok=True)
-                record["extract"] = _run_extract(recipe["extract"], pbf)
-                record["outputs"][outputs["extract"]] = record["extract"]["sha256"]
-            if recipe["layers"] or recipe["graph"] is not None:
-                osm = OSM(str(pbf), **recipe["reader"])
-            if recipe["layers"]:
-                record["layers"], written = _run_layers(recipe, osm, staging)
-                record["outputs"].update(written)
+                extract, name = recipe["extract"], outputs["extract"]
+                pbf = pathlib.Path(staging, name)
+
+                def run_extract():
+                    pbf.parent.mkdir(parents=True, exist_ok=True)
+                    entry = _run_extract(extract, pbf)
+                    return entry, {name: entry["sha256"]}
+
+                inputs = {"stage": extract, "upstream": record["inputs"]}
+                reusable = not extract["keywords"].get("update")
+                record["extract"] = _stage(
+                    work, previous.get("extract"), inputs, [name], run_extract, reusable
+                )
+                if work["status"][name] == "reused":
+                    pbf = root / name
+                _check_pins(extract, record["extract"])
+                upstream = record["extract"]["sha256"]
+                entries.append(record["extract"])
+            osm = functools.cache(lambda: OSM(str(pbf), **reader))
+            for layer_name, layer in recipe["layers"].items():
+                name = outputs["layers"][layer_name]
+                inputs = {"stage": layer, "reader": reader, "upstream": upstream}
+                entry = _stage(
+                    work,
+                    _get(previous, "layers", layer_name),
+                    inputs,
+                    [name],
+                    functools.partial(_run_layer, osm, layer, name, staging),
+                )
+                record.setdefault("layers", {})[layer_name] = entry
+                entries.append(entry)
             if recipe["graph"] is not None:
-                record["graph"], written = _run_graph(recipe, osm, staging)
-                record["outputs"].update(written)
-            if [_identity(p) for p in inputs] != identities:
+                graph, files = recipe["graph"], outputs["graph"]
+                inputs = {"stage": graph, "reader": reader, "upstream": upstream}
+                record["graph"] = _stage(
+                    work,
+                    previous.get("graph"),
+                    inputs,
+                    list(files.values()),
+                    functools.partial(_run_graph, graph, files, osm, staging),
+                )
+                entries.append(record["graph"])
+            record["outputs"] = {}
+            for entry in entries:
+                record["outputs"].update(entry["outputs"])
+            if [_identity(source["file"]) for source in sources] != identities:
                 raise OSError("an input file changed while the recipe ran")
+            for name, identity in work["reused"].items():
+                if _identity(root / name) != identity:
+                    raise OSError("%s, reused, changed while the recipe ran" % name)
             record["written_at"] = datetime.now(timezone.utc).isoformat()
-            _publish(root, pathlib.Path(staging), record["outputs"], record, provenance)
+            written = [n for n, status in work["status"].items() if status == "written"]
+            _publish(root, pathlib.Path(staging), written, record, provenance)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
-    return [root / name for name in record["outputs"]] + [provenance]
+    status = {root / name: status for name, status in work["status"].items()}
+    status[provenance] = "written"
+    return status
 
 
 def main(argv=None):
-    """The ``pyrosm`` command: ``pyrosm run RECIPE [-o DIR]`` runs a recipe and prints the
-    paths it wrote; ``pyrosm validate RECIPE`` checks one.
+    """The ``pyrosm`` command: ``pyrosm run RECIPE [-o DIR] [--force]`` runs a recipe and
+    prints each output path, after ``written`` or ``reused``; ``pyrosm validate RECIPE``
+    checks one.
 
     Exits 0 on success, 1 with the reason on stderr when the recipe or its data is refused,
     and 2 on a usage error. It never prompts.
@@ -842,6 +1020,9 @@ def main(argv=None):
     runner.add_argument(
         "-o", "--out", help="the output folder (default: the recipe's folder)"
     )
+    runner.add_argument(
+        "--force", action="store_true", help="run every stage, changed or not"
+    )
     checker = commands.add_parser("validate", help="check a recipe without running it")
     checker.add_argument("recipe", help="the recipe YAML file")
     arguments = parser.parse_args(argv)
@@ -849,8 +1030,9 @@ def main(argv=None):
     try:
         if arguments.command == "run":
             invocation = {"entry_point": "cli", "argv": argv}
-            for path in _run(arguments.recipe, arguments.out, invocation):
-                print(path)
+            done = _run(arguments.recipe, arguments.out, invocation, arguments.force)
+            for path, status in done.items():
+                print(status, path)
         else:
             validate(arguments.recipe)
             print("%s: valid pyrosm recipe" % arguments.recipe)

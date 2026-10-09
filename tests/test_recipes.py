@@ -17,6 +17,7 @@ import pytest
 from shapely.geometry import box
 
 import pyrosm
+import pyrosm.data
 from pyrosm import OSM, get_data, recipes
 from pyrosm.data import extract_index
 from pyrosm.exceptions import ExtractDownloadError
@@ -76,10 +77,24 @@ def test_validate_resolves_a_recipe(tmp_path):
           area: {bbox: [24.9, 60.1, 25.0, 60.2]}
           strategy: smallest_total
           must_cover: {file: stops.geojson, layer: stops}
+          snapshot: SNAPSHOT
+          sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
         outputs: {extract: data.osm.pbf}
         """,
     )
-    resolved = recipes.validate(extract)["extract"]
+    text = extract.read_text()
+    snapshots = [
+        ("2026-10-01", "2026-10-01"),
+        ("'2026-10-01'", "2026-10-01"),
+        ("2026-10-01 12:00:00", "2026-10-01T12:00:00+00:00"),
+        ("'2026-10-01T14:00:00+02:00'", "2026-10-01T12:00:00+00:00"),
+        ("'2026-10-01T12:00:00Z'", "2026-10-01T12:00:00+00:00"),
+    ]
+    for given, normalised in snapshots:
+        extract.write_text(text.replace("SNAPSHOT", given))
+        resolved = recipes.validate(extract)["extract"]
+        assert resolved["snapshot"] == normalised
+    assert resolved["sha256"] == "0123456789abcdef" * 4
     assert resolved["call"] == "get_data_by_area"
     assert resolved["area"] == {"bbox": [24.9, 60.1, 25.0, 60.2]}
     assert resolved["keywords"]["must_cover"] == {
@@ -146,6 +161,10 @@ def _keyword(text):
         (_EXTRACT + "{area: {name: nowhere}}\n", "area.name: The dataset 'nowhere' is not"),
         (_EXTRACT + "{area: {file: a.parquet, layer: x}}\n", "GeoParquet file has no layers"),
         (_EXTRACT + "{area: {name: test_pbf}, directory: 5}\n", "must be a folder path"),
+        (_EXTRACT + "{area: {name: test_pbf}, snapshot: 5}\n", "must be a date or a date"),
+        (_EXTRACT + "{area: {name: test_pbf}, snapshot: soon}\n", "not an ISO date"),
+        (_EXTRACT + "{area: {name: test_pbf}, snapshot: '0001-01-01T00:00+01:00'}\n", "range"),
+        (_GOOD.replace("'}", "', sha256: abc}"), "64 lowercase hexadecimal"),
         (_EXTRACT + "{area: {bbox: [1, 2, 0, 3]}}\n", "needs minx < maxx"),
         (_EXTRACT + "{area: {place: ' '}}\n", "must be a non-empty text"),
         (_EXTRACT + "{area: {file: no.gpkg}}\n", "'no.gpkg' does not exist"),
@@ -198,7 +217,6 @@ def test_validate_refuses(tmp_path, text, message):
         recipes.validate(_recipe(tmp_path, text))
 
 
-
 @pytest.fixture
 def offline(monkeypatch):
     """``get_data_by_area`` and ``geocode`` answered with the bundled test PBF; returns the
@@ -215,7 +233,7 @@ def offline(monkeypatch):
         source.snapshot = snapshot
         return extract_index.AreaExtract(
             str(path), "Geofabrik", "t", "https://t/t.pbf", 9, 0.0, 0.0,
-            sources=[source], sha256=extract_index._sha256(path),
+            sources=[source], sha256=extract_index._sha256(path), snapshot=snapshot,
         )
 
     monkeypatch.setattr(extract_index, "get_data_by_area", get_data_by_area)
@@ -230,8 +248,8 @@ def offline(monkeypatch):
     [
         "{area: {name: test_pbf}}",
         "{area: {bbox: [24.9, 60.1, 25.0, 60.2]}, must_cover: {file: stops.geojson}, "
-        "headers: {Authorization: secret}}",
-        "{area: {place: Kallio}, crop: false}",
+        "headers: {Authorization: secret}, sha256: SHA, snapshot: 2026-10-01}",
+        "{area: {place: Kallio}, crop: false, snapshot: 2026-10-01T03:00:00+03:00}",
         "{area: {file: area.parquet}, strategy: smallest_total}",
     ],
 )
@@ -241,6 +259,7 @@ def test_run_extract(tmp_path, offline, extract):
     area = gpd.GeoDataFrame(geometry=[box(24.9, 60.1, 25.0, 60.2)], crs="EPSG:4326")
     area.to_parquet(tmp_path / "area.parquet")
     area.to_file(tmp_path / "stops.geojson")
+    extract = extract.replace("SHA", extract_index._sha256(PBF))
     text = "recipe: pyrosm\nextract: %s\noutputs: {extract: x/a.osm.pbf}\n" % extract
     out = tmp_path / "out"
     written = recipes.run(_recipe(tmp_path, text), out)
@@ -261,14 +280,18 @@ def test_run_extract(tmp_path, offline, extract):
     if "must_cover" in extract:
         assert len(offline[0]["must_cover"]) == 1
         assert offline[0]["headers"] == {"Authorization": "secret"}
+        assert record["recipe"]["extract"]["snapshot"] == "2026-10-01"
         assert record["recipe"]["extract"]["keywords"]["headers"] == "<not recorded>"
         assert list(record["inputs"]) == [(tmp_path / "stops.geojson").as_posix()]
-
+    if "place" in extract:
+        pin = record["recipe"]["extract"]["snapshot"]
+        assert pin == "2026-10-01T00:00:00+00:00"
 
 
 def test_run_layers(tmp_path, monkeypatch):
     """Each layer is written as GeoParquet as read directly, an empty read as an empty layer;
-    a run whose second layer fails leaves the previous outputs and record as they were."""
+    a forced run whose second layer fails leaves the previous outputs and record as they
+    were."""
     recipe = _recipe(
         tmp_path,
         f"""
@@ -293,7 +316,7 @@ def test_run_layers(tmp_path, monkeypatch):
     assert (len(empty), empty.crs.to_epsg()) == (0, 4326)
     record = json.loads(written[3].read_text(encoding="utf-8"))
     counts = {"walk": len(expected[0]), "buildings": len(expected[1]), "none": 0}
-    assert record["layers"] == {name: {"features": n} for name, n in counts.items()}
+    assert {name: e["features"] for name, e in record["layers"].items()} == counts
     assert record["inputs"] == {PBF: extract_index._sha256(PBF)}
     assert sorted(record["outputs"]) == ["b/buildings.parquet", "none.parquet", "walk.parquet"]
 
@@ -304,9 +327,8 @@ def test_run_layers(tmp_path, monkeypatch):
 
     monkeypatch.setattr(OSM, "get_buildings", functools.wraps(OSM.get_buildings)(broken))
     with pytest.raises(RuntimeError, match="cannot read buildings"):
-        recipes.run(recipe)
+        recipes.run(recipe, force=True)
     assert {path: path.read_bytes() for path in written} == before
-
 
 
 @pytest.mark.parametrize(
@@ -345,9 +367,83 @@ def test_run_graph(tmp_path, graph, two_way):
                 else:
                     assert text == str(value)
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    assert record["graph"] == {"nodes": len(nodes), "edges": len(edges)}
+    assert (record["graph"]["nodes"], record["graph"]["edges"]) == (len(nodes), len(edges))
     pairs = set(zip(edges["u"], edges["v"]))
     assert all((v, u) in pairs for u, v in pairs) == two_way
+
+
+def test_run_reuses_unchanged_stages(tmp_path, monkeypatch):
+    """A stage runs again only when its section, the reader, its output names, what it reads
+    or a package version changed, or an output of it was modified; an extract with
+    ``update: true`` always runs, and ``force`` runs every stage."""
+    calls, hooks = [], []
+    real_get_data = pyrosm.data.get_data
+
+    def get_data(*args, **kwargs):
+        calls.append("extract")
+        return real_get_data(*args, **kwargs)
+
+    monkeypatch.setattr(pyrosm.data, "get_data", functools.wraps(real_get_data)(get_data))
+    for method, layer in (("get_network", "walk"), ("get_pois", "shops")):
+
+        def read(self, *args, _real=getattr(OSM, method), _layer=layer, **kwargs):
+            calls.append("graph" if kwargs.get("nodes") else _layer)
+            for hook in hooks:
+                hook()
+            return _real(self, *args, **kwargs)
+
+        monkeypatch.setattr(OSM, method, functools.wraps(getattr(OSM, method))(read))
+    recipe = _recipe(
+        tmp_path,
+        """
+        recipe: pyrosm
+        extract: {area: {name: test_pbf}}
+        reader: {keep_metadata: false}
+        layers: {walk: {read: network}, shops: {read: pois}}
+        graph: {network: {network_type: walking}}
+        outputs:
+          extract: a.osm.pbf
+          layers: {walk: walk.parquet, shops: shops.parquet}
+          graph: {nodes: n.parquet, edges: e.parquet}
+        """,
+    )
+    every = {"extract", "walk", "shops", "graph"}
+    steps = [
+        (None, every),
+        (None, set()),
+        (("{read: network}", "{read: network, network_type: cycling}"), {"walk"}),
+        (("keep_metadata: false", "keep_metadata: true"), {"walk", "shops", "graph"}),
+        (("shops: shops.parquet", "shops: s.parquet"), {"shops"}),
+        ("modified output", {"graph"}),
+        ("removed output", {"walk"}),
+        ("new version", every),
+        (("{name: test_pbf}}", "{name: test_pbf}, update: true}"), {"extract"}),
+        (None, {"extract"}),
+        ("force", every),
+    ]
+    for change, expected in steps:
+        if isinstance(change, tuple):
+            recipe.write_text(recipe.read_text().replace(*change))
+        elif change == "modified output":
+            (tmp_path / "e.parquet").write_bytes(b"changed")
+        elif change == "removed output":
+            (tmp_path / "walk.parquet").unlink()
+        elif change == "new version":
+            monkeypatch.setattr(recipes, "_versions", lambda: {"pyrosm": "0.0"})
+        calls.clear()
+        done = recipes.run(recipe, force=change == "force")
+        assert set(calls) == expected, change
+        if change is None and not expected:  # reused outputs keep the recipe's order
+            assert done == order
+        order = done
+
+    # A reused output that changes while a later stage runs stops the run before publishing.
+    record = (tmp_path / "recipe.provenance.json").read_bytes()
+    hooks.append(lambda: (tmp_path / "s.parquet").write_bytes(b"changed"))
+    recipe.write_text(recipe.read_text().replace("type: walking}}", "type: driving}}"))
+    with pytest.raises(OSError, match="s.parquet, reused, changed while the recipe ran"):
+        recipes.run(recipe)
+    assert (tmp_path / "recipe.provenance.json").read_bytes() == record
 
 
 @pytest.mark.parametrize(
@@ -365,6 +461,9 @@ def test_run_graph(tmp_path, graph, two_way):
         ("lock garbled", "recipe.provenance.json.lock exists (unreadable)"),
         ("cache", "must lie apart"),
         ("failure", "no extract"),
+        ("input pin", "area.json: its SHA-256 is"),
+        ("extract pin", "extract.sha256: the extract's SHA-256 is"),
+        ("snapshot pin", "snapshot is 2026-10-01T00:00:00+00:00, not the pinned 2026-09-30"),
         ("record path", None),
     ],
 )
@@ -401,6 +500,13 @@ def test_run_refuses(tmp_path, offline, monkeypatch, case, message):
         extract, outputs = "{area: {name: test_pbf}}", "{extract: test.osm.pbf}"
     elif case == "changed":
         extract = "{area: {bbox: [0, 0, 1, 1]}, must_cover: {file: area.json}}"
+    elif case == "input pin":
+        pin = "'%s'" % ("0" * 64)
+        extract = "{area: {bbox: [0, 0, 1, 1]}, must_cover: {file: area.json, sha256: %s}}" % pin
+    elif case == "extract pin":
+        extract = "{area: {bbox: [0, 0, 1, 1]}, sha256: '%s'}" % ("0" * 64)
+    elif case == "snapshot pin":
+        extract = "{area: {bbox: [0, 0, 1, 1]}, snapshot: 2026-09-30}"
     elif case == "copied":
         extract = "{area: {bbox: [0, 0, 1, 1]}, crop: false}"
     elif case == "lock path":
@@ -450,7 +556,10 @@ def test_command(tmp_path, offline, capsys, monkeypatch):
     monkeypatch.setattr(recipes, "_PACKAGES", ("pyrosm", "not-installed"))
     assert recipes.main(argv) == 0
     written = [tmp_path / "out" / name for name in ("a.pbf", "good.provenance.json")]
-    assert capsys.readouterr().out.split() == [str(path) for path in written]
+    assert capsys.readouterr().out.splitlines() == ["written %s" % path for path in written]
+    assert recipes.main(argv) == 0
+    reused = ["reused %s" % written[0], "written %s" % written[1]]
+    assert capsys.readouterr().out.splitlines() == reused
     record = json.loads(written[1].read_text(encoding="utf-8"))
     assert record["invocation"]["argv"] == argv
     assert record["versions"] == {"pyrosm": pyrosm.__version__, "not-installed": None}
