@@ -644,6 +644,15 @@ def _identity(path):
     return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
 
 
+def _sha256(path):
+    """The SHA-256 hex digest of a file."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _provenance(path):
     """``(sha256, snapshot)`` of a file: its SHA-256 hex digest and the PBF header's
     ``osmosis_replication_timestamp`` as a UTC datetime (``None`` when it has none).
@@ -658,13 +667,10 @@ def _provenance(path):
     for _ in range(3):
         before = _identity(path)
         stamp = read_header_block(str(path)).osmosis_replication_timestamp
-        digest = hashlib.sha256()
-        with open(path, "rb") as f:
-            while chunk := f.read(1 << 20):
-                digest.update(chunk)
+        digest = _sha256(path)
         if _identity(path) == before:
             snapshot = datetime.fromtimestamp(stamp, timezone.utc) if stamp else None
-            return digest.hexdigest(), snapshot
+            return digest, snapshot
     raise OSError("'%s' kept changing while it was read." % path)
 
 

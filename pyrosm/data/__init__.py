@@ -76,6 +76,12 @@ _ulanbator_test_pbf = {
     "raw/5cf6f19d924108b6ea55b7e51016b56fb0618669/"
     "UlanBator.osm.pbf",
 }
+_static_sources = {
+    "helsinki_region_pbf": _helsinki_region_pbf,
+    "helsinki_history_pbf": _helsinki_history_pbf,
+    "helsinki_test_history_pbf": _helsinki_test_history_pbf,
+    "ulanbator_test_pbf": _ulanbator_test_pbf,
+}
 
 
 class DataSources:
@@ -274,57 +280,41 @@ def get_data(
         as ``progress(written, total)`` after each chunk, with the bytes written so far and
         the file size, ``None`` when the server does not give it.
     """
+    kind, found = _resolve_dataset(dataset)
+    if kind == "package":
+        return found
     net = dict(headers=headers, timeout=timeout, opener=opener, progress=progress)
+    return retrieve(found, update, directory, **net)
 
+
+def _resolve_dataset(dataset):
+    """``("package", path)`` for a file bundled with pyrosm, else ``("source", source)`` with
+    the ``name`` and ``url`` of the download. Raises ``ValueError`` for an unknown name.
+    """
     if not isinstance(dataset, str):
         raise ValueError(f"'dataset' should be text. Got {dataset}.")
     dataset = dataset.lower().strip()
-
     if dataset in _package_files:
-        return str((_module_path / _package_files[dataset]).resolve())
-
-    elif dataset == "helsinki_region_pbf":
-        return retrieve(_helsinki_region_pbf, update, directory, **net)
-
-    elif dataset == "helsinki_history_pbf":
-        return retrieve(_helsinki_history_pbf, update, directory, **net)
-
-    elif dataset == "helsinki_test_history_pbf":
-        return retrieve(_helsinki_test_history_pbf, update, directory, **net)
-
-    elif dataset == "ulanbator_test_pbf":
-        return retrieve(_ulanbator_test_pbf, update, directory, **net)
-
+        return "package", str((_module_path / _package_files[dataset]).resolve())
+    if dataset in _static_sources:
+        return "source", _static_sources[dataset]
     # A region-qualified name ("usa/georgia") disambiguates a name shared by
     # multiple regions; route it straight to the resolver (#162).
-    elif "/" in dataset:
-        return retrieve(search_source(dataset), update, directory, **net)
-
-    elif dataset in sources._all_sources:
-        return retrieve(search_source(dataset), update, directory, **net)
-
-    # Users might pass city names with spaces (e.g. Rio De Janeiro)
-    elif dataset.replace(" ", "") in sources._all_sources:
-        return retrieve(
-            search_source(dataset.replace(" ", "")), update, directory, **net
-        )
-
-    # Users might pass country names without underscores (e.g. North America)
-    elif dataset.replace(" ", "_") in sources._all_sources:
-        return retrieve(
-            search_source(dataset.replace(" ", "_")), update, directory, **net
-        )
-
-    # Users might pass country names with dashes instead of underscores (e.g. canary-islands)
-    elif dataset.replace("-", "_") in sources._all_sources:
-        return retrieve(
-            search_source(dataset.replace("-", "_")), update, directory, **net
-        )
-
-    else:
-        msg = "The dataset '{data}' is not available. ".format(data=dataset)
-        msg += "Available datasets are {}".format(", ".join(sources._all_sources))
-        raise ValueError(msg)
+    if "/" in dataset:
+        return "source", search_source(dataset)
+    # Users might pass city names with spaces (e.g. Rio De Janeiro), country names
+    # without underscores (e.g. North America) or with dashes (e.g. canary-islands).
+    for name in (
+        dataset,
+        dataset.replace(" ", ""),
+        dataset.replace(" ", "_"),
+        dataset.replace("-", "_"),
+    ):
+        if name in sources._all_sources:
+            return "source", search_source(name)
+    msg = "The dataset '{data}' is not available. ".format(data=dataset)
+    msg += "Available datasets are {}".format(", ".join(sources._all_sources))
+    raise ValueError(msg)
 
 
 # Keep temporarily for backward compatibility

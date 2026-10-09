@@ -1,12 +1,23 @@
+import dataclasses
+import functools
+import json
 import os
+import re
+import shutil
 import struct
 import sys
 import textwrap
+from datetime import datetime, timezone
 from pathlib import Path
 
+import geopandas as gpd
 import pytest
+from shapely.geometry import box
 
+import pyrosm
 from pyrosm import get_data, recipes
+from pyrosm.data import extract_index
+from pyrosm.exceptions import ExtractDownloadError
 from pyrosm.proto.fileformat_pb2 import BlobHeader
 
 PBF = Path(get_data("test_pbf")).as_posix()
@@ -27,7 +38,7 @@ def test_validate_resolves_a_recipe(tmp_path):
         f"""
         recipe: pyrosm
         pbf: {{file: '{PBF}'}}
-        reader: {{keep_metadata: false}}
+        reader: {{keep_metadata: false, bounding_box: [24.9, 60.1, 25.0, 60.2]}}
         layers:
           walk: {{read: network, network_type: walking, extra_attributes: [lit]}}
           shops: {{read: pois, custom_filter: {{shop: true}}}}
@@ -41,7 +52,7 @@ def test_validate_resolves_a_recipe(tmp_path):
     )
     resolved = recipes.validate(layers)
     assert resolved["pbf"] == {"file": Path(PBF).resolve()}
-    assert resolved["reader"] == {"keep_metadata": False}
+    assert resolved["reader"]["bounding_box"] == [24.9, 60.1, 25.0, 60.2]
     assert resolved["layers"]["shops"] == {
         "read": "pois",
         "keywords": {"custom_filter": {"shop": True}},
@@ -112,7 +123,7 @@ def _keyword(text):
         (_EXTRACT + "{area: {bbox: [1, 2, 3]}}\n", "must be four numbers"),
         (_EXTRACT + "{strategy: single}\n", "extract: needs an area"),
         (_GOOD.replace("walk: walk.parquet", "walk: 5"), "must be a file path"),
-        ("recipe: pyrosm\nextract: {area: {name: x}}\noutputs: {}\n", "needs 'extract'"),
+        ("recipe: pyrosm\nextract: {area: {name: test_pbf}}\noutputs: {}\n", "needs 'extract'"),
         (_GOOD.replace("{layers:", "{extract: a.pbf, layers:"), "has no extract stage"),
         (_GOOD.replace("{walk: walk.parquet}", "{walk: w.parquet, b: b.parquet}"), "no layer"),
         (_GOOD.replace("parquet}", "parquet}, graph: {}"), "has no graph stage"),
@@ -123,16 +134,19 @@ def _keyword(text):
         (_GOOD + "version: 2\n", "not a known recipe version"),
         ("recipe: pyrosm\noutputs: {}\n", "needs at least one of extract"),
         (_LAYERS, "need an extract stage or a pbf input"),
-        (_GOOD + "extract: {area: {name: x}}\n", "either an extract stage or a pbf input"),
+        (_GOOD + "extract: {area: {name: test_pbf}}\n", "either an extract stage or a pbf input"),
         (_EXTRACT + "{area: {name: x, place: y}}\n", "needs exactly one of"),
+        (_EXTRACT + "{area: {name: nowhere}}\n", "area.name: The dataset 'nowhere' is not"),
+        (_EXTRACT + "{area: {file: a.parquet, layer: x}}\n", "GeoParquet file has no layers"),
+        (_EXTRACT + "{area: {name: test_pbf}, directory: 5}\n", "must be a folder path"),
         (_EXTRACT + "{area: {bbox: [1, 2, 0, 3]}}\n", "needs minx < maxx"),
         (_EXTRACT + "{area: {place: ' '}}\n", "must be a non-empty text"),
         (_EXTRACT + "{area: {file: no.gpkg}}\n", "'no.gpkg' does not exist"),
         (_EXTRACT + "{area: {file: a.csv}}\n", "must end with one of"),
         (_GOOD.replace(PBF, "fake.pbf"), "does not start with an OSM PBF header"),
-        (_EXTRACT + "{area: {name: x}, strategy: single}\n", "unknown keyword 'strategy'"),
+        (_EXTRACT + "{area: {name: test_pbf}, strategy: single}\n", "unknown keyword 'strategy'"),
         (_EXTRACT + "{area: {place: x}, output_path: x}\n", "output_path: set by the recipe"),
-        (_EXTRACT + "{area: {name: x}, opener: {}}\n", "extract.opener: set by the recipe"),
+        (_EXTRACT + "{area: {name: test_pbf}, opener: {}}\n", "extract.opener: set by the recipe"),
         (_GOOD.replace("read: network", "read: rivers"), "layers.walk.read: must be one of"),
         (_keyword("nodes: true"), "set by the recipe"),
         (_GOOD + "graph: {simplify: true}\n", "graph: unknown key 'simplify'"),
@@ -143,10 +157,11 @@ def _keyword(text):
         (_GOOD.replace("walk.parquet", "../walk.parquet"), "must be a relative file path"),
         (_GOOD.replace("walk.parquet", "walk.csv"), "must end with .parquet"),
         (_GOOD.replace("walk.parquet", "con.parquet"), "not a portable file name"),
+        (_GOOD.replace("parquet}", "parquet}, provenance: %s.json" % ("a" * 245)), "over 249"),
         (_TWO.replace("parquet}", "parquet, b: Walk.parquet}"), "is named twice"),
         (_TWO.replace("walk.parquet}", "\u00e9.parquet, b: E\u0301.parquet}"), "named twice"),
         (
-            "recipe: pyrosm\nextract: {area: {name: x}}\noutputs: {extract: a.pbf}\n"
+            "recipe: pyrosm\nextract: {area: {name: test_pbf}}\noutputs: {extract: a.pbf}\n"
             "reader: {engine: in_memory}\n",
             "no layers or graph to read",
         ),
@@ -156,6 +171,7 @@ def test_validate_refuses(tmp_path, text, message):
     """Each mistake is refused by name before anything runs."""
     (tmp_path / "a.csv").write_text("x\n1\n")
     (tmp_path / "a.gpkg").write_bytes(b"SQLite format 3\x00")
+    (tmp_path / "a.parquet").write_bytes(b"PAR1")
     (tmp_path / "empty.gpkg").write_bytes(b"")
     (tmp_path / "fake.pbf").write_bytes(b"not a pbf at all")
     (tmp_path / "short.pbf").write_bytes(b"ab")
@@ -173,15 +189,181 @@ def test_validate_refuses(tmp_path, text, message):
         recipes.validate(_recipe(tmp_path, text))
 
 
-def test_validate_command(tmp_path, capsys, monkeypatch):
-    """`pyrosm validate` exits 0 for a valid recipe, 1 with the reason on stderr for an invalid
-    one or when PyYAML is missing, and 2 for a usage error."""
-    good = _recipe(tmp_path, _GOOD, name="good.yaml")
+
+@pytest.fixture
+def offline(monkeypatch):
+    """``get_data_by_area`` and ``geocode`` answered with the bundled test PBF; returns the
+    calls to ``get_data_by_area``. A cropping call writes ``output_path``, a call with
+    ``crop=False`` returns the downloaded file."""
+    calls = []
+
+    @functools.wraps(extract_index.get_data_by_area)
+    def get_data_by_area(area, crop=True, output_path=None, **keywords):
+        calls.append(dict(keywords, area=area, crop=crop))
+        path = shutil.copyfile(PBF, output_path) if crop else PBF
+        snapshot = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        source = extract_index.ExtractSource("Geofabrik", "t", "https://t/t.pbf", 9, PBF)
+        source.snapshot = snapshot
+        return extract_index.AreaExtract(
+            str(path), "Geofabrik", "t", "https://t/t.pbf", 9, 0.0, 0.0,
+            sources=[source], sha256=extract_index._sha256(path),
+        )
+
+    monkeypatch.setattr(extract_index, "get_data_by_area", get_data_by_area)
+    monkeypatch.setattr(
+        "pyrosm.data.geocoding.geocode", lambda place: box(24.9, 60.1, 25.0, 60.2)
+    )
+    return calls
+
+
+@pytest.mark.parametrize(
+    "extract",
+    [
+        "{area: {name: test_pbf}}",
+        "{area: {bbox: [24.9, 60.1, 25.0, 60.2]}, must_cover: {file: stops.geojson}, "
+        "headers: {Authorization: secret}}",
+        "{area: {place: Kallio}, crop: false}",
+        "{area: {file: area.parquet}, strategy: smallest_total}",
+    ],
+)
+def test_run_extract(tmp_path, offline, extract):
+    """The extract stage writes its PBF and a record of where it came from; nothing else is
+    left in the output folder."""
+    area = gpd.GeoDataFrame(geometry=[box(24.9, 60.1, 25.0, 60.2)], crs="EPSG:4326")
+    area.to_parquet(tmp_path / "area.parquet")
+    area.to_file(tmp_path / "stops.geojson")
+    text = "recipe: pyrosm\nextract: %s\noutputs: {extract: x/a.osm.pbf}\n" % extract
+    out = tmp_path / "out"
+    written = recipes.run(_recipe(tmp_path, text), out)
+    assert written == [out / "x/a.osm.pbf", out / "recipe.provenance.json"]
+    assert sorted(p.name for p in out.iterdir()) == ["recipe.provenance.json", "x"]
+    record = json.loads(written[1].read_text(encoding="utf-8"))
+    sha256 = extract_index._sha256(written[0])
+    assert record["outputs"] == {"x/a.osm.pbf": sha256}
+    assert record["extract"]["sha256"] == sha256
+    assert record["invocation"]["entry_point"] == "python"
+    assert record["versions"]["pyrosm"]
+    if "name" in extract:
+        assert (record["extract"]["dataset"], record["extract"]["url"]) == ("test_pbf", None)
+    else:
+        assert record["extract"]["area"]["bounds"] == [24.9, 60.1, 25.0, 60.2]
+        source = record["extract"]["sources"][0]
+        assert (source["url"], source["snapshot"]) == ("https://t/t.pbf", "2026-10-01T00:00:00+00:00")
+    if "must_cover" in extract:
+        assert len(offline[0]["must_cover"]) == 1
+        assert offline[0]["headers"] == {"Authorization": "secret"}
+        assert record["recipe"]["extract"]["keywords"]["headers"] == "<not recorded>"
+        assert list(record["inputs"]) == [(tmp_path / "stops.geojson").as_posix()]
+
+
+@pytest.mark.parametrize(
+    "case, message",
+    [
+        ("layers", "running layers and graph is not supported"),
+        ("escape", "resolves outside"),
+        ("input", "would overwrite the recipe or one of its inputs"),
+        ("bundled", "would overwrite the recipe or one of its inputs"),
+        ("changed", "an input file changed while the recipe ran"),
+        ("copied", "t.osm.pbf changed while it was copied"),
+        ("lock path", "would be written over the lock file"),
+        ("lock", "recipe.provenance.json.lock exists (pid 1"),
+        ("lock garbled", "recipe.provenance.json.lock exists (unreadable)"),
+        ("cache", "must lie apart"),
+        ("failure", "no extract"),
+        ("record path", None),
+    ],
+)
+def test_run_refuses(tmp_path, offline, monkeypatch, case, message):
+    """A run that cannot write its outputs safely is refused, and a failed stage leaves the
+    output folder as it was, without a lock or staging folder. An output folder named like
+    the record's file is no obstacle."""
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "recipe.provenance.json").write_text("old")
+    area = gpd.GeoDataFrame(geometry=[box(24.9, 60.1, 25.0, 60.2)], crs="EPSG:4326")
+    area.to_file(tmp_path / "area.json", driver="GeoJSON")
+    extract, outputs = "{area: {bbox: [0, 0, 1, 1]}}", "{extract: a.pbf}"
+    if case == "layers":
+        outputs = "{extract: a.pbf, layers: {a: a.parquet}}\nlayers: {a: {read: pois}}"
+    elif case == "escape":
+        try:
+            os.symlink(tmp_path, out / "link", target_is_directory=True)
+        except OSError:
+            pytest.skip("symbolic links cannot be made here")
+        outputs = "{extract: link/a.pbf}"
+    elif case == "input":
+        out = tmp_path
+        extract = "{area: {file: area.json}}"
+        outputs = "{extract: a.pbf, provenance: area.json}"
+    elif case == "bundled":
+        out = Path(PBF).parent
+        extract, outputs = "{area: {name: test_pbf}}", "{extract: test.osm.pbf}"
+    elif case == "changed":
+        extract = "{area: {bbox: [0, 0, 1, 1]}, must_cover: {file: area.json}}"
+    elif case == "copied":
+        extract = "{area: {bbox: [0, 0, 1, 1]}, crop: false}"
+    elif case == "lock path":
+        outputs = "{extract: .recipe.provenance.json.lock/a.pbf}"
+    elif case == "record path":
+        outputs = "{extract: r.json/a.pbf, provenance: m/r.json}"
+    elif case == "lock":
+        (out / ".recipe.provenance.json.lock").write_text("pid 1 on elsewhere")
+    elif case == "lock garbled":
+        (out / ".recipe.provenance.json.lock").write_bytes(b"\xff")
+    elif case == "cache":
+        extract = "{area: {bbox: [0, 0, 1, 1]}, directory: out/cache}"
+    stub = extract_index.get_data_by_area
+
+    def replaced(*args, **kwargs):
+        if case == "failure":
+            raise ValueError("no extract")
+        if case == "changed":
+            with open(tmp_path / "area.json", "a") as f:
+                f.write(" ")
+        result = stub(*args, **kwargs)
+        return dataclasses.replace(result, sha256="0" * 64) if case == "copied" else result
+
+    monkeypatch.setattr(extract_index, "get_data_by_area", functools.wraps(stub)(replaced))
+    text = "recipe: pyrosm\nextract: %s\noutputs: %s\n" % (extract, outputs)
+    if message is None:
+        recipes.run(_recipe(tmp_path, text), out)
+        assert (out / "m/r.json").is_file()
+        return
+    with pytest.raises((ValueError, OSError), match=re.escape(message)):
+        recipes.run(_recipe(tmp_path, text), out)
+    if case not in ("input", "bundled"):
+        left = sorted(p.name for p in out.iterdir() if p.name != "link")
+        lock = [".recipe.provenance.json.lock"] if case in ("lock", "lock garbled") else []
+        assert left == lock + ["recipe.provenance.json"]
+        assert (out / "recipe.provenance.json").read_text() == "old"
+
+
+def test_command(tmp_path, offline, capsys, monkeypatch):
+    """``pyrosm run`` prints what it wrote and ``pyrosm validate`` confirms a recipe, both
+    exiting 0; a refused recipe exits 1 with the reason on stderr (also when PyYAML is
+    missing), a usage error 2."""
+    text = "recipe: pyrosm\nextract: {area: {name: test_pbf}}\noutputs: {extract: a.pbf}\n"
+    good = _recipe(tmp_path, text, name="good.yaml")
     bad = _recipe(tmp_path, _GOOD + "colour: red\n", name="bad.yaml")
+    argv = ["run", str(good), "-o", str(tmp_path / "out")]
+    monkeypatch.setattr(recipes, "_PACKAGES", ("pyrosm", "not-installed"))
+    assert recipes.main(argv) == 0
+    written = [tmp_path / "out" / name for name in ("a.pbf", "good.provenance.json")]
+    assert capsys.readouterr().out.split() == [str(path) for path in written]
+    record = json.loads(written[1].read_text(encoding="utf-8"))
+    assert record["invocation"]["argv"] == argv
+    assert record["versions"] == {"pyrosm": pyrosm.__version__, "not-installed": None}
     assert recipes.main(["validate", str(good)]) == 0
-    assert "valid pyrosm recipe" in capsys.readouterr().out
+    assert capsys.readouterr().out == "%s: valid pyrosm recipe\n" % good
     assert recipes.main(["validate", str(bad)]) == 1
     assert "unknown key 'colour'" in capsys.readouterr().err
+
+    def unavailable(*args):
+        raise ExtractDownloadError("no extract could be downloaded")
+
+    monkeypatch.setattr(recipes, "_run", unavailable)
+    assert recipes.main(argv) == 1
+    assert capsys.readouterr().err == "pyrosm: no extract could be downloaded\n"
     with pytest.raises(SystemExit) as exit_info:
         recipes.main(["nonsense"])
     assert exit_info.value.code == 2

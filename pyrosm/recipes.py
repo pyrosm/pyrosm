@@ -1,19 +1,30 @@
 """Recipes: a YAML file that says how the OSM data of an analysis is obtained (``extract``),
 read into layers (``layers``) and turned into a graph (``graph``). pyrosm checks a recipe with
-:func:`validate`; the file is the reproducible method."""
+:func:`validate` and runs it with :func:`run`, which records how each output was made; the file
+is the reproducible method."""
 
+import contextlib
+import dataclasses
+import hashlib
 import inspect
+import json
 import math
 import os
 import pathlib
 import re
+import shutil
+import socket
 import struct
+import tempfile
 import unicodedata
+from datetime import datetime, timezone
 
 _VERSIONS = (1,)
 _TOP_KEYS = tuple("recipe version extract pbf reader layers graph outputs".split())
 _AREA_KINDS = ("bbox", "file", "place", "name")
 _VECTOR_SUFFIXES = (".gpkg", ".geojson", ".json", ".parquet")
+# The packages whose versions a provenance record lists.
+_PACKAGES = ("pyrosm", "geopandas", "shapely", "pandas", "numpy", "pyarrow", "protobuf")
 # The read methods a layer can name, as OSM methods.
 _READS = {
     n: "get_" + n for n in "network buildings pois landuse natural boundaries".split()
@@ -197,6 +208,8 @@ def _file_source(value, where, recipe_dir, suffixes, pbf=False):
     if "layer" in value:
         if not isinstance(value["layer"], str) or not value["layer"]:
             raise ValueError("%s.layer: must be a layer name" % where)
+        if path.name.lower().endswith(".parquet"):
+            raise ValueError("%s.layer: a GeoParquet file has no layers" % where)
         source["layer"] = value["layer"]
     return source
 
@@ -234,6 +247,13 @@ def _area(value, where, recipe_dir):
         return {"bbox": [float(v) for v in item]}
     if not isinstance(item, str) or not item.strip():
         raise ValueError("%s.%s: must be a non-empty text" % (where, kind))
+    if kind == "name":
+        from pyrosm.data import _resolve_dataset
+
+        try:
+            _resolve_dataset(item)
+        except ValueError as error:
+            raise ValueError("%s.name: %s" % (where, error)) from None
     return {kind: item}
 
 
@@ -250,6 +270,12 @@ def _extract(section, recipe_dir):
     else:
         function, fixed = get_data_by_area, ("area", "output_path", "opener")
     keywords = _keywords(section, function, fixed, "extract", extra=("area",))
+    if keywords.get("directory") is not None:
+        if not isinstance(keywords["directory"], str) or not keywords["directory"]:
+            raise ValueError("extract.directory: must be a folder path")
+        keywords["directory"] = _resolve(
+            recipe_dir / keywords["directory"], "extract.directory"
+        )
     if "must_cover" in keywords:
         keywords["must_cover"] = _file_source(
             keywords["must_cover"], "extract.must_cover", recipe_dir, _VECTOR_SUFFIXES
@@ -365,6 +391,10 @@ def _outputs(section, stem, extract, layers, graph):
         "outputs.provenance",
         ".json",
     )
+    if len(pathlib.PurePosixPath(outputs["provenance"]).name.encode("utf-8")) > 249:
+        raise ValueError(
+            "outputs.provenance: the file name is over 249 bytes, too long for its lock file"
+        )
     paths = [outputs["extract"], outputs["provenance"], *outputs["layers"].values()]
     paths += list((outputs["graph"] or {}).values())
     seen = {}
@@ -458,26 +488,274 @@ def validate(path):
     }
 
 
-def main(argv=None):
-    """The ``pyrosm`` command: ``pyrosm validate RECIPE`` checks a recipe.
+def _jsonable(value):
+    """A path or a time for ``json.dumps``: POSIX or ISO text."""
+    return value.isoformat() if isinstance(value, datetime) else value.as_posix()
 
-    Exits 0 when the recipe is valid, 1 with the reason on stderr when it is not, and 2 on a
-    usage error. It never prompts.
+
+def _versions():
+    """The installed version of each package in ``_PACKAGES``, ``None`` when it is missing."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    found = {}
+    for name in _PACKAGES:
+        try:
+            found[name] = version(name)
+        except PackageNotFoundError:
+            found[name] = None
+    return found
+
+
+def _input_files(recipe):
+    """The recipe's input files: its PBF, its area file and its ``must_cover`` file."""
+    extract = recipe["extract"] or {"area": {}, "keywords": {}}
+    sources = [
+        recipe["pbf"],
+        extract["area"].get("file"),
+        extract["keywords"].get("must_cover"),
+    ]
+    return [source["file"] for source in sources if source]
+
+
+def _read_vector(source):
+    """A file input ``{file, layer}`` read as a GeoDataFrame."""
+    import geopandas as gpd
+
+    if source["file"].name.lower().endswith(".parquet"):
+        return gpd.read_parquet(source["file"])
+    return gpd.read_file(source["file"], layer=source.get("layer"))
+
+
+def _run_extract(extract, target):
+    """Run the extract stage, writing its PBF to ``target``; returns its provenance entry."""
+    from pyrosm.data import _resolve_dataset, get_data
+    from pyrosm.data.extract_index import _area_geometry, _provenance, get_data_by_area
+    from pyrosm.data.geocoding import geocode
+
+    area, keywords = extract["area"], dict(extract["keywords"])
+    if "name" in area:
+        shutil.copyfile(get_data(area["name"], **keywords), target)
+        kind, source = _resolve_dataset(area["name"])
+        sha256, snapshot = _provenance(target)
+        url = source["url"] if kind == "source" else None
+        return {
+            "dataset": area["name"],
+            "url": url,
+            "sha256": sha256,
+            "snapshot": snapshot,
+        }
+    if "file" in area:
+        geometry = _area_geometry(_read_vector(area["file"]))
+    elif "place" in area:
+        geometry = geocode(area["place"])
+    else:
+        geometry = _area_geometry(area["bbox"])
+    if "must_cover" in keywords:
+        keywords["must_cover"] = _read_vector(keywords["must_cover"])
+    result = get_data_by_area(geometry, output_path=str(target), **keywords)
+    entry = {
+        key: getattr(result, key)
+        for key in ("provider", "extract", "url", "sha256", "snapshot")
+    }
+    if pathlib.Path(result.path).resolve() != target.resolve():
+        shutil.copyfile(result.path, target)
+        if _provenance(target)[0] != result.sha256:
+            raise OSError("%s changed while it was copied" % result.path)
+    entry["sources"] = [dataclasses.asdict(source) for source in result.sources]
+    entry["area"] = {
+        "bounds": list(geometry.bounds),
+        "geometry_type": geometry.geom_type,
+        "wkb_sha256": hashlib.sha256(geometry.wkb).hexdigest(),
+    }
+    return entry
+
+
+def _out_root(recipe, out_dir):
+    """The output folder, checked: no output may resolve outside it or onto the recipe or an
+    input, and the extract's download folder must lie apart from it."""
+    from pyrosm.data import _resolve_dataset
+    from pyrosm.utils.download import download_dir
+
+    root = _resolve(recipe["recipe_dir"] if out_dir is None else out_dir, "out_dir")
+    outputs = recipe["outputs"]
+    protected = [recipe["recipe_path"], *_input_files(recipe)]
+    if "name" in recipe["extract"]["area"]:
+        kind, found = _resolve_dataset(recipe["extract"]["area"]["name"])
+        protected += [pathlib.Path(found)] if kind == "package" else []
+    lock = root / (".%s.lock" % pathlib.PurePosixPath(outputs["provenance"]).name)
+    for name in filter(None, (outputs["extract"], outputs["provenance"])):
+        target = _resolve(root / name, "outputs")
+        if root not in target.parents:
+            raise ValueError("outputs: %r resolves outside %s" % (name, root))
+        if lock == target or lock in target.parents:
+            raise ValueError("outputs: %r would be written over the lock file" % name)
+        if target.exists() and any(target.samefile(path) for path in protected):
+            raise ValueError(
+                "outputs: %r would overwrite the recipe or one of its inputs" % name
+            )
+    directory = recipe["extract"]["keywords"].get("directory") or download_dir()
+    cache = _resolve(directory, "extract.directory")
+    if cache == root or root in cache.parents or cache in root.parents:
+        raise ValueError(
+            "extract.directory: the download folder %s and the output folder %s must "
+            "lie apart (neither inside the other)" % (cache, root)
+        )
+    return root
+
+
+@contextlib.contextmanager
+def _locked(path):
+    """Hold the lock file ``path``, naming this process, its host and the time, while the
+    block runs; refuse when it exists."""
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            held = path.read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            held = "unreadable"
+        raise FileExistsError(
+            "%s exists (%s): another run of this recipe is writing its outputs, or one was "
+            "interrupted; delete the file when no run is active" % (path, held)
+        ) from None
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(
+                "pid %d on %s since %s\n"
+                % (
+                    os.getpid(),
+                    socket.gethostname(),
+                    datetime.now(timezone.utc).isoformat(),
+                )
+            )
+        yield
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _publish(root, staging, staged, record, provenance):
+    """Move the staged outputs into place and write the record. The old record goes first,
+    so that a run interrupted while publishing leaves no record rather than one describing a
+    mix of old and new outputs."""
+    fd, temporary = tempfile.mkstemp(suffix=".json", dir=staging)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(record, sort_keys=True, indent=2, default=_jsonable) + "\n")
+    provenance.unlink(missing_ok=True)
+    for name in staged:
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        os.replace(staging / name, root / name)
+    provenance.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(temporary, provenance)
+
+
+def run(path, out_dir=None):
+    """Run a recipe and write its outputs and provenance record; returns their paths.
+
+    The outputs are written into ``out_dir`` (default: the recipe's folder) under the names
+    the recipe gives them. They are made in a staging folder and moved into place only when
+    every stage has succeeded, so a failed stage leaves the previous outputs and record as they
+    were; a run interrupted while moving them leaves no record. A lock file
+    ``.<record name>.lock`` keeps two runs of a recipe from writing at once, and a run is
+    refused when an input file changes while it runs.
+
+    The provenance record (JSON) holds the package versions, the resolved recipe, the SHA-256
+    of each input and output, where the extract came from, how the run was invoked and when.
+
+    Parameters
+    ----------
+    path : str | pathlib.Path
+        The recipe YAML file.
+    out_dir : str | pathlib.Path, optional
+        The output folder, created when missing.
+
+    Returns
+    -------
+    list of pathlib.Path
+        The outputs written, the provenance record last.
+    """
+    return _run(path, out_dir, {"entry_point": "python", "argv": None})
+
+
+def _recorded(recipe):
+    """The resolved recipe for the record, without the extract's ``headers``, which can hold
+    credentials."""
+    keywords = dict(recipe["extract"]["keywords"])
+    if "headers" in keywords:
+        keywords["headers"] = "<not recorded>"
+    return dict(recipe, extract=dict(recipe["extract"], keywords=keywords))
+
+
+def _run(path, out_dir, invocation):
+    from pyrosm.data.extract_index import _identity, _sha256
+
+    recipe = validate(path)
+    if recipe["layers"] or recipe["graph"] is not None:
+        raise ValueError("recipe: running layers and graph is not supported yet")
+    root = _out_root(recipe, out_dir)
+    outputs = recipe["outputs"]
+    provenance = root / outputs["provenance"]
+    root.mkdir(parents=True, exist_ok=True)
+    with _locked(root / (".%s.lock" % provenance.name)):
+        staging = tempfile.mkdtemp(prefix=".pyrosm-staging-", dir=root)
+        try:
+            inputs = _input_files(recipe)
+            identities = [_identity(p) for p in inputs]
+            record = {
+                "pyrosm_recipe_provenance": 1,
+                "versions": _versions(),
+                "recipe": _recorded(recipe),
+                "inputs": {p.as_posix(): _sha256(p) for p in inputs},
+                "invocation": dict(
+                    invocation, recipe=recipe["recipe_path"], out_dir=root
+                ),
+            }
+            target = pathlib.Path(staging, outputs["extract"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            record["extract"] = _run_extract(recipe["extract"], target)
+            record["outputs"] = {outputs["extract"]: record["extract"]["sha256"]}
+            if [_identity(p) for p in inputs] != identities:
+                raise OSError("an input file changed while the recipe ran")
+            record["written_at"] = datetime.now(timezone.utc).isoformat()
+            _publish(root, pathlib.Path(staging), record["outputs"], record, provenance)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    return [root / name for name in record["outputs"]] + [provenance]
+
+
+def main(argv=None):
+    """The ``pyrosm`` command: ``pyrosm run RECIPE [-o DIR]`` runs a recipe and prints the
+    paths it wrote; ``pyrosm validate RECIPE`` checks one.
+
+    Exits 0 on success, 1 with the reason on stderr when the recipe or its data is refused,
+    and 2 on a usage error. It never prompts.
     """
     import argparse
     import sys
 
+    from pyrosm.exceptions import ExtractDownloadError
+
     parser = argparse.ArgumentParser(
-        prog="pyrosm", description="Check a pyrosm recipe."
+        prog="pyrosm", description="Run or check a pyrosm recipe."
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    runner = commands.add_parser("run", help="run a recipe and write its outputs")
+    runner.add_argument("recipe", help="the recipe YAML file")
+    runner.add_argument(
+        "-o", "--out", help="the output folder (default: the recipe's folder)"
+    )
     checker = commands.add_parser("validate", help="check a recipe without running it")
     checker.add_argument("recipe", help="the recipe YAML file")
     arguments = parser.parse_args(argv)
+    argv = sys.argv[1:] if argv is None else list(argv)
     try:
-        validate(arguments.recipe)
-    except (ValueError, OSError, ImportError) as error:
+        if arguments.command == "run":
+            invocation = {"entry_point": "cli", "argv": argv}
+            for path in _run(arguments.recipe, arguments.out, invocation):
+                print(path)
+        else:
+            validate(arguments.recipe)
+            print("%s: valid pyrosm recipe" % arguments.recipe)
+    except (ValueError, OSError, ImportError, ExtractDownloadError) as error:
         print("pyrosm: %s" % error, file=sys.stderr)
         return 1
-    print("%s: valid pyrosm recipe" % arguments.recipe)
     return 0
