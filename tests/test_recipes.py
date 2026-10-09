@@ -25,6 +25,7 @@ from pyrosm.graphs import graph_tables
 from pyrosm.proto.fileformat_pb2 import BlobHeader
 
 PBF = Path(get_data("test_pbf")).as_posix()
+EXAMPLES = Path(__file__).parents[1] / "examples" / "recipes"
 
 
 def _recipe(tmp_path, text, name="recipe.yaml"):
@@ -444,6 +445,16 @@ def test_run_reuses_unchanged_stages(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="s.parquet, reused, changed while the recipe ran"):
         recipes.run(recipe)
     assert (tmp_path / "recipe.provenance.json").read_bytes() == record
+
+
+
+@pytest.mark.parametrize("name", sorted(path.name for path in EXAMPLES.glob("*.yaml")))
+def test_examples(tmp_path, name):
+    """Every example recipe is valid, and those that need no download run end to end."""
+    recipe = recipes.validate(EXAMPLES / name)
+    if recipe["extract"]["area"].get("name") == "helsinki_pbf":
+        written = recipes.run(EXAMPLES / name, tmp_path)
+        assert all(path.stat().st_size > 0 for path in written)
 
 
 @pytest.mark.parametrize(

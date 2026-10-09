@@ -1,0 +1,14 @@
+# The OSM data of Kallio, Helsinki, cropped to its boundary, and its driving network. The
+# data comes from the smallest extract that contains the district or, when it is smaller in
+# total, a merged set of extracts that cover it. Running it geocodes the place and downloads
+# from Geofabrik, BBBike or Movisda.
+recipe: pyrosm
+extract:
+  area: {place: "Kallio, Helsinki"}
+  strategy: smallest_total
+  crop: polygon
+layers:
+  driving_network: {read: network, network_type: driving}
+outputs:
+  extract: kallio.osm.pbf
+  layers: {driving_network: driving_network.parquet}

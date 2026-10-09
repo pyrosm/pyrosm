@@ -1,0 +1,11 @@
+# A simplified walking graph of central Helsinki as node and edge tables, built from the
+# extract that comes with pyrosm (nothing is downloaded).
+recipe: pyrosm
+extract:
+  area: {name: helsinki_pbf}
+graph:
+  network: {network_type: walking}
+  simplify: true
+outputs:
+  extract: helsinki.osm.pbf
+  graph: {nodes: walking_nodes.parquet, edges: walking_edges.parquet}

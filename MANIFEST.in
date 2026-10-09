@@ -4,3 +4,4 @@ graft proto
 graft tests
 include pyproject.toml
 global-exclude __pycache__/*
+graft examples
