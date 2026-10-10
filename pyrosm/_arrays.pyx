@@ -116,8 +116,9 @@ cpdef columns_to_arrays(data):
 cpdef concatenate_dicts_of_arrays(dict_list_of_arrays):
     cdef str k
 
-    keys = list(set([k for d in dict_list_of_arrays
-                     for k in d.keys()]))
+    # In the order the keys first appear, so the columns come out in the same order on
+    # every run.
+    keys = list(dict.fromkeys([k for d in dict_list_of_arrays for k in d.keys()]))
     result_dict = {key: [] for key in keys}
 
     for dicts in dict_list_of_arrays:
