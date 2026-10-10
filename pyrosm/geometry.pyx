@@ -339,41 +339,6 @@ cdef create_line_geometry(nodes, node_coordinates):
     return linestrings(coords)
 
 
-cdef create_linestring_geometry(nodes, node_coordinates):
-    cdef NodeLocations nc = node_coordinates
-    rows, kept_nodes, coords = _kept_nodes(nodes, nc)
-    node_data = [nc.record(rows[i], kept_nodes[i]) for i in range(len(rows))]
-    coords = [[coord] for coord in coords]
-
-    if len(coords) > 1:
-        try:
-            # Each geom segment should be constructed separately
-            # (i.e. becomes a multilinestring)
-            coords = np.array(coords, dtype=np.float64)
-            coords = np.hstack([coords[:-1], coords[1:]])
-            coord_cnt = len(coords)
-            # Get an array of linestrings (segments of the way geometry)
-            geom = linestrings(coords)
-
-            # Get from and to-ids
-            from_ids = kept_nodes[:-1]
-            to_ids = kept_nodes[1:]
-
-            return geom, from_ids, to_ids, node_data
-        except GEOSException as e:
-            if "Invalid number of points" in str(e):
-                # node_data should always be a list
-                return None, None, None, []
-            else:
-                raise e
-        except Exception as e:
-            raise e
-
-    else:
-        # node_data should always be a list
-        return None, None, None, []
-
-
 cdef create_polygon_geometry(nodes, node_coordinates):
     cdef NodeLocations nc = node_coordinates
     cdef int i, n = len(nodes)
@@ -433,110 +398,124 @@ cdef _concatenated_ranges(starts, counts):
             + np.repeat(starts, counts))
 
 
-cdef _create_network_geometries_vectorized(node_coordinates, way_elements,
-                                           bint build_node_data):
-    # Vectorised network path. A plain read (``build_node_data`` False) gets one
-    # LineString per way; graph export gets every way's per-segment LineStrings and
-    # the ``from``/``to`` ids and node-attribute records. Either way the ways whose
-    # nodes are all present with valid coordinates (the near-universal case) are
-    # built by one batched ``shapely.linestrings`` call, and ways with dropped nodes
-    # by the per-way builder, through the nodes that remain.
-    cdef NodeLocations nc = node_coordinates
-    cdef int n = len(way_elements['id'])
-    cdef int i, w, W, vci
-    cdef Py_ssize_t o0, o1, p
-    keys = list(way_elements.keys())
+cdef tuple _way_node_arrays(way_elements, NodeLocations nc):
+    """The node ids of the ways that have nodes as one flat array with per-way offsets,
+    with their store rows and coordinates (-1 and NaN for absent nodes) and whether each
+    pair of coordinates is valid. Returns ``(nonempty, flat_nodes, offsets, rows, lon,
+    lat, valid)``; ``nonempty`` lists the positions of those ways."""
     nodes_col = way_elements['nodes']
-
-    # Flat node ids + per-way offsets, dropping empty ways (as the loop did).
+    cdef int i, n = len(nodes_col)
     flat_list = []
     offsets = [0]
-    nonempty_idx = []
+    nonempty = []
     for i in range(n):
         wnodes = nodes_col[i]
         if len(wnodes) == 0:
             continue
         flat_list.extend(wnodes)
         offsets.append(len(flat_list))
-        nonempty_idx.append(i)
+        nonempty.append(i)
+    flat_nodes = np.asarray(flat_list, dtype=np.int64)
+    rows, lon, lat = nc.gather(flat_nodes)
+    valid = ((rows >= 0)
+             & (lon <= 180.0) & (lon >= -180.0)
+             & (lat <= 90.0) & (lat >= -90.0))
+    return nonempty, flat_nodes, np.asarray(offsets, dtype=np.int64), rows, lon, lat, valid
 
-    W = len(nonempty_idx)
-    geometries = []
-    from_ids = []
-    to_ids = []
-    node_attributes = []
 
-    if W > 0:
-        flat_nodes = np.asarray(flat_list, dtype=np.int64)
-        offsets = np.asarray(offsets, dtype=np.int64)          # length W + 1
-        way_lengths = offsets[1:] - offsets[:-1]               # length W
+cdef _complete_ways(valid, offsets):
+    """Whether each way has at least two nodes, all with valid coordinates."""
+    cumulative = np.zeros(len(valid) + 1, dtype=np.int64)
+    np.cumsum(valid, out=cumulative[1:])
+    counts = np.diff(offsets)
+    return (cumulative[offsets[1:]] - cumulative[offsets[:-1]] == counts) & (counts >= 2)
 
-        # Vectorised coordinate gather + validity (mirrors is_valid_coordinate_pair).
-        idx, lon, lat = nc.gather(flat_nodes)
-        valid = ((idx >= 0)
-                 & (lon <= 180.0) & (lon >= -180.0)
-                 & (lat <= 90.0) & (lat >= -90.0))
 
-        # Ways whose every node is present+valid (and >= 2 nodes) take the batched
-        # path; the rest fall back to the exact per-way builder.
-        valid_count = np.add.reduceat(valid.astype(np.int64), offsets[:-1])
-        vectorizable = (valid_count == way_lengths) & (way_lengths >= 2)
+cdef _create_network_lines(node_coordinates, way_elements):
+    # A plain network read: one LineString per way. The ways whose nodes are all
+    # present with valid coordinates (the near-universal case) come from one batched
+    # ``shapely.linestrings`` call, the others from the per-way builder, through the
+    # nodes that remain.
+    cdef NodeLocations nc = node_coordinates
+    cdef Py_ssize_t w
+    nodes_col = way_elements['nodes']
+    nonempty, flat_nodes, offsets, rows, lon, lat, valid = _way_node_arrays(
+        way_elements, nc
+    )
+    batched = _complete_ways(valid, offsets)
+    line_counts = np.diff(offsets)[batched]
+    positions = _concatenated_ranges(offsets[:-1][batched], line_counts)
+    geometries = np.empty(len(nonempty), dtype=object)
+    if len(positions) > 0:
+        geometries[batched] = linestrings(
+            np.column_stack([lon[positions], lat[positions]]),
+            indices=np.repeat(np.arange(len(line_counts)), line_counts),
+        )
+    for w in np.flatnonzero(~batched):
+        geometries[w] = create_line_geometry(nodes_col[nonempty[w]], nc)
+    for key in list(way_elements.keys()):
+        way_elements[key] = way_elements[key][nonempty]
+    return way_elements, geometries, [], [], []
 
-        coords = np.column_stack([lon, lat])                   # (T, 2) float64
-        if not build_node_data:
-            # One LineString per way, the batched ways from a single call.
-            line_counts = way_lengths[vectorizable]
-            line_positions = _concatenated_ranges(offsets[:-1][vectorizable], line_counts)
-            geometries = np.empty(W, dtype=object)
-            if len(line_positions) > 0:
-                geometries[vectorizable] = linestrings(
-                    coords[line_positions],
-                    indices=np.repeat(np.arange(len(line_counts)), line_counts),
-                )
-            for w in np.flatnonzero(~vectorizable):
-                geometries[w] = create_line_geometry(nodes_col[nonempty_idx[w]], nc)
-            for key in keys:
-                way_elements[key] = way_elements[key][nonempty_idx]
-            return way_elements, geometries, from_ids, to_ids, node_attributes
 
-        seg_counts = way_lengths[vectorizable] - 1             # segments per vec way
-        seg_start_pos = _concatenated_ranges(offsets[:-1][vectorizable], seg_counts)
-        seg_geoms_all = None
-        if len(seg_start_pos) > 0:
-            segments = np.stack(
-                [coords[seg_start_pos], coords[seg_start_pos + 1]], axis=1
-            )
-            seg_geoms_all = linestrings(segments)
-        seg_cum = np.zeros(len(seg_counts) + 1, dtype=np.int64)
-        np.cumsum(seg_counts, out=seg_cum[1:])
+cpdef create_network_segments(node_coordinates, way_elements):
+    """Graph-export edges: each way's segments between consecutive nodes as 2-point
+    LineStrings, with their from/to node ids, and the nodes the segments use.
 
-        vci = 0
-        for w in range(W):
-            if vectorizable[w]:
-                geometries.append(seg_geoms_all[seg_cum[vci]:seg_cum[vci + 1]])
-                if build_node_data:
-                    o0 = offsets[w]
-                    o1 = offsets[w + 1]
-                    way_node_ids = flat_nodes[o0:o1]
-                    from_ids.append(way_node_ids[:-1].tolist())
-                    to_ids.append(way_node_ids[1:].tolist())
-                    for p in range(o0, o1):
-                        node_attributes.append(nc.record(idx[p], flat_nodes[p]))
-                vci += 1
-            else:
-                geom, from_id, to_id, node_data = create_linestring_geometry(
-                    nodes_col[nonempty_idx[w]], nc
-                )
-                geometries.append(geom)
-                if build_node_data:
-                    from_ids.append(from_id)
-                    to_ids.append(to_id)
-                    node_attributes += node_data
+    Returns ``(way_elements, segment_counts, segments, from_ids, to_ids, node_ids,
+    node_rows)``: the ways that have nodes, each way's number of segments (0 when fewer
+    than two of its nodes have valid coordinates), all segments in way order with their
+    end node ids, and the ids and store rows of the nodes they use, in order of first
+    use. A way with dropped nodes is cut through the nodes that remain."""
+    cdef NodeLocations nc = node_coordinates
+    cdef Py_ssize_t w, start
+    nodes_col = way_elements['nodes']
+    nonempty, flat_nodes, offsets, rows, lon, lat, valid = _way_node_arrays(
+        way_elements, nc
+    )
+    for key in list(way_elements.keys()):
+        way_elements[key] = way_elements[key][nonempty]
+    way_lengths = np.diff(offsets)
+    batched = _complete_ways(valid, offsets)
 
-    for key in keys:
-        way_elements[key] = way_elements[key][nonempty_idx]
+    # The nodes each way uses: all nodes of a complete way, the remaining nodes of a way
+    # with dropped nodes when at least two remain.
+    used_counts = np.where(batched, way_lengths, 0)
+    remaining = {}
+    for w in np.flatnonzero(~batched):
+        kept_rows, kept_ids, kept_coords = _kept_nodes(nodes_col[nonempty[w]], nc)
+        if len(kept_rows) > 1:
+            remaining[w] = (kept_rows, kept_ids, kept_coords)
+            used_counts[w] = len(kept_rows)
+    used_offsets = np.zeros(len(used_counts) + 1, dtype=np.int64)
+    np.cumsum(used_counts, out=used_offsets[1:])
+    total = int(used_offsets[-1])
+    used_ids = np.empty(total, dtype=np.int64)
+    used_rows = np.empty(total, dtype=np.int64)
+    used_xy = np.empty((total, 2), dtype=np.float64)
+    source = _concatenated_ranges(offsets[:-1][batched], way_lengths[batched])
+    target = _concatenated_ranges(used_offsets[:-1][batched], way_lengths[batched])
+    used_ids[target] = flat_nodes[source]
+    used_rows[target] = rows[source]
+    used_xy[target, 0] = lon[source]
+    used_xy[target, 1] = lat[source]
+    for w, (kept_rows, kept_ids, kept_coords) in remaining.items():
+        start = used_offsets[w]
+        used_ids[start:start + len(kept_ids)] = kept_ids
+        used_rows[start:start + len(kept_rows)] = kept_rows
+        used_xy[start:start + len(kept_coords)] = kept_coords
 
-    return way_elements, geometries, from_ids, to_ids, node_attributes
+    # One segment per pair of consecutive used nodes of a way
+    segment_counts = np.maximum(used_counts - 1, 0)
+    starts = _concatenated_ranges(used_offsets[:-1], segment_counts)
+    if len(starts) > 0:
+        segments = linestrings(np.stack([used_xy[starts], used_xy[starts + 1]], axis=1))
+    else:
+        segments = np.empty(0, dtype=object)
+    first_use = np.unique(used_ids, return_index=True)[1]
+    first_use.sort()
+    return (way_elements, segment_counts, segments, used_ids[starts],
+            used_ids[starts + 1], used_ids[first_use], used_rows[first_use])
 
 
 cdef _has_linear_tag(highway_arr, barrier_arr, route_arr, int i):
@@ -673,20 +652,13 @@ cdef _create_area_geometries_vectorized(node_coordinates, way_elements):
     return way_elements, geometries, [], [], []
 
 
-cdef _create_way_geometries(node_coordinates,
-                            way_elements,
-                            parse_network,
-                            bint build_node_data=True):
+cdef _create_way_geometries(node_coordinates, way_elements, parse_network):
     # Networks are linear and have their own vectorised builder; everything else
     # (buildings, landuse, ...) goes through the vectorised area builder.
     if parse_network:
-        return _create_network_geometries_vectorized(
-            node_coordinates, way_elements, build_node_data
-        )
+        return _create_network_lines(node_coordinates, way_elements)
     return _create_area_geometries_vectorized(node_coordinates, way_elements)
 
 
-cpdef create_way_geometries(node_coordinates, way_elements, parse_network,
-                            bint build_node_data=True):
-    return _create_way_geometries(node_coordinates, way_elements, parse_network,
-                                  build_node_data)
+cpdef create_way_geometries(node_coordinates, way_elements, parse_network):
+    return _create_way_geometries(node_coordinates, way_elements, parse_network)

@@ -2238,3 +2238,30 @@ def test_line_ways_of_other_layers_are_one_linestring():
         assert geometry.geom_type == kind
         coords = geometry.exterior.coords if kind == "Polygon" else geometry.coords
         assert [tuple(c) for c in coords] == [xy[n] for n in expected]
+
+
+def test_graph_edges_join_consecutive_nodes_of_each_way():
+    """``get_network(nodes=True)`` returns one 2-point edge per pair of consecutive way
+    nodes with valid coordinates (from ``u`` to ``v``), and one node row per node those
+    edges use, with the node columns' dtypes."""
+    import numpy as np
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), keep_node_info=True)
+    nodes, edges = osm.get_network("all", nodes=True)
+
+    expected_u, expected_v = [], []
+    for way_nodes in edges.drop_duplicates("id")["nodes"]:
+        idx, lon, lat = osm._node_coordinates.gather(np.asarray(way_nodes, dtype=np.int64))
+        kept = np.asarray(way_nodes)[(idx >= 0) & (np.abs(lon) <= 180) & (np.abs(lat) <= 90)]
+        expected_u.extend(kept[:-1])
+        expected_v.extend(kept[1:])
+    assert edges["u"].tolist() == expected_u
+    assert edges["v"].tolist() == expected_v
+    assert (edges.geometry.apply(lambda g: len(g.coords)) == 2).all()
+
+    assert nodes["id"].is_unique
+    assert set(nodes["id"]) == set(edges["u"]) | set(edges["v"])
+    assert nodes.dtypes[["lon", "lat"]].tolist() == ["float64", "float64"]
+    assert nodes.dtypes[["version", "timestamp", "changeset", "id"]].tolist() == ["int64"] * 4
+    assert nodes["visible"].dtype == bool
