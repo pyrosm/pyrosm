@@ -2125,3 +2125,36 @@ def test_parse_joins_block_arrays_in_each_keys_dtype():
     assert all(type(value) is bool for value in joined["visible"])
     with pytest.raises(AssertionError):
         concatenate_dicts_of_arrays([{"id": np.array([1]), "lon": np.array([1.0, 2.0])}])
+
+
+def test_orient_polygons_returns_points_and_lines_as_they_are():
+    """Ring orientation (#230) applies to polygons, multipolygons and the polygons of a
+    geometry collection; points, lines and missing geometries come back as the same
+    objects instead of copies."""
+    import numpy as np
+    import shapely
+    from shapely.geometry import GeometryCollection, LineString, Point, Polygon
+    from pyrosm.geometry import orient_polygons
+
+    clockwise = Polygon(
+        [(0, 0), (0, 4), (4, 4), (4, 0)], [[(1, 1), (2, 1), (2, 2), (1, 2)]]
+    )
+    geometries = np.array(
+        [
+            Point(0, 0),
+            LineString([(0, 0), (1, 1)]),
+            clockwise,
+            GeometryCollection([clockwise, Point(5, 5)]),
+            None,
+        ],
+        dtype=object,
+    )
+    oriented = orient_polygons(geometries)
+
+    assert oriented[0] is geometries[0]
+    assert oriented[1] is geometries[1]
+    assert oriented[4] is None
+    expected = shapely.orient_polygons(geometries[2:4], exterior_cw=False)
+    assert shapely.equals_exact(oriented[2:4], expected, tolerance=0).all()
+    assert oriented[2].exterior.is_ccw and not oriented[2].interiors[0].is_ccw
+    assert oriented[3].geoms[0].exterior.is_ccw

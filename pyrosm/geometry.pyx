@@ -10,18 +10,34 @@ from shapely.predicates import is_geometry
 from shapely.geometry import MultiPolygon
 from shapely.ops import polygonize
 from shapely import orient_polygons as _orient_polygons
+from shapely import GeometryType, get_type_id
 from pyrosm.distance import Unit, haversine
 from pyrosm.node_lookup cimport NodeLocations
+
+# The geometry types whose rings orient_polygons orients (a collection may hold polygons).
+_POLYGONAL_TYPES = [
+    GeometryType.POLYGON,
+    GeometryType.MULTIPOLYGON,
+    GeometryType.GEOMETRYCOLLECTION,
+]
 
 
 cpdef orient_polygons(geometries):
     """Normalize Polygon/MultiPolygon ring orientation to the OGC/GeoJSON
     right-hand rule (exterior counter-clockwise, holes clockwise), matching
-    osmium and QGIS (#230). Non-polygonal geometries pass through unchanged.
+    osmium and QGIS (#230). Only polygons, multipolygons and geometry collections
+    are oriented; points, lines and missing geometries are returned as the same
+    objects.
 
     Delegates to shapely's vectorized ``orient_polygons`` (requires shapely
     >= 2.1) rather than a per-geometry Python loop."""
-    return _orient_polygons(geometries, exterior_cw=False)
+    geometries = np.asarray(geometries, dtype=object)
+    polygonal = np.isin(get_type_id(geometries), _POLYGONAL_TYPES)
+    if not polygonal.any():
+        return geometries
+    oriented = geometries.copy()
+    oriented[polygonal] = _orient_polygons(geometries[polygonal], exterior_cw=False)
+    return oriented
 
 
 cpdef fix_geometry(geometry, diff_threshold=20):
