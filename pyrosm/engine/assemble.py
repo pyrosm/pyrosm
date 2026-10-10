@@ -145,6 +145,8 @@ def _assemble_network(
     else:
         node_coordinates = _node_lookup(shard_paths, needed, workers)
     ways = _ways_arrays(kept, tags_as_columns, keep_metadata)
+    # The tag dicts are in the way columns now; free them before the frame is built.
+    kept["tags"] = None
     edges, node_gdf = prepare_geodataframe(
         None,
         node_coordinates,

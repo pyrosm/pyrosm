@@ -2269,3 +2269,32 @@ def test_graph_edges_join_consecutive_nodes_of_each_way():
     assert nodes.dtypes[["lon", "lat"]].tolist() == ["float64", "float64"]
     assert nodes.dtypes[["version", "timestamp", "changeset", "id"]].tolist() == ["int64"] * 4
     assert nodes["visible"].dtype == bool
+
+
+def test_decode_spills_every_ways_refs_only_for_relation_lookups(monkeypatch):
+    """The out-of-core decode spills every way's id and node refs, which only the lookup of
+    relation members reads, unless told not to (as for a network read)."""
+    from pyrosm import get_data
+    from pyrosm.engine import decode
+    from pyrosm.engine.blobs import _index_blobs, _read_block
+    from pyrosm.primitive_block_decoder import decode_primitive_block
+
+    fp = get_data("test_pbf")
+    with open(fp, "rb") as f:
+        blocks = [
+            decode_primitive_block(_read_block(f, offset, size))
+            for kind, offset, size in _index_blobs(fp)
+            if kind == "OSMData"
+        ]
+    monkeypatch.setattr(decode, "_OSM_KEYS", [b"highway"])
+    monkeypatch.setattr(decode, "_INCLUDE_NODES", False)
+    monkeypatch.setattr(decode, "_BBOX_BOUNDS", None)
+    monkeypatch.setattr(decode, "_REQUESTED_TAG_KEYS", None)
+    spilled = {}
+    for spill in (True, False):
+        monkeypatch.setattr(decode, "_SPILL_ALL_WAYS", spill)
+        shards = [decode._decode_one_block(*block) for block in blocks]
+        spilled[spill] = sum(len(shard["all_refs"]) for shard in shards)
+        assert sum(len(shard["way_id"]) for shard in shards) > 0
+    assert spilled[True] > 0
+    assert spilled[False] == 0

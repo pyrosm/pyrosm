@@ -129,6 +129,7 @@ def _get_layer(
                 bbox_bounds=bounds,
                 requested_tag_keys=requested_tag_keys,
                 progress=progress,
+                spill_all_ways=keep_relations,
             )
             is not None,
         )
@@ -171,6 +172,7 @@ def _get_layer(
         bbox_bounds=bounds,
         requested_tag_keys=requested_tag_keys,
         progress=progress,
+        spill_all_ways=keep_relations,
     )
 
 
@@ -653,6 +655,7 @@ def get_network(
             assemble,
             bbox_bounds=bounds,
             progress=progress,
+            spill_all_ways=False,
         )
 
     # A user-supplied output writes the result there and returns it: a GeoParquet file for the
