@@ -1353,6 +1353,8 @@ class OSM:
         is written. Each row of ``data`` updates the tags of the matching element
         (by ``osm_type`` + ``id``); rows whose ``id`` is not in the source are
         added as new elements synthesized from their geometry (with negative ids).
+        A frame without tag columns (only ``id``, ``osm_type``, the geometry and other
+        structural columns) changes no tags: the elements it matches keep their own.
         Topology and coordinates come from the data pyrosm read, so the output is
         faithful and re-readable (e.g. by pyrosm, osmium, GDAL and r5py/R5).
 
@@ -1400,7 +1402,8 @@ class OSM:
 
         data : GeoDataFrame or list of GeoDataFrame
             The (possibly modified) feature frame(s) whose tag columns are written
-            onto the matching elements. New rows (ids not in the source) are added
+            onto the matching elements; a frame with no tag columns leaves their tags
+            as they are. New rows (ids not in the source) are added
             from their geometry: ``Point`` -> node, ``LineString`` -> way, hole-less
             ``Polygon`` -> closed way. Polygons with holes, MultiPolygon and
             MultiLineString geometries are not supported and raise ``ValueError``.
