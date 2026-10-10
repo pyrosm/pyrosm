@@ -1966,3 +1966,15 @@ def test_node_locations_gather_from_an_empty_store():
     idx, lon, lat = store([7], [24.9], [60.2]).gather(np.array([7, 8], dtype=np.int64))
     assert idx.tolist() == [0, -1]
     assert lon[0] == 24.9 and lat[0] == 60.2 and np.isnan(lon[1]) and np.isnan(lat[1])
+
+
+def test_node_columns_come_in_a_fixed_order():
+    """Readers that return nodes put the node columns in one fixed order, the one the
+    out-of-core engine uses, instead of an order that changed with Python's hash seed."""
+    from pyrosm import OSM, get_data
+
+    fp = get_data("test_pbf")
+    columns = list(OSM(fp).get_pois().columns)
+    node_columns = ["id", "lon", "lat", "tags", "visible", "version", "timestamp"]
+    assert columns[:8] == node_columns + ["changeset"]
+    assert columns == list(OSM(fp, engine="out_of_core").get_pois().columns)

@@ -203,13 +203,13 @@ cdef parse_dense(
 
     if keep_meta:
         return [dict(id=ids,
-                     version=versions,
-                     changeset=changesets,
-                     timestamp=timestamps,
                      lon=lons,
                      lat=lats,
                      tags=tags,
                      visible=visible,
+                     version=versions,
+                     timestamp=timestamps,
+                     changeset=changesets,
                      )]
     return [dict(id=ids,
                  lon=lons,
@@ -304,13 +304,13 @@ cdef parse_nodes(pblock, data, string_table, bounding_box, unix_time_filter=None
 
     if keep_meta:
         return dict(id=id_,
-                    version=version,
-                    changeset=changeset,
-                    timestamp=timestamp,
                     lon=lon,
                     lat=lat,
                     tags=tags,
                     visible=visible,
+                    version=version,
+                    timestamp=timestamp,
+                    changeset=changeset,
                     )
     return dict(id=id_,
                 lon=lon,
