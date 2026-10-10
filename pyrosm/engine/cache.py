@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # The version of the cached results' content, part of every key: bumped whenever a read
 # returns different output, so a file cached by an older pyrosm is not served.
-_RESULT_FORMAT = 2
+_RESULT_FORMAT = 3
 
 
 def cache_dir():
