@@ -210,7 +210,8 @@ def _set_geometry_edit(mapping, oid, value, what):
 
 
 class _Edits:
-    """Per-element edits and additions collected from the input frame(s)."""
+    """Per-element edits and additions collected from the input frame(s). A tag edit of
+    ``None`` keeps the element's own tags."""
 
     def __init__(self):
         self.node_tags, self.node_coords = {}, {}
@@ -258,8 +259,9 @@ def _add_new_element(edits, oid, otype, geom, tags, refs, seen):
 def _collect_edits(frames, way_by_id, node_coordinates, rel_ids, apply_geometry):
     """Split frame rows into edits of existing elements and new elements.
 
-    Existing elements are matched by ``osm_type`` + ``id``; their tags are always
-    taken from the row. With ``apply_geometry`` a node row's ``Point`` also moves the
+    Existing elements are matched by ``osm_type`` + ``id``; their tags are taken from the
+    row, unless the frame has no tag columns, in which case they keep their own. With
+    ``apply_geometry`` a node row's ``Point`` also moves the
     node, a way row's ``nodes`` column also reshapes the way, and a row with a
     negative unmatched id is added under exactly that id (so a way can reference a
     vertex added in the same call). Otherwise unmatched rows are synthesized with
@@ -269,6 +271,11 @@ def _collect_edits(frames, way_by_id, node_coordinates, rel_ids, apply_geometry)
     seen_new = set()
     for gdf in frames:
         geom_col = gdf.geometry.name
+        has_tags = any(
+            col == "tags" or col not in _NON_TAG_COLS
+            for col in gdf.columns
+            if col != geom_col
+        )
         for _, row in gdf.iterrows():
             otype = _normalize_osm_type(row.get("osm_type"))
             oid = _normalize_id(row.get("id"))
@@ -276,20 +283,21 @@ def _collect_edits(frames, way_by_id, node_coordinates, rel_ids, apply_geometry)
             if otype is None:
                 otype = _infer_osm_type(geom)
             tags = _row_tags(row, geom_col)
+            edit = tags if has_tags else None
             refs = _row_refs(row) if apply_geometry else None
             if oid is not None and otype == "way" and oid in way_by_id:
-                edits.way_tags[oid] = tags
+                edits.way_tags[oid] = edit
                 if refs is not None:
                     _set_geometry_edit(edits.way_refs, oid, refs, "member node ids")
             elif oid is not None and otype == "node" and oid in node_coordinates:
-                edits.node_tags[oid] = tags
+                edits.node_tags[oid] = edit
                 if apply_geometry and getattr(geom, "geom_type", None) == "Point":
                     _check_lonlat(geom.x, geom.y, oid)
                     _set_geometry_edit(
                         edits.node_coords, oid, (geom.x, geom.y), "coordinates"
                     )
             elif oid is not None and otype == "relation" and oid in rel_ids:
-                edits.rel_tags[oid] = tags
+                edits.rel_tags[oid] = edit
             elif apply_geometry and oid is not None and oid < 0:
                 _add_new_element(edits, oid, otype, geom, tags, refs, seen_new)
             else:
@@ -743,9 +751,8 @@ def _add_base_nodes(builder, node_coordinates, nodes_cache, plan, keep=None):
             continue
         if keep is not None and nid not in keep:
             continue
-        if nid in plan.node_tags:
-            tags = plan.node_tags[nid]
-        else:
+        tags = plan.node_tags.get(nid)
+        if tags is None:
             tags = poi_tags.get(nid)
             if tags is None:
                 tags = rec.get("tags")
@@ -769,13 +776,14 @@ def _add_base_ways(builder, way_records, plan, keep=None):
             continue
         if keep is not None and wid not in keep:
             continue
+        tags = plan.way_tags.get(wid)
         builder.ways.append(
             {
                 "id": wid,
                 "refs": plan.way_refs[wid],
                 "version": w.get("version") or 1,
                 "timestamp": w.get("timestamp"),
-                "tags": plan.way_tags.get(wid, _record_tags(w)),
+                "tags": _record_tags(w) if tags is None else tags,
             }
         )
 
@@ -796,7 +804,10 @@ def _add_base_relations(builder, relations, plan, keep=None):
                 (mem["member_type"][j], int(mem["member_id"][j]), mem["member_role"][j])
                 for j in range(len(mem["member_id"]))
             ]
-        rtags = relations["tags"][i]
+        rtags = plan.rel_tags.get(rid)
+        if rtags is None:
+            rtags = relations["tags"][i]
+            rtags = rtags if isinstance(rtags, dict) else {}
         builder.rels.append(
             {
                 "id": rid,
@@ -810,9 +821,7 @@ def _add_base_relations(builder, relations, plan, keep=None):
                 "changeset": (
                     int(relations["changeset"][i]) if "changeset" in relations else None
                 ),
-                "tags": plan.rel_tags.get(
-                    rid, rtags if isinstance(rtags, dict) else {}
-                ),
+                "tags": rtags,
             }
         )
 
