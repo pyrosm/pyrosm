@@ -279,7 +279,9 @@ def test_reading_buildings_from_osh(helsinki_history_pbf):
     assert osm._current_timestamp == unix_time
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], Polygon)
-    assert gdf.shape == (74, 14)
+    # Three ways lost their building tag before 2010; their latest version is no
+    # building (#379).
+    assert gdf.shape == (71, 14)
 
     required_cols = ["building", "id", "timestamp", "version", "geometry"]
 
