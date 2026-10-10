@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- FIXED: History reads (an `.osh.pbf` file, or a `timestamp`) no longer return elements that were deleted before the timestamp: a deleted element used to come back as its last version before the deletion. With a `bounding_box`, they no longer return elements that had left the box by then, at their old position: the box is now applied to each element's state at the timestamp, not to every version. On the Helsinki test history file at 2010-01-01, three buildings and 33 network ways that had been deleted are gone ([#443](https://github.com/pyrosm/pyrosm/pull/443))
+
 v0.18.0
 -------
 

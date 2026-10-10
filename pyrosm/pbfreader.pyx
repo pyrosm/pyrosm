@@ -494,19 +494,23 @@ cdef _parse_osm_data(
     all_nodes = []
     all_relations = []
     node_lookup_created = False
+    # A history read applies the bounding box to each element's state at the timestamp
+    # (below), not to every version: a deletion has no location, and an element can
+    # move into or out of the box between versions.
+    box = None if unix_time_filter is not None else bounding_box
 
     for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath, progress):
         for pgroup in pblock.primitivegroup:
             if len(pgroup.dense.id) > 0:
-                all_nodes += parse_dense(pblock, pgroup.dense, str_table, bounding_box,
+                all_nodes += parse_dense(pblock, pgroup.dense, str_table, box,
                                          unix_time_filter, None, keep_metadata)
             elif len(pgroup.nodes) > 0:
                 all_nodes += [parse_nodes(pblock, pgroup.nodes, str_table,
-                                          bounding_box, unix_time_filter, None,
+                                          box, unix_time_filter, None,
                                           keep_metadata)]
             elif len(pgroup.ways) > 0:
                 # Once all the nodes have been parsed comes Ways
-                if bounding_box is not None:
+                if box is not None:
                     if not node_lookup_created:
                         node_lookup = get_nodeid_lookup_khash(all_nodes)
                     all_ways += parse_ways(pgroup.ways, str_table, node_lookup, unix_time_filter)
@@ -538,22 +542,23 @@ cdef _parse_osm_data(
         )
         return {}, [], {}, {}, []
 
-    # Keep the closest record to the timestamp if filter is used
+    # Keep each element's state at the timestamp if filter is used
     if unix_time_filter is not None:
-        ways_df = pd.DataFrame(all_ways)
-        # Drop deleted history items
-        nodes_df = nodes_df.loc[nodes_df["visible"]==True].copy()
-        ways_df = ways_df.loc[ways_df["visible"]==True].copy()
-        relations_df = relations_df[relations_df["visible"]==True].copy()
-
-        # Get latest version
         nodes_df = get_latest_version(nodes_df)
-        all_ways = get_latest_version(ways_df).to_dict(orient="records")
+        ways_df = get_latest_version(pd.DataFrame(all_ways))
+        relations_df = get_latest_version(relations_df)
+        if bounding_box is not None:
+            xmin, ymin, xmax, ymax = bounding_box
+            inside = nodes_df["lon"].between(xmin, xmax) & nodes_df["lat"].between(ymin, ymax)
+            nodes_df = nodes_df.loc[inside]
+            if len(ways_df) > 0:
+                node_lookup = get_nodeid_lookup_khash([{"id": nodes_df["id"].values}])
+                ways_df = ways_df.loc[
+                    [nodes_for_way_exist_khash(ids, node_lookup) for ids in ways_df["nodes"]]
+                ]
 
         # DataFrame structure produces unnecesary None values that needs to be cleaned
-        all_ways = clean_empty_values_from_ways(all_ways)
-
-        relations_df = get_latest_version(relations_df)
+        all_ways = clean_empty_values_from_ways(ways_df.to_dict(orient="records"))
 
     # Keys with numpy arrays
     all_nodes = {col: nodes_df[col].values for col in nodes_df.columns}
@@ -605,9 +610,7 @@ cdef _parse_osm_data(
             completed_relation_ways = explode_way_tags(completed_relation_ways)
             if unix_time_filter is not None and len(completed_relation_ways) > 0:
                 # Mirror the OSH latest-version selection applied to all_ways above.
-                cw_df = pd.DataFrame(completed_relation_ways)
-                cw_df = cw_df.loc[cw_df["visible"] == True].copy()
-                cw_df = get_latest_version(cw_df)
+                cw_df = get_latest_version(pd.DataFrame(completed_relation_ways))
                 completed_relation_ways = clean_empty_values_from_ways(
                     cw_df.to_dict(orient="records")
                 )
@@ -648,12 +651,9 @@ cdef _parse_osm_data(
                 if "id" in boundary_df.columns:
                     # Apply the same OSH latest-version selection to the boundary
                     # nodes as nodes_df received above, so timestamped geometries are
-                    # built from the latest non-deleted vertex rather than whichever
-                    # historical version drop_duplicates happens to keep first.
+                    # built from each vertex's state at the timestamp rather than
+                    # whichever historical version drop_duplicates happens to keep.
                     if unix_time_filter is not None:
-                        boundary_df = boundary_df.loc[
-                            boundary_df["visible"] == True
-                        ].copy()
                         boundary_df = get_latest_version(boundary_df)
                     coords_df = pd.concat(
                         [nodes_df, boundary_df], ignore_index=True

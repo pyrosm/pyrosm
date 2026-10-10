@@ -558,20 +558,17 @@ def test_nxgraph_export_from_osh(helsinki_history_pbf):
         assert to == edge["v"]
 
     # Test that finding shortest paths works for all nodes
-    node_ids = [n for n in g.nodes()]
-    source = node_ids[5]
-    shortest_paths = []
-    for target in node_ids:
-        shortest_path_length = nx.shortest_path_length(
-            g, source=source, target=target, weight="length"
-        )
-        shortest_paths.append(shortest_path_length)
+    source = 25292470
+    shortest_paths = {
+        target: nx.shortest_path_length(g, source=source, target=target, weight="length")
+        for target in g.nodes()
+    }
 
     # Check couple of exact lengths
     # Windows gives a slightly different result
     # most likely due to float handling differences between Unix and Windows
-    assert round(shortest_paths[0], 0) in [478, 470]
-    assert round(shortest_paths[-1], 0) in [810]
+    assert round(shortest_paths[60072314], 0) in [478, 470]
+    assert round(shortest_paths[472662939], 0) in [810]
 
 
 def _edge_pairs(directed_edges, from_id_col="u", to_id_col="v"):

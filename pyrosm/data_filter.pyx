@@ -338,11 +338,15 @@ cdef filter_node_indices(node_arrays, osm_keys, data_filter, filter_type, bint k
 
 
 cpdef get_latest_version(df):
-    """The latest version of each element: its last row (versions come in ascending
-    order), taken whole, so a value the latest version lacks stays missing instead of
-    coming from an older version. Rows are sorted by id, with ``id`` as the first
+    """The state of each element in a history read: its last version (versions come in
+    ascending order), taken whole, so a value the latest version lacks stays missing
+    instead of coming from an older version. An element whose last version is a deletion
+    (``visible`` False) is left out. Rows are sorted by id, with ``id`` as the first
     column."""
+    if len(df) == 0:
+        return df
     latest = df.drop_duplicates("id", keep="last").sort_values("id")
+    latest = latest.loc[latest["visible"] == True]
     columns = ["id"] + [column for column in df.columns if column != "id"]
     return latest[columns].reset_index(drop=True)
 
