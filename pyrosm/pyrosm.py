@@ -257,9 +257,9 @@ class OSM:
         """Whether the out-of-core engine handles this read. History reads -- an ``.osh.pbf``
         file, or an explicit ``timestamp`` -- route to the in-memory reader instead: selecting
         the latest version of each element at/before the timestamp is pyrosm's per-id
-        ``get_latest_version`` merge (``df.groupby("id").last()``, each column's last non-null
-        value across an element's versions), which pandas evaluates eagerly over the whole
-        materialised multi-version frame, so history is read in memory."""
+        ``get_latest_version`` (each element's last version, taken whole), which pandas
+        evaluates eagerly over the whole materialised multi-version frame, so history is
+        read in memory."""
         return self.engine == "out_of_core" and timestamp is None and not self._osh_file
 
     def _read_engine(self, reader, with_relations=True, **kwargs):

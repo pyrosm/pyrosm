@@ -1978,3 +1978,19 @@ def test_node_columns_come_in_a_fixed_order():
     node_columns = ["id", "lon", "lat", "tags", "visible", "version", "timestamp"]
     assert columns[:8] == node_columns + ["changeset"]
     assert columns == list(OSM(fp, engine="out_of_core").get_pois().columns)
+
+
+def test_latest_history_version_is_taken_whole():
+    """#379: the latest version of each element is taken whole, so a tag that the newest
+    version removed stays missing instead of coming back from an older version."""
+    import pandas as pd
+
+    from pyrosm.data_filter import get_latest_version
+
+    versions = pd.DataFrame(
+        {"version": [1, 1, 2], "id": [2, 1, 1], "name": ["b", "old", None]}
+    )
+    latest = get_latest_version(versions)
+    assert list(latest.columns) == ["id", "version", "name"]
+    assert latest["id"].tolist() == [1, 2] and latest["version"].tolist() == [2, 1]
+    assert pd.isna(latest.loc[0, "name"]) and latest.loc[1, "name"] == "b"
