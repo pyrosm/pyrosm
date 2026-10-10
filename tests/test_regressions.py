@@ -2009,17 +2009,78 @@ def test_write_pbf_frame_without_tag_columns_keeps_tags(tmp_path):
     assert names[("node", node["id"])] == node["name"]
 
 
-def test_latest_history_version_is_taken_whole():
-    """#379: the latest version of each element is taken whole, so a tag that the newest
-    version removed stays missing instead of coming back from an older version."""
+def test_history_state_is_each_elements_latest_version():
+    """#379: an element's state at a timestamp is its latest version, taken whole: a tag
+    that the newest version removed stays missing instead of coming back from an older
+    version, and an element whose latest version is a deletion is left out."""
     import pandas as pd
 
     from pyrosm.data_filter import get_latest_version
 
     versions = pd.DataFrame(
-        {"version": [1, 1, 2], "id": [2, 1, 1], "name": ["b", "old", None]}
+        {
+            "version": [1, 1, 2, 1, 2],
+            "id": [2, 1, 1, 3, 3],
+            "visible": [True, True, True, True, False],
+            "name": ["b", "old", None, "c", None],
+        }
     )
     latest = get_latest_version(versions)
-    assert list(latest.columns) == ["id", "version", "name"]
+    assert list(latest.columns) == ["id", "version", "visible", "name"]
     assert latest["id"].tolist() == [1, 2] and latest["version"].tolist() == [2, 1]
     assert pd.isna(latest.loc[0, "name"]) and latest.loc[1, "name"] == "b"
+
+
+def test_history_read_with_a_bounding_box_returns_the_state_in_the_box():
+    """A history read with a bounding box returns the elements whose state at the
+    timestamp lies in the box, at that state: none deleted by then, none that had left
+    the box, and nodes at their position at that time."""
+    import numpy as np
+    import pandas as pd
+
+    from pyrosm import get_data
+    from pyrosm.pbfreader import parse_osm_data
+    from pyrosm.utils import datetime_to_unix_time
+
+    fp = get_data("helsinki_test_history_pbf")
+    when = datetime_to_unix_time(pd.to_datetime("2014-01-01", utc=True))
+    nodes, ways, _, _, _ = parse_osm_data(fp, None, False, None)
+    columns = ("id", "timestamp", "visible", "lon", "lat")
+    node_versions = pd.DataFrame({c: np.asarray(nodes[c]) for c in columns})
+    state = node_versions[node_versions["timestamp"] <= when]
+    state = state.drop_duplicates("id", keep="last")
+    state = state[state["visible"]]
+    (xmin, ymin), (xmax, ymax) = state[["lon", "lat"]].quantile([0.3, 0.7]).values
+    inside = state[state["lon"].between(xmin, xmax) & state["lat"].between(ymin, ymax)]
+    way_versions = pd.DataFrame(ways)
+    way_state = way_versions[way_versions["timestamp"] <= when]
+    way_state = way_state.drop_duplicates("id", keep="last")
+    way_state = way_state[way_state["visible"]]
+    in_box = set(inside["id"])
+    expected_ways = {
+        way_id
+        for way_id, refs in zip(way_state["id"], way_state["nodes"])
+        if in_box.intersection(refs)
+    }
+
+    got_nodes, got_ways, _, _, _ = parse_osm_data(fp, [xmin, ymin, xmax, ymax], False, when)
+    got = pd.DataFrame({c: np.asarray(got_nodes[c]) for c in ("id", "lon", "lat")})
+    expected = inside[["id", "lon", "lat"]]
+    pd.testing.assert_frame_equal(
+        got.sort_values("id").reset_index(drop=True),
+        expected.sort_values("id").reset_index(drop=True),
+        check_dtype=False,
+    )
+    assert {way["id"] for way in got_ways} == expected_ways
+
+
+@pytest.mark.parametrize("bounding_box", [None, [24.9, 60.1, 25.0, 60.2]])
+def test_history_read_before_the_first_way_finds_no_network(bounding_box):
+    """A history read at a timestamp when only nodes existed (the test file's first way
+    and relation came later) finds no network, instead of failing on the empty way and
+    relation tables."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_test_history_pbf"), bounding_box=bounding_box)
+    with pytest.warns(UserWarning, match="Could not find any edges"):
+        assert osm.get_network(timestamp="2007-01-15") is None

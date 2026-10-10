@@ -524,7 +524,7 @@ def test_reading_network_from_osh(helsinki_history_pbf):
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], MultiLineString)
-    assert gdf.shape == (204, 21)
+    assert gdf.shape == (171, 21)
 
     required_cols = ["highway", "id", "timestamp", "version", "geometry"]
 
@@ -587,5 +587,6 @@ def test_osh_network_does_not_leak_empty_tag_columns(helsinki_history_pbf):
     # The column set must stay lean (21 since the latest version of each way is taken
     # whole (#379); 24 before that, 25 before the network-filter fix and 27 with the
     # #248 NA-leak bug). The row count dropped by one with the OSMnx-parity filters
-    # (#369) and by one more with #379, as a way lost its highway tag before 2010.
-    assert gdf.shape == (204, 21)
+    # (#369), by one more with #379, as a way lost its highway tag before 2010, and by
+    # 33 ways that were deleted before 2010.
+    assert gdf.shape == (171, 21)
