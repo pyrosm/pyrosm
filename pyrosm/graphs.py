@@ -136,6 +136,44 @@ def get_directed_edges(
     return nodes, edges
 
 
+def graph_tables(
+    nodes,
+    edges,
+    direction="oneway",
+    from_id_col="u",
+    to_id_col="v",
+    node_id_col="id",
+    force_bidirectional=False,
+    network_type=None,
+    retain_all=False,
+    simplify=False,
+    simplify_kwargs=None,
+):
+    """The nodes and edges of a graph as GeoDataFrames, as the graph exporters build it: the
+    edges directed (see :func:`get_directed_edges`), simplified when ``simplify`` and, unless
+    ``retain_all``, only the connected part kept. The parameters are those of
+    :func:`to_networkx`."""
+    nodes, edges = get_directed_edges(
+        nodes,
+        edges,
+        direction,
+        from_id_col,
+        to_id_col,
+        node_id_col,
+        force_bidirectional,
+        network_type,
+    )
+    nodes, edges = _maybe_simplify(
+        simplify, nodes, edges, from_id_col, to_id_col, node_id_col, simplify_kwargs
+    )
+    # Keep only strongly connected component if not specifically requested otherwise
+    if not retain_all:
+        nodes, edges = get_connected_edges(
+            nodes, edges, from_id_col, to_id_col, node_id_col
+        )
+    return nodes, edges
+
+
 def to_networkx(
     nodes,
     edges,
@@ -216,7 +254,7 @@ def to_networkx(
     """
 
     # Prepare the data
-    nodes, edges = get_directed_edges(
+    nodes, edges = graph_tables(
         nodes,
         edges,
         direction,
@@ -225,17 +263,10 @@ def to_networkx(
         node_id_col,
         force_bidirectional,
         network_type,
+        retain_all,
+        simplify,
+        simplify_kwargs,
     )
-
-    nodes, edges = _maybe_simplify(
-        simplify, nodes, edges, from_id_col, to_id_col, node_id_col, simplify_kwargs
-    )
-
-    # Keep only strongly connected component if not specifically requested otherwise
-    if not retain_all:
-        nodes, edges = get_connected_edges(
-            nodes, edges, from_id_col, to_id_col, node_id_col
-        )
 
     if osmnx_compatible:
         # OSMnx carries the parallel-edge key in the graph structure, not as an
@@ -340,7 +371,7 @@ def to_igraph(
 
     """
     # Prepare the data
-    nodes, edges = get_directed_edges(
+    nodes, edges = graph_tables(
         nodes,
         edges,
         direction,
@@ -349,17 +380,10 @@ def to_igraph(
         node_id_col,
         force_bidirectional,
         network_type,
+        retain_all,
+        simplify,
+        simplify_kwargs,
     )
-
-    nodes, edges = _maybe_simplify(
-        simplify, nodes, edges, from_id_col, to_id_col, node_id_col, simplify_kwargs
-    )
-
-    # Keep only strongly connected component if not specifically requested otherwise
-    if not retain_all:
-        nodes, edges = get_connected_edges(
-            nodes, edges, from_id_col, to_id_col, node_id_col
-        )
 
     return _create_igraph(nodes, edges, from_id_col, to_id_col, node_id_col)
 
@@ -379,7 +403,7 @@ def to_pandana(
     simplify_kwargs=None,
 ):
     # Prepare the data
-    nodes, edges = get_directed_edges(
+    nodes, edges = graph_tables(
         nodes,
         edges,
         direction,
@@ -388,17 +412,10 @@ def to_pandana(
         node_id_col,
         force_bidirectional,
         network_type,
+        retain_all,
+        simplify,
+        simplify_kwargs,
     )
-
-    nodes, edges = _maybe_simplify(
-        simplify, nodes, edges, from_id_col, to_id_col, node_id_col, simplify_kwargs
-    )
-
-    # Keep only strongly connected component if not specifically requested otherwise
-    if not retain_all:
-        nodes, edges = get_connected_edges(
-            nodes, edges, from_id_col, to_id_col, node_id_col
-        )
 
     nodes = nodes.rename(columns={"lat": "y", "lon": "x"})
     nodes = nodes.set_index("id", drop=False)
@@ -422,7 +439,7 @@ def to_pandarm(
     simplify_kwargs=None,
 ):
     # Prepare the data
-    nodes, edges = get_directed_edges(
+    nodes, edges = graph_tables(
         nodes,
         edges,
         direction,
@@ -431,17 +448,10 @@ def to_pandarm(
         node_id_col,
         force_bidirectional,
         network_type,
+        retain_all,
+        simplify,
+        simplify_kwargs,
     )
-
-    nodes, edges = _maybe_simplify(
-        simplify, nodes, edges, from_id_col, to_id_col, node_id_col, simplify_kwargs
-    )
-
-    # Keep only strongly connected component if not specifically requested otherwise
-    if not retain_all:
-        nodes, edges = get_connected_edges(
-            nodes, edges, from_id_col, to_id_col, node_id_col
-        )
 
     nodes = nodes.rename(columns={"lat": "y", "lon": "x"})
     nodes = nodes.set_index("id", drop=False)

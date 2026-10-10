@@ -1,0 +1,15 @@
+# The walking network, the buildings and the restaurants and cafes of central Helsinki,
+# read from the extract that comes with pyrosm (nothing is downloaded).
+recipe: pyrosm
+extract:
+  area: {name: helsinki_pbf}
+layers:
+  walking_network: {read: network, network_type: walking}
+  buildings: {read: buildings}
+  food: {read: pois, custom_filter: {amenity: [restaurant, cafe]}}
+outputs:
+  extract: helsinki.osm.pbf
+  layers:
+    walking_network: walking_network.parquet
+    buildings: buildings.parquet
+    food: food.parquet

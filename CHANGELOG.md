@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- NEW: Recipes. A recipe is a YAML file that says how the OSM data of an analysis is made: an extract to download (by bounding box, place name, area file or dataset name), layers to read from it, a graph to build, and where each output goes. `pyrosm run RECIPE [-o DIR]` (or `pyrosm.recipes.run`) writes the extract as PBF, each layer and the graph's node and edge tables as GeoParquet, and a provenance record with the package versions, the resolved recipe, the SHA-256 of every input and output and where the extract came from. Outputs are moved into place only when every stage has succeeded; a rerun reuses the stages that did not change, and `sha256` and `snapshot` pins refuse data that differs. `pyrosm validate RECIPE` checks a recipe without running it, and `pyrosm.graphs.graph_tables` returns a graph's node and edge tables as the graph exporters build them. Recipes need PyYAML and pyarrow (`pip install "pyrosm[recipes]"`), and the user guide has a page on them ([#432](https://github.com/pyrosm/pyrosm/pull/432), [#433](https://github.com/pyrosm/pyrosm/pull/433), [#434](https://github.com/pyrosm/pyrosm/pull/434), [#435](https://github.com/pyrosm/pyrosm/pull/435), [#436](https://github.com/pyrosm/pyrosm/pull/436), [#437](https://github.com/pyrosm/pyrosm/pull/437))
+
 v0.17.0
 -------
 
