@@ -2084,3 +2084,44 @@ def test_history_read_before_the_first_way_finds_no_network(bounding_box):
     osm = OSM(get_data("helsinki_test_history_pbf"), bounding_box=bounding_box)
     with pytest.warns(UserWarning, match="Could not find any edges"):
         assert osm.get_network(timestamp="2007-01-15") is None
+
+
+def test_parse_joins_block_arrays_in_each_keys_dtype():
+    """The parse joins its per-block arrays per key, in block order and in each key's
+    dtype; tag dicts stay the same objects, a key without values is left out, and blocks
+    whose columns differ in length are refused."""
+    import numpy as np
+    from pyrosm._arrays import concatenate_dicts_of_arrays
+
+    tags = np.empty(2, dtype=object)
+    tags[:] = [{"amenity": "cafe"}, None]
+    first = {
+        "id": np.array([1, 2]),
+        "version": np.array([3, 4]),
+        "timestamp": np.array([5, 6]),
+        "changeset": np.array([7, 8]),
+        "lon": np.array([24.5, 24.6]),
+        "visible": np.array([True, False]),
+        "tags": tags,
+        "empty": np.empty(0),
+    }
+    second = {key: values[:1] for key, values in first.items()}
+    joined = concatenate_dicts_of_arrays([first, second])
+
+    expected = {
+        "id": ("int64", [1, 2, 1]),
+        "version": ("int32", [3, 4, 3]),
+        "timestamp": ("uint32", [5, 6, 5]),
+        "changeset": ("int32", [7, 8, 7]),
+        "lon": ("float64", [24.5, 24.6, 24.5]),
+        "visible": ("object", [True, False, True]),
+        "tags": ("object", [tags[0], None, tags[0]]),
+    }
+    assert list(joined) == list(expected)
+    for key, (dtype, values) in expected.items():
+        assert joined[key].dtype == dtype
+        assert joined[key].tolist() == values
+    assert joined["tags"][0] is tags[0] and joined["tags"][2] is tags[0]
+    assert all(type(value) is bool for value in joined["visible"])
+    with pytest.raises(AssertionError):
+        concatenate_dicts_of_arrays([{"id": np.array([1]), "lon": np.array([1.0, 2.0])}])
