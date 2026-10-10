@@ -87,7 +87,7 @@ def test_igraph_export_by_walking(walk_nodes_and_edges):
     import igraph
 
     nodes, edges = walk_nodes_and_edges
-    g = to_igraph(nodes, edges, retain_all=True)
+    g = to_igraph(nodes, edges, retain_all=True, simplify=False)
     n_edges = len(edges)
     n_nodes = len(nodes)
 
@@ -124,7 +124,7 @@ def test_igraph_export_by_cycling(bike_nodes_and_edges):
     import igraph
 
     nodes, edges = bike_nodes_and_edges
-    g = to_igraph(nodes, edges, retain_all=True)
+    g = to_igraph(nodes, edges, retain_all=True, simplify=False)
     n_edges = len(edges)
     n_nodes = len(nodes)
 
@@ -162,7 +162,7 @@ def test_igraph_export_by_driving(driving_nodes_and_edges):
     import igraph
 
     nodes, edges = driving_nodes_and_edges
-    g = to_igraph(nodes, edges, retain_all=True)
+    g = to_igraph(nodes, edges, retain_all=True, simplify=False)
     n_nodes = len(nodes)
 
     assert isinstance(g, igraph.Graph)
@@ -207,7 +207,7 @@ def test_igraph_immutable_counts(test_pbf):
 
     osm = OSM(test_pbf)
     nodes, edges = osm.get_network(nodes=True)
-    g = to_igraph(nodes, edges, retain_all=True)
+    g = to_igraph(nodes, edges, retain_all=True, simplify=False)
     n_nodes = len(nodes)
 
     assert isinstance(g, igraph.Graph)
@@ -223,7 +223,7 @@ def test_nxgraph_export_by_walking(walk_nodes_and_edges):
 
     nodes, edges = walk_nodes_and_edges
     edges = edges.drop_duplicates(["u", "v"])
-    g = to_networkx(nodes, edges, retain_all=True, osmnx_compatible=False)
+    g = to_networkx(nodes, edges, retain_all=True, osmnx_compatible=False, simplify=False)
     n_edges = len(edges)
     n_nodes = len(nodes)
 
@@ -271,7 +271,7 @@ def test_nxgraph_immutable_counts(test_pbf):
 
     osm = OSM(test_pbf)
     nodes, edges = osm.get_network(nodes=True)
-    g = to_networkx(nodes, edges, retain_all=True)
+    g = to_networkx(nodes, edges, retain_all=True, simplify=False)
     n_nodes = len(nodes)
 
     assert isinstance(g, nx.MultiDiGraph)
@@ -351,7 +351,7 @@ def test_igraph_connectivity(immutable_nodes_and_edges):
     import numpy as np
 
     nodes, edges = immutable_nodes_and_edges
-    g = to_igraph(nodes, edges, retain_all=False)
+    g = to_igraph(nodes, edges, retain_all=False, simplify=False)
 
     # Test that graph source and target nodes matches with the ones in attribute table
     for edge in g.es:
@@ -382,7 +382,7 @@ def test_nxgraph_connectivity(immutable_nodes_and_edges):
     import numpy as np
 
     nodes, edges = immutable_nodes_and_edges
-    g = to_networkx(nodes, edges, retain_all=False)
+    g = to_networkx(nodes, edges, retain_all=False, simplify=False)
 
     # Test that graph source and target nodes matches with the ones in attribute table
     for fr, to, edge in g.edges(data=True):
@@ -433,7 +433,7 @@ def test_pdgraph_connectivity():
     x = restaurants["lon"]
     y = restaurants["lat"]
 
-    g = to_pandana(nodes, edges, retain_all=False)
+    g = to_pandana(nodes, edges, retain_all=False, simplify=False)
 
     # Nodes and edges should be in DataFrames
     assert isinstance(g.nodes_df, pd.DataFrame)
@@ -511,7 +511,12 @@ def test_graph_exports_correct_number_of_nodes(test_pbf):
     nodes, edges = osm.get_network(nodes=True)
     node_cnt = len(nodes)
     nxg = osm.to_graph(
-        nodes, edges, graph_type="networkx", osmnx_compatible=False, retain_all=True
+        nodes,
+        edges,
+        graph_type="networkx",
+        osmnx_compatible=False,
+        retain_all=True,
+        simplify=False,
     )
     assert node_cnt == nxg.number_of_nodes()
 
@@ -548,7 +553,12 @@ def test_nxgraph_export_from_osh(helsinki_history_pbf):
     nodes, edges = osm.get_network(timestamp=timestamp, nodes=True)
 
     g = osm.to_graph(
-        nodes, edges, graph_type="networkx", retain_all=False, osmnx_compatible=True
+        nodes,
+        edges,
+        graph_type="networkx",
+        retain_all=False,
+        osmnx_compatible=True,
+        simplify=False,
     )
     assert isinstance(g, nx.MultiDiGraph)
 
@@ -716,7 +726,7 @@ def test_pandarm_connectivity():
     x = restaurants["lon"]
     y = restaurants["lat"]
 
-    g = to_pandarm(nodes, edges, retain_all=False)
+    g = to_pandarm(nodes, edges, retain_all=False, simplify=False)
 
     assert isinstance(g.nodes_df, pd.DataFrame)
     assert isinstance(g.edges_df, pd.DataFrame)

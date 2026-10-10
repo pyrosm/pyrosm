@@ -134,7 +134,7 @@ def test_reads_are_logged(caplog, tmp_path, monkeypatch):
         "get_network network_type=driving nodes=True node_rows=%d edge_rows=%d "
         % (len(nodes), len(edges))
     )
-    assert find("to_graph graph_type=networkx network_type=None simplify=False ")
+    assert find("to_graph graph_type=networkx network_type=None simplify=True ")
     assert find("OSM file=test.osm.pbf engine=out_of_core workers=1")
     # One decode for the buildings and one for the empty layer; the cached reads decode nothing.
     assert len(find("index file=test.osm.pbf blobs=3 ")) == 2

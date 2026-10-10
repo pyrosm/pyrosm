@@ -1,10 +1,20 @@
 """Tests for pyrosm.graph_simplify (issue #89): OSMnx-equivalent simplification."""
 
+import sys
+
 import numpy as np
 import pandas as pd
 import pytest
 from geopandas import GeoDataFrame
 from shapely.geometry import LineString, Point
+
+
+# pandana's C extension expects 32-bit C longs on Windows, where NumPy 2 hands it 64-bit
+# integers; its export tests are skipped there, as in tests/test_graph_exports.py.
+_pandana_unsupported_on_win = pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="pandana is incompatible with NumPy 2 on Windows (C long is 32-bit)",
+)
 
 
 def _graph(node_xy, rows):
@@ -179,7 +189,7 @@ def test_attribute_merge_mixed_vs_uniform():
         },
         crs="epsg:4326",
     )
-    _, se = simplify_graph(nodes, edges)
+    _, se = simplify_graph(nodes, edges, edge_attrs_differ=None)
     assert len(se) == 1
     row = se.iloc[0]
     assert (int(row["u"]), int(row["v"])) == (1, 4)
@@ -351,7 +361,7 @@ def test_osmnx_equivalence(bbox):
             )
 
     Gs = oxs.simplify_graph(G, edge_attrs_differ=None)
-    sn, se = gs.simplify_graph(nodes, directed)
+    sn, se = gs.simplify_graph(nodes, directed, edge_attrs_differ=None)
 
     assert set(map(int, Gs.nodes())) == set(sn["id"].astype(int))
     assert Gs.number_of_edges() == len(se)
@@ -408,7 +418,12 @@ def test_to_graph_simplify_integration():
     )
     nodes, edges = osm.get_network("driving", nodes=True)
     full = osm.to_graph(
-        nodes, edges, graph_type="igraph", network_type="driving", retain_all=True
+        nodes,
+        edges,
+        graph_type="igraph",
+        network_type="driving",
+        retain_all=True,
+        simplify=False,
     )
     simp = osm.to_graph(
         nodes,
@@ -526,3 +541,147 @@ def test_stitch_geometries_empty():
         np.array([0], dtype=np.int64),
     )
     assert len(res) == 0
+
+
+@pytest.mark.parametrize("differ", ["default", None, ()])
+def test_chain_is_not_merged_across_speed_or_road_class_changes(differ):
+    """By default a chain is cut where ``maxspeed`` changes (also between a missing and a
+    set value) or ``highway`` changes; ``edge_attrs_differ=None`` or ``()`` merges it
+    whole."""
+    from pyrosm.graph_simplify import simplify_graph
+
+    nodes = GeoDataFrame(
+        {
+            "id": [1, 2, 3, 4, 5, 6],
+            "lon": [0, 1, 2, 3, 4, 5],
+            "lat": [0, 0, 0, 0, 0, 0],
+            "geometry": [Point(i, 0) for i in range(6)],
+        },
+        crs="epsg:4326",
+    )
+    # one-way chain 1->...->6: equal at 2, set->missing at 3, missing->set at 4,
+    # highway change at 5
+    edges = GeoDataFrame(
+        {
+            "u": [1, 2, 3, 4, 5],
+            "v": [2, 3, 4, 5, 6],
+            "length": [1.0] * 5,
+            "maxspeed": ["50", "50", None, "60", "60"],
+            "highway": ["residential"] * 4 + ["primary"],
+            "geometry": [LineString([(i, 0), (i + 1, 0)]) for i in range(5)],
+        },
+        crs="epsg:4326",
+    )
+    kwargs = {} if differ == "default" else {"edge_attrs_differ": differ}
+    _, simplified = simplify_graph(nodes, edges, **kwargs)
+    pairs = list(zip(simplified["u"].astype(int), simplified["v"].astype(int)))
+    if differ == "default":
+        assert pairs == [(1, 3), (3, 4), (4, 5), (5, 6)]
+        assert not simplified["maxspeed"].map(lambda v: isinstance(v, list)).any()
+    else:
+        assert pairs == [(1, 6)]
+    assert simplified["length"].sum() == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize(
+    "export, module",
+    [
+        ("graph_tables", None),
+        ("to_networkx", "networkx"),
+        ("to_igraph", "igraph"),
+        pytest.param("to_pandana", "pandana", marks=_pandana_unsupported_on_win),
+        ("to_pandarm", "pandarm"),
+        ("OSM.to_graph", "igraph"),
+    ],
+)
+def test_graph_exports_simplify_by_default(export, module):
+    """Every graph export simplifies unless ``simplify=False``, which keeps one directed
+    edge per segment."""
+    import pyrosm.graphs as graphs
+    from pyrosm import OSM, get_data
+
+    if module is not None:
+        pytest.importorskip(module)
+    osm = OSM(get_data("test_pbf"))
+    nodes, edges = osm.get_network("driving", nodes=True)
+    if export == "OSM.to_graph":
+        build = lambda **kw: osm.to_graph(nodes, edges, retain_all=True, **kw)  # noqa: E731
+    else:
+        build = lambda **kw: getattr(graphs, export)(  # noqa: E731
+            nodes, edges, retain_all=True, **kw
+        )
+
+    def topology(result):
+        """Node ids and (from, to, length) edges, sorted."""
+        if export == "graph_tables":
+            n, e = result
+            return sorted(n["id"]), sorted(zip(e["u"], e["v"], e["length"]))
+        if module == "networkx":
+            edge_rows = [(u, v, d["length"]) for u, v, d in result.edges(data=True)]
+            return sorted(result.nodes()), sorted(edge_rows)
+        if module == "igraph":
+            edge_rows = zip(result.es["u"], result.es["v"], result.es["length"])
+            return sorted(result.vs["id"]), sorted(edge_rows)
+        e = result.edges_df
+        return sorted(result.nodes_df.index), sorted(zip(e["from"], e["to"], e["length"]))
+
+    by_default = topology(build())
+    assert by_default == topology(build(simplify=True))
+    directed_nodes, directed = graphs.get_directed_edges(
+        nodes, edges, network_type="driving"
+    )
+    per_segment = topology(build(simplify=False))
+    assert per_segment == (
+        sorted(directed_nodes["id"]),
+        sorted(zip(directed["u"], directed["v"], directed["length"])),
+    )
+    assert len(by_default[1]) < len(per_segment[1])
+
+
+@pytest.mark.parametrize(
+    "export, module",
+    [
+        ("to_pandarm", "pandarm"),
+        pytest.param("to_pandana", "pandana", marks=_pandana_unsupported_on_win),
+    ],
+)
+def test_pandana_weights_are_summed_along_merged_chains(export, module):
+    """A pandana/pandarm weight column is summed along a simplified chain, like
+    ``length``."""
+    pytest.importorskip(module)
+    import pyrosm.graphs as graphs
+
+    nodes = GeoDataFrame(
+        {
+            "id": [1, 2, 3],
+            "lon": [24.0, 24.001, 24.002],
+            "lat": [60.0, 60.0, 60.0],
+            "geometry": [Point(24.0 + i / 1000, 60.0) for i in range(3)],
+        },
+        crs="epsg:4326",
+    )
+    edges = GeoDataFrame(
+        {
+            "u": [1, 2],
+            "v": [2, 3],
+            "length": [55.0, 56.0],
+            "travel_time": [4.0, 5.0],
+            "oneway": [None, None],
+            "geometry": [
+                LineString([(24.0, 60.0), (24.001, 60.0)]),
+                LineString([(24.001, 60.0), (24.002, 60.0)]),
+            ],
+        },
+        crs="epsg:4326",
+    )
+    network = getattr(graphs, export)(
+        nodes,
+        edges,
+        network_type="walking",
+        retain_all=True,
+        weight_cols=["length", "travel_time"],
+    )
+    merged = network.edges_df.sort_values(["from", "to"])
+    assert merged[["from", "to"]].values.tolist() == [[1, 3], [3, 1]]
+    assert merged["length"].tolist() == [111.0, 111.0]
+    assert merged["travel_time"].tolist() == [9.0, 9.0]

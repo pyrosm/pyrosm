@@ -1501,7 +1501,7 @@ class OSM:
         retain_all=False,
         osmnx_compatible=True,
         pandana_weights=["length"],
-        simplify=False,
+        simplify=True,
         simplify_kwargs=None,
     ):
         """
@@ -1519,11 +1519,13 @@ class OSM:
         attribute; cycling additionally honours "oneway:bicycle" so that
         contraflow cycling on one-way streets is modelled correctly).
 
-        Set ``simplify=True`` to topologically simplify the graph before export:
-        interstitial degree-2 nodes are removed and each intersection-to-intersection
-        chain is collapsed into a single edge that keeps the full geometry. This
-        reduces the graph size while preserving routing distances and is equivalent to
-        ``osmnx.simplification.simplify_graph``.
+        The graph is topologically simplified before export: interstitial degree-2
+        nodes are removed and each intersection-to-intersection chain is collapsed into
+        a single edge that keeps the full geometry, except where ``maxspeed`` or
+        ``highway`` changes along it. This reduces the graph size while preserving
+        routing distances and is equivalent to ``osmnx.simplification.simplify_graph``
+        with ``edge_attrs_differ=["maxspeed", "highway"]``. Pass ``simplify=False`` to
+        keep every segment of every way as its own edge.
 
         Parameters
         ----------
@@ -1589,20 +1591,26 @@ class OSM:
         pandana_weights : list
             Columns that are used as weights when exporting to Pandana graph. By default uses "length" column.
 
-        simplify : bool (default False)
+        simplify : bool (default True)
             If True, topologically simplify the graph before export: interstitial
             nodes that only carry geometry (degree-2 pass-throughs) are removed and
             each chain between intersections/endpoints is collapsed into a single edge
-            that keeps the full geometry. Edge ``length`` is summed along the chain and
-            the merged geometry runs from ``u`` to ``v``. The result is equivalent to
-            ``osmnx.simplification.simplify_graph``. See
-            ``pyrosm.graph_simplify.simplify_graph`` for details.
+            that keeps the full geometry. A chain is not merged across a change of
+            ``maxspeed`` or ``highway``, so each edge keeps one speed limit and one road
+            class. Edge ``length`` (and, for pandana and pandarm graphs, the
+            ``pandana_weights``) is summed along the chain and the merged geometry runs
+            from ``u`` to ``v``; any other additive column, such as a travel time, is
+            summed only when listed in ``simplify_kwargs["length_cols"]``, so compute it
+            after the export or list it there. See
+            ``pyrosm.graph_simplify.simplify_graph`` for details. If False, every segment
+            of every way is its own edge.
 
         simplify_kwargs : dict (optional)
             Keyword arguments forwarded to ``pyrosm.graph_simplify.simplify_graph``
-            when ``simplify=True``, e.g. ``edge_attrs_differ`` (do not merge across a
-            change in the listed columns), ``node_attrs_include`` (keep the listed
-            nodes as endpoints), ``remove_rings``, ``track_merged`` or ``length_cols``.
+            when ``simplify=True``, e.g. ``edge_attrs_differ`` (the columns whose change
+            stops a merge; ``None`` merges across every change, as OSMnx does by
+            default), ``node_attrs_include`` (keep the listed nodes as endpoints),
+            ``remove_rings``, ``track_merged`` or ``length_cols``.
         """
         graph_type = validate_graph_type(graph_type)
 

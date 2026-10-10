@@ -35,6 +35,16 @@ def _maybe_simplify(
     )
 
 
+def _summing_weights(simplify_kwargs, weight_cols):
+    """``simplify_kwargs`` with ``weight_cols`` added to the columns a simplified edge sums
+    (``length_cols``), so each merged edge carries the totals of its segments' weights.
+    """
+    kwargs = dict(simplify_kwargs or {})
+    summed = list(kwargs.get("length_cols", ("length",)))
+    kwargs["length_cols"] = tuple(dict.fromkeys(summed + list(weight_cols)))
+    return kwargs
+
+
 def get_directed_edges(
     nodes,
     edges,
@@ -146,7 +156,7 @@ def graph_tables(
     force_bidirectional=False,
     network_type=None,
     retain_all=False,
-    simplify=False,
+    simplify=True,
     simplify_kwargs=None,
 ):
     """The nodes and edges of a graph as GeoDataFrames, as the graph exporters build it: the
@@ -186,7 +196,7 @@ def to_networkx(
     network_type=None,
     retain_all=False,
     osmnx_compatible=True,
-    simplify=False,
+    simplify=True,
     simplify_kwargs=None,
 ):
     """
@@ -312,7 +322,7 @@ def to_igraph(
     force_bidirectional=False,
     network_type=None,
     retain_all=False,
-    simplify=False,
+    simplify=True,
     simplify_kwargs=None,
 ):
     """
@@ -399,7 +409,7 @@ def to_pandana(
     network_type=None,
     retain_all=False,
     weight_cols=["length"],
-    simplify=False,
+    simplify=True,
     simplify_kwargs=None,
 ):
     # Prepare the data
@@ -414,7 +424,7 @@ def to_pandana(
         network_type,
         retain_all,
         simplify,
-        simplify_kwargs,
+        _summing_weights(simplify_kwargs, weight_cols),
     )
 
     nodes = nodes.rename(columns={"lat": "y", "lon": "x"})
@@ -435,7 +445,7 @@ def to_pandarm(
     network_type=None,
     retain_all=False,
     weight_cols=["length"],
-    simplify=False,
+    simplify=True,
     simplify_kwargs=None,
 ):
     # Prepare the data
@@ -450,7 +460,7 @@ def to_pandarm(
         network_type,
         retain_all,
         simplify,
-        simplify_kwargs,
+        _summing_weights(simplify_kwargs, weight_cols),
     )
 
     nodes = nodes.rename(columns={"lat": "y", "lon": "x"})

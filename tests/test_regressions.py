@@ -264,7 +264,9 @@ def test_get_network_custom_filter_graph_export():
         nodes=True,
     )
 
-    graph = OSM.to_graph(nodes, edges, graph_type="networkx", retain_all=True)
+    graph = OSM.to_graph(
+        nodes, edges, graph_type="networkx", retain_all=True, simplify=False
+    )
     assert graph.number_of_nodes() > 0
     assert graph.number_of_nodes() == len(nodes)
 
@@ -1529,6 +1531,7 @@ def test_networkx_export_accepts_edges_with_gaps_in_index():
         graph_type="networkx",
         network_type="walking",
         retain_all=True,
+        simplify=False,
     )
     # Walking edges are bidirectional, so each row gives an edge to both directions.
     assert graph.number_of_edges() == 2 * len(subset)
@@ -1562,6 +1565,7 @@ def test_directed_edges_handle_duplicate_index_labels():
         graph_type="networkx",
         network_type="driving",
         retain_all=True,
+        simplify=False,
     )
     assert graph.number_of_edges() == len(directed)
 
