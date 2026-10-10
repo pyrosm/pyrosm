@@ -1,5 +1,6 @@
 """Worker-count resolution and parallel-decode orchestration for decoding blobs."""
 
+import logging
 import multiprocessing
 import os
 import shutil
@@ -9,9 +10,12 @@ from concurrent.futures import ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
+from pyrosm._log import timed
 from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
 from pyrosm.engine.decode import _init_worker, _decode_batch
 from pyrosm.utils.progress import reporting
+
+logger = logging.getLogger(__name__)
 
 # ``workers="auto"`` decodes in parallel only for files at or above this size.
 _PARALLEL_MIN_FILE_BYTES = 70_000_000  # ~70 MB
@@ -220,9 +224,13 @@ def _decode_and_run(
     shown after 2 s and cleared at the end, or the caller's ``progress(done, total)``.
     ``report`` is that callback (``None`` without progress), for a ``run`` that makes another
     pass over the file."""
-    desc = "Reading %s" % Path(filepath).name
-    with reporting(progress, desc, delay=2.0, leave=False, timed=True) as report:
-        data_blobs, header_bytes = _data_blob_spans(_index_blobs(filepath))
+    name = Path(filepath).name
+    with reporting(
+        progress, "Reading %s" % name, delay=2.0, leave=False, timed=True
+    ) as report:
+        with timed(logger, "index", file=name) as fields:
+            data_blobs, header_bytes = _data_blob_spans(_index_blobs(filepath))
+            fields["blobs"] = len(data_blobs)
         total = header_bytes + sum(span for _, _, span in data_blobs)
         if workers is None:
             workers = 1
@@ -232,18 +240,23 @@ def _decode_and_run(
             workers = _cap_workers(workers)
         shard_dir = tempfile.mkdtemp(prefix="pyrosm_ooc_")
         try:
-            shard_paths, pool_ok = _decode_all(
-                filepath,
-                data_blobs,
-                workers,
-                shard_dir,
-                osm_key_bytes,
-                include_nodes,
-                bbox_bounds,
-                requested_tag_keys,
-                None if report is None else (report, header_bytes, total),
-            )
+            with timed(
+                logger, "decode", workers=workers, blobs=len(data_blobs)
+            ) as fields:
+                shard_paths, pool_ok = _decode_all(
+                    filepath,
+                    data_blobs,
+                    workers,
+                    shard_dir,
+                    osm_key_bytes,
+                    include_nodes,
+                    bbox_bounds,
+                    requested_tag_keys,
+                    None if report is None else (report, header_bytes, total),
+                )
+                fields["pool"] = pool_ok
             collect_workers = workers if pool_ok else 1
-            return run(shard_paths, collect_workers, report)
+            with timed(logger, "collect", workers=collect_workers):
+                return run(shard_paths, collect_workers, report)
         finally:
             shutil.rmtree(shard_dir, ignore_errors=True)

@@ -76,6 +76,14 @@ Downloading data
    geocode
    get_data_by_geocoding
 
+Logging
+-------
+
+.. autosummary::
+   :toctree: api/
+
+   enable_logging
+
 Exceptions
 ----------
 

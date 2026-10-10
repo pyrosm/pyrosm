@@ -9,11 +9,14 @@ except PackageNotFoundError:  # running from a source tree without an install
 # pyrosm reports progress through the "pyrosm" logger; the application decides what is shown.
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
+from pyrosm._log import enable_logging  # noqa: E402
+
 # `OSM` pulls in geopandas/shapely (~2 s); import it lazily so that lightweight
 # entry points (e.g. the multiprocessing workers in pyrosm.pbf_export, which only
 # need protobuf + numpy) do not pay that cost when importing a pyrosm submodule.
 __all__ = [
     "OSM",
+    "enable_logging",
     "find_extracts",
     "geocode",
     "get_data",

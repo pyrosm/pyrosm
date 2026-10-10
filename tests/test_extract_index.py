@@ -659,7 +659,8 @@ def test_get_data_by_area_falls_back_to_next_extract(
         ("bbbike_Helsinki.osm.pbf", {**net, "progress": False}),
         ("movisda_N60W024-latest.osm.pbf", {**net, "progress": False}),
     ]
-    assert "Movisda 'N60E024'" in caplog.text and capsys.readouterr().out == ""
+    assert "download_extract provider=Movisda extract=N60E024" in caplog.text
+    assert capsys.readouterr().out == ""
     assert (got.provider, got.extract, got.bytes) == ("Movisda", "N60E024", 66)
     assert got.failed == [(BBBIKE[2], "unavailable")]
     if crop:

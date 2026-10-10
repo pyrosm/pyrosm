@@ -1,7 +1,9 @@
+import logging
 import warnings
 from pathlib import Path
 
 import pandas as pd
+from pyrosm._log import log_event, logged, timed
 from pyrosm.config import Conf
 from pyrosm.config.osm_filters import get_osm_filter
 from pyrosm.filter_compiler import CompiledFilter
@@ -44,6 +46,8 @@ from pyrosm.graphs import to_networkx, to_igraph, to_pandana, to_pandarm
 # Aliased so the module does not collide with the ``engine`` constructor
 # parameter / ``self.engine`` attribute of the same name.
 from pyrosm import engine as engine_backend
+
+logger = logging.getLogger(__name__)
 
 
 class OSM:
@@ -231,6 +235,24 @@ class OSM:
         self._current_timestamp = None
         self._timestamp_changed = False
 
+        bbox = self.bounding_box
+        if isinstance(bbox, list):
+            bbox = ",".join(str(v) for v in bbox)
+        elif bbox is not None:
+            bbox = bbox.geom_type
+        log_event(
+            logger,
+            logging.INFO,
+            "OSM",
+            file=Path(self.filepath).name,
+            engine=self.engine,
+            workers=self.workers,
+            bounding_box=bbox,
+            keep_metadata=self.keep_metadata,
+            complete_relations=self.complete_relations,
+            progress="callable" if callable(progress) else progress,
+        )
+
     def _use_engine(self, timestamp):
         """Whether the out-of-core engine handles this read. History reads -- an ``.osh.pbf``
         file, or an explicit ``timestamp`` -- route to the in-memory reader instead: selecting
@@ -260,9 +282,10 @@ class OSM:
         return reader(self.filepath, **kwargs)
 
     def _get_pbf_elements(self, bounding_box):
-        desc = "Reading %s" % Path(self.filepath).name
-        with reporting(
-            self.progress, desc, delay=2.0, leave=False, timed=True
+        name = Path(self.filepath).name
+        size = Path(self.filepath).stat().st_size
+        with timed(logger, "read_pbf", file=name, bytes=size), reporting(
+            self.progress, "Reading %s" % name, delay=2.0, leave=False, timed=True
         ) as report:
             (
                 nodes,
@@ -325,6 +348,7 @@ class OSM:
             self._set_current_time(unix_time)
             warn_about_timestamp_not_set(unix_time)
 
+    @logged("network_type", "nodes")
     def get_network(
         self,
         network_type="walking",
@@ -514,6 +538,7 @@ class OSM:
             return (node_gdf, edges)
         return edges
 
+    @logged()
     def get_buildings(
         self,
         custom_filter=None,
@@ -603,6 +628,7 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
+    @logged()
     def get_landuse(
         self,
         custom_filter=None,
@@ -694,6 +720,7 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
+    @logged()
     def get_natural(
         self,
         custom_filter=None,
@@ -785,6 +812,7 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
+    @logged()
     def get_boundaries(
         self,
         boundary_type="administrative",
@@ -901,6 +929,7 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
+    @logged()
     def get_pois(
         self,
         custom_filter=None,
@@ -1034,6 +1063,7 @@ class OSM:
                 gdf = gdf.drop("nodes", axis=1)
         return gdf
 
+    @logged()
     def get_data_by_custom_criteria(
         self,
         custom_filter=None,
@@ -1453,6 +1483,7 @@ class OSM:
         )
 
     @staticmethod
+    @logged("graph_type", "network_type", "simplify", count=False)
     def to_graph(
         nodes,
         edges,

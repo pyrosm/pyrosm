@@ -1085,7 +1085,7 @@ def test_download_update_replaces_existing_file(
         "https://example.invalid/x.osm.pbf", "x.osm.pbf", True, str(tmp_path)
     )
     assert Path(out).read_bytes() == fresh
-    assert "Downloaded Protobuf data 'x.osm.pbf'" in caplog.text
+    assert "download file=x.osm.pbf megabytes=" in caplog.text
     assert capsys.readouterr().out == ""
 
 

@@ -37,6 +37,7 @@ import shapely
 from shapely.geometry import box, shape
 from shapely.geometry.base import BaseGeometry
 
+from pyrosm._log import log_event
 from pyrosm.data.geofabrik_index import (
     _EQUAL_AREA_CRS,
     _bbox_filename,
@@ -1003,11 +1004,15 @@ def get_data_by_area(
         sources = []
         start = time.perf_counter()
         for extract in chosen.itertuples():
-            size = "unknown size"
-            if pd.notna(extract.bytes):
-                size = "%.1f MB" % (extract.bytes / 1e6)
-            logger.info(
-                "Downloading %s '%s' (%s)", extract.provider, extract.name, size
+            log_event(
+                logger,
+                logging.INFO,
+                "download_extract",
+                provider=extract.provider,
+                extract=extract.name,
+                megabytes=(
+                    extract.bytes / 1e6 if pd.notna(extract.bytes) else "unknown"
+                ),
             )
             filename = "%s_%s" % (extract.provider.lower(), Path(extract.url).name)
             try:

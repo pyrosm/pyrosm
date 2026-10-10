@@ -42,14 +42,16 @@ def test_download_false_picks_smallest_covering_extract():
 
 
 @pytest.mark.parametrize(
-    "bbox, shown, hidden",
-    [(HELSINKI, "'Finland' (id: finland)", None), (CHICAGO, "'us/illinois'", "(id:")],
+    "bbox, shown",
+    [
+        (HELSINKI, "covering_extract provider=Geofabrik name=Finland id=finland"),
+        (CHICAGO, "covering_extract provider=Geofabrik name=us/illinois id=us/illinois"),
+    ],
 )
-def test_lookup_logs_matched_extract(caplog, capsys, bbox, shown, hidden):
+def test_lookup_logs_matched_extract(caplog, capsys, bbox, shown):
     caplog.set_level(logging.INFO, logger="pyrosm")
     get_data_by_bbox(bbox, download=False)
     assert shown in caplog.text
-    assert hidden is None or hidden not in caplog.text
     assert capsys.readouterr().out == ""
 
 

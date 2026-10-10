@@ -18,6 +18,7 @@ import numpy as np
 from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 
+from pyrosm._log import log_event
 from pyrosm.utils.download import open_url
 
 logger = logging.getLogger(__name__)
@@ -119,12 +120,14 @@ def _covering_extract_url(geom, update=False):
     ).sort_values(["_area", "id"], kind="stable")
     best = ranked.iloc[0]
 
-    name = best["name"] or best["id"]
-    if name == best["id"]:
-        label = "'%s'" % name
-    else:
-        label = "'%s' (id: %s)" % (name, best["id"])
-    logger.info("Geofabrik extract covering the area: %s", label)
+    log_event(
+        logger,
+        logging.INFO,
+        "covering_extract",
+        provider="Geofabrik",
+        name=best["name"] or best["id"],
+        id=best["id"],
+    )
     return best["pbf"]
 
 
