@@ -1978,3 +1978,32 @@ def test_node_columns_come_in_a_fixed_order():
     node_columns = ["id", "lon", "lat", "tags", "visible", "version", "timestamp"]
     assert columns[:8] == node_columns + ["changeset"]
     assert columns == list(OSM(fp, engine="out_of_core").get_pois().columns)
+
+
+def test_write_pbf_frame_without_tag_columns_keeps_tags(tmp_path):
+    """#383: a frame that names elements by id only, with no tag columns, edits no tags,
+    so a subset written from it keeps the tags of every node, way and relation in it."""
+    import geopandas as gpd
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    buildings, pois = osm.get_buildings(), osm.get_pois()
+    way = buildings[buildings["osm_type"] == "way"].iloc[0]
+    relation = buildings[buildings["osm_type"] == "relation"].iloc[0]
+    node = pois[(pois["osm_type"] == "node") & pois["name"].notna()].iloc[0]
+    rows = [way, relation, node]
+    frame = gpd.GeoDataFrame(
+        {"id": [r["id"] for r in rows], "osm_type": [r["osm_type"] for r in rows]},
+        geometry=[None] * 3,
+        crs="EPSG:4326",
+    )
+    out = tmp_path / "subset.osm.pbf"
+    osm.write_pbf(frame, str(out), subset_only=True)
+
+    back = OSM(str(out))
+    written = back.get_buildings().set_index(["osm_type", "id"])["building"]
+    assert written[("way", way["id"])] == way["building"]
+    assert written[("relation", relation["id"])] == relation["building"]
+    names = back.get_pois().set_index(["osm_type", "id"])["name"]
+    assert names[("node", node["id"])] == node["name"]
