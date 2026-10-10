@@ -23,6 +23,11 @@ from pyrosm._log import log_event
 logger = logging.getLogger(__name__)
 
 
+# The version of the cached results' content, part of every key: bumped whenever a read
+# returns different output, so a file cached by an older pyrosm is not served.
+_RESULT_FORMAT = 2
+
+
 def cache_dir():
     """The persistent result-cache directory (created on demand): ``<tempdir>/pyrosm/cache``."""
     path = Path(tempfile.gettempdir()) / "pyrosm" / "cache"
@@ -57,6 +62,7 @@ def result_path(filepath, key_params):
     fp = Path(filepath)
     st = fp.stat()
     key = {
+        "format": _RESULT_FORMAT,
         "filepath": str(fp.resolve()),
         "mtime_ns": st.st_mtime_ns,
         "size": st.st_size,

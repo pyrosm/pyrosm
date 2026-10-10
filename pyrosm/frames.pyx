@@ -9,8 +9,7 @@ from pyrosm.geometry import orient_polygons
 from pyrosm.relations import prepare_relations
 from shapely.geometry import box
 from pyrosm.data_filter import get_mask_by_osmid, _filter_array_dict_by_indices_or_mask
-from shapely import multilinestrings
-from pyrosm.distance import calculate_geom_length, calculate_geom_array_length
+from pyrosm.distance import calculate_line_lengths, calculate_geom_array_length
 
 cpdef create_nodes_gdf(nodes, osmids_to_keep=None):
     cdef str k
@@ -60,14 +59,10 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
 
         # In case network is parsed, include way-level length info
         if parse_network and not calculate_seg_lengths:
-            # Drop rows without geometry
+            # Drop rows without geometry; each remaining way is one LineString
             way_gdf = way_gdf.dropna(subset=['geometry']).reset_index(drop=True)
-
-            # Create MultiLineStrings and calculate the length
-            geoms = [multilinestrings(geom) for geom in way_gdf["geometry"]]
             way_gdf = way_gdf.assign(
-                geometry=geoms,
-                length=[calculate_geom_length(geom) for geom in geoms],
+                length=calculate_line_lengths(way_gdf["geometry"].to_numpy())
             )
             way_gdf = gpd.GeoDataFrame(way_gdf, geometry="geometry", crs="epsg:4326")
 
@@ -201,15 +196,20 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
     else:
         node_gdf = gpd.GeoDataFrame()
 
-    # Merge all
-    gdf = pd.concat([node_gdf, way_gdf, relation_gdf])
+    # Merge all. A network has only ways, which prepare_way_gdf has already indexed and
+    # stripped of missing geometries.
+    if parse_network:
+        gdf = way_gdf
+    else:
+        gdf = pd.concat([node_gdf, way_gdf, relation_gdf])
 
     if len(gdf) == 0:
         if parse_network:
             return None, None
         return None
 
-    gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
+    if not parse_network:
+        gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
 
     # Normalize polygon ring orientation to the OGC/GeoJSON right-hand rule
     # (exterior CCW, holes CW); non-polygonal geometries are untouched (#230).

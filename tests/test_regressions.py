@@ -2158,3 +2158,39 @@ def test_orient_polygons_returns_points_and_lines_as_they_are():
     assert shapely.equals_exact(oriented[2:4], expected, tolerance=0).all()
     assert oriented[2].exterior.is_ccw and not oriented[2].interiors[0].is_ccw
     assert oriented[3].geoms[0].exterior.is_ccw
+
+
+def test_network_edges_are_one_linestring_per_way():
+    """Each network edge is one LineString through its way's nodes that have valid
+    coordinates, in the way's order, and its length is the haversine sum of its segments
+    (millimetres per segment, metres per edge)."""
+    import numpy as np
+    from pyrosm import OSM, get_data
+    from pyrosm.distance import Unit, haversine
+
+    osm = OSM(get_data("helsinki_pbf"), keep_node_info=True)
+    edges = osm.get_network("all")
+    assert set(edges.geometry.geom_type) == {"LineString"}
+
+    partial = 0
+    for nodes, line, length in zip(edges["nodes"], edges.geometry, edges["length"]):
+        idx, lon, lat = osm._node_coordinates.gather(np.asarray(nodes, dtype=np.int64))
+        kept = (idx >= 0) & (np.abs(lon) <= 180) & (np.abs(lat) <= 90)
+        partial += not kept.all()
+        lon, lat = lon[kept], lat[kept]
+        assert np.array_equal(np.asarray(line.coords), np.column_stack([lon, lat]))
+        segments = haversine(lat[:-1], lon[:-1], lat[1:], lon[1:], unit=Unit.METERS)
+        assert length == segments.round(3).sum().round(0)
+    assert partial > 0
+
+
+def test_result_cache_key_changes_with_its_format(monkeypatch):
+    """A result cached under another cache format is not served: the format number is part
+    of the result's cache key."""
+    from pyrosm import get_data
+    from pyrosm.engine import cache
+
+    fp = get_data("test_pbf")
+    before = cache.result_path(fp, {"network": True})
+    monkeypatch.setattr(cache, "_RESULT_FORMAT", cache._RESULT_FORMAT + 1)
+    assert cache.result_path(fp, {"network": True}) != before
