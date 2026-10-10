@@ -108,3 +108,24 @@ Graph simplification
    :toctree: api/
 
    simplify_graph
+
+Graph tables
+------------
+
+.. currentmodule:: pyrosm.graphs
+
+.. autosummary::
+   :toctree: api/
+
+   graph_tables
+
+Recipes
+-------
+
+.. currentmodule:: pyrosm.recipes
+
+.. autosummary::
+   :toctree: api/
+
+   validate
+   run
