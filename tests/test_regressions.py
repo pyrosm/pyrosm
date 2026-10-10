@@ -2194,3 +2194,47 @@ def test_result_cache_key_changes_with_its_format(monkeypatch):
     before = cache.result_path(fp, {"network": True})
     monkeypatch.setattr(cache, "_RESULT_FORMAT", cache._RESULT_FORMAT + 1)
     assert cache.result_path(fp, {"network": True}) != before
+
+
+def test_line_ways_of_other_layers_are_one_linestring():
+    """Outside the network, a way that is not an area is one LineString through its nodes
+    that have valid coordinates: an open way, a closed highway ring and a closed
+    ``area=no`` way alike; a closed way without such tags stays a Polygon."""
+    import numpy as np
+    import pandas as pd
+    from pyrosm.geometry import create_way_geometries
+    from pyrosm.node_lookup import NodeLocations
+
+    xy = {1: (0.0, 0.0), 2: (1.0, 0.0), 3: (1.0, 1.0), 4: (0.0, 1.0)}
+    store = NodeLocations(
+        pd.DataFrame(
+            {
+                "id": np.array(list(xy), dtype=np.int64),
+                "lon": [x for x, _ in xy.values()],
+                "lat": [y for _, y in xy.values()],
+            }
+        )
+    )
+    ring = [1, 2, 3, 4, 1]
+    ways = [
+        ([1, 2, 3], None, None, [1, 2, 3], "LineString"),
+        ([1, 2], None, None, [1, 2], "LineString"),
+        (ring, "residential", None, ring, "LineString"),
+        (ring, None, "no", ring, "LineString"),
+        (ring, None, None, ring, "Polygon"),
+        ([1, 99, 3], None, None, [1, 3], "LineString"),
+    ]
+    nodes = np.empty(len(ways), dtype=object)
+    nodes[:] = [np.array(w[0], dtype=np.int64) for w in ways]
+    elements = {
+        "id": np.arange(len(ways), dtype=np.int64),
+        "nodes": nodes,
+        "highway": np.array([w[1] for w in ways], dtype=object),
+        "area": np.array([w[2] for w in ways], dtype=object),
+    }
+    _, geometries, _, _, _ = create_way_geometries(store, elements, False)
+
+    for geometry, (_, _, _, expected, kind) in zip(geometries, ways):
+        assert geometry.geom_type == kind
+        coords = geometry.exterior.coords if kind == "Polygon" else geometry.coords
+        assert [tuple(c) for c in coords] == [xy[n] for n in expected]

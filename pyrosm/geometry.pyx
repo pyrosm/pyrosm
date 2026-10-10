@@ -2,7 +2,6 @@ import numpy as np
 from shapely import linestrings, polygons, points, linearrings, \
     multilinestrings, multipolygons, get_geometry, symmetric_difference, \
     is_valid
-from shapely import Geometry
 from shapely import GEOSException
 from shapely.linear import line_merge
 from shapely.coordinates import get_coordinates
@@ -551,29 +550,22 @@ cdef _has_linear_tag(highway_arr, barrier_arr, route_arr, int i):
 
 
 cdef _single_area_geometry(nodes, node_coordinates, area_value, bint has_linear_tag):
-    # One way's non-network geometry: a Polygon when it is a closed area, otherwise
-    # a (Multi)LineString -- the exact per-way decision the loop made. Used for the
-    # ways the vectorised builder leaves out (open ways, closed-but-linear ways,
-    # ways with dropped nodes).
+    # One way's non-network geometry: a Polygon when it is a closed area, otherwise a
+    # LineString through its kept nodes. Used for the ways the vectorised builder
+    # leaves out (ways with dropped nodes, areas with fewer than four nodes).
     if nodes[0] == nodes[-1] and _closed_way_is_polygon(area_value, has_linear_tag):
         return create_polygon_geometry(nodes, node_coordinates)
-    geom = create_linestring_geometry(nodes, node_coordinates)[0]
-    if isinstance(geom, Geometry) or geom is None:
-        return geom
-    # LineStrings come back as an array of segments.
-    if len(geom) == 1:
-        return geom[0]
-    return multilinestrings(geom)
+    return create_line_geometry(nodes, node_coordinates)
 
 
 cdef _create_area_geometries_vectorized(node_coordinates, way_elements):
     # Vectorised area path: build the closed-area Polygons with a single batched
-    # shapely.polygons(linearrings(...)) call instead of one call per way. A way
-    # takes the batched path only when it is a closed area whose every node is
-    # present with valid coordinates and it has at least 4 coordinates (a ring's
-    # minimum) -- the dominant building/landuse case. Every other way (open ways,
-    # closed ways tagged linear, ways with dropped nodes, too-short rings) falls
-    # back to the exact per-way builder, so the output is identical to before.
+    # shapely.polygons(linearrings(...)) call, and the lines (open ways, closed ways
+    # tagged linear) with a single shapely.linestrings call, instead of one call per
+    # way. A way takes a batched path only when every node is present with valid
+    # coordinates and it has enough of them (4 for a ring, 2 for a line). Every other
+    # way (ways with dropped nodes, too-short rings) falls back to the per-way
+    # builder.
     cdef NodeLocations nc = node_coordinates
     cdef int n = len(way_elements['id'])
     cdef int i, w, W, poly_i
@@ -649,6 +641,20 @@ cdef _create_area_geometries_vectorized(node_coordinates, way_elements):
                     if vectorizable[w]:
                         geometries[w] = poly_geoms[poly_i]
                         poly_i += 1
+
+        # The lines (open ways, and closed ways that are not areas) whose nodes are all
+        # present and valid: one LineString each from a single call.
+        line_batch = ~is_area & (valid_count == way_lengths) & (way_lengths >= 2)
+        line_counts = way_lengths[line_batch]
+        line_positions = _concatenated_ranges(offsets[:-1][line_batch], line_counts)
+        if len(line_positions) > 0:
+            lines = linestrings(
+                coords[line_positions],
+                indices=np.repeat(np.arange(len(line_counts)), line_counts),
+            )
+            for w, line in zip(np.flatnonzero(line_batch), lines):
+                geometries[w] = line
+        vectorizable |= line_batch
 
         for w in range(W):
             if not vectorizable[w]:
