@@ -308,11 +308,12 @@ cdef is_valid_coordinate_pair(lat, lon):
     return True
 
 
-cdef create_linestring_geometry(nodes, node_coordinates):
-    cdef NodeLocations nc = node_coordinates
-    coords = []
+cdef tuple _kept_nodes(nodes, NodeLocations nc):
+    """The store rows, ids and coordinates of the way's nodes that are present with valid
+    coordinates, in the way's order."""
+    rows = []
     kept_nodes = []
-    node_data = []
+    coords = []
     cdef int i, n = len(nodes)
     cdef long long node, idx
     cdef double lon, lat
@@ -320,14 +321,30 @@ cdef create_linestring_geometry(nodes, node_coordinates):
         node = nodes[i]
         if nc.contains(node):
             idx = nc.index(node)
-            # Ensure coordinates are valid
             lon = nc.lon_at(idx)
             lat = nc.lat_at(idx)
-
             if is_valid_coordinate_pair(lat, lon):
-                coords.append([(lon, lat)])
+                rows.append(idx)
                 kept_nodes.append(node)
-                node_data.append(nc.record(idx, node))
+                coords.append((lon, lat))
+    return rows, kept_nodes, coords
+
+
+cdef create_line_geometry(nodes, node_coordinates):
+    """One LineString through the way's nodes that are present with valid coordinates, in
+    order; None when fewer than two remain."""
+    cdef NodeLocations nc = node_coordinates
+    _, _, coords = _kept_nodes(nodes, nc)
+    if len(coords) < 2:
+        return None
+    return linestrings(coords)
+
+
+cdef create_linestring_geometry(nodes, node_coordinates):
+    cdef NodeLocations nc = node_coordinates
+    rows, kept_nodes, coords = _kept_nodes(nodes, nc)
+    node_data = [nc.record(rows[i], kept_nodes[i]) for i in range(len(rows))]
+    coords = [[coord] for coord in coords]
 
     if len(coords) > 1:
         try:
@@ -419,14 +436,12 @@ cdef _concatenated_ranges(starts, counts):
 
 cdef _create_network_geometries_vectorized(node_coordinates, way_elements,
                                            bint build_node_data):
-    # Vectorised network path: build every way's per-segment LineStrings with a
-    # single batched ``shapely.linestrings`` call instead of one call per way.
-    # A way takes the batched path only when all of its nodes are present and
-    # have valid coordinates (the near-universal case); ways with dropped nodes
-    # fall back to the exact per-way builder, so the kept-node subsequence (and
-    # therefore the output) is identical to before. ``from``/``to`` ids and the
-    # node-attribute records are only built when requested (graph export); plain
-    # ``get_network`` discards them.
+    # Vectorised network path. A plain read (``build_node_data`` False) gets one
+    # LineString per way; graph export gets every way's per-segment LineStrings and
+    # the ``from``/``to`` ids and node-attribute records. Either way the ways whose
+    # nodes are all present with valid coordinates (the near-universal case) are
+    # built by one batched ``shapely.linestrings`` call, and ways with dropped nodes
+    # by the per-way builder, through the nodes that remain.
     cdef NodeLocations nc = node_coordinates
     cdef int n = len(way_elements['id'])
     cdef int i, w, W, vci
@@ -469,6 +484,22 @@ cdef _create_network_geometries_vectorized(node_coordinates, way_elements,
         vectorizable = (valid_count == way_lengths) & (way_lengths >= 2)
 
         coords = np.column_stack([lon, lat])                   # (T, 2) float64
+        if not build_node_data:
+            # One LineString per way, the batched ways from a single call.
+            line_counts = way_lengths[vectorizable]
+            line_positions = _concatenated_ranges(offsets[:-1][vectorizable], line_counts)
+            geometries = np.empty(W, dtype=object)
+            if len(line_positions) > 0:
+                geometries[vectorizable] = linestrings(
+                    coords[line_positions],
+                    indices=np.repeat(np.arange(len(line_counts)), line_counts),
+                )
+            for w in np.flatnonzero(~vectorizable):
+                geometries[w] = create_line_geometry(nodes_col[nonempty_idx[w]], nc)
+            for key in keys:
+                way_elements[key] = way_elements[key][nonempty_idx]
+            return way_elements, geometries, from_ids, to_ids, node_attributes
+
         seg_counts = way_lengths[vectorizable] - 1             # segments per vec way
         seg_start_pos = _concatenated_ranges(offsets[:-1][vectorizable], seg_counts)
         seg_geoms_all = None
