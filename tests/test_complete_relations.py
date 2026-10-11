@@ -72,9 +72,9 @@ def test_complete_relations_fixes_straddling_building_geometries(helsinki_pbf):
 
 
 def test_complete_relations_defaults_to_off(helsinki_pbf):
-    # The option is opt-in: the default is False and the cached completion set is
-    # empty, so existing reads are unchanged.
-    osm = OSM(helsinki_pbf, bounding_box=STRADDLING_BBOX)
+    # The option is opt-in: the default is False and the in-memory reader's cached
+    # completion set is empty, so existing reads are unchanged.
+    osm = OSM(helsinki_pbf, bounding_box=STRADDLING_BBOX, engine="in_memory")
     assert osm.complete_relations is False
     osm.get_buildings()
     assert osm._relation_member_ways == []
@@ -109,7 +109,12 @@ def test_complete_relations_does_not_leak_into_other_layers(helsinki_pbf):
 
 
 def test_complete_relations_fetches_member_ways_outside_box(helsinki_pbf):
-    osm = OSM(helsinki_pbf, bounding_box=STRADDLING_BBOX, complete_relations=True)
+    osm = OSM(
+        helsinki_pbf,
+        bounding_box=STRADDLING_BBOX,
+        complete_relations=True,
+        engine="in_memory",
+    )
     osm.get_buildings()
 
     completed = osm._relation_member_ways
@@ -126,8 +131,8 @@ def test_complete_relations_noop_without_bounding_box(helsinki_pbf):
     from pandas.testing import assert_frame_equal
 
     # A whole-file read already holds every member, so the option is a no-op there.
-    whole = OSM(helsinki_pbf).get_buildings()
-    osm = OSM(helsinki_pbf, complete_relations=True)
+    whole = OSM(helsinki_pbf, engine="in_memory").get_buildings()
+    osm = OSM(helsinki_pbf, complete_relations=True, engine="in_memory")
     whole_complete = osm.get_buildings()
 
     assert osm._relation_member_ways == []
@@ -143,7 +148,9 @@ def test_complete_relations_noop_when_box_contains_whole_extent(helsinki_pbf):
     extent = OSM(helsinki_pbf)._data_bounding_box.bounds
     big_box = [extent[0] - 0.01, extent[1] - 0.01, extent[2] + 0.01, extent[3] + 0.01]
 
-    osm = OSM(helsinki_pbf, bounding_box=big_box, complete_relations=True)
+    osm = OSM(
+        helsinki_pbf, bounding_box=big_box, complete_relations=True, engine="in_memory"
+    )
     osm.get_buildings()
     assert osm._relation_member_ways == []
 

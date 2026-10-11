@@ -19,9 +19,10 @@ Wire-format primer (the field numbers live in ``primitive_block_decoder.pxd``):
   additionally *delta coded* (each value is added to the running total), which we undo
   with a cumulative sum -- mirroring ``delta_compression.pyx``.
 
-Nodes are decoded straight into flat arrays. Ways and relations are variable length, so
-they are decoded in two passes: a cheap counting pass sizes the flat (CSR) arrays
-exactly, then a single fill pass writes into them -- no per-element allocation.
+Dense nodes are decoded straight into flat arrays. Ways, relations and plain (non-dense)
+nodes are variable length, so they are decoded in two passes: a cheap counting pass sizes
+the flat (CSR) arrays exactly, then a single fill pass writes into them -- no per-element
+allocation. Plain nodes are returned in the same form as dense ones.
 Coordinates and ids are returned as raw cumulative integers (not scaled by
 ``granularity``/offset); scaling is the caller's job, which keeps the values exact and
 easy to compare against the protobuf path in tests.
@@ -29,6 +30,8 @@ easy to compare against the protobuf path in tests.
 import numpy as np
 
 from libc.stdint cimport int64_t, uint64_t
+
+from pyrosm.exceptions import InvalidOSMFileError
 
 
 # The per-element metadata columns (from ``Info`` / ``DenseInfo``), in output order.
@@ -237,20 +240,33 @@ cdef dict _decode_dense_group(const unsigned char* buf, Py_ssize_t start,
     return node
 
 
+cdef _join_aligned(list groups, str name):
+    """Concatenate the groups' ``name`` arrays. When only some groups have one (an
+    untagged group's empty ``keys_vals``, an absent ``DenseInfo`` field), each of the
+    others contributes a 0 per node, so every node keeps its own values."""
+    parts = [g[name] for g in groups]
+    if all(len(p) for p in parts) or not any(len(p) for p in parts):
+        return np.concatenate(parts)
+    return np.concatenate([
+        p if len(p) else np.zeros(len(g["id"]), dtype=np.int64)
+        for p, g in zip(parts, groups)
+    ])
+
+
 cdef dict _merge_dense(list groups, bint keep_metadata):
-    """Concatenate the per-group dense-node dicts into one. (Delta coding is per
-    group, so each group's arrays are already cumulative before they are joined.)"""
+    """Concatenate the per-group node dicts into one. (Delta coding is per group, so
+    each group's arrays are already cumulative before they are joined.)"""
     if len(groups) == 0:
         return None
     out = {
         "id": np.concatenate([g["id"] for g in groups]),
         "lat": np.concatenate([g["lat"] for g in groups]),
         "lon": np.concatenate([g["lon"] for g in groups]),
-        "keys_vals": np.concatenate([g["keys_vals"] for g in groups]),
+        "keys_vals": _join_aligned(groups, "keys_vals"),
     }
     if keep_metadata:
         for name in _META_COLS:
-            out[name] = np.concatenate([g[name] for g in groups])
+            out[name] = _join_aligned(groups, name)
     return out
 
 
@@ -524,9 +540,10 @@ cdef dict _decode_elements(const unsigned char* buf, list group_ranges,
     return b.result()
 
 
-cdef void _collect_dense(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
-                         bint keep_metadata, list dense_groups):
-    """Decode every ``DenseNodes`` block in one group into ``dense_groups``."""
+cdef void _count_node_tags(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                           Py_ssize_t* n_keys, Py_ssize_t* n_vals) nogil:
+    """Count one plain ``Node``'s key ids and value ids, whether packed (in one run or
+    several) or not."""
     cdef Py_ssize_t pos = start, f_start
     cdef int field, wire
     cdef uint64_t length
@@ -536,11 +553,132 @@ cdef void _collect_dense(const unsigned char* buf, Py_ssize_t start, Py_ssize_t 
             length = _read_varint(buf, &pos, end)
             f_start = pos
             pos += <Py_ssize_t>length
-            if field == GROUP_DENSE:
-                dense_groups.append(
-                    _decode_dense_group(buf, f_start, pos, keep_metadata))
+            if field == NODE_KEYS:
+                n_keys[0] += _count_packed(buf, f_start, pos)
+            elif field == NODE_VALS:
+                n_vals[0] += _count_packed(buf, f_start, pos)
+        elif wire == WIRE_VARINT:
+            _read_varint(buf, &pos, end)
+            if field == NODE_KEYS:
+                n_keys[0] += 1
+            elif field == NODE_VALS:
+                n_vals[0] += 1
         else:
             _skip_field(buf, &pos, end, wire)
+
+
+cdef void _fill_plain_node(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                           _ElementArrays b, int64_t[::1] lat, int64_t[::1] lon):
+    """Decode one plain ``Node`` into the builder (its tags as ``keys``/``vals``) and its
+    coordinates into ``lat``/``lon``. Its id and coordinates are absolute, not delta
+    coded; key and value ids may come packed (in one run or several) or not."""
+    cdef Py_ssize_t pos = start, f_start
+    cdef Py_ssize_t info_start = -1, info_end = -1
+    cdef int field, wire
+    cdef uint64_t length
+    cdef Py_ssize_t kpos = b.ti, vpos = b.ti
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire == WIRE_VARINT:
+            if field == NODE_ID:
+                b.ids[b.ei] = _zig_zag_decode(_read_varint(buf, &pos, end))
+            elif field == NODE_LAT:
+                lat[b.ei] = _zig_zag_decode(_read_varint(buf, &pos, end))
+            elif field == NODE_LON:
+                lon[b.ei] = _zig_zag_decode(_read_varint(buf, &pos, end))
+            elif field == NODE_KEYS:
+                b.keys[kpos] = <int64_t>_read_varint(buf, &pos, end)
+                kpos += 1
+            elif field == NODE_VALS:
+                b.vals[vpos] = <int64_t>_read_varint(buf, &pos, end)
+                vpos += 1
+            else:
+                _read_varint(buf, &pos, end)
+        elif wire == WIRE_LENGTH:
+            length = _read_varint(buf, &pos, end)
+            f_start = pos
+            pos += <Py_ssize_t>length
+            if field == NODE_KEYS:
+                kpos += _fill_packed(buf, f_start, pos, False, b.keys, kpos)
+            elif field == NODE_VALS:
+                vpos += _fill_packed(buf, f_start, pos, False, b.vals, vpos)
+            elif field == NODE_INFO:
+                info_start = f_start
+                info_end = pos
+        else:
+            _skip_field(buf, &pos, end, wire)
+    b.ti = kpos
+    b.tags_off[b.ei + 1] = b.ti
+    b.members_off[b.ei + 1] = 0
+    if b.keep_metadata:
+        _fill_metadata(buf, info_start, info_end, b, b.ei)
+    b.ei += 1
+
+
+cdef dict _decode_plain_nodes(const unsigned char* buf, list spans, bint keep_metadata):
+    """Decode a group's plain ``Node`` messages (the non-dense encoding) into the dict a
+    ``DenseNodes`` group gives: absolute ``id``/``lat``/``lon``, ``keys_vals`` as each
+    node's key and value ids followed by a 0 (empty when no node has tags), and the
+    metadata from each node's ``Info`` (the proto2 defaults when it has none)."""
+    cdef Py_ssize_t n = len(spans), n_tags = 0, n_keys, n_vals
+    cdef Py_ssize_t start, end
+    for start, end in spans:
+        n_keys = 0
+        n_vals = 0
+        _count_node_tags(buf, start, end, &n_keys, &n_vals)
+        # Each key needs its value; the fill pass relies on it to stay in its arrays.
+        if n_keys != n_vals:
+            raise InvalidOSMFileError(
+                "A node in the PBF has %d tag keys but %d values." % (n_keys, n_vals))
+        n_tags += n_keys
+    cdef _ElementArrays b = _ElementArrays(n, n_tags, 0, keep_metadata, False)
+    lat = np.empty(n, dtype=np.int64)
+    lon = np.empty(n, dtype=np.int64)
+    cdef int64_t[::1] lat_view = lat
+    cdef int64_t[::1] lon_view = lon
+    for start, end in spans:
+        _fill_plain_node(buf, start, end, b, lat_view, lon_view)
+    arrays = b.result()
+    node = {"id": arrays["id"], "lat": lat, "lon": lon,
+            "keys_vals": np.empty(0, dtype=np.int64)}
+    if n_tags > 0:
+        # Node i's pairs start at 2 * tags_off[i] + i (each earlier node adds its pairs
+        # and a 0), so its tag j goes to position 2 * j + i.
+        tag_node = np.repeat(np.arange(n), np.diff(arrays["tags_off"]))
+        at = 2 * np.arange(n_tags) + tag_node
+        keys_vals = np.zeros(2 * n_tags + n, dtype=np.int64)
+        keys_vals[at] = arrays["keys"]
+        keys_vals[at + 1] = arrays["vals"]
+        node["keys_vals"] = keys_vals
+    if keep_metadata:
+        for name in _META_COLS:
+            node[name] = arrays[name]
+    return node
+
+
+cdef void _collect_nodes(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                         bint keep_metadata, list node_groups):
+    """Decode the nodes of one group into ``node_groups``: each ``DenseNodes`` block,
+    and the group's plain ``Node`` messages as one more entry of the same form."""
+    cdef Py_ssize_t pos = start, f_start
+    cdef int field, wire
+    cdef uint64_t length
+    plain = []
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire == WIRE_LENGTH:
+            length = _read_varint(buf, &pos, end)
+            f_start = pos
+            pos += <Py_ssize_t>length
+            if field == GROUP_DENSE:
+                node_groups.append(
+                    _decode_dense_group(buf, f_start, pos, keep_metadata))
+            elif field == GROUP_NODES:
+                plain.append((f_start, pos))
+        else:
+            _skip_field(buf, &pos, end, wire)
+    if plain:
+        node_groups.append(_decode_plain_nodes(buf, plain, keep_metadata))
 
 
 def decode_primitive_block(const unsigned char[::1] data, bint keep_metadata=True):
@@ -566,7 +704,7 @@ def decode_primitive_block(const unsigned char[::1] data, bint keep_metadata=Tru
     string_table = []
     header = {"granularity": 100, "date_granularity": 1000,
               "lat_offset": 0, "lon_offset": 0}
-    dense_groups = []
+    node_groups = []
     group_ranges = []
 
     while pos < end:
@@ -590,11 +728,11 @@ def decode_primitive_block(const unsigned char[::1] data, bint keep_metadata=Tru
                 string_table = _decode_string_table(buf, f_start, pos)
             elif field == PB_PRIMITIVEGROUP:
                 group_ranges.append((f_start, pos))
-                _collect_dense(buf, f_start, pos, keep_metadata, dense_groups)
+                _collect_nodes(buf, f_start, pos, keep_metadata, node_groups)
         else:
             _skip_field(buf, &pos, end, wire)
 
-    nodes = _merge_dense(dense_groups, keep_metadata)
+    nodes = _merge_dense(node_groups, keep_metadata)
     ways = _decode_elements(buf, group_ranges, GROUP_WAYS, WAY_KEYS, WAY_REFS,
                             keep_metadata, False)
     relations = _decode_elements(buf, group_ranges, GROUP_RELATIONS, REL_KEYS,

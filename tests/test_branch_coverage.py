@@ -31,7 +31,7 @@ def helsinki_region_pbf():
 def test_get_natural_custom_filter_without_natural_key(helsinki_pbf):
     """A custom_filter lacking the 'natural' key gets natural=[True] injected, so
     the result still contains the full set of natural features (natural.py)."""
-    osm = OSM(helsinki_pbf)
+    osm = OSM(helsinki_pbf, engine="in_memory")
     default = osm.get_natural()
     via_filter = osm.get_natural(custom_filter={"wetland": ["bog", "marsh"]})
     assert isinstance(via_filter, GeoDataFrame)
@@ -46,9 +46,16 @@ def test_get_natural_custom_filter_without_natural_key(helsinki_pbf):
 # --- boundary.py --------------------------------------------------------------
 
 
-def test_get_boundaries_returns_none_for_empty_area(helsinki_pbf):
-    """A bbox with no boundaries warns and returns None (boundary.py)."""
-    osm = OSM(helsinki_pbf, bounding_box=[24.940, 60.173, 24.942, 60.175])
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_get_boundaries_returns_none_for_empty_area(helsinki_pbf, engine):
+    """A bbox with no boundaries warns and returns None (boundary.py), with either
+    engine."""
+    osm = OSM(
+        helsinki_pbf,
+        bounding_box=[24.940, 60.173, 24.942, 60.175],
+        engine=engine,
+        workers=1,
+    )
     with pytest.warns(UserWarning, match="Could not find any boundaries"):
         gdf = osm.get_boundaries()
     assert gdf is None
@@ -59,7 +66,7 @@ def test_get_boundaries_filter_by_name(helsinki_region_pbf):
     (boundary.py name-filter branch). Helsinki has named neighbourhood
     boundaries (e.g. 'Kallio'). The region extract is used because helsinki_pbf's
     boundaries are all incomplete and dropped (#154)."""
-    osm = OSM(helsinki_region_pbf)
+    osm = OSM(helsinki_region_pbf, engine="in_memory")
     all_boundaries = osm.get_boundaries()
     assert "Kallio" in set(all_boundaries["name"].dropna())
 

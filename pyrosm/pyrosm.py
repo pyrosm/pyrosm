@@ -23,7 +23,7 @@ from pyrosm.utils import (
     get_bounding_box,
     get_unix_time,
     warn_about_timestamp_not_set,
-    warn_about_single_core,
+    warn_empty_result,
 )
 from pyrosm.utils.download import get_file_size
 from pyrosm.utils.progress import reporting, validate_progress
@@ -41,7 +41,13 @@ from pyrosm.natural import get_natural_data
 from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
-from pyrosm.graphs import to_networkx, to_igraph, to_pandana, to_pandarm
+from pyrosm.graphs import (
+    record_network_type,
+    to_networkx,
+    to_igraph,
+    to_pandana,
+    to_pandarm,
+)
 
 # Aliased so the module does not collide with the ``engine`` constructor
 # parameter / ``self.engine`` attribute of the same name.
@@ -85,10 +91,15 @@ class OSM:
         already holds every member. Only member ways are completed; relations
         whose members are themselves relations (super-relations) are not.
 
-    engine : str (default: 'in_memory')
-        Which reader backend to use. `'in_memory'` (the default) parses the whole
-        file into memory. `'out_of_core'` decodes the file in a single streaming
-        pass with bounded peak memory, spilling intermediate data to disk.
+    engine : str (default: 'out_of_core')
+        Which reader backend to use. `'out_of_core'` (the default) decodes the file
+        in a single streaming pass with bounded peak memory, spilling intermediate
+        data to disk, and -- when the optional `pyarrow` is installed -- caches each
+        read's result in the temporary folder, so an identical read returns it
+        without decoding the file again (`OSM.clear_cache()` removes the cached
+        results). `'in_memory'` parses the
+        whole file into memory once and serves every read of the `OSM` object from
+        it.
 
         The out-of-core backend reads on a single core by default. To decode in
         parallel pass `workers="auto"` (or an explicit `workers=N`); see below. The
@@ -105,11 +116,11 @@ class OSM:
         guard is needed, and the default single-core read needs no guard anywhere.
 
         History reads -- an `.osh.pbf` file, or any feature call with a
-        `timestamp` -- are served by the in-memory reader even when
-        `engine='out_of_core'`: selecting the latest version of each element
-        at/before the timestamp uses pyrosm's `get_latest_version`, which pandas
-        evaluates eagerly over the whole multi-version frame, so history is read
-        in memory.
+        `timestamp` -- are served by the in-memory reader with either engine:
+        selecting the latest version of each element at/before the timestamp uses
+        pyrosm's `get_latest_version`, which pandas evaluates eagerly over the whole
+        multi-version frame, so history is read in memory. `write_pbf` also reads
+        the file in memory with either engine.
 
     keep_node_info : bool (default: False)
         Whether to keep the `nodes` column -- the ordered member node ids of each
@@ -120,14 +131,12 @@ class OSM:
 
     workers : int | str (default: None)
         Number of worker processes the `'out_of_core'` engine uses to decode the
-        file. By default (`None`) the engine reads on a single core, and the first
-        out-of-core read reports how many CPU cores are available and how to opt
-        into parallelism. Pass `workers="auto"` to let pyrosm choose the count
-        automatically -- a single core for small files and one worker per CPU core
-        for larger files -- or `workers=N` for an explicit count (a count above the
-        available CPU cores is reduced to the core count, with a warning). Parallel
-        reads need the `if __name__ == "__main__":` guard on macOS/Windows; pass
-        `workers=1` to read on a single core silently. Has no effect on the
+        file. By default (`None`) the engine reads on a single core. Pass
+        `workers="auto"` to let pyrosm choose the count automatically -- a single
+        core for small files; for larger files the CPU cores less two, up to eight --
+        or `workers=N` for an explicit count (a count above the available CPU cores is
+        reduced to the core count, with a warning). Parallel reads need the
+        `if __name__ == "__main__":` guard on macOS/Windows. Has no effect on the
         `'in_memory'` engine.
 
     progress : bool | callable (default: True)
@@ -157,7 +166,7 @@ class OSM:
         keep_metadata=True,
         complete_relations=False,
         keep_node_info=False,
-        engine="in_memory",
+        engine="out_of_core",
         workers=None,
         progress=True,
     ):
@@ -179,7 +188,6 @@ class OSM:
         self.workers = validate_workers(workers)
         validate_progress(progress)
         self.progress = progress
-        self._single_core_notice_emitted = False
 
         # Check if file contains history
         self._osh_file = False
@@ -264,19 +272,15 @@ class OSM:
 
     def _read_engine(self, reader, with_relations=True, **kwargs):
         """Route a feature read to the given out-of-core engine reader, threading the
-        constructor-level ``bounding_box`` / ``keep_metadata`` / ``workers`` (and
-        ``complete_relations`` for the layer readers). Only non-history reads reach here;
+        constructor-level ``bounding_box`` / ``keep_metadata`` / ``keep_node_info`` /
+        ``workers`` (and ``complete_relations`` for the layer readers). Only non-history reads reach here;
         history reads use the in-memory path (see :meth:`_use_engine`)."""
-        workers = self.workers
-        if workers is None:
-            workers = 1
-            if not self._single_core_notice_emitted:
-                self._single_core_notice_emitted = True
-                warn_about_single_core()
+        workers = 1 if self.workers is None else self.workers
         kwargs["bounding_box"] = self.bounding_box
         kwargs["keep_metadata"] = self.keep_metadata
         kwargs["workers"] = workers
         kwargs["progress"] = self.progress
+        kwargs["keep_node_info"] = self.keep_node_info
         if with_relations:
             kwargs["complete_relations"] = self.complete_relations
         return reader(self.filepath, **kwargs)
@@ -471,7 +475,7 @@ class OSM:
             filter_type = "exclude"
 
         if self._use_engine(timestamp):
-            return self._read_engine(
+            result = self._read_engine(
                 engine_backend.get_network,
                 with_relations=False,
                 network_type=network_type,
@@ -481,6 +485,9 @@ class OSM:
                 filter_type=filter_type,
                 tags_to_keep=tags_to_keep,
             )
+            if (result[1] if nodes else result) is None:
+                warn_empty_result("network")
+            return result
 
         # Get filter (also validates network_type, which still drives the graph
         # semantics even when a custom_filter is provided)
@@ -523,10 +530,6 @@ class OSM:
             osm_keys=network_osm_keys,
         )
 
-        if edges is not None:
-            # Add metadata
-            edges._metadata.append(network_type)
-
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
         if not self.keep_node_info and edges is not None:
@@ -535,8 +538,8 @@ class OSM:
 
         # In case both edges and nodes are requested
         if nodes:
-            return (node_gdf, edges)
-        return edges
+            return record_network_type((node_gdf, edges), network_type)
+        return record_network_type(edges, network_type)
 
     @logged()
     def get_buildings(
@@ -589,12 +592,15 @@ class OSM:
 
         """
         if self._use_engine(timestamp):
-            return self._read_engine(
+            gdf = self._read_engine(
                 engine_backend.get_buildings,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
             )
+            if gdf is None:
+                warn_empty_result("buildings")
+            return gdf
 
         # Default tags to keep as columns
         tags_as_columns = list(self.conf.tags.building)
@@ -680,12 +686,15 @@ class OSM:
         """
 
         if self._use_engine(timestamp):
-            return self._read_engine(
+            gdf = self._read_engine(
                 engine_backend.get_landuse,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
             )
+            if gdf is None:
+                warn_empty_result("landuse")
+            return gdf
 
         self._read_pbf(timestamp)
 
@@ -772,12 +781,15 @@ class OSM:
         """
 
         if self._use_engine(timestamp):
-            return self._read_engine(
+            gdf = self._read_engine(
                 engine_backend.get_natural,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
             )
+            if gdf is None:
+                warn_empty_result("natural")
+            return gdf
 
         self._read_pbf(timestamp)
 
@@ -876,8 +888,16 @@ class OSM:
 
         """
 
+        # Check boundary type and name (with either engine)
+        boundary_type = validate_boundary_type(boundary_type)
+        if name is not None:
+            if not isinstance(name, str):
+                raise ValueError(
+                    f"'name' should be text." f"Got '{name}' of type {type(name)}."
+                )
+
         if self._use_engine(timestamp):
-            return self._read_engine(
+            gdf = self._read_engine(
                 engine_backend.get_boundaries,
                 boundary_type=boundary_type,
                 name=name,
@@ -885,6 +905,9 @@ class OSM:
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
             )
+            if gdf is None:
+                warn_empty_result("boundaries")
+            return gdf
 
         self._read_pbf(timestamp)
 
@@ -898,15 +921,6 @@ class OSM:
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
             tags_as_columns += extra_attributes
-
-        # Check boundary type
-        boundary_type = validate_boundary_type(boundary_type)
-
-        if name is not None:
-            if not isinstance(name, str):
-                raise ValueError(
-                    f"'name' should be text." f"Got '{name}' of type {type(name)}."
-                )
 
         gdf = get_boundary_data(
             self._node_coordinates,
@@ -1009,12 +1023,15 @@ class OSM:
 
         """
         if self._use_engine(timestamp):
-            return self._read_engine(
+            gdf = self._read_engine(
                 engine_backend.get_pois,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
             )
+            if gdf is None:
+                warn_empty_result("pois")
+            return gdf
 
         # If custom_filter has not been defined, initialize with default
         if custom_filter is None:
@@ -1133,14 +1150,25 @@ class OSM:
 
         """
 
+        # custom_filter=None means "return everything": keep every tagged element
+        # with no key/value filtering (issue #113). There is nothing to keep or exclude
+        # by value then, so filter_type is ignored; it is pinned to a valid no-op so a
+        # caller-supplied value cannot reject the request.
+        keep_all = custom_filter is None
+        if keep_all:
+            filter_type = "keep"
+        if not isinstance(filter_type, str) or filter_type.lower() not in (
+            "keep",
+            "exclude",
+        ):
+            raise ValueError(
+                "'filter_type' -parameter should be either 'keep' or 'exclude'. "
+            )
+        filter_type = filter_type.lower()
+        validate_booleans(keep_nodes, keep_ways, keep_relations)
+
         if self._use_engine(timestamp):
-            if custom_filter is None:
-                raise NotImplementedError(
-                    "get_data_by_custom_criteria(custom_filter=None) ('return everything') "
-                    "is not yet supported by the out-of-core engine; pass an explicit "
-                    "custom_filter."
-                )
-            return self._read_engine(
+            gdf = self._read_engine(
                 engine_backend.get_data_by_custom_criteria,
                 custom_filter=custom_filter,
                 osm_keys_to_keep=osm_keys_to_keep,
@@ -1152,6 +1180,9 @@ class OSM:
                 extra_attributes=extra_attributes,
                 keep_other_tags=keep_other_tags,
             )
+            if gdf is None:
+                warn_empty_result("custom")
+            return gdf
 
         # keep_other_tags=False only skips tag work in the out-of-core decode; the in-memory
         # reader resolves every tag once and caches it for reuse across layers, so it cannot
@@ -1162,35 +1193,13 @@ class OSM:
                 "construct OSM(..., engine='out_of_core')."
             )
 
-        # custom_filter=None means "return everything": keep every tagged element
-        # with no key/value filtering (issue #113).
-        keep_all = custom_filter is None
-        if keep_all:
-            custom_filter = {}
-            # There is nothing to keep/exclude by value, so filter_type is ignored;
-            # pin it to a valid no-op so a caller-supplied value cannot reject the
-            # request or reach Solver() with an invalid direction.
-            filter_type = "keep"
-
         # Check that the custom filter is in correct format
-        custom_filter = validate_custom_filter(custom_filter)
-
-        if not isinstance(filter_type, str):
-            raise ValueError(
-                "'filter_type' -parameter should be either 'keep' or 'exclude'. "
-            )
+        custom_filter = validate_custom_filter({} if keep_all else custom_filter)
 
         # Validate osm keys
         validate_osm_keys(osm_keys_to_keep)
         if isinstance(osm_keys_to_keep, str):
             osm_keys_to_keep = [osm_keys_to_keep]
-
-        # Validate filter
-        filter_type = filter_type.lower()
-        if filter_type not in ["keep", "exclude"]:
-            raise ValueError(
-                "'filter_type' -parameter should be either 'keep' or 'exclude'. "
-            )
 
         # Tags to keep as columns
         if tags_as_columns is None:
@@ -1198,10 +1207,7 @@ class OSM:
                 # No key filter to derive columns from: expose the default columns
                 # of every known feature, so common tags become columns and the
                 # rest land in the JSON 'tags' column.
-                tags_as_columns = []
-                for k in self.conf.tags.available:
-                    tags_as_columns += getattr(self.conf.tags, k)
-                tags_as_columns = list(dict.fromkeys(tags_as_columns))
+                tags_as_columns = self.conf.tags._every_feature_columns()
             else:
                 tags_as_columns = []
                 for k in custom_filter.keys():
@@ -1221,9 +1227,6 @@ class OSM:
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
             tags_as_columns += extra_attributes
-
-        # Validate booleans
-        validate_booleans(keep_nodes, keep_ways, keep_relations)
 
         self._read_pbf(timestamp)
 
@@ -1567,11 +1570,12 @@ class OSM:
 
         network_type : str (optional)
             Network type for the given data. Determines how the graph will be constructed.
-            The network type is typically extracted automatically from the metadata of
-            the edges/nodes GeoDataFrames. This parameter can be used if this metadata is not
-            available for a reason or another. By default, a bidirectional graph is created for walking and all,
-            and a directed graph for driving and cycling (oneway streets are taken into account;
-            cycling additionally honours oneway:bicycle for contraflow).
+            If not given, the type that ``get_network`` recorded on the frames
+            (``edges.attrs["network_type"]``) is used; pass it for frames that do not
+            carry one, such as frames read from a file. By default, a bidirectional graph
+            is created for walking and all, and a directed graph for driving and cycling
+            (oneway streets are taken into account; cycling additionally honours
+            oneway:bicycle for contraflow).
             Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'
             and 'all_public', plus the OSMnx names 'walk', 'bike', 'drive' and
             'drive_service'.

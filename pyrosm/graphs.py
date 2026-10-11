@@ -9,9 +9,22 @@ from pyrosm.graph_connectivity import get_connected_edges
 from pyrosm.graph_simplify import simplify_graph
 from pyrosm.utils import validate_edge_gdf, validate_node_gdf
 from pyrosm.config import Conf
-from pyrosm.config.osm_filters import normalize_network_type
+from pyrosm.config.osm_filters import _UNKNOWN_NETWORK_TYPE, normalize_network_type
 from rapidjson import dumps
+import pandas as pd
 import warnings
+
+
+def record_network_type(result, network_type):
+    """Record ``network_type`` (lower-cased, an OSMnx alias as its pyrosm name) in the
+    ``attrs`` of the frames ``get_network`` returns (the edges, or the ``(nodes, edges)``
+    pair), where graph export looks it up. Entries that are not frames (an empty read's
+    ``None``) are left alone. Returns ``result``."""
+    frames = result if isinstance(result, tuple) else (result,)
+    for frame in frames:
+        if isinstance(frame, pd.DataFrame):
+            frame.attrs["network_type"] = normalize_network_type(network_type)
+    return result
 
 
 def _maybe_simplify(
@@ -90,15 +103,15 @@ def get_directed_edges(
             "Required column '{col}' does not exist in nodes.".format(col=node_id_col)
         )
 
-    # Check the network_type
+    # The network type given, else the one recorded on the edges or nodes
     if network_type is not None:
         net_type = network_type
+        if normalize_network_type(net_type) not in allowed_network_types:
+            raise ValueError(_UNKNOWN_NETWORK_TYPE)
     else:
-        net_type = edges._metadata[-1]
-
-    # Check if network type is stored with edges or nodes
-    if net_type not in allowed_network_types:
-        net_type = nodes._metadata[-1]
+        net_type = edges.attrs.get("network_type")
+        if net_type not in allowed_network_types:
+            net_type = nodes.attrs.get("network_type")
         if net_type not in allowed_network_types:
             txt = ", ".join(allowed_network_types)
             raise ValueError(

@@ -305,21 +305,21 @@ def warn_about_timestamp_not_set(unix_time):
     )
 
 
-def warn_about_single_core():
-    """Warn that the out-of-core engine is reading on a single core and how to opt into
-    parallelism; reports the available CPU count and is a no-op on a single-core host.
-    """
-    n_cores = os.cpu_count() or 1
-    if n_cores <= 1:
-        return
+# The warning a feature read gives when it finds nothing, by feature.
+_EMPTY_RESULT_MESSAGES = {
+    "boundaries": "Could not find any boundaries for given area.",
+    "buildings": "Could not find any building elements for given area.",
+    "landuse": "Could not find any landuse elements for given area.",
+    "natural": "Could not find any natural elements for given area.",
+    "network": "Could not find any edges for given area.",
+    "pois": "Could not find any POIs for given area.",
+    "custom": "Could not find any OSM data for given area.",
+}
+
+
+def warn_empty_result(feature, stacklevel=2):
+    """Warn that a read of ``feature`` (a key of ``_EMPTY_RESULT_MESSAGES``) found
+    nothing. ``stacklevel`` counts from the caller, as for ``warnings.warn``."""
     warnings.warn(
-        "The out-of-core engine is reading on a single core. This machine has "
-        f"{n_cores} CPU cores available; pass workers='auto' to "
-        "OSM(..., engine='out_of_core') to let pyrosm choose automatically whether the "
-        "file benefits from multiple cores or a single one, or set workers=N for an "
-        "explicit count. Parallel reads spawn worker processes on macOS/Windows, so run "
-        'them under an `if __name__ == "__main__":` guard. Pass workers=1 to silence '
-        "this message.",
-        UserWarning,
-        stacklevel=4,
+        _EMPTY_RESULT_MESSAGES[feature], UserWarning, stacklevel=stacklevel + 1
     )

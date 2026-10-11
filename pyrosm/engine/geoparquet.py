@@ -62,12 +62,12 @@ def _stream_layer_to_parquet(
     bounding_box=None,
     complete_relations=False,
     keep_other_tags=True,
-    workers=1,
+    keep_node_info=False,
 ):
     """Stream the layer (point nodes, then ways in chunks, then relations) to a GeoParquet
     at ``output``, spilling each chunk to its own temporary parquet file and then combining
     the files under the union of their schemas. Returns the path, or ``None`` if there was
-    nothing to write. ``workers > 1`` runs the collect phase across a process pool."""
+    nothing to write. ``keep_node_info`` keeps the ways' ``nodes`` column."""
     import pyarrow.parquet as pq
     from geopandas.io.arrow import _geopandas_to_arrow
 
@@ -80,7 +80,6 @@ def _stream_layer_to_parquet(
         keep_relations,
         bounding_box,
         complete_relations,
-        workers=workers,
     )
     if collected is None:
         return None
@@ -98,6 +97,7 @@ def _stream_layer_to_parquet(
             bounding_box=bounding_box,
             complete_relations=complete_relations,
             keep_other_tags=keep_other_tags,
+            keep_node_info=keep_node_info,
         )
         if gdf is None or len(gdf) == 0:
             return None

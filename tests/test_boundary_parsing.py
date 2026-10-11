@@ -66,25 +66,23 @@ def test_reading_boundaries_with_name_search(helsinki_region_pbf):
     assert gdf["name"].str.contains("saari").all()
 
 
-def test_passing_incorrect_parameters(helsinki_pbf):
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
+    "options, message",
+    [
+        ({"boundary_type": "incorrect"}, "should be one of the following"),
+        ({"name": 1}, "should be text"),
+    ],
+    ids=["boundary_type", "name"],
+)
+def test_passing_incorrect_parameters(helsinki_pbf, engine, options, message):
+    """An unknown boundary_type and a name that is not text are refused, with either
+    engine."""
     from pyrosm import OSM
 
-    osm = OSM(helsinki_pbf)
-    try:
-        osm.get_boundaries(boundary_type="incorrect")
-    except ValueError as e:
-        if "should be one of the following" in str(e):
-            pass
-    except Exception as e:
-        raise e
-
-    try:
-        osm.get_boundaries(name=1)
-    except ValueError as e:
-        if "should be text" in str(e):
-            pass
-    except Exception as e:
-        raise e
+    osm = OSM(helsinki_pbf, engine=engine, workers=1)
+    with pytest.raises(ValueError, match=message):
+        osm.get_boundaries(**options)
 
 
 def test_adding_extra_attribute(helsinki_region_pbf):
@@ -108,7 +106,7 @@ def test_adding_extra_attribute(helsinki_region_pbf):
 def test_reading_all_boundaries(helsinki_region_pbf):
     from pyrosm import OSM
 
-    osm = OSM(helsinki_region_pbf)
+    osm = OSM(helsinki_region_pbf, engine="in_memory")
     gdf = osm.get_boundaries(boundary_type="all")
 
     assert len(gdf) == 712  # +13: multi-ring boundaries now assemble correctly (#21)

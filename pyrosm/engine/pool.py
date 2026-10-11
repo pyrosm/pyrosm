@@ -19,16 +19,22 @@ logger = logging.getLogger(__name__)
 
 # ``workers="auto"`` decodes in parallel only for files at or above this size.
 _PARALLEL_MIN_FILE_BYTES = 70_000_000  # ~70 MB
+# ``workers="auto"`` leaves this many CPU cores free and uses at most ``_AUTO_MAX_WORKERS``.
+_AUTO_SPARE_CORES = 2
+_AUTO_MAX_WORKERS = 8
+# A parallel decode splits the file into about this many tasks per worker.
+_TASKS_PER_WORKER = 8
 # Seconds between the progress reports of a decode running in a process pool.
 _PROGRESS_INTERVAL = 0.2
 
 
 def _auto_workers(filepath, n_blobs):
     """Worker count for ``workers="auto"``: a single core for files below ~70 MB, otherwise
-    one worker per available CPU core, capped at the number of data blobs."""
+    the CPU cores less two, between 1 and 8 and at most the number of data blobs."""
     if Path(filepath).stat().st_size < _PARALLEL_MIN_FILE_BYTES:
         return 1
-    return max(1, min(os.cpu_count() or 1, n_blobs))
+    n_cores = (os.cpu_count() or 1) - _AUTO_SPARE_CORES
+    return max(1, min(n_cores, _AUTO_MAX_WORKERS, n_blobs))
 
 
 def _cap_workers(workers):
@@ -114,10 +120,8 @@ def _run_pool(
     cannot start (``OSError`` in an environment that forbids pools) or whose workers die on
     start (``BrokenProcessPool`` -- e.g. a read not guarded by ``if __name__ == "__main__":``,
     so each spawned worker re-imports and re-runs the entry point) falls back to a single
-    process and reports ``pool_ok`` False, so a later phase can stay serial instead of
-    re-attempting a pool that cannot start. ``fallback_warning`` (when given) is emitted on
-    that fallback; passing ``None`` keeps a downstream phase from warning a second time after
-    the decode already did.
+    process and reports ``pool_ok`` False. ``fallback_warning`` (when given) is emitted on
+    that fallback.
 
     ``progress``, when given, is ``(report, start, total)``: ``initializer`` then gets one more
     argument, the target each task adds the bytes it has decoded to (a callable in this
@@ -158,6 +162,21 @@ _DECODE_FALLBACK_WARNING = (
 )
 
 
+def _decode_tasks(blobs, workers):
+    """Split ``blobs`` into ``(task_id, blobs)`` tasks of consecutive blobs in file order: one
+    task for a single worker, otherwise about ``_TASKS_PER_WORKER`` per worker, each covering
+    a similar share of the file's bytes. Each blob goes to the task whose share holds the
+    blob's start."""
+    n_tasks = 1 if workers == 1 else workers * _TASKS_PER_WORKER
+    total = sum(span for _, _, span in blobs)
+    tasks = {}
+    before = 0
+    for offset, size, span in blobs:
+        tasks.setdefault(before * n_tasks // total, []).append((offset, size, span))
+        before += span
+    return list(enumerate(tasks.values()))
+
+
 def _decode_all(
     filepath,
     blobs,
@@ -171,20 +190,13 @@ def _decode_all(
     spill_all_ways=True,
 ):
     """Decode every data blob (``(offset, size, span)``, see
-    :func:`~pyrosm.engine.blobs._data_blob_spans`) into per-block shards (each worker spills one
-    shard per block as it is decoded). Returns ``(shard_paths, pool_ok)`` -- the flat list of
-    shard paths and whether the decode pool ran (so the collect phase can mirror it instead of
-    re-attempting a pool that could not start). ``progress`` is as for :func:`_run_pool`.
-    ``spill_all_ways=False`` leaves out every way's id and node refs, which only the lookup of
-    relation members reads.
+    :func:`~pyrosm.engine.blobs._data_blob_spans`) into shards. A pool hands the tasks of
+    :func:`_decode_tasks` to its workers as they become free. Returns ``(shard_paths,
+    pool_ok)``: the shard paths in file order and whether the decode pool ran. ``progress``
+    is as for :func:`_run_pool`. ``spill_all_ways=False`` leaves out every way's id and node
+    refs, which only the lookup of relation members reads.
     """
-    n = len(blobs)
-    per = (n + workers - 1) // workers
-    tasks = [
-        (i, blobs[i * per : (i + 1) * per])
-        for i in range(workers)
-        if blobs[i * per : (i + 1) * per]
-    ]
+    tasks = _decode_tasks(blobs, workers)
     init_args = (
         filepath,
         shard_dir,
@@ -218,11 +230,8 @@ def _decode_and_run(
     spill_all_ways=True,
 ):
     """Index + parallel-decode ``filepath`` into a temp shard dir, call
-    ``run(shard_paths, collect_workers, report)`` and clean up. The shared front half of every
-    public read. ``collect_workers`` is the worker count the collect phase should use: the
-    resolved decode worker count when the decode pool ran, otherwise 1 -- so after a decode
-    fallback (unguarded entry point or a pool-forbidden environment) the collect phase stays
-    serial instead of re-attempting a pool that cannot start (and warning a second time).
+    ``run(shard_paths, report)`` in this process and clean up. The shared front half of every
+    public read.
 
     ``progress`` (``True``, ``False`` or a callable, validated by the caller) reports the bytes
     of the file decoded, out of the bytes indexed (the file size), for the whole read: a bar
@@ -261,8 +270,7 @@ def _decode_and_run(
                     spill_all_ways,
                 )
                 fields["pool"] = pool_ok
-            collect_workers = workers if pool_ok else 1
-            with timed(logger, "collect", workers=collect_workers):
-                return run(shard_paths, collect_workers, report)
+            with timed(logger, "collect"):
+                return run(shard_paths, report)
         finally:
             shutil.rmtree(shard_dir, ignore_errors=True)

@@ -93,6 +93,14 @@ class Tags:
     # Basic info tags
     _basic_tags = basic_info_tags
 
+    def _every_feature_columns(self):
+        """The default tag columns of every known feature, in feature order without
+        repeats: the columns of a read with no key filter (``custom_filter=None``)."""
+        columns = []
+        for feature in self.available:
+            columns += getattr(self, feature)
+        return list(dict.fromkeys(columns))
+
 
 class Conf:
     network_filters = NetworkFilter()

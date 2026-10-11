@@ -1,10 +1,11 @@
 """Public out-of-core readers (one per layer). Each indexes the file's blobs, decodes them
-into per-worker shards selecting the layer's elements (and, for point layers, the matching
+into shards selecting the layer's elements (and, for point layers, the matching
 nodes), then collects and assembles (or streams to GeoParquet) the requested layer. A
 ``bounding_box`` restricts the read to that area."""
 
 from pathlib import Path
 
+import numpy as np
 from rapidjson import dumps, loads
 
 from pyrosm.data_manager import parse_custom_filter
@@ -49,11 +50,13 @@ def _get_layer(
     complete_relations=False,
     keep_other_tags=True,
     progress=True,
+    keep_node_info=False,
 ):
     """Read a layer: decode the file in parallel selecting the elements that carry any of
-    the filter keys (``osm_keys`` if given, else ``custom_filter``'s keys; and, when
-    ``include_nodes``, the matching nodes as point features), refine them by the exact value
-    filter (``filter_type`` keep/exclude), then assemble with the full ``tags_as_columns``
+    the filter keys (``osm_keys`` if given, else ``custom_filter``'s keys, or every tagged
+    element when ``custom_filter`` is ``None``; and, when ``include_nodes``, the matching
+    nodes as point features), refine them by the exact value filter (``filter_type``
+    keep/exclude), then assemble with the full ``tags_as_columns``
     schema (every occurring tag as its own column, the rest in a JSON ``tags`` column, and
     -- when ``keep_metadata`` -- the element metadata), matching the in-memory reader.
     ``keep_ways`` / ``keep_relations`` drop those element kinds from the output. A
@@ -67,22 +70,27 @@ def _get_layer(
     must run under an ``if __name__ == "__main__":`` guard, otherwise it falls back to one
     process with a warning) -- see the package docstring. ``progress`` (``True``, ``False``
     or a callable) shows the read as for ``OSM(..., progress=...)``; a cached read has nothing
-    to show.
+    to show. ``keep_node_info`` keeps each way's ``nodes`` column (a list of node ids), as
+    ``OSM(..., keep_node_info=True)`` does.
     """
     validate_progress(progress)
     if output is not None:
         _compat.require_pyarrow()
-    data_filter, derived_keys = parse_custom_filter(custom_filter)
-    if osm_keys is None:
-        osm_keys = derived_keys
+    if custom_filter is None:
+        # Every tagged element: no filter keys to select by, nothing to filter by value.
+        data_filter, osm_keys, osm_key_bytes = None, None, None
+    else:
+        data_filter, derived_keys = parse_custom_filter(custom_filter)
+        if osm_keys is None:
+            osm_keys = derived_keys
+        osm_key_bytes = [k.encode("utf-8") for k in osm_keys]
     filter_spec = (osm_keys, data_filter, filter_type)
-    osm_key_bytes = [k.encode("utf-8") for k in osm_keys]
     # keep_other_tags=False: the workers resolve only the requested tag keys -- the output
     # columns (tags_as_columns) plus the filter keys (so the value filter still has what it
     # checks). None lets them resolve every tag (the default).
     requested_tag_keys = None
     if not keep_other_tags:
-        wanted = list(tags_as_columns) + list(osm_keys) + list(_GEOMETRY_TAG_KEYS)
+        wanted = list(tags_as_columns) + list(osm_keys or []) + list(_GEOMETRY_TAG_KEYS)
         requested_tag_keys = [k.encode("utf-8") for k in dict.fromkeys(wanted)]
     bounding_box = _normalize_bounding_box(bounding_box)
     bounds = _bbox_bounds(bounding_box)
@@ -103,16 +111,17 @@ def _get_layer(
             "bounding_box": bounding_box,
             "complete_relations": complete_relations,
             "keep_other_tags": keep_other_tags,
+            "keep_node_info": keep_node_info,
         }
         cache_path = cache.result_path(filepath, key_params)
-        return cache.materialize(
+        result = cache.materialize(
             cache_path,
             lambda tmp_path: _decode_and_run(
                 filepath,
                 osm_key_bytes,
                 include_nodes,
                 workers,
-                lambda shard_paths, collect_workers, report: geoparquet._stream_layer_to_parquet(
+                lambda shard_paths, report: geoparquet._stream_layer_to_parquet(
                     shard_paths,
                     tmp_path,
                     geoparquet._OUTPUT_CHUNK_SIZE,
@@ -124,7 +133,7 @@ def _get_layer(
                     bounding_box,
                     complete_relations,
                     keep_other_tags=keep_other_tags,
-                    workers=collect_workers,
+                    keep_node_info=keep_node_info,
                 ),
                 bbox_bounds=bounds,
                 requested_tag_keys=requested_tag_keys,
@@ -133,8 +142,9 @@ def _get_layer(
             )
             is not None,
         )
+        return _node_lists(result)
 
-    def run(shard_paths, collect_workers, report):
+    def run(shard_paths, report):
         if output is None:
             return _assemble_layer(
                 shard_paths,
@@ -146,7 +156,7 @@ def _get_layer(
                 bounding_box,
                 complete_relations,
                 keep_other_tags=keep_other_tags,
-                workers=collect_workers,
+                keep_node_info=keep_node_info,
             )
         return geoparquet._stream_layer_to_parquet(
             shard_paths,
@@ -160,10 +170,10 @@ def _get_layer(
             bounding_box,
             complete_relations,
             keep_other_tags=keep_other_tags,
-            workers=collect_workers,
+            keep_node_info=keep_node_info,
         )
 
-    return _decode_and_run(
+    result = _decode_and_run(
         filepath,
         osm_key_bytes,
         include_nodes,
@@ -174,6 +184,21 @@ def _get_layer(
         progress=progress,
         spill_all_ways=keep_relations,
     )
+    return result if output is not None else _node_lists(result)
+
+
+def _node_lists(result):
+    """``result`` (a frame, or the ``(nodes, edges)`` pair of a network read) with each
+    way's ``nodes`` -- kept with ``keep_node_info`` -- as a list of ints, as the in-memory
+    reader returns it, instead of the array the assembly or the cached GeoParquet gives.
+    """
+    frames = result if isinstance(result, tuple) else (result,)
+    for frame in frames:
+        if frame is not None and "nodes" in frame.columns:
+            frame["nodes"] = [
+                v.tolist() if isinstance(v, np.ndarray) else v for v in frame["nodes"]
+            ]
+    return result
 
 
 def _resolve_tags_as_columns(base_tags, extra_attributes, tags_to_keep):
@@ -213,6 +238,7 @@ def get_buildings(
     output=None,
     keep_metadata=True,
     progress=True,
+    keep_node_info=False,
 ):
     """Read building geometries (ways + relations) from ``filepath`` with the out-of-core
     engine, with the same columns as ``OSM(...).get_buildings()``. ``custom_filter`` refines
@@ -234,6 +260,7 @@ def get_buildings(
         bounding_box=bounding_box,
         complete_relations=complete_relations,
         progress=progress,
+        keep_node_info=keep_node_info,
     )
 
 
@@ -248,6 +275,7 @@ def get_landuse(
     output=None,
     keep_metadata=True,
     progress=True,
+    keep_node_info=False,
 ):
     """Read landuse geometries (ways + relations) from ``filepath`` with the out-of-core
     engine, with the same columns as ``OSM(...).get_landuse()``. ``custom_filter`` refines
@@ -266,6 +294,7 @@ def get_landuse(
         bounding_box=bounding_box,
         complete_relations=complete_relations,
         progress=progress,
+        keep_node_info=keep_node_info,
     )
 
 
@@ -280,6 +309,7 @@ def get_natural(
     output=None,
     keep_metadata=True,
     progress=True,
+    keep_node_info=False,
 ):
     """Read natural features (nodes + ways + relations) from ``filepath`` with the
     out-of-core engine, with the same columns as ``OSM(...).get_natural()``. ``custom_filter``
@@ -299,6 +329,7 @@ def get_natural(
         bounding_box=bounding_box,
         complete_relations=complete_relations,
         progress=progress,
+        keep_node_info=keep_node_info,
     )
 
 
@@ -313,6 +344,7 @@ def get_pois(
     output=None,
     keep_metadata=True,
     progress=True,
+    keep_node_info=False,
 ):
     """Read points of interest (nodes + ways + relations) from ``filepath`` with the
     out-of-core engine, with the same columns as ``OSM(...).get_pois(custom_filter=...)``.
@@ -342,6 +374,7 @@ def get_pois(
         bounding_box=bounding_box,
         complete_relations=complete_relations,
         progress=progress,
+        keep_node_info=keep_node_info,
     )
 
 
@@ -358,6 +391,7 @@ def get_boundaries(
     output=None,
     keep_metadata=True,
     progress=True,
+    keep_node_info=False,
 ):
     """Read boundaries (ways + relations) from ``filepath`` with the out-of-core engine,
     with the same columns as ``OSM(...).get_boundaries()``. ``boundary_type`` selects the
@@ -397,6 +431,7 @@ def get_boundaries(
         bounding_box=bounding_box,
         complete_relations=complete_relations,
         progress=progress,
+        keep_node_info=keep_node_info,
     )
     # Name post-filter (substring match), as OSM.get_boundaries does. The output= + name
     # combination is rejected above, so reaching here means an in-memory frame.
@@ -428,6 +463,7 @@ def get_data_by_custom_criteria(
     keep_metadata=True,
     keep_other_tags=True,
     progress=True,
+    keep_node_info=False,
 ):
     """Read OSM elements matching an arbitrary ``custom_filter`` from ``filepath`` with the
     out-of-core engine, with the same columns as
@@ -436,7 +472,9 @@ def get_data_by_custom_criteria(
     which element kinds are returned; ``extra_attributes`` adds further tag columns.
     ``keep_other_tags=False`` resolves only the requested tags (``tags_as_columns`` plus the
     filter keys) and drops the JSON ``tags`` column of leftovers, so the read does minimal
-    tag work. See :func:`_get_layer` for the other keyword arguments."""
+    tag work. ``custom_filter=None`` reads every tagged element (``filter_type`` and
+    ``osm_keys_to_keep`` are then not used), with the default columns of every known
+    feature as tag columns. See :func:`_get_layer` for the other keyword arguments."""
     from pyrosm.config import Conf
     from pyrosm.utils import (
         validate_custom_filter,
@@ -444,12 +482,21 @@ def get_data_by_custom_criteria(
         validate_tags_as_columns,
     )
 
-    custom_filter = validate_custom_filter(custom_filter)
+    keep_all = custom_filter is None
+    if keep_all:
+        # Every tagged element: there is nothing to keep or exclude by value, and the
+        # filter keys are not used.
+        filter_type = "keep"
+        osm_keys_to_keep = None
+    else:
+        custom_filter = validate_custom_filter(custom_filter)
     filter_type = filter_type.lower()
     validate_osm_keys(osm_keys_to_keep)
     if isinstance(osm_keys_to_keep, str):
         osm_keys_to_keep = [osm_keys_to_keep]
-    if tags_as_columns is None:
+    if tags_as_columns is None and keep_all:
+        tags_as_columns = Conf.tags._every_feature_columns()
+    elif tags_as_columns is None:
         tags_as_columns = []
         for k in custom_filter.keys():
             try:
@@ -480,6 +527,7 @@ def get_data_by_custom_criteria(
         complete_relations=complete_relations,
         keep_other_tags=keep_other_tags,
         progress=progress,
+        keep_node_info=keep_node_info,
     )
 
 
@@ -559,6 +607,7 @@ def get_network(
     output=None,
     keep_metadata=True,
     progress=True,
+    keep_node_info=False,
 ):
     """Read a street network (``highway=*`` ways as LineString edges + a ``length`` column)
     from ``filepath`` with the out-of-core engine, with the same columns as
@@ -583,8 +632,12 @@ def get_network(
     from pyrosm.config import Conf
     from pyrosm.utils import validate_custom_filter, validate_tags_as_columns
     from pyrosm.filter_compiler import CompiledFilter
+    from pyrosm.graphs import record_network_type
 
     validate_progress(progress)
+    # The network type drives the graph semantics even with a custom_filter, so it is
+    # validated for every read, as the in-memory reader does.
+    _network_filter(network_type)
 
     tags_as_columns = list(Conf.tags.highway)
     if tags_to_keep is not None:
@@ -630,7 +683,7 @@ def get_network(
     if output is not None:
         _compat.require_pyarrow()
 
-    def assemble(shard_paths, collect_workers, report):
+    def assemble(shard_paths, report):
         edges, node_gdf = _assemble_network(
             shard_paths,
             tags_as_columns,
@@ -639,8 +692,8 @@ def get_network(
             nodes,
             bounding_box,
             filepath=filepath,
-            workers=collect_workers,
             progress=report,
+            keep_node_info=keep_node_info,
         )
         return (node_gdf, edges) if nodes else edges
 
@@ -668,7 +721,7 @@ def get_network(
     # With pyarrow absent there is nowhere to cache, so return the direct in-memory result (the
     # edges frame, or the (nodes, edges) tuple for nodes=True).
     if not _compat.HAS_PYARROW:
-        return decode()
+        return record_network_type(_node_lists(decode()), network_type)
 
     # Cache the result to / serve it from a per-read GeoParquet, keyed apart from the area/point
     # layers via "network". nodes=True is a (nodes, edges) tuple, cached as two files.
@@ -679,18 +732,21 @@ def get_network(
         "tags_as_columns": tags_as_columns,
         "keep_metadata": keep_metadata,
         "bounding_box": bounding_box,
+        "keep_node_info": keep_node_info,
     }
     if nodes:
         edges_path = cache.result_path(filepath, {**key_params, "part": "edges"})
         nodes_path = cache.result_path(filepath, {**key_params, "part": "nodes"})
-        return cache.materialize_pair(
+        result = cache.materialize_pair(
             edges_path,
             nodes_path,
             lambda e_tmp, n_tmp: _write_network_pair(decode(), e_tmp, n_tmp),
             read_nodes=_read_nodes_parquet,
         )
+        return record_network_type(_node_lists(result), network_type)
 
     cache_path = cache.result_path(filepath, key_params)
-    return cache.materialize(
+    result = cache.materialize(
         cache_path, lambda tmp_path: _write_parquet(decode(), tmp_path)
     )
+    return record_network_type(_node_lists(result), network_type)

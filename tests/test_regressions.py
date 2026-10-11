@@ -6,12 +6,14 @@ from pathlib import Path
 import pytest
 
 
-def test_get_methods_do_not_mutate_shared_tag_config():
-    """#252 — get_* must not mutate the shared Conf default-tag lists."""
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_get_methods_do_not_mutate_shared_tag_config(engine):
+    """#252 — get_* must not mutate the shared Conf default-tag lists, with either
+    engine."""
     from pyrosm import OSM, get_data
     from pyrosm.config import Conf
 
-    osm = OSM(get_data("test_pbf"))
+    osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
 
     building_before = list(Conf.tags.building)
     highway_before = list(Conf.tags.highway)
@@ -127,10 +129,12 @@ def test_nxgraph_keys_nodes_by_id_not_dataframe_index():
 _EXCLUDED_SERVICE = {"parking", "parking_aisle", "private", "emergency_access"}
 
 
-def test_exclude_filter_does_not_leak_secondary_keys():
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_exclude_filter_does_not_leak_secondary_keys(engine):
     """#112 — an exclude custom_filter that lists `service` values must drop those
-    ways. The old ways filter broke on the first filter key in the record, so a
-    `highway=service` way leaked because `highway` was checked before `service`."""
+    ways, with either engine. The old ways filter broke on the first filter key in the
+    record, so a `highway=service` way leaked because `highway` was checked before
+    `service`."""
     from pyrosm import OSM, get_data
 
     drive_filter = dict(
@@ -156,7 +160,7 @@ def test_exclude_filter_does_not_leak_secondary_keys():
         motor_vehicle=["no"],
         motorcar=["no"],
     )
-    osm = OSM(get_data("test_pbf"))
+    osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
     gdf = osm.get_data_by_custom_criteria(
         custom_filter=drive_filter,
         osm_keys_to_keep="highway",
@@ -348,7 +352,7 @@ def test_get_network_without_custom_filter_unchanged():
         "timestamp",
         "version",
     ]
-    assert edges._metadata[-1] == "driving"
+    assert edges.attrs["network_type"] == "driving"
 
     rows = sorted(f"{i}:{h}" for i, h in zip(edges["id"], edges["highway"].fillna("")))
     digest = hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
@@ -535,7 +539,7 @@ def test_valid_bbox_unchanged_by_empty_guard():
     """#241 guard — a valid in-extent bounding box still parses normally."""
     from pyrosm import OSM, get_data
 
-    osm = OSM(get_data("helsinki_pbf"), bounding_box=[24.93, 60.16, 24.96, 60.20])
+    osm = OSM(get_data("helsinki_pbf"), bounding_box=[24.93, 60.16, 24.96, 60.20], engine="in_memory")
     edges = osm.get_network(network_type="all")
     assert edges is not None
     assert len(edges) == 2469
@@ -548,10 +552,10 @@ def test_bbox_straddling_building_ways_complete_not_cut():
     from pyrosm import OSM, get_data
 
     fp = get_data("helsinki_pbf")
-    full = OSM(fp).get_buildings()
+    full = OSM(fp, engine="in_memory").get_buildings()
     full = full[full["osm_type"] == "way"].set_index("id")
 
-    sub = OSM(fp, bounding_box=[24.93, 60.16, 24.945, 60.18]).get_buildings()
+    sub = OSM(fp, bounding_box=[24.93, 60.16, 24.945, 60.18], engine="in_memory").get_buildings()
     sub = sub[sub["osm_type"] == "way"].set_index("id")
 
     # The fix completes geometries; it does not change which ways are kept.
@@ -577,10 +581,10 @@ def test_bbox_does_not_introduce_invalid_building_ways():
     from pyrosm import OSM, get_data
 
     fp = get_data("helsinki_pbf")
-    full = OSM(fp).get_buildings()
+    full = OSM(fp, engine="in_memory").get_buildings()
     full = full[full["osm_type"] == "way"].set_index("id")
 
-    sub = OSM(fp, bounding_box=[24.93, 60.16, 24.945, 60.18]).get_buildings()
+    sub = OSM(fp, bounding_box=[24.93, 60.16, 24.945, 60.18], engine="in_memory").get_buildings()
     sub = sub[sub["osm_type"] == "way"].set_index("id")
 
     common = full.index.intersection(sub.index)
@@ -661,13 +665,15 @@ def test_to_graph_pandana_emits_deprecation_warning():
     assert g is not None
 
 
-def test_parse_nodes_non_dense_pbf_matches_dense(tmp_path):
-    """#274 — pyrosm parses non-dense PBF node groups (pbfreader.parse_nodes) and
-    produces the same network and buildings as the dense encoding. Guards the
-    regression where parse_nodes' dict result was spread into the all_nodes list
-    as bare keys, crashing non-dense reads with 'str object has no attribute
-    keys'. A non-dense copy of the bundled test PBF is generated with osmium."""
-    import numpy as np
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_parse_nodes_non_dense_pbf_matches_dense(tmp_path, engine, fresh_cache):
+    """#274 — pyrosm parses non-dense PBF node groups and returns the same frames as
+    for the dense encoding, with both engines. Guards the regression where
+    parse_nodes' dict result was spread into the all_nodes list as bare keys,
+    crashing non-dense reads with 'str object has no attribute keys', and the
+    out-of-core engine returning nothing because its decoder skipped plain nodes. A
+    non-dense copy of the bundled test PBF is generated with osmium."""
+    import pandas as pd
 
     osmium = pytest.importorskip("osmium")
     from pyrosm import OSM, get_data
@@ -680,34 +686,23 @@ def test_parse_nodes_non_dense_pbf_matches_dense(tmp_path):
         for obj in osmium.FileProcessor(src):
             writer.add(obj)
 
-    dense_edges = OSM(src).get_network()
-    nondense_edges = OSM(nondense).get_network()
-    assert nondense_edges is not None
-    assert len(nondense_edges) == len(dense_edges)
-
-    dense_buildings = OSM(src).get_buildings()
-    nondense_buildings = OSM(nondense).get_buildings()
-    assert len(nondense_buildings) == len(dense_buildings)
-    # Same geometric extent -> node coordinates parsed identically.
-    assert np.allclose(
-        nondense_buildings.total_bounds, dense_buildings.total_bounds, atol=1e-6
-    )
-
-    # POIs come from standalone (tagged) nodes, so this checks parse_nodes emits
-    # the 'tags' column with the same schema as parse_dense.
-    dense_pois = OSM(src).get_pois()
-    nondense_pois = OSM(nondense).get_pois()
-    assert nondense_pois is not None
-    assert len(nondense_pois) == len(dense_pois)
-    assert set(nondense_pois.columns) == set(dense_pois.columns)
-
-    # A bounding box exercises parse_nodes' bbox filter and the #236
-    # boundary-completion (id-filter) pass on the non-dense node groups.
+    # POIs come from standalone (tagged) nodes; a bounding box exercises the node
+    # filter by box (and, in memory, the #236 boundary-completion pass).
     bounds = [26.94, 60.525, 26.96, 60.535]
-    dense_bbox = OSM(src, bounding_box=bounds).get_buildings()
-    nondense_bbox = OSM(nondense, bounding_box=bounds).get_buildings()
-    assert nondense_bbox is not None
-    assert len(nondense_bbox) == len(dense_bbox)
+    reads = [
+        ("get_network", {}),
+        ("get_buildings", {}),
+        ("get_pois", {}),
+        ("get_buildings", {"bounding_box": bounds}),
+    ]
+    for method, options in reads:
+        dense = getattr(OSM(src, engine=engine, workers=1, **options), method)()
+        frame = getattr(OSM(nondense, engine=engine, workers=1, **options), method)()
+        assert frame is not None and len(frame) > 0
+        pd.testing.assert_frame_equal(
+            frame.drop(columns="geometry"), dense.drop(columns="geometry")
+        )
+        assert (frame.geometry.to_wkb() == dense.geometry.to_wkb()).all()
 
 
 def test_parse_nodes_non_dense_osh_history_with_timestamp(tmp_path):
@@ -1128,8 +1123,9 @@ def test_tags_to_keep_applies_to_all_feature_methods():
     from pyrosm import OSM, get_data
 
     # The region extract is used because the small helsinki_pbf has only
-    # incomplete boundaries (all dropped, #154), leaving get_boundaries empty.
-    osm = OSM(get_data("helsinki_region_pbf"))
+    # incomplete boundaries (all dropped, #154), leaving get_boundaries empty. The
+    # out-of-core engine's tags_to_keep is covered by its parity tests.
+    osm = OSM(get_data("helsinki_region_pbf"), engine="in_memory")
     cases = [
         (osm.get_network, {}, "highway"),
         (osm.get_landuse, {}, "landuse"),
@@ -1162,7 +1158,7 @@ def test_compact_node_store_preserves_graph_node_attributes():
     import numpy as np
     from pyrosm import OSM, get_data
 
-    osm = OSM(get_data("helsinki_pbf"))
+    osm = OSM(get_data("helsinki_pbf"), engine="in_memory")
     nodes, edges = osm.get_network(nodes=True)
 
     assert nodes["version"].dtype == np.int64
@@ -1211,7 +1207,7 @@ def test_streaming_block_reader_bbox_boundary_completeness():
 
     # Sub-box inside the data extent, so network ways cross the box edge.
     bbox = [24.945, 60.170, 24.950, 60.174]
-    net = OSM(get_data("helsinki_pbf"), bounding_box=bbox).get_network()
+    net = OSM(get_data("helsinki_pbf"), bounding_box=bbox, engine="in_memory").get_network()
     assert net is not None and len(net) > 0
     assert net.geometry.notna().all()
     assert net.geometry.is_valid.all()
@@ -1978,7 +1974,7 @@ def test_node_columns_come_in_a_fixed_order():
     from pyrosm import OSM, get_data
 
     fp = get_data("test_pbf")
-    columns = list(OSM(fp).get_pois().columns)
+    columns = list(OSM(fp, engine="in_memory").get_pois().columns)
     node_columns = ["id", "lon", "lat", "tags", "visible", "version", "timestamp"]
     assert columns[:8] == node_columns + ["changeset"]
     assert columns == list(OSM(fp, engine="out_of_core").get_pois().columns)
@@ -2172,7 +2168,7 @@ def test_network_edges_are_one_linestring_per_way():
     from pyrosm import OSM, get_data
     from pyrosm.distance import Unit, haversine
 
-    osm = OSM(get_data("helsinki_pbf"), keep_node_info=True)
+    osm = OSM(get_data("helsinki_pbf"), keep_node_info=True, engine="in_memory")
     edges = osm.get_network("all")
     assert set(edges.geometry.geom_type) == {"LineString"}
 
@@ -2251,7 +2247,7 @@ def test_graph_edges_join_consecutive_nodes_of_each_way():
     import numpy as np
     from pyrosm import OSM, get_data
 
-    osm = OSM(get_data("helsinki_pbf"), keep_node_info=True)
+    osm = OSM(get_data("helsinki_pbf"), keep_node_info=True, engine="in_memory")
     nodes, edges = osm.get_network("all", nodes=True)
 
     expected_u, expected_v = [], []
@@ -2298,3 +2294,109 @@ def test_decode_spills_every_ways_refs_only_for_relation_lookups(monkeypatch):
         assert sum(len(shard["way_id"]) for shard in shards) > 0
     assert spilled[True] > 0
     assert spilled[False] == 0
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_graph_export_uses_the_network_type_of_its_frames(engine, fresh_cache):
+    """Graph export takes the network type recorded on the frames it gets, not that of the
+    latest network read: driving frames exported after a walking read stay a directed
+    driving graph, and out-of-core frames export without naming their type."""
+    from pyrosm import OSM, get_data
+
+    pytest.importorskip("networkx")
+    osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
+    nodes, edges = osm.get_network("driving", nodes=True)
+    osm.get_network("walking")
+    graph = OSM.to_graph(nodes, edges, graph_type="networkx", simplify=False)
+    assert graph.number_of_edges() == 1237
+
+
+def test_graph_export_reads_the_network_type_of_the_node_frame():
+    """A network read records its type by its pyrosm name. Graph export uses a given
+    network_type (refusing an unknown one), else falls back to the type of the node frame
+    when the edges carry none, and asks for network_type when neither frame does."""
+    from pyrosm import OSM, get_data
+
+    pytest.importorskip("networkx")
+    nodes, edges = OSM(get_data("test_pbf")).get_network("Drive", nodes=True)
+    assert edges.attrs["network_type"] == nodes.attrs["network_type"] == "driving"
+    with pytest.raises(ValueError, match="should be one of"):
+        OSM.to_graph(nodes, edges, graph_type="networkx", network_type="drivng")
+    edges.attrs.clear()
+    graph = OSM.to_graph(nodes, edges, graph_type="networkx", simplify=False)
+    assert graph.number_of_edges() == 1237
+    nodes.attrs.clear()
+    with pytest.raises(ValueError, match="Could not detect the network type"):
+        OSM.to_graph(nodes, edges, graph_type="networkx")
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_network_read_with_custom_filter_refuses_unknown_network_type(engine):
+    """A network read validates network_type even with a custom_filter, with either
+    engine, so the type it records for graph export is a known one."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
+    with pytest.raises(ValueError, match="should be one of"):
+        osm.get_network("drivng", custom_filter={"highway": ["primary"]})
+
+
+@pytest.mark.parametrize("nodes", [False, True])
+def test_cached_network_read_records_its_network_type(nodes, fresh_cache, monkeypatch):
+    """An out-of-core network read served from the result cache records its network type
+    on the frames like the read that built the cache."""
+    from pyrosm import OSM, get_data
+    from pyrosm.engine import readers
+
+    pytest.importorskip("networkx")
+    fp = get_data("test_pbf")
+    first = OSM(fp, engine="out_of_core", workers=1).get_network("driving", nodes=nodes)
+    # The second read must come from the cache, not from decoding the file again.
+    monkeypatch.setattr(readers, "_decode_and_run", None)
+    second = OSM(fp, engine="out_of_core", workers=1).get_network("driving", nodes=nodes)
+    for result in (first, second):
+        frames = result if nodes else (result,)
+        assert [frame.attrs["network_type"] for frame in frames] == ["driving"] * len(
+            frames
+        )
+    if nodes:
+        graph = OSM.to_graph(*second, graph_type="networkx", simplify=False)
+        assert graph.number_of_edges() == 1237
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
+    "read, found",
+    [
+        (lambda osm: osm.get_network(), "edges"),
+        (lambda osm: osm.get_network(nodes=True)[1], "edges"),
+        (lambda osm: osm.get_buildings(), "building elements"),
+        (lambda osm: osm.get_landuse(), "landuse elements"),
+        (lambda osm: osm.get_natural(), "natural elements"),
+        (lambda osm: osm.get_pois(), "POIs"),
+        (lambda osm: osm.get_boundaries(), "boundaries"),
+        (lambda osm: osm.get_data_by_custom_criteria({"shop": True}), "OSM data"),
+    ],
+    ids=[
+        "network",
+        "network_segments",
+        "buildings",
+        "landuse",
+        "natural",
+        "pois",
+        "boundaries",
+        "custom",
+    ],
+)
+def test_read_that_finds_nothing_warns(engine, read, found, fresh_cache):
+    """A read that finds nothing warns so and returns None, with either engine (the
+    out-of-core engine used to return None silently)."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(
+        get_data("test_pbf"), engine=engine, workers=1, bounding_box=[0, 0, 0.01, 0.01]
+    )
+    with pytest.warns(
+        UserWarning, match="Could not find any %s for given area" % found
+    ):
+        assert read(osm) is None

@@ -236,56 +236,30 @@ def test_using_incorrect_filter_type(test_pbf):
             raise e
 
 
-def test_using_incorrect_booleans(test_pbf):
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
+    "toggles, message",
+    [
+        ({"keep_nodes": "foo"}, "'keep_nodes' should be boolean type"),
+        ({"keep_ways": "foo"}, "'keep_ways' should be boolean type"),
+        ({"keep_relations": "foo"}, "'keep_relations' should be boolean type"),
+        (
+            {"keep_nodes": False, "keep_ways": False, "keep_relations": False},
+            "At least on of the following parameters should be True",
+        ),
+    ],
+    ids=["nodes", "ways", "relations", "none_kept"],
+)
+def test_using_incorrect_booleans(test_pbf, engine, toggles, message):
+    """keep_nodes/keep_ways/keep_relations must be booleans and not all False, with
+    either engine."""
     from pyrosm import OSM
 
-    osm = OSM(filepath=test_pbf)
-
-    custom_filter = {"building": ["retail"]}
-    incorrect_bool = "foo"
-    # Test that passing incorrect data works as should
-    try:
-        gdf = osm.get_data_by_custom_criteria(
-            custom_filter=custom_filter, keep_nodes=incorrect_bool
+    osm = OSM(filepath=test_pbf, engine=engine, workers=1)
+    with pytest.raises(ValueError, match=message):
+        osm.get_data_by_custom_criteria(
+            custom_filter={"building": ["retail"]}, **toggles
         )
-    except ValueError as e:
-        if "'keep_nodes' should be boolean type: True or False" in str(e):
-            pass
-        else:
-            raise e
-
-    try:
-        gdf = osm.get_data_by_custom_criteria(
-            custom_filter=custom_filter, keep_ways=incorrect_bool
-        )
-    except ValueError as e:
-        if "'keep_ways' should be boolean type: True or False" in str(e):
-            pass
-        else:
-            raise e
-
-    try:
-        gdf = osm.get_data_by_custom_criteria(
-            custom_filter=custom_filter, keep_relations=incorrect_bool
-        )
-    except ValueError as e:
-        if "'keep_relations' should be boolean type: True or False" in str(e):
-            pass
-        else:
-            raise e
-
-    try:
-        gdf = osm.get_data_by_custom_criteria(
-            custom_filter=custom_filter,
-            keep_relations=False,
-            keep_ways=False,
-            keep_nodes=False,
-        )
-    except ValueError as e:
-        if "At least on of the following parameters should be True" in str(e):
-            pass
-        else:
-            raise e
 
 
 def test_using_incorrect_osm_keys(test_pbf):
@@ -727,17 +701,18 @@ def test_get_all_data_is_superset_of_single_key(test_pbf):
     assert set(buildings["id"]).issubset(set(everything["id"]))
 
 
-def test_get_all_data_element_toggles(test_pbf):
-    """keep_nodes / keep_ways / keep_relations scope the unfiltered result."""
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_get_all_data_element_toggles(test_pbf, engine):
+    """keep_nodes / keep_ways / keep_relations scope the unfiltered result, with either
+    engine."""
     from pyrosm import OSM
 
-    no_nodes = OSM(filepath=test_pbf).get_data_by_custom_criteria(
-        custom_filter=None, keep_nodes=False
-    )
+    osm = OSM(filepath=test_pbf, engine=engine, workers=1)
+    no_nodes = osm.get_data_by_custom_criteria(custom_filter=None, keep_nodes=False)
     assert "node" not in set(no_nodes["osm_type"].unique())
     assert "Point" not in set(no_nodes.geom_type)
 
-    no_ways = OSM(filepath=test_pbf).get_data_by_custom_criteria(
+    no_ways = osm.get_data_by_custom_criteria(
         custom_filter=None, keep_ways=False, keep_relations=False
     )
     assert "way" not in set(no_ways["osm_type"].unique())
@@ -831,23 +806,26 @@ def test_keep_all_drops_untagged_standalone_way():
     assert relations is None
 
 
-def test_custom_filter_key_outside_conf_uses_key_as_column(test_pbf):
-    """A custom_filter key with no predefined Conf.tags entry still works: the
-    getattr lookup falls through and the key itself becomes the column."""
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_custom_filter_key_outside_conf_uses_key_as_column(test_pbf, engine):
+    """A custom_filter key with no predefined Conf.tags entry still works, with either
+    engine: the getattr lookup falls through and the key itself becomes the column."""
     from pyrosm import OSM
 
-    osm = OSM(filepath=test_pbf)
+    osm = OSM(filepath=test_pbf, engine=engine, workers=1)
     gdf = osm.get_data_by_custom_criteria(custom_filter={"source": True})
     assert gdf is not None
     assert "source" in gdf.columns
     assert gdf["source"].notna().any()
 
 
-def test_custom_criteria_non_string_filter_type_raises(test_pbf):
-    """A non-string filter_type is rejected by the isinstance guard."""
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_custom_criteria_non_string_filter_type_raises(test_pbf, engine):
+    """A non-string filter_type is rejected by the isinstance guard, with either
+    engine."""
     from pyrosm import OSM
 
-    osm = OSM(filepath=test_pbf)
+    osm = OSM(filepath=test_pbf, engine=engine, workers=1)
     with pytest.raises(ValueError, match="should be either"):
         osm.get_data_by_custom_criteria(
             custom_filter={"building": True}, filter_type=123

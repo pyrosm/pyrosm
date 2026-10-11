@@ -1,6 +1,6 @@
+from pyrosm.utils import warn_empty_result
 from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
-import warnings
 
 
 def get_network_data(
@@ -34,9 +34,7 @@ def get_network_data(
 
     # If there weren't any data, return None
     if ways is None:
-        warnings.warn(
-            "Could not find any edges for given area.", UserWarning, stacklevel=2
-        )
+        warn_empty_result("network")
         return None, None
 
     # Prepare GeoDataFrame

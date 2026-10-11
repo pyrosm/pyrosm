@@ -78,11 +78,12 @@ def test_passing_custom_filter_without_element_key(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
 
-def test_adding_extra_attribute(helsinki_pbf):
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_adding_extra_attribute(helsinki_pbf, engine):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
 
-    osm = OSM(filepath=helsinki_pbf)
+    osm = OSM(filepath=helsinki_pbf, engine=engine, workers=1)
     gdf = osm.get_landuse()
     extra_col = "wikidata"
     extra = osm.get_landuse(extra_attributes=[extra_col])

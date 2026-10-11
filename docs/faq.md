@@ -7,10 +7,10 @@ here, search the [issue tracker](https://github.com/pyrosm/pyrosm/issues) or ope
 
 :::{dropdown} How do I read a large scale extract without running out of memory?
 
-For reading large file sizes covering e.g. whole countries, use the **out-of-core engine**, which decodes the file in a single streaming pass with bounded peak memory, spilling intermediate data to disk instead of holding the whole file at once:
+Pyrosm reads with its **out-of-core engine** by default, which decodes the file in a single streaming pass with bounded peak memory, spilling intermediate data to disk instead of holding the whole file at once, so large files covering e.g. whole countries can be read as they are:
 
 ```python
-osm = OSM("country.osm.pbf", engine="out_of_core", workers="auto")
+osm = OSM("country.osm.pbf", workers="auto")
 buildings = osm.get_buildings()
 ```
 
@@ -21,7 +21,7 @@ warning:
 
 ```python
 if __name__ == "__main__":
-    osm = OSM("country.osm.pbf", engine="out_of_core", workers="auto")
+    osm = OSM("country.osm.pbf", workers="auto")
     buildings = osm.get_buildings()
 ```
 
