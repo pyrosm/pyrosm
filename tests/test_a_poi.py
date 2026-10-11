@@ -81,11 +81,11 @@ def test_adding_extra_attribute(helsinki_pbf):
     assert len(gdf) == len(extra)
 
 
-def test_using_rare_tag(helsinki_pbf):
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_using_rare_tag(helsinki_pbf, engine):
     from pyrosm import OSM
-    from geopandas import GeoDataFrame
 
-    osm = OSM(filepath=helsinki_pbf)
+    osm = OSM(filepath=helsinki_pbf, engine=engine, workers=1)
     with pytest.warns(UserWarning) as w:
         gdf = osm.get_pois({"park_ride": ["yes"]})
 

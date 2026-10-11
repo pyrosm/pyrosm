@@ -113,7 +113,7 @@ def test_reads_are_logged(caplog, tmp_path, monkeypatch):
     monkeypatch.setattr(cache, "cache_dir", lambda: tmp_path)
     caplog.set_level(logging.DEBUG, logger="pyrosm")
     fp = get_data("test_pbf")
-    osm = OSM(fp, progress=False)
+    osm = OSM(fp, engine="in_memory", progress=False)
     buildings = osm.get_buildings()
     nodes, edges = osm.get_network(network_type="driving", nodes=True)
     OSM.to_graph(nodes, edges, graph_type="networkx")

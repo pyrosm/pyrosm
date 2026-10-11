@@ -207,9 +207,10 @@ def test_id_tag_does_not_overwrite_osm_id():
     "bounding_box, passes", [(None, 1), ([26.94, 60.525, 26.96, 60.535], 2)]
 )
 def test_read_progress(test_pbf, bounding_box, passes):
-    """A progress callback gets the bytes of the file read in each pass over it, from
-    (0, size) to (size, size), and does not change what is read. A bounding box that ways
-    cross makes a second pass for their vertices outside the box."""
+    """A progress callback of the in-memory reader gets the bytes of the file read in
+    each pass over it, from (0, size) to (size, size), and does not change what is read.
+    A bounding box that ways cross makes a second pass for their vertices outside the
+    box."""
     from pathlib import Path
 
     from pyrosm import OSM
@@ -217,7 +218,10 @@ def test_read_progress(test_pbf, bounding_box, passes):
     size = Path(test_pbf).stat().st_size
     seen = []
     osm = OSM(
-        test_pbf, bounding_box=bounding_box, progress=lambda *report: seen.append(report)
+        test_pbf,
+        bounding_box=bounding_box,
+        progress=lambda *report: seen.append(report),
+        engine="in_memory",
     )
     buildings = osm.get_buildings()
     assert {total for _, total in seen} == {size}
@@ -226,7 +230,9 @@ def test_read_progress(test_pbf, bounding_box, passes):
     for start, end in zip(starts, starts[1:] + [len(seen)]):
         done = [d for d, _ in seen[start:end]]
         assert done == sorted(done) and done[-1] == size
-    expected = OSM(test_pbf, bounding_box=bounding_box, progress=False).get_buildings()
+    expected = OSM(
+        test_pbf, bounding_box=bounding_box, progress=False, engine="in_memory"
+    ).get_buildings()
     assert buildings.equals(expected)
 
 

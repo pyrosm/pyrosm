@@ -6,12 +6,14 @@ from pathlib import Path
 import pytest
 
 
-def test_get_methods_do_not_mutate_shared_tag_config():
-    """#252 — get_* must not mutate the shared Conf default-tag lists."""
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_get_methods_do_not_mutate_shared_tag_config(engine):
+    """#252 — get_* must not mutate the shared Conf default-tag lists, with either
+    engine."""
     from pyrosm import OSM, get_data
     from pyrosm.config import Conf
 
-    osm = OSM(get_data("test_pbf"))
+    osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
 
     building_before = list(Conf.tags.building)
     highway_before = list(Conf.tags.highway)
@@ -127,10 +129,12 @@ def test_nxgraph_keys_nodes_by_id_not_dataframe_index():
 _EXCLUDED_SERVICE = {"parking", "parking_aisle", "private", "emergency_access"}
 
 
-def test_exclude_filter_does_not_leak_secondary_keys():
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_exclude_filter_does_not_leak_secondary_keys(engine):
     """#112 — an exclude custom_filter that lists `service` values must drop those
-    ways. The old ways filter broke on the first filter key in the record, so a
-    `highway=service` way leaked because `highway` was checked before `service`."""
+    ways, with either engine. The old ways filter broke on the first filter key in the
+    record, so a `highway=service` way leaked because `highway` was checked before
+    `service`."""
     from pyrosm import OSM, get_data
 
     drive_filter = dict(
@@ -156,7 +160,7 @@ def test_exclude_filter_does_not_leak_secondary_keys():
         motor_vehicle=["no"],
         motorcar=["no"],
     )
-    osm = OSM(get_data("test_pbf"))
+    osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
     gdf = osm.get_data_by_custom_criteria(
         custom_filter=drive_filter,
         osm_keys_to_keep="highway",
@@ -535,7 +539,7 @@ def test_valid_bbox_unchanged_by_empty_guard():
     """#241 guard — a valid in-extent bounding box still parses normally."""
     from pyrosm import OSM, get_data
 
-    osm = OSM(get_data("helsinki_pbf"), bounding_box=[24.93, 60.16, 24.96, 60.20])
+    osm = OSM(get_data("helsinki_pbf"), bounding_box=[24.93, 60.16, 24.96, 60.20], engine="in_memory")
     edges = osm.get_network(network_type="all")
     assert edges is not None
     assert len(edges) == 2469
@@ -548,10 +552,10 @@ def test_bbox_straddling_building_ways_complete_not_cut():
     from pyrosm import OSM, get_data
 
     fp = get_data("helsinki_pbf")
-    full = OSM(fp).get_buildings()
+    full = OSM(fp, engine="in_memory").get_buildings()
     full = full[full["osm_type"] == "way"].set_index("id")
 
-    sub = OSM(fp, bounding_box=[24.93, 60.16, 24.945, 60.18]).get_buildings()
+    sub = OSM(fp, bounding_box=[24.93, 60.16, 24.945, 60.18], engine="in_memory").get_buildings()
     sub = sub[sub["osm_type"] == "way"].set_index("id")
 
     # The fix completes geometries; it does not change which ways are kept.
@@ -577,10 +581,10 @@ def test_bbox_does_not_introduce_invalid_building_ways():
     from pyrosm import OSM, get_data
 
     fp = get_data("helsinki_pbf")
-    full = OSM(fp).get_buildings()
+    full = OSM(fp, engine="in_memory").get_buildings()
     full = full[full["osm_type"] == "way"].set_index("id")
 
-    sub = OSM(fp, bounding_box=[24.93, 60.16, 24.945, 60.18]).get_buildings()
+    sub = OSM(fp, bounding_box=[24.93, 60.16, 24.945, 60.18], engine="in_memory").get_buildings()
     sub = sub[sub["osm_type"] == "way"].set_index("id")
 
     common = full.index.intersection(sub.index)
@@ -1119,8 +1123,9 @@ def test_tags_to_keep_applies_to_all_feature_methods():
     from pyrosm import OSM, get_data
 
     # The region extract is used because the small helsinki_pbf has only
-    # incomplete boundaries (all dropped, #154), leaving get_boundaries empty.
-    osm = OSM(get_data("helsinki_region_pbf"))
+    # incomplete boundaries (all dropped, #154), leaving get_boundaries empty. The
+    # out-of-core engine's tags_to_keep is covered by its parity tests.
+    osm = OSM(get_data("helsinki_region_pbf"), engine="in_memory")
     cases = [
         (osm.get_network, {}, "highway"),
         (osm.get_landuse, {}, "landuse"),
@@ -1153,7 +1158,7 @@ def test_compact_node_store_preserves_graph_node_attributes():
     import numpy as np
     from pyrosm import OSM, get_data
 
-    osm = OSM(get_data("helsinki_pbf"))
+    osm = OSM(get_data("helsinki_pbf"), engine="in_memory")
     nodes, edges = osm.get_network(nodes=True)
 
     assert nodes["version"].dtype == np.int64
@@ -1202,7 +1207,7 @@ def test_streaming_block_reader_bbox_boundary_completeness():
 
     # Sub-box inside the data extent, so network ways cross the box edge.
     bbox = [24.945, 60.170, 24.950, 60.174]
-    net = OSM(get_data("helsinki_pbf"), bounding_box=bbox).get_network()
+    net = OSM(get_data("helsinki_pbf"), bounding_box=bbox, engine="in_memory").get_network()
     assert net is not None and len(net) > 0
     assert net.geometry.notna().all()
     assert net.geometry.is_valid.all()
@@ -1969,7 +1974,7 @@ def test_node_columns_come_in_a_fixed_order():
     from pyrosm import OSM, get_data
 
     fp = get_data("test_pbf")
-    columns = list(OSM(fp).get_pois().columns)
+    columns = list(OSM(fp, engine="in_memory").get_pois().columns)
     node_columns = ["id", "lon", "lat", "tags", "visible", "version", "timestamp"]
     assert columns[:8] == node_columns + ["changeset"]
     assert columns == list(OSM(fp, engine="out_of_core").get_pois().columns)
@@ -2163,7 +2168,7 @@ def test_network_edges_are_one_linestring_per_way():
     from pyrosm import OSM, get_data
     from pyrosm.distance import Unit, haversine
 
-    osm = OSM(get_data("helsinki_pbf"), keep_node_info=True)
+    osm = OSM(get_data("helsinki_pbf"), keep_node_info=True, engine="in_memory")
     edges = osm.get_network("all")
     assert set(edges.geometry.geom_type) == {"LineString"}
 
@@ -2242,7 +2247,7 @@ def test_graph_edges_join_consecutive_nodes_of_each_way():
     import numpy as np
     from pyrosm import OSM, get_data
 
-    osm = OSM(get_data("helsinki_pbf"), keep_node_info=True)
+    osm = OSM(get_data("helsinki_pbf"), keep_node_info=True, engine="in_memory")
     nodes, edges = osm.get_network("all", nodes=True)
 
     expected_u, expected_v = [], []

@@ -23,12 +23,12 @@ to parse the data from OSM with more specific filters.
  
 **Pyrosm** is easy to use and it provides a somewhat similar user interface as [OSMnx](https://github.com/gboeing/osmnx).
 The main difference between pyrosm and OSMnx is that OSMnx reads the data over internet using OverPass API, whereas pyrosm reads the data from local OSM data dumps
-that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) which makes it fast to parse OpenStreetMap data from PBF files. With the opt-in out-of-core ("streaming") engine added in **v0.10.0**, it is possible to read whole-country (or even continent) extracts quickly without running out of
+that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) which makes it fast to parse OpenStreetMap data from PBF files. With its out-of-core ("streaming") engine, the default reader, it is possible to read whole-country (or even continent) extracts quickly without running out of
 memory. Pyrosm decodes the PBF data with [Google's Protocol Buffers](https://protobuf.dev/) library (using its fast `upb` C backend). Protocol Buffers is a commonly used and efficient method to serialize and compress structured data which is also used by OpenStreetMap contributors to distribute the OSM data in PBF format (Protocolbuffer Binary Format). 
 
 > **Backend change.** Since **v0.8.0**, the backend used to parse the protocol-buffer messages is [Google's Protobuf](https://protobuf.dev/) (its fast C `upb` backend) instead of the previously used [Pyrobuf](https://github.com/appnexus/pyrobuf). The switch was made for maintainability and installation reliability: Pyrobuf is no longer maintained and its source build fails with modern `setuptools`, which broke `pip install pyrosm`, whereas Google's Protobuf is actively maintained and ships prebuilt wheels and conda-forge packages for Python 3.10–3.14. The change does **not** slow down parsing — see the [backend benchmark](benchmarks/README.md). **v0.7.0 was the last release that used Pyrobuf.**
 
-> **Out-of-core ("streaming") engine (v0.10.0).** Pyrosm now ships an opt-in out-of-core reading engine, selected with `OSM(filepath, engine="out_of_core")`, that decodes large PBF files in a **single streaming pass with bounded memory** — the decode, the node-coordinate gather and the standalone-way read all run **in parallel** across a worker pool, and each layer's result is cached automatically. It reads whole-country and even **whole-continent** extracts (e.g. all of South America) quickly on modest machines without running out of memory, returning GeoDataFrames identical to the default in-memory reader (which is unchanged). 
+> **Out-of-core ("streaming") engine.** Pyrosm reads with its out-of-core engine by default: `OSM(filepath)` decodes PBF files in a **single streaming pass with bounded memory**, can decode **in parallel** across a worker pool (`workers="auto"`), and caches each layer's result automatically. It reads whole-country and even **whole-continent** extracts (e.g. all of South America) quickly on modest machines without running out of memory. `OSM(filepath, engine="in_memory")` selects the in-memory reader, which parses the whole file once and serves every read of the reader from it; history reads always use it. 
 
 **Documentation** is available at [https://pyrosm.readthedocs.io](https://pyrosm.readthedocs.io/en/stable/).
 
@@ -44,7 +44,7 @@ memory. Pyrosm decodes the PBF data with [Google's Protocol Buffers](https://pro
 - read "natural" from PBF
 - read boundaries from PBF (such as administrative borders)
 - read any other data from PBF by using a custom user-defined filter, including regular-expression values and Overpass-style filters (NEW in v0.11.0)
-- read large PBF extracts (country level, even some continents) with bounded memory using the opt-in out-of-core ("streaming") engine (`engine="out_of_core"`), with parallel decoding and automatic result caching (NEW in v0.10.0)
+- read large PBF extracts (country level, even some continents) with bounded memory using the out-of-core ("streaming") engine, the default reader, with parallel decoding and automatic result caching
 - filter data based on bounding box
 - control which OSM tags are parsed into columns
 - crop a PBF to a smaller area and write modified OSM data back to PBF (NEW in v0.9.0), or export only selected layers (NEW in v0.11.0)

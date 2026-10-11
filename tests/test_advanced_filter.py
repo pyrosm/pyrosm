@@ -242,7 +242,7 @@ def test_regex_dict_preserves_pattern_flags():
 def test_regex_value_union_matches_literal_union(helsinki_pbf):
     # issue #116 end-to-end: a regex value matching several alternatives equals the literal
     # union a plain dict expresses.
-    osm = OSM(helsinki_pbf)
+    osm = OSM(helsinki_pbf, engine="in_memory")
     regex = osm.get_data_by_custom_criteria(
         custom_filter={"highway": [re.compile("footway|cycleway")]}
     )
@@ -257,7 +257,7 @@ def test_regex_matches_semicolon_joined_value(helsinki_pbf):
     # issue #116 end-to-end: a regex value matches a multi-value (;-joined) tag via substring,
     # which a literal exact-match filter misses. The bundled extract has
     # surface="paved;cobblestone".
-    osm = OSM(helsinki_pbf)
+    osm = OSM(helsinki_pbf, engine="in_memory")
     regex = osm.get_data_by_custom_criteria(
         custom_filter={"surface": [re.compile("cobblestone")]}
     )
@@ -270,12 +270,12 @@ def test_regex_matches_semicolon_joined_value(helsinki_pbf):
 
 def test_network_bracket_union_matches_dict(helsinki_pbf):
     # issue #341: a list of bracket strings (OR) selecting highway values equals the dict form.
-    osm = OSM(helsinki_pbf)
+    osm = OSM(helsinki_pbf, engine="in_memory")
     bracket = osm.get_network(
         custom_filter=['["highway"~"^footway$"]', '["highway"~"^cycleway$"]'],
         filter_type="keep",
     )
-    osm2 = OSM(helsinki_pbf)
+    osm2 = OSM(helsinki_pbf, engine="in_memory")
     plain = osm2.get_network(
         custom_filter={"highway": ["footway", "cycleway"]}, filter_type="keep"
     )
@@ -287,10 +287,10 @@ def test_network_bracket_union_matches_dict(helsinki_pbf):
 def test_network_and_condition_is_subset(helsinki_pbf):
     # issue #341 AND case: every returned way satisfies both brackets and is a subset of the
     # first bracket alone (the bundled extract has path/footway ways with a bicycle tag).
-    both = OSM(helsinki_pbf).get_network(
+    both = OSM(helsinki_pbf, engine="in_memory").get_network(
         custom_filter='["highway"~"path|footway"]["bicycle"~"."]', filter_type="keep"
     )
-    first = OSM(helsinki_pbf).get_network(
+    first = OSM(helsinki_pbf, engine="in_memory").get_network(
         custom_filter='["highway"~"path|footway"]', filter_type="keep"
     )
     assert both is not None and len(both) > 0
@@ -302,7 +302,7 @@ def test_network_and_condition_is_subset(helsinki_pbf):
 def test_network_non_highway_key(helsinki_pbf):
     # issue #341: advanced filters select by their own positive keys, so a non-highway network
     # (e.g. railway) is possible -- the historical highway-only candidacy did not allow this.
-    rail = OSM(helsinki_pbf).get_network(
+    rail = OSM(helsinki_pbf, engine="in_memory").get_network(
         custom_filter='["railway"~"subway|tram|rail"]', filter_type="keep"
     )
     assert rail is not None and len(rail) > 0
@@ -314,14 +314,14 @@ def test_network_non_highway_key(helsinki_pbf):
 def test_network_filter_type_matrix(helsinki_pbf):
     # advanced filters default to keep; explicit keep matches the default; keep and exclude
     # partition the candidate universe (here: ways carrying a highway tag).
-    keep_default = OSM(helsinki_pbf).get_network(custom_filter='["highway"~"^footway$"]')
-    keep_explicit = OSM(helsinki_pbf).get_network(
+    keep_default = OSM(helsinki_pbf, engine="in_memory").get_network(custom_filter='["highway"~"^footway$"]')
+    keep_explicit = OSM(helsinki_pbf, engine="in_memory").get_network(
         custom_filter='["highway"~"^footway$"]', filter_type="keep"
     )
-    exclude = OSM(helsinki_pbf).get_network(
+    exclude = OSM(helsinki_pbf, engine="in_memory").get_network(
         custom_filter='["highway"~"^footway$"]', filter_type="exclude"
     )
-    universe = OSM(helsinki_pbf).get_network(custom_filter='["highway"~"."]', filter_type="keep")
+    universe = OSM(helsinki_pbf, engine="in_memory").get_network(custom_filter='["highway"~"."]', filter_type="keep")
 
     assert ids(keep_default) == ids(keep_explicit)
     keep_set, exclude_set, universe_set = set(ids(keep_default)), set(ids(exclude)), set(ids(universe))
@@ -331,15 +331,15 @@ def test_network_filter_type_matrix(helsinki_pbf):
 
 def test_buildings_layer_injection_parity(helsinki_pbf):
     # the layer key is OR-injected for advanced filters exactly as for dicts: building OR amenity.
-    advanced = OSM(helsinki_pbf).get_buildings(custom_filter='["amenity"="restaurant"]')
-    plain = OSM(helsinki_pbf).get_buildings(custom_filter={"amenity": ["restaurant"]})
+    advanced = OSM(helsinki_pbf, engine="in_memory").get_buildings(custom_filter='["amenity"="restaurant"]')
+    plain = OSM(helsinki_pbf, engine="in_memory").get_buildings(custom_filter={"amenity": ["restaurant"]})
     assert ids(advanced) == ids(plain)
 
 
 def test_plain_dict_unchanged(helsinki_pbf):
     # backward compatibility: a plain-dict filter is untouched by the advanced path.
-    a = OSM(helsinki_pbf).get_buildings(custom_filter={"building": ["residential"]})
-    b = OSM(helsinki_pbf).get_buildings(custom_filter={"building": ["residential"]})
+    a = OSM(helsinki_pbf, engine="in_memory").get_buildings(custom_filter={"building": ["residential"]})
+    b = OSM(helsinki_pbf, engine="in_memory").get_buildings(custom_filter={"building": ["residential"]})
     assert ids(a) == ids(b)
     assert len(ids(a)) > 0
 
@@ -351,7 +351,7 @@ def test_plain_dict_unchanged(helsinki_pbf):
 
 def test_engine_parity_buildings(helsinki_pbf):
     advanced = '["building"~"."]'
-    in_memory = OSM(helsinki_pbf).get_buildings(custom_filter=advanced)
+    in_memory = OSM(helsinki_pbf, engine="in_memory").get_buildings(custom_filter=advanced)
     engine = OSM(helsinki_pbf, engine="out_of_core", workers=1).get_buildings(
         custom_filter=advanced
     )
@@ -360,7 +360,7 @@ def test_engine_parity_buildings(helsinki_pbf):
 
 def test_engine_parity_network(helsinki_pbf):
     advanced = '["highway"~"footway|cycleway"]'
-    in_memory = OSM(helsinki_pbf).get_network(custom_filter=advanced, filter_type="keep")
+    in_memory = OSM(helsinki_pbf, engine="in_memory").get_network(custom_filter=advanced, filter_type="keep")
     engine = OSM(helsinki_pbf, engine="out_of_core", workers=1).get_network(
         custom_filter=advanced, filter_type="keep"
     )
@@ -369,7 +369,7 @@ def test_engine_parity_network(helsinki_pbf):
 
 def test_engine_parity_custom_criteria(helsinki_pbf):
     advanced = '["highway"~"footway|cycleway"]'
-    in_memory = OSM(helsinki_pbf).get_data_by_custom_criteria(custom_filter=advanced)
+    in_memory = OSM(helsinki_pbf, engine="in_memory").get_data_by_custom_criteria(custom_filter=advanced)
     engine = OSM(helsinki_pbf, engine="out_of_core", workers=1).get_data_by_custom_criteria(
         custom_filter=advanced
     )
@@ -379,7 +379,7 @@ def test_engine_parity_custom_criteria(helsinki_pbf):
 def test_engine_parity_pois(helsinki_pbf):
     # POIs do not inject a layer key, so candidacy is the filter's own positive keys.
     advanced = '["amenity"~"restaurant|cafe"]'
-    in_memory = OSM(helsinki_pbf).get_pois(custom_filter=advanced)
+    in_memory = OSM(helsinki_pbf, engine="in_memory").get_pois(custom_filter=advanced)
     engine = OSM(helsinki_pbf, engine="out_of_core", workers=1).get_pois(
         custom_filter=advanced
     )
@@ -393,14 +393,14 @@ def test_engine_get_network_resolves_default_filter_type(helsinki_pbf):
 
     advanced = '["highway"~"footway|cycleway"]'
     direct = engine_backend.get_network(helsinki_pbf, custom_filter=advanced, workers=1)
-    in_memory = OSM(helsinki_pbf).get_network(custom_filter=advanced, filter_type="keep")
+    in_memory = OSM(helsinki_pbf, engine="in_memory").get_network(custom_filter=advanced, filter_type="keep")
     assert ids(direct) == ids(in_memory)
 
 
 def test_engine_parity_landuse_injection(helsinki_pbf):
     # advanced filter on a layer that OR-injects its key (landuse): engine matches in-memory.
     advanced = '["landuse"~"residential|forest"]'
-    in_memory = OSM(helsinki_pbf).get_landuse(custom_filter=advanced)
+    in_memory = OSM(helsinki_pbf, engine="in_memory").get_landuse(custom_filter=advanced)
     engine = OSM(helsinki_pbf, engine="out_of_core", workers=1).get_landuse(
         custom_filter=advanced
     )

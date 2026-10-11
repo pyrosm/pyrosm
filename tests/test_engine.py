@@ -1,5 +1,6 @@
-"""Out-of-core engine buildings reader: parity vs the in-memory OSM(fp).get_buildings()
-way and relation rows, plus the output= GeoParquet path and the worker-count policy."""
+"""Out-of-core engine buildings reader: parity vs the in-memory
+OSM(fp, engine="in_memory").get_buildings() way and relation rows, plus the output=
+GeoParquet path and the worker-count policy."""
 
 import shutil
 import threading
@@ -24,21 +25,9 @@ from pyrosm.engine import (
 from pyrosm.engine import pool, geoparquet, cache
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
 
-# Captured before the autouse fixture below stubs the module attribute, so a test can exercise
-# the real cache_dir() implementation.
+# Captured at import, before the autouse cache fixture of conftest.py stubs the module
+# attribute, so a test can exercise the real cache_dir() implementation.
 _real_cache_dir = cache.cache_dir
-
-
-@pytest.fixture(autouse=True, scope="session")
-def _shared_cache_dir(tmp_path_factory):
-    # Point the per-layer result cache at one temp dir for the whole session: parity tests that
-    # read the same layer reuse the cached parquet, nothing leaks into the user's real cache dir.
-    # Tests that must observe a (re)build use the function-scoped ``fresh_cache`` fixture.
-    shared = tmp_path_factory.mktemp("result_cache")
-    original = cache.cache_dir
-    cache.cache_dir = lambda: shared
-    yield
-    cache.cache_dir = original
 
 
 @pytest.fixture
@@ -89,7 +78,7 @@ def _in_memory_buildings(fp):
     # Way and relation building rows from the in-memory reader (the out-of-core engine
     # must reproduce both). osm_type makes the comparison key unambiguous since a way and
     # a relation can share an id number.
-    gdf = OSM(fp).get_buildings()
+    gdf = OSM(fp, engine="in_memory").get_buildings()
     return gdf.sort_values(["osm_type", "id"]).reset_index(drop=True)
 
 
@@ -140,7 +129,7 @@ def test_engine_buildings_full_column_parity(fixture, request):
     # OSM().get_buildings() column-for-column and value-for-value.
     fp = request.getfixturevalue(fixture)
     mine = get_buildings(fp)
-    ref = OSM(fp).get_buildings()
+    ref = OSM(fp, engine="in_memory").get_buildings()
     _assert_full_parity(mine, ref)
 
 
@@ -148,7 +137,7 @@ def test_engine_buildings_keep_metadata_false_parity(helsinki_pbf):
     # keep_metadata=False must drop the element-metadata columns exactly as the in-memory
     # reader does (whatever its handling) -- full column + value parity either way.
     mine = get_buildings(helsinki_pbf, keep_metadata=False)
-    ref = OSM(helsinki_pbf, keep_metadata=False).get_buildings()
+    ref = OSM(helsinki_pbf, keep_metadata=False, engine="in_memory").get_buildings()
     assert "changeset" not in mine.columns
     _assert_full_parity(mine, ref)
 
@@ -157,7 +146,7 @@ def test_engine_building_relations_match(helsinki_pbf):
     # The bundled Helsinki extract has building relations (multipolygons); they must
     # match the in-memory reader's relation rows exactly.
     mine = get_buildings(helsinki_pbf)
-    ref = OSM(helsinki_pbf).get_buildings()
+    ref = OSM(helsinki_pbf, engine="in_memory").get_buildings()
     n_rel = int((ref["osm_type"] == "relation").sum())
     assert n_rel > 0
     assert int((mine["osm_type"] == "relation").sum()) == n_rel
@@ -271,7 +260,7 @@ def test_engine_parallel_decode_runs_and_matches_serial(
     # the same result as the single-process path.
     monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor())
     mine = get_buildings(helsinki_pbf, workers=3)
-    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
+    _assert_full_parity(mine, OSM(helsinki_pbf, engine="in_memory").get_buildings())
 
 
 @pytest.mark.parametrize("where", ["construction", "run"])
@@ -290,7 +279,7 @@ def test_engine_parallel_decode_falls_back_to_serial(
     monkeypatch.setattr(pool, "ProcessPoolExecutor", fake)
     with pytest.warns(RuntimeWarning, match="single process"):
         mine = get_buildings(helsinki_pbf, workers=3)
-    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
+    _assert_full_parity(mine, OSM(helsinki_pbf, engine="in_memory").get_buildings())
 
 
 def _make_way_partition(ids):
@@ -352,9 +341,9 @@ def test_engine_parallel_collect_matches_serial(read, helsinki_pbf, monkeypatch)
 
     fn = {"buildings": get_buildings, "pois": get_pois, "network": get_network}[read]
     ref = {
-        "buildings": lambda: OSM(helsinki_pbf).get_buildings(),
-        "pois": lambda: OSM(helsinki_pbf).get_pois(),
-        "network": lambda: OSM(helsinki_pbf).get_network(),
+        "buildings": lambda: OSM(helsinki_pbf, engine="in_memory").get_buildings(),
+        "pois": lambda: OSM(helsinki_pbf, engine="in_memory").get_pois(),
+        "network": lambda: OSM(helsinki_pbf, engine="in_memory").get_network(),
     }[read]()
 
     parallel = fn(helsinki_pbf, workers=3)
@@ -381,7 +370,7 @@ def test_engine_collect_stays_serial_after_decode_fallback(
         mine = get_buildings(helsinki_pbf, workers=3)
     fallbacks = [w for w in caught if "single process" in str(w.message)]
     assert len(fallbacks) == 1
-    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
+    _assert_full_parity(mine, OSM(helsinki_pbf, engine="in_memory").get_buildings())
 
 
 class _ThreadValue:
@@ -489,7 +478,7 @@ def test_engine_read_progress(test_pbf, fresh_cache):
     fresh_cache.mkdir()
     _assert_full_parity(frames[0], get_buildings(test_pbf, workers=1, progress=False))
     for refused in (
-        lambda: OSM(test_pbf, progress="yes"),
+        lambda: OSM(test_pbf, progress="yes", engine="in_memory"),
         lambda: get_buildings(test_pbf, progress="yes"),
     ):
         with pytest.raises(ValueError, match="progress must be"):
@@ -555,13 +544,14 @@ def test_engine_decode_shard_target_parity(helsinki_pbf, monkeypatch, fresh_cach
     from pyrosm.engine import decode
 
     monkeypatch.setattr(decode, "_SHARD_TARGET_BYTES", target)
-    _assert_full_parity(get_buildings(helsinki_pbf), OSM(helsinki_pbf).get_buildings())
+    _assert_full_parity(get_buildings(helsinki_pbf), OSM(helsinki_pbf, engine="in_memory").get_buildings())
 
 
 def test_engine_unguarded_module_read_does_not_hang(test_pbf, tmp_path):
     # A read at module level (no `if __name__ == "__main__":` guard) must not hang: the
     # spawned workers cannot re-import the entry point, so the decode falls back to a single
     # process. Run it as a subprocess with a timeout so a regression surfaces as a failure.
+    import os
     import subprocess
     import sys
     import textwrap
@@ -575,11 +565,15 @@ def test_engine_unguarded_module_read_does_not_hang(test_pbf, tmp_path):
                 gdf = engine.get_buildings(%r, workers=3)
             print("ROWS", 0 if gdf is None else len(gdf))
             """ % test_pbf))
+    # The child process has its own temporary folder, so it neither reads nor writes a
+    # result cached outside this test.
+    env = dict(os.environ, TMPDIR=str(tmp_path), TEMP=str(tmp_path), TMP=str(tmp_path))
     r = subprocess.run(
         [sys.executable, str(script)],
         capture_output=True,
         text=True,
         timeout=180,
+        env=env,
     )
     assert "ROWS" in r.stdout, r.stderr[-800:]
 
@@ -867,7 +861,7 @@ def test_engine_landuse_full_column_parity(fixture, request):
     # OSM().get_landuse() column-for-column and value-for-value.
     fp = request.getfixturevalue(fixture)
     mine = get_landuse(fp)
-    ref = OSM(fp).get_landuse()
+    ref = OSM(fp, engine="in_memory").get_landuse()
     if ref is None:
         assert mine is None
         return
@@ -879,7 +873,7 @@ def test_engine_natural_full_column_parity(fixture, request):
     # natural includes NODE point features, so this exercises the node path too.
     fp = request.getfixturevalue(fixture)
     mine = get_natural(fp)
-    ref = OSM(fp).get_natural()
+    ref = OSM(fp, engine="in_memory").get_natural()
     if ref is None:
         assert mine is None
         return
@@ -899,7 +893,7 @@ def test_engine_pois_default_parity(fixture, request):
     # The default POI filter over nodes + ways + relations.
     fp = request.getfixturevalue(fixture)
     mine = get_pois(fp)
-    ref = OSM(fp).get_pois()
+    ref = OSM(fp, engine="in_memory").get_pois()
     if ref is None:
         assert mine is None
         return
@@ -910,7 +904,7 @@ def test_engine_pois_value_filter_parity(helsinki_pbf):
     # A value-level custom_filter must refine to the exact values (not just key presence).
     flt = {"amenity": ["restaurant", "cafe", "bar"]}
     mine = get_pois(helsinki_pbf, custom_filter=flt)
-    ref = OSM(helsinki_pbf).get_pois(custom_filter=flt)
+    ref = OSM(helsinki_pbf, engine="in_memory").get_pois(custom_filter=flt)
     assert mine is not None and len(mine) > 0
     assert mine["amenity"].isin(flt["amenity"]).all()
     _assert_full_parity(mine, ref)
@@ -919,7 +913,7 @@ def test_engine_pois_value_filter_parity(helsinki_pbf):
 def test_engine_custom_criteria_value_filter_parity(helsinki_pbf):
     flt = {"amenity": ["restaurant", "cafe", "pub"]}
     mine = get_data_by_custom_criteria(helsinki_pbf, custom_filter=flt)
-    ref = OSM(helsinki_pbf).get_data_by_custom_criteria(custom_filter=flt)
+    ref = OSM(helsinki_pbf, engine="in_memory").get_data_by_custom_criteria(custom_filter=flt)
     assert mine is not None and len(mine) > 0
     _assert_full_parity(mine, ref)
 
@@ -938,7 +932,7 @@ def test_engine_custom_criteria_keep_flags_parity(helsinki_pbf, flags):
     # in-memory reader.
     flt = {"amenity": True}
     mine = get_data_by_custom_criteria(helsinki_pbf, custom_filter=flt, **flags)
-    ref = OSM(helsinki_pbf).get_data_by_custom_criteria(custom_filter=flt, **flags)
+    ref = OSM(helsinki_pbf, engine="in_memory").get_data_by_custom_criteria(custom_filter=flt, **flags)
     if ref is None:
         assert mine is None
         return
@@ -993,7 +987,7 @@ def test_engine_custom_criteria_keep_other_tags_default_unchanged(helsinki_pbf):
 def test_osm_custom_criteria_keep_other_tags_in_memory_rejected(helsinki_pbf):
     # The in-memory reader caches all tags for reuse across layers, so it cannot honour the
     # minimal-tags mode and rejects it.
-    osm = OSM(helsinki_pbf)
+    osm = OSM(helsinki_pbf, engine="in_memory")
     with pytest.raises(ValueError, match="only supported by the out-of-core engine"):
         osm.get_data_by_custom_criteria({"building": True}, keep_other_tags=False)
     # The default value leaves the in-memory path working.
@@ -1139,7 +1133,7 @@ def test_engine_cache_pyarrow_absent_falls_back(helsinki_pbf, monkeypatch, fresh
 
     monkeypatch.setattr(_compat, "HAS_PYARROW", False)
     mine = get_buildings(helsinki_pbf)
-    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
+    _assert_full_parity(mine, OSM(helsinki_pbf, engine="in_memory").get_buildings())
     assert list(cache.cache_dir().glob("*.parquet")) == []
 
 
@@ -1155,7 +1149,7 @@ def test_cache_dir_builds_and_creates_tempdir_path(monkeypatch, tmp_path):
 def test_engine_boundaries_parity(helsinki_region_pbf):
     # The Helsinki region extract has administrative boundaries (relations + ways).
     mine = get_boundaries(helsinki_region_pbf)
-    ref = OSM(helsinki_region_pbf).get_boundaries()
+    ref = OSM(helsinki_region_pbf, engine="in_memory").get_boundaries()
     assert ref is not None and (ref["osm_type"] == "relation").any()
     _assert_full_parity(mine, ref)
 
@@ -1174,7 +1168,7 @@ def test_engine_natural_output_parquet_matches(helsinki_pbf, tmp_path):
 def test_engine_boundaries_name_filter_parity(helsinki_region_pbf):
     # The name= substring post-filter must match OSM().get_boundaries(name=...).
     mine = get_boundaries(helsinki_region_pbf, name="Vantaa")
-    ref = OSM(helsinki_region_pbf).get_boundaries(name="Vantaa")
+    ref = OSM(helsinki_region_pbf, engine="in_memory").get_boundaries(name="Vantaa")
     assert mine is not None and len(mine) > 0
     _assert_full_parity(mine, ref)
 
@@ -1187,7 +1181,7 @@ def test_engine_custom_criteria_osm_keys_and_explicit_columns(helsinki_pbf):
         tags_as_columns=["building"],
     )
     mine = get_data_by_custom_criteria(helsinki_pbf, **kwargs)
-    ref = OSM(helsinki_pbf).get_data_by_custom_criteria(**kwargs)
+    ref = OSM(helsinki_pbf, engine="in_memory").get_data_by_custom_criteria(**kwargs)
     _assert_full_parity(mine, ref)
 
 
@@ -1195,7 +1189,7 @@ def test_engine_custom_criteria_non_conf_key_parity(helsinki_pbf):
     # A filter key without a dedicated Conf.tags column set becomes its own column.
     flt = {"source": True}
     mine = get_data_by_custom_criteria(helsinki_pbf, custom_filter=flt)
-    ref = OSM(helsinki_pbf).get_data_by_custom_criteria(custom_filter=flt)
+    ref = OSM(helsinki_pbf, engine="in_memory").get_data_by_custom_criteria(custom_filter=flt)
     _assert_full_parity(mine, ref)
 
 
@@ -1224,7 +1218,7 @@ def test_engine_node_feature_edge_cases(tmp_path):
 def test_engine_natural_keep_metadata_false_parity(helsinki_pbf):
     # keep_metadata=False over a point layer (nodes + ways) must match the in-memory reader.
     mine = get_natural(helsinki_pbf, keep_metadata=False)
-    ref = OSM(helsinki_pbf, keep_metadata=False).get_natural()
+    ref = OSM(helsinki_pbf, keep_metadata=False, engine="in_memory").get_natural()
     _assert_full_parity(mine, ref)
 
 
@@ -1232,7 +1226,7 @@ def test_engine_boundaries_custom_filter_adds_boundary_key(helsinki_region_pbf):
     # A custom_filter without 'boundary' gets it added, matching OSM().get_boundaries().
     flt = {"admin_level": True}
     mine = get_boundaries(helsinki_region_pbf, custom_filter=dict(flt))
-    ref = OSM(helsinki_region_pbf).get_boundaries(custom_filter=dict(flt))
+    ref = OSM(helsinki_region_pbf, engine="in_memory").get_boundaries(custom_filter=dict(flt))
     if ref is None or len(ref) == 0:
         assert mine is None or len(mine) == 0
         return
@@ -1292,7 +1286,7 @@ def test_engine_network_parity(network_type, helsinki_pbf):
     # Street network: highway ways as LineString edges + a 'length' column. 'all' keeps
     # every highway (a None data_filter); the others apply a predefined exclude filter.
     mine = get_network(helsinki_pbf, network_type=network_type)
-    ref = OSM(helsinki_pbf).get_network(network_type=network_type)
+    ref = OSM(helsinki_pbf, engine="in_memory").get_network(network_type=network_type)
     assert ref is not None and len(ref) > 0
     _assert_full_parity(mine, ref)
 
@@ -1303,7 +1297,7 @@ def test_engine_network_custom_filter_parity(helsinki_pbf):
     # yields no column.
     flt = {"highway": ["footway", "path", "pedestrian"], "crossing": True}
     mine = get_network(helsinki_pbf, custom_filter=flt, filter_type="keep")
-    ref = OSM(helsinki_pbf).get_network(custom_filter=flt, filter_type="keep")
+    ref = OSM(helsinki_pbf, engine="in_memory").get_network(custom_filter=flt, filter_type="keep")
     assert mine is not None and len(mine) > 0
     _assert_full_parity(mine, ref)
 
@@ -1316,7 +1310,7 @@ def test_engine_network_nodes_parity(network_type, helsinki_pbf):
     mine_nodes, mine_edges = get_network(
         helsinki_pbf, network_type=network_type, nodes=True
     )
-    ref_nodes, ref_edges = OSM(helsinki_pbf).get_network(
+    ref_nodes, ref_edges = OSM(helsinki_pbf, engine="in_memory").get_network(
         network_type=network_type, nodes=True
     )
     assert ref_edges is not None and len(ref_edges) > 0
@@ -1331,7 +1325,7 @@ def test_engine_network_nodes_keep_metadata_false_parity(helsinki_pbf):
     mine_nodes, mine_edges = get_network(
         helsinki_pbf, network_type="driving", nodes=True, keep_metadata=False
     )
-    ref_nodes, ref_edges = OSM(helsinki_pbf, keep_metadata=False).get_network(
+    ref_nodes, ref_edges = OSM(helsinki_pbf, keep_metadata=False, engine="in_memory").get_network(
         network_type="driving", nodes=True
     )
     assert "changeset" not in mine_nodes.columns and "visible" in mine_nodes.columns
@@ -1374,7 +1368,7 @@ def test_engine_network_output_path_writes_edges(helsinki_pbf, tmp_path):
     ret = get_network(helsinki_pbf, network_type="driving", output=out)
     assert ret == out and out.exists()
     written = cache.read_result(out)
-    ref = OSM(helsinki_pbf).get_network(network_type="driving")
+    ref = OSM(helsinki_pbf, engine="in_memory").get_network(network_type="driving")
     _assert_full_parity(written, ref)
 
 
@@ -1388,7 +1382,7 @@ def test_engine_network_output_dir_with_nodes(helsinki_pbf, tmp_path):
     assert ret == out
     assert (out / "edges.parquet").exists()
     assert (out / "nodes.parquet").exists()
-    ref_nodes, ref_edges = OSM(helsinki_pbf).get_network(
+    ref_nodes, ref_edges = OSM(helsinki_pbf, engine="in_memory").get_network(
         network_type="driving", nodes=True
     )
     _assert_full_parity(cache.read_result(out / "edges.parquet"), ref_edges)
@@ -1417,7 +1411,7 @@ def test_engine_network_pyarrow_absent_falls_back(
 
     monkeypatch.setattr(_compat, "HAS_PYARROW", False)
     mine = get_network(helsinki_pbf, network_type="driving")
-    _assert_full_parity(mine, OSM(helsinki_pbf).get_network(network_type="driving"))
+    _assert_full_parity(mine, OSM(helsinki_pbf, engine="in_memory").get_network(network_type="driving"))
     assert list(cache.cache_dir().glob("*.parquet")) == []
 
 
@@ -1513,12 +1507,13 @@ def test_engine_buildings_bounding_box_parity(helsinki_pbf, complete_relations):
     # A bounding box restricts buildings (ways + relations) to that area; relations are
     # partial by default and complete with complete_relations=True -- matching the in-memory
     # reader either way.
-    bbox = _central_bbox(OSM(helsinki_pbf).get_buildings())
+    bbox = _central_bbox(OSM(helsinki_pbf, engine="in_memory").get_buildings())
     mine = get_buildings(
         helsinki_pbf, bounding_box=bbox, complete_relations=complete_relations
     )
     ref = OSM(
-        helsinki_pbf, bounding_box=bbox, complete_relations=complete_relations
+        helsinki_pbf, bounding_box=bbox, complete_relations=complete_relations,
+        engine="in_memory",
     ).get_buildings()
     assert ref is not None and (ref["osm_type"] == "relation").any()
     _assert_full_parity(mine, ref)
@@ -1526,9 +1521,9 @@ def test_engine_buildings_bounding_box_parity(helsinki_pbf, complete_relations):
 
 def test_engine_pois_bounding_box_parity(helsinki_pbf):
     # bbox over a layer with node features: nodes + ways restricted to the box.
-    bbox = _central_bbox(OSM(helsinki_pbf).get_pois())
+    bbox = _central_bbox(OSM(helsinki_pbf, engine="in_memory").get_pois())
     mine = get_pois(helsinki_pbf, bounding_box=bbox)
-    ref = OSM(helsinki_pbf, bounding_box=bbox).get_pois()
+    ref = OSM(helsinki_pbf, bounding_box=bbox, engine="in_memory").get_pois()
     assert ref is not None and (ref["osm_type"] == "node").any()
     _assert_full_parity(mine, ref)
 
@@ -1536,9 +1531,9 @@ def test_engine_pois_bounding_box_parity(helsinki_pbf):
 def test_engine_network_bounding_box_parity(helsinki_pbf):
     # A bounding box keeps ways with >=1 node inside it (kept whole), then the final spatial
     # filter clips to the box -- matching the in-memory reader.
-    full = OSM(helsinki_pbf).get_network(network_type="driving")
+    full = OSM(helsinki_pbf, engine="in_memory").get_network(network_type="driving")
     bbox = _central_bbox(full, frac=0.5)
-    ref = OSM(helsinki_pbf, bounding_box=bbox).get_network(network_type="driving")
+    ref = OSM(helsinki_pbf, bounding_box=bbox, engine="in_memory").get_network(network_type="driving")
     mine = get_network(helsinki_pbf, network_type="driving", bounding_box=bbox)
     assert ref is not None and 0 < len(ref) < len(full)
     _assert_full_parity(mine, ref)
@@ -1546,11 +1541,11 @@ def test_engine_network_bounding_box_parity(helsinki_pbf):
 
 def test_engine_custom_criteria_bounding_box_parity(helsinki_pbf):
     flt = {"building": True}
-    bbox = _central_bbox(OSM(helsinki_pbf).get_buildings())
+    bbox = _central_bbox(OSM(helsinki_pbf, engine="in_memory").get_buildings())
     mine = get_data_by_custom_criteria(
         helsinki_pbf, custom_filter=flt, filter_type="keep", bounding_box=bbox
     )
-    ref = OSM(helsinki_pbf, bounding_box=bbox).get_data_by_custom_criteria(
+    ref = OSM(helsinki_pbf, bounding_box=bbox, engine="in_memory").get_data_by_custom_criteria(
         custom_filter=flt, filter_type="keep"
     )
     assert mine is not None and len(mine) > 0
@@ -1562,9 +1557,9 @@ def test_engine_bounding_box_polygon_parity(helsinki_pbf):
     # in-memory reader and yields the same result as the equivalent coordinate list.
     from shapely.geometry import box
 
-    poly = box(*_central_bbox(OSM(helsinki_pbf).get_buildings()))
+    poly = box(*_central_bbox(OSM(helsinki_pbf, engine="in_memory").get_buildings()))
     mine = get_buildings(helsinki_pbf, bounding_box=poly)
-    ref = OSM(helsinki_pbf, bounding_box=poly).get_buildings()
+    ref = OSM(helsinki_pbf, bounding_box=poly, engine="in_memory").get_buildings()
     assert ref is not None and len(ref) > 0
     _assert_full_parity(mine, ref)
 
@@ -1574,7 +1569,7 @@ def test_engine_bounding_box_validation_matches_in_memory(helsinki_pbf, bad):
     # Malformed boxes (wrong length, inverted coordinates, wrong type) raise the same
     # ValueError the in-memory reader raises.
     with pytest.raises(ValueError):
-        OSM(helsinki_pbf, bounding_box=bad)
+        OSM(helsinki_pbf, bounding_box=bad, engine="in_memory")
     with pytest.raises(ValueError):
         get_buildings(helsinki_pbf, bounding_box=bad)
 
@@ -1730,7 +1725,7 @@ def _osm_parity(fp, method, **kwargs):
     key-ensuring branch."""
     import copy
 
-    ref = getattr(OSM(fp), method)(**copy.deepcopy(kwargs))
+    ref = getattr(OSM(fp, engine="in_memory"), method)(**copy.deepcopy(kwargs))
     mine = getattr(OSM(fp, engine="out_of_core"), method)(**copy.deepcopy(kwargs))
     if ref is None:
         assert mine is None
@@ -1804,9 +1799,10 @@ def test_osm_out_of_core_extra_attributes_and_tags_to_keep_parity(helsinki_pbf):
 def test_osm_out_of_core_bbox_complete_relations_parity(
     helsinki_pbf, complete_relations
 ):
-    bbox = _central_bbox(OSM(helsinki_pbf).get_buildings())
+    bbox = _central_bbox(OSM(helsinki_pbf, engine="in_memory").get_buildings())
     ref = OSM(
-        helsinki_pbf, bounding_box=bbox, complete_relations=complete_relations
+        helsinki_pbf, bounding_box=bbox, complete_relations=complete_relations,
+        engine="in_memory",
     ).get_buildings()
     mine = OSM(
         helsinki_pbf,
@@ -1831,55 +1827,27 @@ def test_osm_workers_validation(test_pbf):
     # The constructor-level worker count must be a positive integer, "auto", or None.
     for bad in (0, -1, 1.5, True, "2", "bogus"):
         with pytest.raises(ValueError, match="workers"):
-            OSM(test_pbf, workers=bad)
-    assert OSM(test_pbf).workers is None
-    assert OSM(test_pbf, workers=2).workers == 2
-    assert OSM(test_pbf, workers="auto").workers == "auto"
-    assert OSM(test_pbf, workers="AUTO").workers == "auto"  # normalized
+            OSM(test_pbf, workers=bad, engine="in_memory")
+    assert OSM(test_pbf, engine="in_memory").workers is None
+    assert OSM(test_pbf, workers=2, engine="in_memory").workers == 2
+    assert OSM(test_pbf, workers="auto", engine="in_memory").workers == "auto"
+    assert OSM(test_pbf, workers="AUTO", engine="in_memory").workers == "auto"  # normalized
 
 
-def test_osm_out_of_core_default_single_core_notice_and_workers(
-    helsinki_pbf, monkeypatch, fresh_cache
+@pytest.mark.parametrize(
+    "workers, passed", [(None, 1), (1, 1), (2, 2), ("auto", "auto")]
+)
+def test_osm_workers_reach_the_reader_without_a_warning(
+    test_pbf, monkeypatch, workers, passed
 ):
-    # Without an explicit workers count the read uses a single worker and warns once,
-    # reporting the available CPU count; the result still matches the in-memory reader.
+    """The engine reader gets workers=1 when no count is given and a given count or
+    "auto" unchanged, and no read warns about the CPU cores. Worker processes run in
+    this process."""
     import warnings as _warnings
-    from pyrosm import utils as utils_mod
     import pyrosm.engine.readers as readers_mod
 
-    monkeypatch.setattr(utils_mod.os, "cpu_count", lambda: 4)
-    captured = []
-    real = readers_mod._decode_and_run
-
-    def spy(filepath, osm_key_bytes, include_nodes, workers, run, **kwargs):
-        captured.append(workers)
-        return real(filepath, osm_key_bytes, include_nodes, workers, run, **kwargs)
-
-    monkeypatch.setattr(readers_mod, "_decode_and_run", spy)
-    osm = OSM(helsinki_pbf, engine="out_of_core")
-    with pytest.warns(UserWarning, match="single core") as record:
-        mine = osm.get_buildings()
-    assert captured == [1]
-    msg = str(record[0].message)
-    assert "4 CPU cores" in msg and "workers='auto'" in msg
-    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
-    # The notice is emitted only once per reader.
-    with _warnings.catch_warnings(record=True) as caught:
-        _warnings.simplefilter("always")
-        osm.get_buildings()
-    assert not [w for w in caught if "single core" in str(w.message)]
-
-
-def test_osm_out_of_core_explicit_workers_threaded_and_silent(
-    helsinki_pbf, monkeypatch, fresh_cache
-):
-    # An explicit workers count reaches the engine decode unchanged and suppresses the
-    # single-core notice; the read still matches the in-memory reader.
-    import warnings as _warnings
-    from pyrosm import utils as utils_mod
-    import pyrosm.engine.readers as readers_mod
-
-    monkeypatch.setattr(utils_mod.os, "cpu_count", lambda: 4)
+    monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor())
+    monkeypatch.setattr(pool.os, "cpu_count", lambda: 4)
     captured = []
     real = readers_mod._decode_and_run
 
@@ -1890,35 +1858,9 @@ def test_osm_out_of_core_explicit_workers_threaded_and_silent(
     monkeypatch.setattr(readers_mod, "_decode_and_run", spy)
     with _warnings.catch_warnings(record=True) as caught:
         _warnings.simplefilter("always")
-        mine = OSM(helsinki_pbf, engine="out_of_core", workers=1).get_buildings()
-    assert captured == [1]
-    assert not [w for w in caught if "single core" in str(w.message)]
-    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
-
-
-def test_osm_out_of_core_auto_workers_threaded_and_silent(
-    helsinki_pbf, monkeypatch, fresh_cache
-):
-    # workers="auto" reaches the engine unchanged (resolved there) and emits no single-core
-    # notice; the read still matches the in-memory reader. The bundled file is below the size
-    # threshold, so "auto" resolves to a single core (no worker processes are spawned).
-    import warnings as _warnings
-    import pyrosm.engine.readers as readers_mod
-
-    captured = []
-    real = readers_mod._decode_and_run
-
-    def spy(filepath, osm_key_bytes, include_nodes, workers, run, **kwargs):
-        captured.append(workers)
-        return real(filepath, osm_key_bytes, include_nodes, workers, run, **kwargs)
-
-    monkeypatch.setattr(readers_mod, "_decode_and_run", spy)
-    with _warnings.catch_warnings(record=True) as caught:
-        _warnings.simplefilter("always")
-        mine = OSM(helsinki_pbf, engine="out_of_core", workers="auto").get_buildings()
-    assert captured == ["auto"]
-    assert not [w for w in caught if "single core" in str(w.message)]
-    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
+        OSM(test_pbf, workers=workers).get_buildings()
+    assert captured == [passed]
+    assert not [w for w in caught if "CPU core" in str(w.message)]
 
 
 def test_auto_workers_picks_single_core_for_small_files(tmp_path, monkeypatch):
@@ -1953,20 +1895,6 @@ def test_cap_workers_reduces_above_cpu_count(monkeypatch):
         assert pool._cap_workers(1) == 1
 
 
-def test_osm_out_of_core_single_core_host_no_notice(
-    helsinki_pbf, monkeypatch, fresh_cache
-):
-    # On a single-core host there is nothing to parallelize, so no notice is emitted.
-    import warnings as _warnings
-    from pyrosm import utils as utils_mod
-
-    monkeypatch.setattr(utils_mod.os, "cpu_count", lambda: 1)
-    with _warnings.catch_warnings(record=True) as caught:
-        _warnings.simplefilter("always")
-        OSM(helsinki_pbf, engine="out_of_core").get_buildings()
-    assert not [w for w in caught if "single core" in str(w.message)]
-
-
 def test_osm_out_of_core_excess_workers_capped(helsinki_pbf, monkeypatch, fresh_cache):
     # An explicit worker count above the CPU-core count is reduced to the core count, with a
     # warning; the read still matches the in-memory reader.
@@ -1983,7 +1911,7 @@ def test_osm_out_of_core_excess_workers_capped(helsinki_pbf, monkeypatch, fresh_
     with pytest.warns(UserWarning, match="exceeds the 2 CPU cores"):
         mine = OSM(helsinki_pbf, engine="out_of_core", workers=50).get_buildings()
     assert captured == [2]
-    _assert_full_parity(mine, OSM(helsinki_pbf).get_buildings())
+    _assert_full_parity(mine, OSM(helsinki_pbf, engine="in_memory").get_buildings())
 
 
 def test_osm_out_of_core_network_nodes_parity(helsinki_pbf):
@@ -1992,7 +1920,7 @@ def test_osm_out_of_core_network_nodes_parity(helsinki_pbf):
     mine_nodes, mine_edges = OSM(helsinki_pbf, engine="out_of_core").get_network(
         network_type="cycling", nodes=True
     )
-    ref_nodes, ref_edges = OSM(helsinki_pbf).get_network(
+    ref_nodes, ref_edges = OSM(helsinki_pbf, engine="in_memory").get_network(
         network_type="cycling", nodes=True
     )
     _assert_full_parity(mine_edges, ref_edges)
@@ -2199,7 +2127,7 @@ def test_keep_node_info_matches_in_memory(helsinki_pbf, fresh_cache, read):
     in-memory reader does: the list of node ids of a way, missing for nodes and
     relations."""
     mine = read(OSM(helsinki_pbf, engine="out_of_core", workers=1, keep_node_info=True))
-    ref = read(OSM(helsinki_pbf, keep_node_info=True))
+    ref = read(OSM(helsinki_pbf, keep_node_info=True, engine="in_memory"))
     assert "nodes" in mine.columns
     _assert_full_parity(mine, ref)
 
@@ -2216,7 +2144,7 @@ def test_keep_node_info_is_part_of_a_cached_read(test_pbf, fresh_cache, monkeypa
     kept = read(keep_node_info=True)
     monkeypatch.setattr(readers, "_decode_and_run", None)
     cached = read(keep_node_info=True)
-    ref = OSM(test_pbf, keep_node_info=True).get_buildings()
+    ref = OSM(test_pbf, keep_node_info=True, engine="in_memory").get_buildings()
     assert "nodes" not in without.columns
     for frame in (kept, cached):
         _assert_full_parity(frame, ref)
@@ -2278,7 +2206,7 @@ def test_osm_custom_criteria_everything_matches_in_memory(
     mine = OSM(
         fp, engine="out_of_core", workers=1, **constructor
     ).get_data_by_custom_criteria(None, **options)
-    ref = OSM(fp, **constructor).get_data_by_custom_criteria(None, **options)
+    ref = OSM(fp, **constructor, engine="in_memory").get_data_by_custom_criteria(None, **options)
     if not options and not constructor:
         assert {"node", "way", "relation"} <= set(ref["osm_type"])
     if fixture == "helsinki_pbf":

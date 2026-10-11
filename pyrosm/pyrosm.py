@@ -23,7 +23,6 @@ from pyrosm.utils import (
     get_bounding_box,
     get_unix_time,
     warn_about_timestamp_not_set,
-    warn_about_single_core,
     warn_empty_result,
 )
 from pyrosm.utils.download import get_file_size
@@ -92,10 +91,15 @@ class OSM:
         already holds every member. Only member ways are completed; relations
         whose members are themselves relations (super-relations) are not.
 
-    engine : str (default: 'in_memory')
-        Which reader backend to use. `'in_memory'` (the default) parses the whole
-        file into memory. `'out_of_core'` decodes the file in a single streaming
-        pass with bounded peak memory, spilling intermediate data to disk.
+    engine : str (default: 'out_of_core')
+        Which reader backend to use. `'out_of_core'` (the default) decodes the file
+        in a single streaming pass with bounded peak memory, spilling intermediate
+        data to disk, and -- when the optional `pyarrow` is installed -- caches each
+        read's result in the temporary folder, so an identical read returns it
+        without decoding the file again (`OSM.clear_cache()` removes the cached
+        results). `'in_memory'` parses the
+        whole file into memory once and serves every read of the `OSM` object from
+        it.
 
         The out-of-core backend reads on a single core by default. To decode in
         parallel pass `workers="auto"` (or an explicit `workers=N`); see below. The
@@ -112,11 +116,11 @@ class OSM:
         guard is needed, and the default single-core read needs no guard anywhere.
 
         History reads -- an `.osh.pbf` file, or any feature call with a
-        `timestamp` -- are served by the in-memory reader even when
-        `engine='out_of_core'`: selecting the latest version of each element
-        at/before the timestamp uses pyrosm's `get_latest_version`, which pandas
-        evaluates eagerly over the whole multi-version frame, so history is read
-        in memory.
+        `timestamp` -- are served by the in-memory reader with either engine:
+        selecting the latest version of each element at/before the timestamp uses
+        pyrosm's `get_latest_version`, which pandas evaluates eagerly over the whole
+        multi-version frame, so history is read in memory. `write_pbf` also reads
+        the file in memory with either engine.
 
     keep_node_info : bool (default: False)
         Whether to keep the `nodes` column -- the ordered member node ids of each
@@ -127,14 +131,12 @@ class OSM:
 
     workers : int | str (default: None)
         Number of worker processes the `'out_of_core'` engine uses to decode the
-        file. By default (`None`) the engine reads on a single core, and the first
-        out-of-core read reports how many CPU cores are available and how to opt
-        into parallelism. Pass `workers="auto"` to let pyrosm choose the count
-        automatically -- a single core for small files and one worker per CPU core
-        for larger files -- or `workers=N` for an explicit count (a count above the
-        available CPU cores is reduced to the core count, with a warning). Parallel
-        reads need the `if __name__ == "__main__":` guard on macOS/Windows; pass
-        `workers=1` to read on a single core silently. Has no effect on the
+        file. By default (`None`) the engine reads on a single core. Pass
+        `workers="auto"` to let pyrosm choose the count automatically -- a single
+        core for small files and one worker per CPU core for larger files -- or
+        `workers=N` for an explicit count (a count above the available CPU cores is
+        reduced to the core count, with a warning). Parallel reads need the
+        `if __name__ == "__main__":` guard on macOS/Windows. Has no effect on the
         `'in_memory'` engine.
 
     progress : bool | callable (default: True)
@@ -164,7 +166,7 @@ class OSM:
         keep_metadata=True,
         complete_relations=False,
         keep_node_info=False,
-        engine="in_memory",
+        engine="out_of_core",
         workers=None,
         progress=True,
     ):
@@ -186,7 +188,6 @@ class OSM:
         self.workers = validate_workers(workers)
         validate_progress(progress)
         self.progress = progress
-        self._single_core_notice_emitted = False
 
         # Check if file contains history
         self._osh_file = False
@@ -274,12 +275,7 @@ class OSM:
         constructor-level ``bounding_box`` / ``keep_metadata`` / ``keep_node_info`` /
         ``workers`` (and ``complete_relations`` for the layer readers). Only non-history reads reach here;
         history reads use the in-memory path (see :meth:`_use_engine`)."""
-        workers = self.workers
-        if workers is None:
-            workers = 1
-            if not self._single_core_notice_emitted:
-                self._single_core_notice_emitted = True
-                warn_about_single_core()
+        workers = 1 if self.workers is None else self.workers
         kwargs["bounding_box"] = self.bounding_box
         kwargs["keep_metadata"] = self.keep_metadata
         kwargs["workers"] = workers
@@ -892,6 +888,14 @@ class OSM:
 
         """
 
+        # Check boundary type and name (with either engine)
+        boundary_type = validate_boundary_type(boundary_type)
+        if name is not None:
+            if not isinstance(name, str):
+                raise ValueError(
+                    f"'name' should be text." f"Got '{name}' of type {type(name)}."
+                )
+
         if self._use_engine(timestamp):
             gdf = self._read_engine(
                 engine_backend.get_boundaries,
@@ -917,15 +921,6 @@ class OSM:
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
             tags_as_columns += extra_attributes
-
-        # Check boundary type
-        boundary_type = validate_boundary_type(boundary_type)
-
-        if name is not None:
-            if not isinstance(name, str):
-                raise ValueError(
-                    f"'name' should be text." f"Got '{name}' of type {type(name)}."
-                )
 
         gdf = get_boundary_data(
             self._node_coordinates,
@@ -1170,6 +1165,7 @@ class OSM:
                 "'filter_type' -parameter should be either 'keep' or 'exclude'. "
             )
         filter_type = filter_type.lower()
+        validate_booleans(keep_nodes, keep_ways, keep_relations)
 
         if self._use_engine(timestamp):
             gdf = self._read_engine(
@@ -1231,9 +1227,6 @@ class OSM:
         if extra_attributes is not None:
             validate_tags_as_columns(extra_attributes)
             tags_as_columns += extra_attributes
-
-        # Validate booleans
-        validate_booleans(keep_nodes, keep_ways, keep_relations)
 
         self._read_pbf(timestamp)
 

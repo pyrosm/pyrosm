@@ -58,16 +58,22 @@ def pytest_runtest_call(item):
         pytest.skip("The outside service failed: %s" % err)
 
 
-@pytest.fixture
-def fresh_cache(tmp_path, monkeypatch):
-    """A private, empty out-of-core result cache, for tests that need a read to be built
-    rather than served from a result cached by another test."""
+@pytest.fixture(autouse=True)
+def _result_cache(tmp_path_factory, monkeypatch):
+    """Each test reads and writes the out-of-core result cache in its own empty
+    directory (outside its ``tmp_path``), so no test is served a result another test
+    cached, and nothing is written to the user's cache."""
     from pyrosm.engine import cache
 
-    cache_dir = tmp_path / "fresh_cache"
-    cache_dir.mkdir()
+    cache_dir = tmp_path_factory.mktemp("result_cache")
     monkeypatch.setattr(cache, "cache_dir", lambda: cache_dir)
     return cache_dir
+
+
+@pytest.fixture
+def fresh_cache(_result_cache):
+    """The test's own, initially empty, out-of-core result cache directory."""
+    return _result_cache
 
 
 @pytest.fixture(autouse=True)

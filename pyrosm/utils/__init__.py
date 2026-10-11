@@ -323,23 +323,3 @@ def warn_empty_result(feature, stacklevel=2):
     warnings.warn(
         _EMPTY_RESULT_MESSAGES[feature], UserWarning, stacklevel=stacklevel + 1
     )
-
-
-def warn_about_single_core():
-    """Warn that the out-of-core engine is reading on a single core and how to opt into
-    parallelism; reports the available CPU count and is a no-op on a single-core host.
-    """
-    n_cores = os.cpu_count() or 1
-    if n_cores <= 1:
-        return
-    warnings.warn(
-        "The out-of-core engine is reading on a single core. This machine has "
-        f"{n_cores} CPU cores available; pass workers='auto' to "
-        "OSM(..., engine='out_of_core') to let pyrosm choose automatically whether the "
-        "file benefits from multiple cores or a single one, or set workers=N for an "
-        "explicit count. Parallel reads spawn worker processes on macOS/Windows, so run "
-        'them under an `if __name__ == "__main__":` guard. Pass workers=1 to silence '
-        "this message.",
-        UserWarning,
-        stacklevel=4,
-    )
