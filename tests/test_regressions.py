@@ -348,7 +348,7 @@ def test_get_network_without_custom_filter_unchanged():
         "timestamp",
         "version",
     ]
-    assert edges._metadata[-1] == "driving"
+    assert edges.attrs["network_type"] == "driving"
 
     rows = sorted(f"{i}:{h}" for i, h in zip(edges["id"], edges["highway"].fillna("")))
     digest = hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
@@ -2298,3 +2298,71 @@ def test_decode_spills_every_ways_refs_only_for_relation_lookups(monkeypatch):
         assert sum(len(shard["way_id"]) for shard in shards) > 0
     assert spilled[True] > 0
     assert spilled[False] == 0
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_graph_export_uses_the_network_type_of_its_frames(engine, fresh_cache):
+    """Graph export takes the network type recorded on the frames it gets, not that of the
+    latest network read: driving frames exported after a walking read stay a directed
+    driving graph, and out-of-core frames export without naming their type."""
+    from pyrosm import OSM, get_data
+
+    pytest.importorskip("networkx")
+    osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
+    nodes, edges = osm.get_network("driving", nodes=True)
+    osm.get_network("walking")
+    graph = OSM.to_graph(nodes, edges, graph_type="networkx", simplify=False)
+    assert graph.number_of_edges() == 1237
+
+
+def test_graph_export_reads_the_network_type_of_the_node_frame():
+    """A network read records its type by its pyrosm name. Graph export uses a given
+    network_type (refusing an unknown one), else falls back to the type of the node frame
+    when the edges carry none, and asks for network_type when neither frame does."""
+    from pyrosm import OSM, get_data
+
+    pytest.importorskip("networkx")
+    nodes, edges = OSM(get_data("test_pbf")).get_network("Drive", nodes=True)
+    assert edges.attrs["network_type"] == nodes.attrs["network_type"] == "driving"
+    with pytest.raises(ValueError, match="should be one of"):
+        OSM.to_graph(nodes, edges, graph_type="networkx", network_type="drivng")
+    edges.attrs.clear()
+    graph = OSM.to_graph(nodes, edges, graph_type="networkx", simplify=False)
+    assert graph.number_of_edges() == 1237
+    nodes.attrs.clear()
+    with pytest.raises(ValueError, match="Could not detect the network type"):
+        OSM.to_graph(nodes, edges, graph_type="networkx")
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_network_read_with_custom_filter_refuses_unknown_network_type(engine):
+    """A network read validates network_type even with a custom_filter, with either
+    engine, so the type it records for graph export is a known one."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
+    with pytest.raises(ValueError, match="should be one of"):
+        osm.get_network("drivng", custom_filter={"highway": ["primary"]})
+
+
+@pytest.mark.parametrize("nodes", [False, True])
+def test_cached_network_read_records_its_network_type(nodes, fresh_cache, monkeypatch):
+    """An out-of-core network read served from the result cache records its network type
+    on the frames like the read that built the cache."""
+    from pyrosm import OSM, get_data
+    from pyrosm.engine import readers
+
+    pytest.importorskip("networkx")
+    fp = get_data("test_pbf")
+    first = OSM(fp, engine="out_of_core", workers=1).get_network("driving", nodes=nodes)
+    # The second read must come from the cache, not from decoding the file again.
+    monkeypatch.setattr(readers, "_decode_and_run", None)
+    second = OSM(fp, engine="out_of_core", workers=1).get_network("driving", nodes=nodes)
+    for result in (first, second):
+        frames = result if nodes else (result,)
+        assert [frame.attrs["network_type"] for frame in frames] == ["driving"] * len(
+            frames
+        )
+    if nodes:
+        graph = OSM.to_graph(*second, graph_type="networkx", simplify=False)
+        assert graph.number_of_edges() == 1237

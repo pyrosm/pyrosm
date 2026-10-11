@@ -42,15 +42,6 @@ def _shared_cache_dir(tmp_path_factory):
 
 
 @pytest.fixture
-def fresh_cache(tmp_path, monkeypatch):
-    # A private, empty cache dir for tests that need the layer to actually be (re)built.
-    cache_dir = tmp_path / "fresh_cache"
-    cache_dir.mkdir()
-    monkeypatch.setattr(cache, "cache_dir", lambda: cache_dir)
-    return cache_dir
-
-
-@pytest.fixture
 def test_pbf():
     return get_data("test_pbf")
 

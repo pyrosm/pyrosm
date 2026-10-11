@@ -583,8 +583,12 @@ def get_network(
     from pyrosm.config import Conf
     from pyrosm.utils import validate_custom_filter, validate_tags_as_columns
     from pyrosm.filter_compiler import CompiledFilter
+    from pyrosm.graphs import record_network_type
 
     validate_progress(progress)
+    # The network type drives the graph semantics even with a custom_filter, so it is
+    # validated for every read, as the in-memory reader does.
+    _network_filter(network_type)
 
     tags_as_columns = list(Conf.tags.highway)
     if tags_to_keep is not None:
@@ -668,7 +672,7 @@ def get_network(
     # With pyarrow absent there is nowhere to cache, so return the direct in-memory result (the
     # edges frame, or the (nodes, edges) tuple for nodes=True).
     if not _compat.HAS_PYARROW:
-        return decode()
+        return record_network_type(decode(), network_type)
 
     # Cache the result to / serve it from a per-read GeoParquet, keyed apart from the area/point
     # layers via "network". nodes=True is a (nodes, edges) tuple, cached as two files.
@@ -683,14 +687,16 @@ def get_network(
     if nodes:
         edges_path = cache.result_path(filepath, {**key_params, "part": "edges"})
         nodes_path = cache.result_path(filepath, {**key_params, "part": "nodes"})
-        return cache.materialize_pair(
+        result = cache.materialize_pair(
             edges_path,
             nodes_path,
             lambda e_tmp, n_tmp: _write_network_pair(decode(), e_tmp, n_tmp),
             read_nodes=_read_nodes_parquet,
         )
+        return record_network_type(result, network_type)
 
     cache_path = cache.result_path(filepath, key_params)
-    return cache.materialize(
+    result = cache.materialize(
         cache_path, lambda tmp_path: _write_parquet(decode(), tmp_path)
     )
+    return record_network_type(result, network_type)

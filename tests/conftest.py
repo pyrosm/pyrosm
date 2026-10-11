@@ -58,6 +58,18 @@ def pytest_runtest_call(item):
         pytest.skip("The outside service failed: %s" % err)
 
 
+@pytest.fixture
+def fresh_cache(tmp_path, monkeypatch):
+    """A private, empty out-of-core result cache, for tests that need a read to be built
+    rather than served from a result cached by another test."""
+    from pyrosm.engine import cache
+
+    cache_dir = tmp_path / "fresh_cache"
+    cache_dir.mkdir()
+    monkeypatch.setattr(cache, "cache_dir", lambda: cache_dir)
+    return cache_dir
+
+
 @pytest.fixture(autouse=True)
 def _no_retry_wait(monkeypatch):
     """Retried downloads do not wait between attempts during the tests."""

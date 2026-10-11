@@ -41,7 +41,13 @@ from pyrosm.natural import get_natural_data
 from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
-from pyrosm.graphs import to_networkx, to_igraph, to_pandana, to_pandarm
+from pyrosm.graphs import (
+    record_network_type,
+    to_networkx,
+    to_igraph,
+    to_pandana,
+    to_pandarm,
+)
 
 # Aliased so the module does not collide with the ``engine`` constructor
 # parameter / ``self.engine`` attribute of the same name.
@@ -523,10 +529,6 @@ class OSM:
             osm_keys=network_osm_keys,
         )
 
-        if edges is not None:
-            # Add metadata
-            edges._metadata.append(network_type)
-
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
         if not self.keep_node_info and edges is not None:
@@ -535,8 +537,8 @@ class OSM:
 
         # In case both edges and nodes are requested
         if nodes:
-            return (node_gdf, edges)
-        return edges
+            return record_network_type((node_gdf, edges), network_type)
+        return record_network_type(edges, network_type)
 
     @logged()
     def get_buildings(
@@ -1567,11 +1569,12 @@ class OSM:
 
         network_type : str (optional)
             Network type for the given data. Determines how the graph will be constructed.
-            The network type is typically extracted automatically from the metadata of
-            the edges/nodes GeoDataFrames. This parameter can be used if this metadata is not
-            available for a reason or another. By default, a bidirectional graph is created for walking and all,
-            and a directed graph for driving and cycling (oneway streets are taken into account;
-            cycling additionally honours oneway:bicycle for contraflow).
+            If not given, the type that ``get_network`` recorded on the frames
+            (``edges.attrs["network_type"]``) is used; pass it for frames that do not
+            carry one, such as frames read from a file. By default, a bidirectional graph
+            is created for walking and all, and a directed graph for driving and cycling
+            (oneway streets are taken into account; cycling additionally honours
+            oneway:bicycle for contraflow).
             Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'
             and 'all_public', plus the OSMnx names 'walk', 'bike', 'drive' and
             'drive_service'.
