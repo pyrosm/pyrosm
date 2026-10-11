@@ -9,9 +9,11 @@ from pyrosm.data_filter cimport (
     get_latest_version,
     clean_empty_values_from_ways,
 )
+from cykhash.khashsets cimport isin_int64
 from pyrosm.utils import valid_header_block
 from pyrosm.frames import create_df
 from pyrosm.node_lookup import NodeLocations
+from pyrosm.way_store import WayStore, WayStoreBuilder, any_per_row
 import numpy as np
 import pandas as pd
 
@@ -123,53 +125,39 @@ cdef dict _node_columns(
     return columns
 
 
-cdef list _way_records(
-        dict ways,
-        list strings,
-        node_lookup,
-        unix_time_filter,
-        way_id_filter=None,
-):
-    """A dict per way of a decoded block: ``id``, ``version``, ``timestamp``,
-    ``visible``, ``nodes`` (the node ids), then the tags in order. A tag keyed ``id`` is
-    kept as ``id_tag``; a tag keyed like one of the other keys replaces its value, and a
-    tag keyed ``tags`` is dropped. Ways newer than ``unix_time_filter``, not in
-    ``way_id_filter`` when given, or without a node in ``node_lookup`` when given are left
-    out."""
-    cdef Py_ssize_t i, j
-    cdef Py_ssize_t n = len(ways["id"])
-    cdef const int64_t[::1] refs_off = ways["refs_off"]
-    cdef const int64_t[::1] tags_off = ways["tags_off"]
-    ids = ways["id"].tolist()
-    refs = ways["refs"].tolist()
-    keys = ways["keys"].tolist()
-    vals = ways["vals"].tolist()
-    version = ways["version"].tolist()
-    timestamp = ways["timestamp"].tolist()
-    visible = ways["visible"].astype(bool).tolist()
-    records = []
-    for i in range(n):
-        if unix_time_filter is not None and timestamp[i] > unix_time_filter:
-            continue
-        if way_id_filter is not None and ids[i] not in way_id_filter:
-            continue
-        nodes = refs[refs_off[i]:refs_off[i + 1]]
-        if node_lookup is not None and not nodes_for_way_exist_khash(nodes, node_lookup):
-            continue
-        way = {
-            "id": ids[i],
-            "version": version[i],
-            "timestamp": timestamp[i],
-            "visible": visible[i],
-            "tags": None,
-            "nodes": nodes,
-        }
-        for j in range(tags_off[i], tags_off[i + 1]):
-            key = strings[keys[j]]
-            way["id_tag" if key == "id" else key] = strings[vals[j]]
-        del way["tags"]
-        records.append(way)
-    return records
+cdef _way_mask(dict ways, node_lookup, unix_time_filter, way_ids=None):
+    """Which ways of a decoded block to keep: those not newer than ``unix_time_filter``,
+    whose id is in ``way_ids`` (an array) when given, and with a node in ``node_lookup``
+    when given. None keeps them all."""
+    keep = None
+    if unix_time_filter is not None:
+        keep = ways["timestamp"] <= unix_time_filter
+    if way_ids is not None:
+        listed = np.isin(ways["id"], way_ids)
+        keep = listed if keep is None else keep & listed
+    if node_lookup is not None:
+        refs = ways["refs"]
+        hits = np.zeros(len(refs), dtype=bool)
+        if len(refs) > 0:
+            isin_int64(refs, node_lookup, hits)
+        in_box = any_per_row(hits, ways["refs_off"])
+        keep = in_box if keep is None else keep & in_box
+    return keep
+
+
+cdef _way_ids(ways):
+    """The ids of the parsed ways (a ``WayStore``, or a list of way records)."""
+    if isinstance(ways, WayStore):
+        return ways.ids
+    return np.array([way["id"] for way in ways], dtype=np.int64)
+
+
+cdef _way_refs(ways):
+    """The node ids of the parsed ways (a ``WayStore``, or a list of way records),
+    joined."""
+    if isinstance(ways, WayStore):
+        return ways.refs
+    return np.fromiter((node for way in ways for node in way["nodes"]), dtype=np.int64)
 
 
 cdef dict _relation_columns(dict relations, list strings, unix_time_filter):
@@ -240,7 +228,7 @@ cdef _parse_osm_data(
         bint complete_relations=False,
         progress=None,
 ):
-    all_ways = []
+    ways_builder = WayStoreBuilder()
     all_nodes = []
     all_relations = []
     node_lookup = None
@@ -256,15 +244,19 @@ cdef _parse_osm_data(
                                            unix_time_filter, None, keep_metadata))
         if ways is not None:
             if box is None:
-                all_ways += _way_records(ways, strings, None, unix_time_filter)
+                ways_builder.add(ways, strings, _way_mask(ways, None, unix_time_filter))
             elif len(all_nodes) > 0:
                 # A way is kept when one of its nodes read so far is in the box.
                 if node_blocks_in_lookup != len(all_nodes):
                     node_lookup = get_nodeid_lookup_khash(all_nodes)
                     node_blocks_in_lookup = len(all_nodes)
-                all_ways += _way_records(ways, strings, node_lookup, unix_time_filter)
+                ways_builder.add(
+                    ways, strings, _way_mask(ways, node_lookup, unix_time_filter)
+                )
         if relations is not None and not exclude_relations:
             all_relations.append(_relation_columns(relations, strings, unix_time_filter))
+
+    all_ways = ways_builder.build()
 
     # Concatenate nodes and create a DataFrame
     nodes_df = create_df(concatenate_dicts_of_arrays(all_nodes))
@@ -287,7 +279,7 @@ cdef _parse_osm_data(
     # Keep each element's state at the timestamp if filter is used
     if unix_time_filter is not None:
         nodes_df = get_latest_version(nodes_df)
-        ways_df = get_latest_version(pd.DataFrame(all_ways))
+        ways_df = get_latest_version(pd.DataFrame(all_ways.records()))
         relations_df = get_latest_version(relations_df)
         if bounding_box is not None:
             xmin, ymin, xmax, ymax = bounding_box
@@ -318,9 +310,7 @@ cdef _parse_osm_data(
     # coordinates are picked up by the #236 pass below. bbox-only and opt-in.
     completed_relation_ways = []
     if complete_relations and bounding_box is not None and len(all_ways) > 0:
-        present_way_ids = set()
-        for way in all_ways:
-            present_way_ids.add(way["id"])
+        present_way_ids = set(_way_ids(all_ways).tolist())
 
         missing_way_ids = set()
         for members in all_relations.get("members", []):
@@ -342,12 +332,15 @@ cdef _parse_osm_data(
                     missing_way_ids.add(wid)
 
         if len(missing_way_ids) > 0:
+            missing = np.fromiter(missing_way_ids, dtype=np.int64)
+            completed = WayStoreBuilder()
             for strings, header, nodes, ways, relations in iter_decoded_blocks(
                     filepath, progress):
                 if ways is not None:
-                    completed_relation_ways += _way_records(
-                        ways, strings, None, unix_time_filter, missing_way_ids
+                    completed.add(
+                        ways, strings, _way_mask(ways, None, unix_time_filter, missing)
                     )
+            completed_relation_ways = completed.build().records()
             if unix_time_filter is not None and len(completed_relation_ways) > 0:
                 # Mirror the OSH latest-version selection applied to all_ways above.
                 cw_df = get_latest_version(pd.DataFrame(completed_relation_ways))
@@ -365,16 +358,11 @@ cdef _parse_osm_data(
     # leak into node-feature results (e.g. POIs). bbox-only.
     coords_df = nodes_df
     if bounding_box is not None and len(all_ways) > 0:
-        present_ids = set(nodes_df["id"].tolist())
-        missing_ids = set()
         # Completed relation member ways also need their out-of-box vertices fetched
         # into the coordinate store so the relation geometries are complete.
-        for way in all_ways + completed_relation_ways:
-            for node_id in way["nodes"]:
-                if node_id not in present_ids:
-                    missing_ids.add(node_id)
-        if len(missing_ids) > 0:
-            node_id_filter = np.array(sorted(missing_ids), dtype=np.int64)
+        refs = np.concatenate([_way_refs(all_ways), _way_refs(completed_relation_ways)])
+        node_id_filter = np.setdiff1d(refs, nodes_df["id"].values)
+        if len(node_id_filter) > 0:
             boundary_nodes = []
             for strings, header, nodes, ways, relations in iter_decoded_blocks(
                     filepath, progress):

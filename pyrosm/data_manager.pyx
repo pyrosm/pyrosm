@@ -3,6 +3,7 @@ from pyrosm.data_filter cimport filter_osm_records, filter_node_indices, \
 from pyrosm._arrays cimport convert_to_arrays_and_drop_empty, convert_way_records_to_lists, concatenate_dicts_of_arrays
 from pyrosm.tagparser cimport explode_tag_array
 from pyrosm.filter_compiler import compile_custom_filter, CompiledFilter
+from pyrosm.way_store import WayStore
 import numpy as np
 
 cdef get_data_filter_and_osm_keys(custom_filter):
@@ -84,6 +85,13 @@ cdef separate_relation_ways(way_records, relation_way_ids):
     return normal_ways, relation_ways
 
 cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, data_filter, filter_type, relation_member_ways=None, bint keep_all=False):
+    # From a WayStore, build the records of only the ways the key check of
+    # filter_osm_records can keep.
+    if isinstance(way_records, WayStore):
+        way_records = way_records.records(
+            way_records.candidate_rows(osm_keys, relation_way_ids, keep_all)
+        )
+
     # Get all ways including the ones associated with relations
     ways = filter_osm_records(way_records,
                       data_filter,

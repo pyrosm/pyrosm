@@ -57,10 +57,7 @@ def test_parsing_basic_elements_from_pbf(test_pbf):
     # WAYS
     # ----
 
-    # Ways should be a list of dictionaries
-    assert isinstance(
-        ways, list
-    ), f"way_records should be a list of dictionaries, got '{type(ways)}'."
+    # The way store yields a dictionary per way
     for way in ways:
         assert isinstance(way, dict)
 
@@ -214,7 +211,7 @@ def test_id_tag_does_not_overwrite_osm_id(tmp_path):
     fp = str(tmp_path / "id_tag.osm.pbf")
     _write_pbf(fp, nodes, ways)
 
-    exploded = parse_osm_data(fp, None, False, None)[1]
+    exploded = list(parse_osm_data(fp, None, False, None)[1])
 
     # The colliding 'id' tag is surfaced as 'id_tag', element id is preserved
     assert exploded[0]["id"] == 12345
@@ -227,6 +224,48 @@ def test_id_tag_does_not_overwrite_osm_id(tmp_path):
     # A way without an 'id' tag is unaffected (no spurious id_tag key)
     assert exploded[1]["id"] == 67890
     assert "id_tag" not in exploded[1]
+
+
+@pytest.mark.parametrize(
+    "osm_keys, relation_way_ids, keep_all, rows",
+    [
+        (["highway"], None, False, [0]),
+        (["id_tag"], None, False, [1]),
+        (["version"], None, False, [0, 1, 2, 3]),
+        (["building"], [13], False, [2, 3]),
+        ([], None, True, [0, 1, 2]),
+    ],
+    ids=["tag_key", "id_tag", "record_key", "relation_member", "keep_all"],
+)
+def test_way_store_candidate_rows(osm_keys, relation_way_ids, keep_all, rows):
+    """A way store selects the ways the key check of filter_osm_records can keep: ways
+    with a tag keyed in osm_keys (an id tag for id_tag), every way for a key every
+    record has, ways with any tag with keep_all, and relation members."""
+    import numpy as np
+    from pyrosm.way_store import WayStoreBuilder
+
+    strings = ["", "highway", "primary", "id", "x", "building", "yes"]
+    tags = [[(1, 2)], [(3, 4)], [(5, 6)], []]
+    keys = [k for way in tags for k, _ in way]
+    vals = [v for way in tags for _, v in way]
+    builder = WayStoreBuilder()
+    builder.add(
+        {
+            "id": np.array([10, 11, 12, 13]),
+            "version": np.ones(4, dtype=np.int64),
+            "timestamp": np.ones(4, dtype=np.int64),
+            "visible": np.ones(4, dtype=np.int64),
+            "refs": np.array([1, 2, 3, 4, 5]),
+            "refs_off": np.array([0, 2, 3, 4, 5]),
+            "keys": np.array(keys),
+            "vals": np.array(vals),
+            "tags_off": np.array([0, 1, 2, 3, 3]),
+        },
+        strings,
+    )
+    store = builder.build()
+    assert store.candidate_rows(osm_keys, relation_way_ids, keep_all).tolist() == rows
+    assert [way["id"] for way in store] == [10, 11, 12, 13]
 
 
 @pytest.mark.parametrize(
