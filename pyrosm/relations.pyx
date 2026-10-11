@@ -34,34 +34,46 @@ cdef members_to_list(members):
     return parsed
 
 cpdef _get_ways_for_relation(member_ids, member_roles, building_relation_ways):
-    return get_ways_for_relation(member_ids, member_roles, building_relation_ways)
+    return get_ways_for_relation(member_ids, member_roles, building_relation_ways,
+                                 way_id_index(building_relation_ways["id"]))
 
-cdef get_ways_for_relation(member_ids, member_roles, building_relation_ways):
+cdef way_id_index(way_ids):
+    """The relation ways' ids in sorted order, with the rows that sort them."""
+    order = np.argsort(way_ids, kind="stable")
+    return order, np.asarray(way_ids)[order]
+
+cdef get_ways_for_relation(member_ids, member_roles, building_relation_ways, way_index):
     # Ensure there are no duplicate member_ids/roles
     member_ids, idx = np.unique(member_ids, return_index=True)
     member_roles = member_roles[idx]
 
-    mask = np.isin(building_relation_ways["id"], member_ids)
+    # Rows of the member ways, in their order among the relation ways
+    order, sorted_ids = way_index
+    first = np.searchsorted(sorted_ids, member_ids, side="left")
+    last = np.searchsorted(sorted_ids, member_ids, side="right")
+    found = last > first
+    counts = (last - first)[found]
+    positions = np.repeat(first[found] - np.cumsum(counts) + counts, counts)
+    rows = np.sort(order[positions + np.arange(len(positions))])
 
     # If data for relation is not available, skip
-    if np.sum(mask) == 0:
+    if len(rows) == 0:
         return None, None, None
 
     # If some of the ways were missing, use the ones that are available.
     # Might cause incorrectly shaped geometry but it's better than not having
     # the data for relation at all
-    elif len(member_ids) != np.sum(mask):
-        # Filter member_ids and roles accordingly
-        member_mask = np.isin(member_ids, building_relation_ways["id"])
-        member_ids = member_ids[member_mask]
-        member_roles = member_roles[member_mask]
+    elif len(member_ids) != len(rows):
+        member_ids = member_ids[found]
+        member_roles = member_roles[found]
 
-    ways = filter_array_dict_by_indices_or_mask(building_relation_ways, mask)
+    ways = filter_array_dict_by_indices_or_mask(building_relation_ways, rows)
     return member_ids, member_roles, ways
 
 cdef get_relations(relations, relation_ways, node_coordinates, bint keep_metadata=True):
     cdef int i, j, n2, m_cnt, n = len(relations["id"])
 
+    way_index = way_id_index(relation_ways["id"])
     prepared_relations = []
     for i in range(0, n):
         rel = filter_array_dict_by_indices_or_mask(relations, [i])
@@ -139,7 +151,8 @@ cdef get_relations(relations, relation_ways, node_coordinates, bint keep_metadat
         # Get ways for given relation
         member_ids, member_roles, ways = get_ways_for_relation(member_ids,
                                                                member_roles,
-                                                               relation_ways)
+                                                               relation_ways,
+                                                               way_index)
 
         if ways is None:
             continue

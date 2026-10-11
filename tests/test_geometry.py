@@ -439,3 +439,44 @@ def test_multipolygon_relations_match_osmium_bundled():
         if shapely.symmetric_difference(a, b).area / a.area > 1e-6:
             bad.append(rid)
     assert bad == [], f"relations diverging from osmium: {bad}"
+
+
+@pytest.mark.parametrize(
+    "member_ids, way_ids",
+    [
+        ([2, 3], [4, 3, 2, 1]),
+        ([2, 9], [1, 2, 3]),
+        ([3, 2, 3], [3, 1, 2]),
+        ([5], [5, 1, 5]),
+        ([9], [1, 2]),
+        ([], [1, 2]),
+    ],
+    ids=[
+        "all_present",
+        "one_missing",
+        "repeated_member",
+        "repeated_way",
+        "none_present",
+        "no_members",
+    ],
+)
+def test_relation_member_ways_match_an_isin_selection(member_ids, way_ids):
+    """A relation gets the member ways an isin over all relation ways selects, in their
+    order among the ways, with the members (and their roles) that were found."""
+    import numpy as np
+    from pyrosm.relations import _get_ways_for_relation
+
+    member_ids = np.array(member_ids, dtype=np.int64)
+    roles = np.array(["role%d" % m for m in member_ids], dtype=object)
+    ways = {"id": np.array(way_ids, dtype=np.int64), "row": np.arange(len(way_ids))}
+    got = _get_ways_for_relation(member_ids, roles, ways)
+
+    unique, first = np.unique(member_ids, return_index=True)
+    selected = np.isin(ways["id"], unique)
+    if not selected.any():
+        assert got == (None, None, None)
+        return
+    present = np.isin(unique, ways["id"])
+    np.testing.assert_array_equal(got[0], unique[present])
+    np.testing.assert_array_equal(got[1], roles[first][present])
+    np.testing.assert_array_equal(got[2]["row"], ways["row"][selected])
