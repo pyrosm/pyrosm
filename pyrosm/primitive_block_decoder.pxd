@@ -14,9 +14,18 @@ cdef enum StringTableField:
     ST_S = 1
 
 cdef enum GroupField:
+    GROUP_NODES = 1
     GROUP_DENSE = 2
     GROUP_WAYS = 3
     GROUP_RELATIONS = 4
+
+cdef enum NodeField:
+    NODE_ID = 1
+    NODE_KEYS = 2
+    NODE_VALS = 3
+    NODE_INFO = 4
+    NODE_LAT = 8
+    NODE_LON = 9
 
 cdef enum DenseField:
     DENSE_ID = 1

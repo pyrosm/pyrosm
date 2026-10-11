@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from pyrosm import get_data
+from pyrosm.exceptions import InvalidOSMFileError
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
 from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
 from pyrosm.primitive_block_decoder import decode_primitive_block
@@ -19,6 +20,19 @@ from pyrosm.primitive_block_decoder import decode_primitive_block
 @pytest.fixture
 def test_pbf():
     return get_data("test_pbf")
+
+
+@pytest.fixture(scope="module")
+def nondense_pbf(tmp_path_factory):
+    """The bundled test PBF rewritten by osmium with plain (non-dense) node groups."""
+    osmium = pytest.importorskip("osmium")
+    path = str(tmp_path_factory.mktemp("nondense") / "test_nondense.osm.pbf")
+    with osmium.SimpleWriter(
+        osmium.io.File(path, "pbf,pbf_dense_nodes=false")
+    ) as writer:
+        for obj in osmium.FileProcessor(get_data("test_pbf")):
+            writer.add(obj)
+    return path
 
 
 @pytest.fixture
@@ -71,21 +85,7 @@ def _ref_decode(raw, keep_metadata=True):
     }
 
     nodes = None
-    n = {
-        k: []
-        for k in (
-            "id",
-            "lat",
-            "lon",
-            "keys_vals",
-            "version",
-            "timestamp",
-            "changeset",
-            "uid",
-            "user_sid",
-            "visible",
-        )
-    }
+    node_groups = []
     w = {
         k: []
         for k in (
@@ -126,17 +126,23 @@ def _ref_decode(raw, keep_metadata=True):
     for g in pb.primitivegroup:
         d = g.dense
         if len(d.id):
-            n["id"].append(np.cumsum(_i64(d.id)))
-            n["lat"].append(np.cumsum(_i64(d.lat)))
-            n["lon"].append(np.cumsum(_i64(d.lon)))
-            n["keys_vals"].append(_i64(d.keys_vals))
             di = d.denseinfo
-            n["version"].append(_i64(di.version))
-            n["timestamp"].append(np.cumsum(_i64(di.timestamp)))
-            n["changeset"].append(np.cumsum(_i64(di.changeset)))
-            n["uid"].append(np.cumsum(_i64(di.uid)))
-            n["user_sid"].append(np.cumsum(_i64(di.user_sid)))
-            n["visible"].append(_i64(di.visible))
+            node_groups.append(
+                {
+                    "id": np.cumsum(_i64(d.id)),
+                    "lat": np.cumsum(_i64(d.lat)),
+                    "lon": np.cumsum(_i64(d.lon)),
+                    "keys_vals": _i64(d.keys_vals),
+                    "version": _i64(di.version),
+                    "timestamp": np.cumsum(_i64(di.timestamp)),
+                    "changeset": np.cumsum(_i64(di.changeset)),
+                    "uid": np.cumsum(_i64(di.uid)),
+                    "user_sid": np.cumsum(_i64(di.user_sid)),
+                    "visible": _i64(di.visible),
+                }
+            )
+        if len(g.nodes):
+            node_groups.append(_ref_plain_nodes(g.nodes))
         for way in g.ways:
             w["id"].append(way.id)
             w["keys"].append(_i64(way.keys))
@@ -156,23 +162,11 @@ def _ref_decode(raw, keep_metadata=True):
             r["roles"].append(_i64(rel.roles_sid))
             _ref_info(r, rel.info)
 
-    if n["id"]:
-        nodes = {
-            "id": np.concatenate(n["id"]),
-            "lat": np.concatenate(n["lat"]),
-            "lon": np.concatenate(n["lon"]),
-            "keys_vals": np.concatenate(n["keys_vals"]),
-        }
+    if node_groups:
+        keys = ["id", "lat", "lon", "keys_vals"]
         if keep_metadata:
-            for k in (
-                "version",
-                "timestamp",
-                "changeset",
-                "uid",
-                "user_sid",
-                "visible",
-            ):
-                nodes[k] = np.concatenate(n[k])
+            keys += list(_META)
+        nodes = {k: _ref_join(node_groups, k) for k in keys}
 
     ways = _ref_build(w, "refs", "refn", keep_metadata)
     relations = _ref_build(r, "memids", "memn", keep_metadata)
@@ -185,6 +179,45 @@ def _ref_decode(raw, keep_metadata=True):
         )
         relations["members_off"] = relations.pop("memids_off")
     return string_table_ref(pb), header, nodes, ways, relations
+
+
+_META = ("version", "timestamp", "changeset", "uid", "user_sid", "visible")
+
+
+def _ref_plain_nodes(plain):
+    """One group of plain nodes in the dense form: absolute values, and each node's
+    key/value ids followed by a 0 when any node of the group has tags."""
+    tagged = any(len(node.keys) for node in plain)
+    keys_vals = []
+    meta = {k: [] for k in _META}
+    for node in plain:
+        if tagged:
+            for k, v in zip(node.keys, node.vals):
+                keys_vals += [k, v]
+            keys_vals.append(0)
+        _ref_info(meta, node.info)
+    group = {
+        "id": np.array([node.id for node in plain], dtype=np.int64),
+        "lat": np.array([node.lat for node in plain], dtype=np.int64),
+        "lon": np.array([node.lon for node in plain], dtype=np.int64),
+        "keys_vals": np.array(keys_vals, dtype=np.int64),
+    }
+    group.update({k: np.array(v, dtype=np.int64) for k, v in meta.items()})
+    return group
+
+
+def _ref_join(groups, key):
+    """Concatenate ``key`` over the node groups, a 0 per node for a group without it
+    when another group has it."""
+    have = [len(g[key]) > 0 for g in groups]
+    if all(have) or not any(have):
+        return np.concatenate([g[key] for g in groups])
+    return np.concatenate(
+        [
+            g[key] if h else np.zeros(len(g["id"]), np.int64)
+            for g, h in zip(groups, have)
+        ]
+    )
 
 
 def string_table_ref(pb):
@@ -228,7 +261,7 @@ def _assert_arrays(mine, ref, label):
         )
 
 
-@pytest.mark.parametrize("fixture", ["test_pbf", "helsinki_pbf"])
+@pytest.mark.parametrize("fixture", ["test_pbf", "helsinki_pbf", "nondense_pbf"])
 def test_decoder_matches_protobuf(fixture, request):
     fp = request.getfixturevalue(fixture)
     n_blocks = n_nodes = n_ways = n_rels = 0
@@ -274,3 +307,124 @@ def test_empty_block_returns_empty(helsinki_pbf):
     st, header, nodes, ways, relations = decode_primitive_block(b"")
     assert st == [] and nodes is None and ways is None and relations is None
     assert header["granularity"] == 100
+
+
+def test_node_groups_keep_each_nodes_own_values():
+    """In a block whose node groups differ in having tags or metadata (a tagged dense
+    group with DenseInfo, an untagged dense group without, and plain nodes with and
+    without Info), every node keeps its own tags and metadata."""
+    pb = PrimitiveBlock()
+    pb.stringtable.s.extend([b"", b"amenity", b"cafe", b"name", b"x"])
+    tagged = pb.primitivegroup.add().dense
+    tagged.id.extend([1, 1])
+    tagged.lat.extend([10, 1])
+    tagged.lon.extend([20, 1])
+    tagged.keys_vals.extend([1, 2, 0, 0])
+    tagged.denseinfo.version.extend([3, 4])
+    tagged.denseinfo.timestamp.extend([100, 1])
+    untagged = pb.primitivegroup.add().dense
+    untagged.id.extend([3, 1])
+    untagged.lat.extend([30, 1])
+    untagged.lon.extend([40, 1])
+    plain = pb.primitivegroup.add()
+    node = plain.nodes.add(id=5, lat=50, lon=60)
+    node.keys.append(3)
+    node.vals.append(4)
+    node.info.version = 2
+    node.info.timestamp = 500
+    plain.nodes.add(id=6, lat=51, lon=61)
+
+    _, _, nodes, ways, relations = decode_primitive_block(pb.SerializeToString())
+    assert ways is None and relations is None
+    assert nodes["id"].tolist() == [1, 2, 3, 4, 5, 6]
+    assert nodes["lat"].tolist() == [10, 11, 30, 31, 50, 51]
+    assert nodes["lon"].tolist() == [20, 21, 40, 41, 60, 61]
+    assert nodes["keys_vals"].tolist() == [1, 2, 0, 0, 0, 0, 3, 4, 0, 0]
+    assert nodes["version"].tolist() == [3, 4, 0, 0, 2, -1]
+    assert nodes["timestamp"].tolist() == [100, 101, 0, 0, 500, 0]
+
+
+def _all_nodes(fp):
+    """Every node of ``fp`` in file order: ids, coordinates in degrees, tag dicts and
+    metadata, the user id resolved to its name."""
+    ids, lon, lat, tags, users = [], [], [], [], []
+    meta = {k: [] for k in ("version", "timestamp", "changeset", "uid")}
+    for raw in _iter_block_bytes(fp):
+        st, header, nodes, _, _ = decode_primitive_block(raw)
+        if nodes is None:
+            continue
+        gran = header["granularity"]
+        ids.append(nodes["id"])
+        lon.append((nodes["lon"] * gran + header["lon_offset"]) / 1e9)
+        lat.append((nodes["lat"] * gran + header["lat_offset"]) / 1e9)
+        stream = nodes["keys_vals"].tolist()
+        p = 0
+        for _ in range(len(nodes["id"])):
+            node_tags = {}
+            while p < len(stream) and stream[p] != 0:
+                node_tags[st[stream[p]]] = st[stream[p + 1]]
+                p += 2
+            p += 1
+            tags.append(node_tags)
+        for k in meta:
+            meta[k].append(nodes[k])
+        users.extend(st[i] for i in nodes["user_sid"])
+    out = {"id": np.concatenate(ids), "lon": np.concatenate(lon)}
+    out["lat"] = np.concatenate(lat)
+    out.update({k: np.concatenate(v) for k, v in meta.items()})
+    return out, tags, users
+
+
+def test_nondense_nodes_equal_the_dense_ones(test_pbf, nondense_pbf):
+    """The non-dense copy decodes to the same nodes as the dense file: ids,
+    coordinates, tags and metadata."""
+    dense, dense_tags, dense_users = _all_nodes(test_pbf)
+    plain, plain_tags, plain_users = _all_nodes(nondense_pbf)
+    assert len(dense["id"]) > 0 and any(dense_tags)
+    for key in dense:
+        np.testing.assert_array_equal(plain[key], dense[key], err_msg=key)
+    assert plain_tags == dense_tags
+    assert plain_users == dense_users
+
+
+def _varint(value):
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if not value:
+            out.append(byte)
+            return bytes(out)
+        out.append(byte | 0x80)
+
+
+def _field(number, wire_type, payload):
+    """One protobuf field: a varint value (wire type 0) or a length-delimited one (2)."""
+    tag = _varint(number << 3 | wire_type)
+    if wire_type == 2:
+        return tag + _varint(len(payload)) + payload
+    return tag + _varint(payload)
+
+
+def _block_with_plain_node(*fields):
+    """A PrimitiveBlock whose only group holds one plain node made of ``fields``."""
+    pb = PrimitiveBlock()
+    pb.stringtable.s.extend([b"", b"a", b"b", b"c", b"d"])
+    group = _field(1, 2, b"".join(fields))
+    return pb.SerializeToString() + _field(2, 2, group)
+
+
+def test_plain_node_tags_in_any_protobuf_encoding():
+    """A plain node's key and value ids decode the same packed in several runs or not
+    packed at all; a node with more keys than values is refused."""
+    node = [_field(1, 0, 14), _field(8, 0, 140), _field(9, 0, 159)]  # 7, 70, -80
+    keys = [_field(2, 2, _varint(1)), _field(2, 2, _varint(3))]
+    vals = [_field(3, 0, 2), _field(3, 0, 4)]
+    _, _, nodes, _, _ = decode_primitive_block(
+        _block_with_plain_node(*node, *keys, *vals)
+    )
+    assert nodes["id"].tolist() == [7]
+    assert nodes["lat"].tolist() == [70] and nodes["lon"].tolist() == [-80]
+    assert nodes["keys_vals"].tolist() == [1, 2, 3, 4, 0]
+    with pytest.raises(InvalidOSMFileError, match="2 tag keys but 1 values"):
+        decode_primitive_block(_block_with_plain_node(*node, *keys, vals[0]))

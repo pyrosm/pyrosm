@@ -661,13 +661,15 @@ def test_to_graph_pandana_emits_deprecation_warning():
     assert g is not None
 
 
-def test_parse_nodes_non_dense_pbf_matches_dense(tmp_path):
-    """#274 — pyrosm parses non-dense PBF node groups (pbfreader.parse_nodes) and
-    produces the same network and buildings as the dense encoding. Guards the
-    regression where parse_nodes' dict result was spread into the all_nodes list
-    as bare keys, crashing non-dense reads with 'str object has no attribute
-    keys'. A non-dense copy of the bundled test PBF is generated with osmium."""
-    import numpy as np
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_parse_nodes_non_dense_pbf_matches_dense(tmp_path, engine, fresh_cache):
+    """#274 — pyrosm parses non-dense PBF node groups and returns the same frames as
+    for the dense encoding, with both engines. Guards the regression where
+    parse_nodes' dict result was spread into the all_nodes list as bare keys,
+    crashing non-dense reads with 'str object has no attribute keys', and the
+    out-of-core engine returning nothing because its decoder skipped plain nodes. A
+    non-dense copy of the bundled test PBF is generated with osmium."""
+    import pandas as pd
 
     osmium = pytest.importorskip("osmium")
     from pyrosm import OSM, get_data
@@ -680,34 +682,23 @@ def test_parse_nodes_non_dense_pbf_matches_dense(tmp_path):
         for obj in osmium.FileProcessor(src):
             writer.add(obj)
 
-    dense_edges = OSM(src).get_network()
-    nondense_edges = OSM(nondense).get_network()
-    assert nondense_edges is not None
-    assert len(nondense_edges) == len(dense_edges)
-
-    dense_buildings = OSM(src).get_buildings()
-    nondense_buildings = OSM(nondense).get_buildings()
-    assert len(nondense_buildings) == len(dense_buildings)
-    # Same geometric extent -> node coordinates parsed identically.
-    assert np.allclose(
-        nondense_buildings.total_bounds, dense_buildings.total_bounds, atol=1e-6
-    )
-
-    # POIs come from standalone (tagged) nodes, so this checks parse_nodes emits
-    # the 'tags' column with the same schema as parse_dense.
-    dense_pois = OSM(src).get_pois()
-    nondense_pois = OSM(nondense).get_pois()
-    assert nondense_pois is not None
-    assert len(nondense_pois) == len(dense_pois)
-    assert set(nondense_pois.columns) == set(dense_pois.columns)
-
-    # A bounding box exercises parse_nodes' bbox filter and the #236
-    # boundary-completion (id-filter) pass on the non-dense node groups.
+    # POIs come from standalone (tagged) nodes; a bounding box exercises the node
+    # filter by box (and, in memory, the #236 boundary-completion pass).
     bounds = [26.94, 60.525, 26.96, 60.535]
-    dense_bbox = OSM(src, bounding_box=bounds).get_buildings()
-    nondense_bbox = OSM(nondense, bounding_box=bounds).get_buildings()
-    assert nondense_bbox is not None
-    assert len(nondense_bbox) == len(dense_bbox)
+    reads = [
+        ("get_network", {}),
+        ("get_buildings", {}),
+        ("get_pois", {}),
+        ("get_buildings", {"bounding_box": bounds}),
+    ]
+    for method, options in reads:
+        dense = getattr(OSM(src, engine=engine, workers=1, **options), method)()
+        frame = getattr(OSM(nondense, engine=engine, workers=1, **options), method)()
+        assert frame is not None and len(frame) > 0
+        pd.testing.assert_frame_equal(
+            frame.drop(columns="geometry"), dense.drop(columns="geometry")
+        )
+        assert (frame.geometry.to_wkb() == dense.geometry.to_wkb()).all()
 
 
 def test_parse_nodes_non_dense_osh_history_with_timestamp(tmp_path):
