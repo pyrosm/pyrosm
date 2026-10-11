@@ -1,7 +1,6 @@
 from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
-from pyrosm.utils import validate_custom_filter, ensure_filter_key
-import warnings
+from pyrosm.utils import validate_custom_filter, ensure_filter_key, warn_empty_result
 
 
 def get_natural_data(
@@ -40,11 +39,7 @@ def get_natural_data(
 
     # If there weren't any data, return empty GeoDataFrame
     if nodes is None and ways is None and relations is None:
-        warnings.warn(
-            "Could not find any natural elements for given area.",
-            UserWarning,
-            stacklevel=2,
-        )
+        warn_empty_result("natural")
         return None
 
     # Prepare GeoDataFrame

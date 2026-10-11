@@ -1,6 +1,6 @@
+from pyrosm.utils import warn_empty_result
 from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
-import warnings
 
 
 def get_user_defined_data(
@@ -52,9 +52,7 @@ def get_user_defined_data(
 
     # If there weren't any data, return empty GeoDataFrame
     if nodes is None and ways is None and relations is None:
-        warnings.warn(
-            "Could not find any OSM data for given area.", UserWarning, stacklevel=2
-        )
+        warn_empty_result("custom")
         return None
 
     # Ensure that ways are None if returning those are not requested

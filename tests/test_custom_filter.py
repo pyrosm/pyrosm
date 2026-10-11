@@ -843,11 +843,13 @@ def test_custom_filter_key_outside_conf_uses_key_as_column(test_pbf):
     assert gdf["source"].notna().any()
 
 
-def test_custom_criteria_non_string_filter_type_raises(test_pbf):
-    """A non-string filter_type is rejected by the isinstance guard."""
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_custom_criteria_non_string_filter_type_raises(test_pbf, engine):
+    """A non-string filter_type is rejected by the isinstance guard, with either
+    engine."""
     from pyrosm import OSM
 
-    osm = OSM(filepath=test_pbf)
+    osm = OSM(filepath=test_pbf, engine=engine, workers=1)
     with pytest.raises(ValueError, match="should be either"):
         osm.get_data_by_custom_criteria(
             custom_filter={"building": True}, filter_type=123

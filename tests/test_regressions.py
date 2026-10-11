@@ -2357,3 +2357,41 @@ def test_cached_network_read_records_its_network_type(nodes, fresh_cache, monkey
     if nodes:
         graph = OSM.to_graph(*second, graph_type="networkx", simplify=False)
         assert graph.number_of_edges() == 1237
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
+    "read, found",
+    [
+        (lambda osm: osm.get_network(), "edges"),
+        (lambda osm: osm.get_network(nodes=True)[1], "edges"),
+        (lambda osm: osm.get_buildings(), "building elements"),
+        (lambda osm: osm.get_landuse(), "landuse elements"),
+        (lambda osm: osm.get_natural(), "natural elements"),
+        (lambda osm: osm.get_pois(), "POIs"),
+        (lambda osm: osm.get_boundaries(), "boundaries"),
+        (lambda osm: osm.get_data_by_custom_criteria({"shop": True}), "OSM data"),
+    ],
+    ids=[
+        "network",
+        "network_segments",
+        "buildings",
+        "landuse",
+        "natural",
+        "pois",
+        "boundaries",
+        "custom",
+    ],
+)
+def test_read_that_finds_nothing_warns(engine, read, found, fresh_cache):
+    """A read that finds nothing warns so and returns None, with either engine (the
+    out-of-core engine used to return None silently)."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(
+        get_data("test_pbf"), engine=engine, workers=1, bounding_box=[0, 0, 0.01, 0.01]
+    )
+    with pytest.warns(
+        UserWarning, match="Could not find any %s for given area" % found
+    ):
+        assert read(osm) is None

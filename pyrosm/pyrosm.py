@@ -24,6 +24,7 @@ from pyrosm.utils import (
     get_unix_time,
     warn_about_timestamp_not_set,
     warn_about_single_core,
+    warn_empty_result,
 )
 from pyrosm.utils.download import get_file_size
 from pyrosm.utils.progress import reporting, validate_progress
@@ -478,7 +479,7 @@ class OSM:
             filter_type = "exclude"
 
         if self._use_engine(timestamp):
-            return self._read_engine(
+            result = self._read_engine(
                 engine_backend.get_network,
                 with_relations=False,
                 network_type=network_type,
@@ -488,6 +489,9 @@ class OSM:
                 filter_type=filter_type,
                 tags_to_keep=tags_to_keep,
             )
+            if (result[1] if nodes else result) is None:
+                warn_empty_result("network")
+            return result
 
         # Get filter (also validates network_type, which still drives the graph
         # semantics even when a custom_filter is provided)
@@ -592,12 +596,15 @@ class OSM:
 
         """
         if self._use_engine(timestamp):
-            return self._read_engine(
+            gdf = self._read_engine(
                 engine_backend.get_buildings,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
             )
+            if gdf is None:
+                warn_empty_result("buildings")
+            return gdf
 
         # Default tags to keep as columns
         tags_as_columns = list(self.conf.tags.building)
@@ -683,12 +690,15 @@ class OSM:
         """
 
         if self._use_engine(timestamp):
-            return self._read_engine(
+            gdf = self._read_engine(
                 engine_backend.get_landuse,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
             )
+            if gdf is None:
+                warn_empty_result("landuse")
+            return gdf
 
         self._read_pbf(timestamp)
 
@@ -775,12 +785,15 @@ class OSM:
         """
 
         if self._use_engine(timestamp):
-            return self._read_engine(
+            gdf = self._read_engine(
                 engine_backend.get_natural,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
             )
+            if gdf is None:
+                warn_empty_result("natural")
+            return gdf
 
         self._read_pbf(timestamp)
 
@@ -880,7 +893,7 @@ class OSM:
         """
 
         if self._use_engine(timestamp):
-            return self._read_engine(
+            gdf = self._read_engine(
                 engine_backend.get_boundaries,
                 boundary_type=boundary_type,
                 name=name,
@@ -888,6 +901,9 @@ class OSM:
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
             )
+            if gdf is None:
+                warn_empty_result("boundaries")
+            return gdf
 
         self._read_pbf(timestamp)
 
@@ -1012,12 +1028,15 @@ class OSM:
 
         """
         if self._use_engine(timestamp):
-            return self._read_engine(
+            gdf = self._read_engine(
                 engine_backend.get_pois,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
             )
+            if gdf is None:
+                warn_empty_result("pois")
+            return gdf
 
         # If custom_filter has not been defined, initialize with default
         if custom_filter is None:
@@ -1136,8 +1155,24 @@ class OSM:
 
         """
 
+        # custom_filter=None means "return everything": keep every tagged element
+        # with no key/value filtering (issue #113). There is nothing to keep or exclude
+        # by value then, so filter_type is ignored; it is pinned to a valid no-op so a
+        # caller-supplied value cannot reject the request.
+        keep_all = custom_filter is None
+        if keep_all:
+            filter_type = "keep"
+        if not isinstance(filter_type, str) or filter_type.lower() not in (
+            "keep",
+            "exclude",
+        ):
+            raise ValueError(
+                "'filter_type' -parameter should be either 'keep' or 'exclude'. "
+            )
+        filter_type = filter_type.lower()
+
         if self._use_engine(timestamp):
-            return self._read_engine(
+            gdf = self._read_engine(
                 engine_backend.get_data_by_custom_criteria,
                 custom_filter=custom_filter,
                 osm_keys_to_keep=osm_keys_to_keep,
@@ -1149,6 +1184,9 @@ class OSM:
                 extra_attributes=extra_attributes,
                 keep_other_tags=keep_other_tags,
             )
+            if gdf is None:
+                warn_empty_result("custom")
+            return gdf
 
         # keep_other_tags=False only skips tag work in the out-of-core decode; the in-memory
         # reader resolves every tag once and caches it for reuse across layers, so it cannot
@@ -1159,35 +1197,13 @@ class OSM:
                 "construct OSM(..., engine='out_of_core')."
             )
 
-        # custom_filter=None means "return everything": keep every tagged element
-        # with no key/value filtering (issue #113).
-        keep_all = custom_filter is None
-        if keep_all:
-            custom_filter = {}
-            # There is nothing to keep/exclude by value, so filter_type is ignored;
-            # pin it to a valid no-op so a caller-supplied value cannot reject the
-            # request or reach Solver() with an invalid direction.
-            filter_type = "keep"
-
         # Check that the custom filter is in correct format
-        custom_filter = validate_custom_filter(custom_filter)
-
-        if not isinstance(filter_type, str):
-            raise ValueError(
-                "'filter_type' -parameter should be either 'keep' or 'exclude'. "
-            )
+        custom_filter = validate_custom_filter({} if keep_all else custom_filter)
 
         # Validate osm keys
         validate_osm_keys(osm_keys_to_keep)
         if isinstance(osm_keys_to_keep, str):
             osm_keys_to_keep = [osm_keys_to_keep]
-
-        # Validate filter
-        filter_type = filter_type.lower()
-        if filter_type not in ["keep", "exclude"]:
-            raise ValueError(
-                "'filter_type' -parameter should be either 'keep' or 'exclude'. "
-            )
 
         # Tags to keep as columns
         if tags_as_columns is None:
