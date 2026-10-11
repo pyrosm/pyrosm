@@ -2065,3 +2065,50 @@ def test_use_engine_routing(helsinki_pbf, helsinki_history_pbf):
     osh = OSM(helsinki_history_pbf, engine="out_of_core")
     assert osh._use_engine(None) is False
     assert osh._use_engine("2015-01-01") is False
+
+
+def _gather_every_shard_id(shard_paths, needed):
+    """Reference for ``_gather_node_shards``: search every id of every shard in
+    ``needed``."""
+    pos_parts, lon_parts, lat_parts = [], [], []
+    for path in shard_paths:
+        z = np.load(path)
+        nid = z["node_id"]
+        if len(nid) == 0:
+            continue
+        pos = np.clip(np.searchsorted(needed, nid), 0, len(needed) - 1)
+        hit = needed[pos] == nid
+        pos_parts.append(pos[hit])
+        lon_parts.append(z["node_lon"][hit])
+        lat_parts.append(z["node_lat"][hit])
+    return [np.concatenate(parts) for parts in (pos_parts, lon_parts, lat_parts)]
+
+
+@pytest.mark.parametrize(
+    "needed", [[3, 4, 5, 7, 10, 12, 50], [50]], ids=["some_found", "none_found"]
+)
+def test_gather_node_shards_matches_searching_every_id(tmp_path, needed):
+    """The coordinate gather returns what searching every shard id returns, element for
+    element: a sorted shard is searched within its id range, a shard that is not
+    strictly increasing (unsorted, or with a repeated id) id by id."""
+    from pyrosm.engine.collect import _gather_node_shards
+
+    paths = []
+    for name, ids in [
+        ("sorted", [1, 3, 5, 7]),
+        ("outside_the_needed_range", [100, 200]),
+        ("unsorted", [12, 10, 11]),
+        ("repeated_id", [5, 5, 6]),
+        ("empty", []),
+    ]:
+        ids = np.array(ids, dtype=np.int64)
+        # Distinct coordinates per row, so rows of a repeated id are told apart.
+        rows = np.arange(len(ids)) + 100 * len(paths)
+        paths.append(tmp_path / ("%s.npz" % name))
+        np.savez(paths[-1], node_id=ids, node_lon=rows * 1.0, node_lat=rows * -1.0)
+
+    needed = np.array(needed, dtype=np.int64)
+    result = _gather_node_shards(paths, needed)
+    expected = _gather_every_shard_id(paths, needed)
+    for got, want in zip(result, expected):
+        np.testing.assert_array_equal(got, want)

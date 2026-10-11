@@ -136,8 +136,9 @@ def _collect_node_features(shard_paths, tags_as_columns, keep_metadata, keep):
 def _gather_node_shards(shard_subset, needed):
     """Gather the coordinates of the ``needed`` (sorted) node ids that a subset of shards
     holds. Returns ``(pos, lon, lat)``: ``pos`` indexes into ``needed`` for the ids found, and
-    ``lon`` / ``lat`` their coordinates. The per-shard searchsorted lookup is the same work
-    the serial gather does; splitting the shards across workers is what parallelises it.
+    ``lon`` / ``lat`` their coordinates. A shard whose ids increase (a PBF sorted by type and
+    id) searches only the needed ids within its id range; any other shard searches each of
+    its ids in ``needed``. Splitting the shards across workers is what parallelises it.
     """
     n = len(needed)
     pos_parts, lon_parts, lat_parts = [], [], []
@@ -146,12 +147,21 @@ def _gather_node_shards(shard_subset, needed):
         nid = z["node_id"]
         if len(nid) == 0:
             continue
-        pos = np.clip(np.searchsorted(needed, nid), 0, n - 1)
-        hit = needed[pos] == nid
-        if hit.any():
-            pos_parts.append(pos[hit])
-            lon_parts.append(z["node_lon"][hit])
-            lat_parts.append(z["node_lat"][hit])
+        if np.all(nid[1:] > nid[:-1]):
+            first = np.searchsorted(needed, nid[0], side="left")
+            last = np.searchsorted(needed, nid[-1], side="right")
+            wanted = needed[first:last]
+            rows = np.searchsorted(nid, wanted)
+            hit = nid[rows] == wanted
+            pos, rows = first + np.flatnonzero(hit), rows[hit]
+        else:
+            pos = np.clip(np.searchsorted(needed, nid), 0, n - 1)
+            rows = np.flatnonzero(needed[pos] == nid)
+            pos = pos[rows]
+        if len(pos):
+            pos_parts.append(pos)
+            lon_parts.append(z["node_lon"][rows])
+            lat_parts.append(z["node_lat"][rows])
     if not pos_parts:
         return np.empty(0, np.int64), np.empty(0), np.empty(0)
     return (
