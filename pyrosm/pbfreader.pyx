@@ -258,16 +258,15 @@ cdef _parse_osm_data(
 
     all_ways = ways_builder.build()
 
-    # Concatenate nodes and create a DataFrame
-    nodes_df = create_df(concatenate_dicts_of_arrays(all_nodes))
+    # Concatenate the node columns (history reads below select from them in a DataFrame)
+    all_nodes = concatenate_dicts_of_arrays(all_nodes)
     relations_df = create_df(concatenate_dicts_of_arrays(all_relations))
 
-    # If no nodes were parsed the nodes DataFrame is empty and has no 'id' column. Without
-    # any nodes the ways cannot be georeferenced anyway, so return an empty result instead
-    # of crashing later at nodes_df.set_index("id"). (A swapped/inverted bounding box is
-    # rejected earlier with a ValueError at OSM() construction; reaching here means the
+    # If no nodes were parsed there is no 'id' column. Without any nodes the ways cannot
+    # be georeferenced anyway, so return an empty result. (A swapped/inverted bounding box
+    # is rejected earlier with a ValueError at OSM() construction; reaching here means the
     # bounding box is well-formed but does not overlap this PBF's data extent.)
-    if "id" not in nodes_df.columns:
+    if "id" not in all_nodes:
         warnings.warn(
             "The given bounding box did not contain any OSM nodes, so no data could be "
             "parsed. It likely does not overlap the data extent of this PBF file.",
@@ -278,7 +277,7 @@ cdef _parse_osm_data(
 
     # Keep each element's state at the timestamp if filter is used
     if unix_time_filter is not None:
-        nodes_df = get_latest_version(nodes_df)
+        nodes_df = get_latest_version(create_df(all_nodes))
         ways_df = get_latest_version(pd.DataFrame(all_ways.records()))
         relations_df = get_latest_version(relations_df)
         if bounding_box is not None:
@@ -293,9 +292,9 @@ cdef _parse_osm_data(
 
         # DataFrame structure produces unnecesary None values that needs to be cleaned
         all_ways = clean_empty_values_from_ways(ways_df.to_dict(orient="records"))
+        all_nodes = {col: nodes_df[col].values for col in nodes_df.columns}
 
     # Keys with numpy arrays
-    all_nodes = {col: nodes_df[col].values for col in nodes_df.columns}
     all_relations = {col: relations_df[col].values for col in relations_df.columns}
 
     # Complete the member ways of relations that straddle the bounding box (the
@@ -356,12 +355,12 @@ cdef _parse_osm_data(
     # them to the coordinate lookup used for geometry building. They are deliberately
     # NOT added to `all_nodes` (the standalone node features), so out-of-box nodes never
     # leak into node-feature results (e.g. POIs). bbox-only.
-    coords_df = nodes_df
+    coords = all_nodes
     if bounding_box is not None and len(all_ways) > 0:
         # Completed relation member ways also need their out-of-box vertices fetched
         # into the coordinate store so the relation geometries are complete.
         refs = np.concatenate([_way_refs(all_ways), _way_refs(completed_relation_ways)])
-        node_id_filter = np.setdiff1d(refs, nodes_df["id"].values)
+        node_id_filter = np.setdiff1d(refs, all_nodes["id"])
         if len(node_id_filter) > 0:
             boundary_nodes = []
             for strings, header, nodes, ways, relations in iter_decoded_blocks(
@@ -375,18 +374,18 @@ cdef _parse_osm_data(
                 boundary_df = create_df(concatenate_dicts_of_arrays(boundary_nodes))
                 if "id" in boundary_df.columns:
                     # Apply the same OSH latest-version selection to the boundary
-                    # nodes as nodes_df received above, so timestamped geometries are
+                    # nodes as the nodes received above, so timestamped geometries are
                     # built from each vertex's state at the timestamp rather than
                     # whichever historical version drop_duplicates happens to keep.
                     if unix_time_filter is not None:
                         boundary_df = get_latest_version(boundary_df)
-                    coords_df = pd.concat(
-                        [nodes_df, boundary_df], ignore_index=True
+                    coords = pd.concat(
+                        [create_df(all_nodes), boundary_df], ignore_index=True
                     ).drop_duplicates(subset="id")
 
     # Compact node-coordinate store (cykhash id->index map + column arrays),
     # replacing the per-node dict-of-dicts; geometry/graph code reads through it.
-    node_coordinates_lookup = NodeLocations(coords_df)
+    node_coordinates_lookup = NodeLocations(coords)
 
     return (all_nodes, all_ways, all_relations, node_coordinates_lookup,
             completed_relation_ways)
