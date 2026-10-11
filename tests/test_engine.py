@@ -2183,3 +2183,43 @@ def test_block_tags_share_one_decoded_string_table(monkeypatch):
     assert relation_tags == {"building": "ye\ufffds", "type": "multipolygon"}
     assert way_tags["building"] is relation_tags["building"]
     assert shard["rel_memrole"].tolist() == ["outer"]
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        lambda osm: osm.get_network(),
+        lambda osm: osm.get_network(nodes=True)[1],
+        lambda osm: osm.get_buildings(),
+        lambda osm: osm.get_pois(),
+        lambda osm: osm.get_data_by_custom_criteria({"leisure": True}),
+    ],
+    ids=["network", "network_segments", "buildings", "pois", "custom"],
+)
+def test_keep_node_info_matches_in_memory(helsinki_pbf, fresh_cache, read):
+    """With keep_node_info=True the out-of-core engine keeps each way's nodes as the
+    in-memory reader does: the list of node ids of a way, missing for nodes and
+    relations."""
+    mine = read(OSM(helsinki_pbf, engine="out_of_core", workers=1, keep_node_info=True))
+    ref = read(OSM(helsinki_pbf, keep_node_info=True))
+    assert "nodes" in mine.columns
+    _assert_full_parity(mine, ref)
+
+
+def test_keep_node_info_is_part_of_a_cached_read(test_pbf, fresh_cache, monkeypatch):
+    """A cached read without the node column does not serve a read that keeps it, and a
+    read that keeps it, served from the cache, returns lists of node ids again."""
+    from pyrosm.engine import readers
+
+    def read(**options):
+        return OSM(test_pbf, engine="out_of_core", workers=1, **options).get_buildings()
+
+    without = read()
+    kept = read(keep_node_info=True)
+    monkeypatch.setattr(readers, "_decode_and_run", None)
+    cached = read(keep_node_info=True)
+    ref = OSM(test_pbf, keep_node_info=True).get_buildings()
+    assert "nodes" not in without.columns
+    for frame in (kept, cached):
+        _assert_full_parity(frame, ref)
+        assert all(isinstance(v, list) and type(v[0]) is int for v in frame["nodes"])

@@ -2450,9 +2450,11 @@ def test_write_pbf_delete_relation_keeps_its_members(tiny_pbf, tmp_path):
     assert way_ids == set(_TINY_WAYS) and node_ids == set(_TINY_NODES)
 
 
-def test_write_pbf_insert_vertex(tiny_pbf, tmp_path):
-    """A new node with a caller-chosen id can be spliced into a way's member list."""
-    osm = OSM(tiny_pbf, keep_node_info=True)
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_write_pbf_insert_vertex(tiny_pbf, tmp_path, engine, fresh_cache):
+    """A new node with a caller-chosen id can be spliced into a way's member list, also of
+    a frame the out-of-core engine read."""
+    osm = OSM(tiny_pbf, keep_node_info=True, engine=engine, workers=1)
     edges = _set_way_nodes(osm.get_network(), 10, [1, -1, 2, 3])
     inserted = (24.9405, 60.1705)
     new_node = gpd.GeoDataFrame(
@@ -2762,10 +2764,12 @@ def test_write_pbf_new_way_needs_two_members(tiny_pbf, tmp_path):
         osm.write_pbf(bad, str(tmp_path / "boom.osm.pbf"), apply_geometry=True)
 
 
-def test_keep_node_info_parameter(tiny_pbf):
-    """The constructor keyword keeps the way member-id column reshaping needs."""
-    assert "nodes" not in OSM(tiny_pbf).get_network().columns
-    edges = OSM(tiny_pbf, keep_node_info=True).get_network()
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_keep_node_info_parameter(tiny_pbf, engine, fresh_cache):
+    """The constructor keyword keeps the way member-id column reshaping needs, with
+    either engine."""
+    assert "nodes" not in OSM(tiny_pbf, engine=engine, workers=1).get_network().columns
+    edges = OSM(tiny_pbf, keep_node_info=True, engine=engine, workers=1).get_network()
     assert list(edges.set_index("id").loc[10, "nodes"]) == _TINY_WAYS[10]
 
     with pytest.raises(ValueError, match="keep_node_info"):

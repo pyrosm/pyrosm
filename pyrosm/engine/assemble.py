@@ -26,11 +26,13 @@ def _assemble_chunk(
     bounding_box=None,
     complete_relations=False,
     keep_other_tags=True,
+    keep_node_info=False,
 ):
     """Build one GeoDataFrame from node, way and/or relation elements using pyrosm's own
     tag + geometry pipeline (full columns, missing-node handling, polygon/linestring
     typing, ring assembly, dropna, orientation, the ``bounding_box`` spatial filter), so the
-    result matches the in-memory reader exactly."""
+    result matches the in-memory reader exactly. The ways' ``nodes`` column is kept only
+    with ``keep_node_info``."""
     from pyrosm.frames import prepare_geodataframe
 
     ways = (
@@ -49,7 +51,7 @@ def _assemble_chunk(
         keep_metadata=keep_metadata,
         complete_relations=complete_relations,
     )
-    if gdf is not None and "nodes" in gdf.columns:
+    if not keep_node_info and gdf is not None and "nodes" in gdf.columns:
         gdf = gdf.drop(columns=["nodes"])
     # keep_other_tags=False (minimal-tags mode): drop the JSON 'tags' column of leftover tags
     # so the result holds only the requested tags_as_columns. _ways_arrays already skips
@@ -70,6 +72,7 @@ def _assemble_layer(
     complete_relations=False,
     keep_other_tags=True,
     workers=1,
+    keep_node_info=False,
 ):
     """Assemble all matching nodes, ways and relations into one in-memory GeoDataFrame.
     ``workers > 1`` runs the collect phase across a process pool."""
@@ -98,6 +101,7 @@ def _assemble_layer(
         bounding_box=bounding_box,
         complete_relations=complete_relations,
         keep_other_tags=keep_other_tags,
+        keep_node_info=keep_node_info,
     )
 
 
@@ -111,6 +115,7 @@ def _assemble_network(
     filepath=None,
     workers=1,
     progress=None,
+    keep_node_info=False,
 ):
     """Assemble the matching highway ways as a network (LineString edges + a ``length``
     column) through pyrosm's ``parse_network`` path. Returns ``(edges, nodes)``; ``nodes``
@@ -159,8 +164,8 @@ def _assemble_network(
         calculate_seg_lengths=segments,
         keep_metadata=keep_metadata,
     )
-    # The per-way 'nodes' list is dropped by default (it breaks file export), matching
-    # OSM.get_network with the default keep_node_info=False.
-    if edges is not None and "nodes" in edges.columns:
+    # The per-way 'nodes' list is dropped by default (it breaks file export), as
+    # OSM.get_network does unless keep_node_info=True.
+    if not keep_node_info and edges is not None and "nodes" in edges.columns:
         edges = edges.drop(columns=["nodes"])
     return edges, node_gdf

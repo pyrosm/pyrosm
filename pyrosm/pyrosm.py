@@ -270,8 +270,8 @@ class OSM:
 
     def _read_engine(self, reader, with_relations=True, **kwargs):
         """Route a feature read to the given out-of-core engine reader, threading the
-        constructor-level ``bounding_box`` / ``keep_metadata`` / ``workers`` (and
-        ``complete_relations`` for the layer readers). Only non-history reads reach here;
+        constructor-level ``bounding_box`` / ``keep_metadata`` / ``keep_node_info`` /
+        ``workers`` (and ``complete_relations`` for the layer readers). Only non-history reads reach here;
         history reads use the in-memory path (see :meth:`_use_engine`)."""
         workers = self.workers
         if workers is None:
@@ -283,6 +283,7 @@ class OSM:
         kwargs["keep_metadata"] = self.keep_metadata
         kwargs["workers"] = workers
         kwargs["progress"] = self.progress
+        kwargs["keep_node_info"] = self.keep_node_info
         if with_relations:
             kwargs["complete_relations"] = self.complete_relations
         return reader(self.filepath, **kwargs)
