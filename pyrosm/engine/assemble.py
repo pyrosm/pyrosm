@@ -27,16 +27,19 @@ def _assemble_chunk(
     complete_relations=False,
     keep_other_tags=True,
     keep_node_info=False,
+    way_columns=None,
 ):
     """Build one GeoDataFrame from node, way and/or relation elements using pyrosm's own
     tag + geometry pipeline (full columns, missing-node handling, polygon/linestring
     typing, ring assembly, dropna, orientation, the ``bounding_box`` spatial filter), so the
     result matches the in-memory reader exactly. The ways' ``nodes`` column is kept only
-    with ``keep_node_info``."""
+    with ``keep_node_info``; ``way_columns`` are passed to :func:`_ways_arrays`."""
     from pyrosm.frames import prepare_geodataframe
 
     ways = (
-        _ways_arrays(way_records, tags_as_columns, keep_metadata, keep_other_tags)
+        _ways_arrays(
+            way_records, tags_as_columns, keep_metadata, keep_other_tags, way_columns
+        )
         if way_records
         else None
     )

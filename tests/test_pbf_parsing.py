@@ -185,13 +185,15 @@ def _write_pbf(path, *blocks):
             f.write(pack("!L", len(header_bytes)) + header_bytes + blob_bytes)
 
 
-def test_id_tag_does_not_overwrite_osm_id(tmp_path):
+def test_id_tag_does_not_overwrite_osm_id(tmp_path, monkeypatch):
     """Regression test for #233.
 
     An OSM tag literally keyed ``id`` would otherwise overwrite the element's
     OSM id when way tags are flattened. It must instead be surfaced under the
     ``id_tag`` column, leaving the element ``id`` intact.
     """
+    from pyrosm import OSM
+    from pyrosm.engine import geoparquet
     from pyrosm.pbfreader import parse_osm_data
     from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
 
@@ -205,7 +207,7 @@ def test_id_tag_does_not_overwrite_osm_id(tmp_path):
     ways = PrimitiveBlock()
     ways.stringtable.s.extend(strings)
     group = ways.primitivegroup.add()
-    for way_id, keys, vals in [(12345, [1, 3], [2, 4]), (67890, [5], [6])]:
+    for way_id, keys, vals in [(67890, [5], [6]), (12345, [1, 3], [2, 4])]:
         way = group.ways.add(id=way_id)
         way.keys.extend(keys)
         way.vals.extend(vals)
@@ -216,16 +218,29 @@ def test_id_tag_does_not_overwrite_osm_id(tmp_path):
     exploded = list(parse_osm_data(fp, None, False, None)[1])
 
     # The colliding 'id' tag is surfaced as 'id_tag', element id is preserved
-    assert exploded[0]["id"] == 12345
-    assert exploded[0]["id_tag"] == "stray-tag-value"
-    assert exploded[0]["building"] == "yes"
-    assert list(exploded[0]) == [
+    assert exploded[1]["id"] == 12345
+    assert exploded[1]["id_tag"] == "stray-tag-value"
+    assert exploded[1]["building"] == "yes"
+    assert list(exploded[1]) == [
         "id", "version", "timestamp", "visible", "nodes", "building", "id_tag"
     ]
 
     # A way without an 'id' tag is unaffected (no spurious id_tag key)
-    assert exploded[1]["id"] == 67890
-    assert "id_tag" not in exploded[1]
+    assert exploded[0]["id"] == 67890
+    assert "id_tag" not in exploded[0]
+
+    # Both engines return it in an id_tag column at the same place, also when the
+    # out-of-core engine writes its result in chunks of one way, the first without it.
+    monkeypatch.setattr(geoparquet, "_OUTPUT_CHUNK_SIZE", 1)
+    frames = [
+        OSM(fp, engine=engine).get_data_by_custom_criteria(
+            {"building": True, "highway": True}, extra_attributes=["id_tag"]
+        )
+        for engine in ("in_memory", "out_of_core")
+    ]
+    assert list(frames[1].columns) == list(frames[0].columns)
+    for frame in frames:
+        assert frame.set_index("id")["id_tag"][12345] == "stray-tag-value"
 
 
 @pytest.mark.parametrize(

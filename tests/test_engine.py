@@ -99,10 +99,7 @@ def _assert_full_parity(mine, ref):
 
     a = mine.sort_values(["osm_type", "id"]).reset_index(drop=True)
     b = ref.sort_values(["osm_type", "id"]).reset_index(drop=True)
-    assert set(a.columns) == set(b.columns), set(a.columns).symmetric_difference(
-        b.columns
-    )
-    a = a[b.columns]
+    assert list(a.columns) == list(b.columns)
     na = gpd.GeoSeries(shapely.normalize(a.geometry.values))
     nb = gpd.GeoSeries(shapely.normalize(b.geometry.values))
     assert na.geom_equals_exact(nb, tolerance=0).all()
@@ -197,7 +194,7 @@ def test_engine_buildings_output_is_chunked(helsinki_pbf, tmp_path, monkeypatch)
     pytest.importorskip("pyarrow")
     import pyarrow.parquet as pq
 
-    in_memory = get_buildings(helsinki_pbf)
+    in_memory = OSM(helsinki_pbf, engine="in_memory").get_buildings()
     full_out = str(tmp_path / "buildings_full.parquet")
     get_buildings(helsinki_pbf, output=full_out)
     full_reload = gpd.read_parquet(full_out)
@@ -208,9 +205,10 @@ def test_engine_buildings_output_is_chunked(helsinki_pbf, tmp_path, monkeypatch)
     assert pq.ParquetFile(chunked_out).metadata.num_row_groups > 1
     chunked_reload = gpd.read_parquet(chunked_out)
 
-    # No column dropped: the chunked output carries exactly the in-memory reader's columns,
-    # and is identical value-for-value to the single-chunk output.
-    assert set(chunked_reload.columns) == set(in_memory.columns)
+    # The chunked output carries the in-memory reader's columns in its order (a tag column
+    # that first occurs in a later chunk keeps its place), and is identical value-for-value
+    # to the single-chunk output.
+    assert list(chunked_reload.columns) == list(in_memory.columns)
     _assert_full_parity(chunked_reload, full_reload)
 
 
@@ -679,21 +677,25 @@ def test_engine_geoparquet_schema_helpers():
     pa = pytest.importorskip("pyarrow")
     from pyrosm.engine.geoparquet import _unify_schemas, _align_table
 
-    s1 = pa.schema([pa.field("a", pa.int64())])
+    s1 = pa.schema([pa.field("a", pa.int64()), pa.field("c", pa.null())])
     s2 = pa.schema([pa.field("b", pa.string())])
     unified = _unify_schemas([s1, s2])  # neither carries GeoParquet 'geo' metadata
-    assert set(unified.names) == {"a", "b"}
-    # A table missing column 'b' is widened with typed nulls rather than dropping columns.
-    aligned = _align_table(pa.table({"a": [1, 2]}), unified)
-    assert aligned.schema.names == ["a", "b"]
+    # The fields in order of appearance; a column of Nones (arrow's null type) as a string.
+    assert unified.names == ["a", "c", "b"]
+    assert unified.field("c").type == pa.large_string()
+    # A table missing column 'b' is widened with typed nulls rather than dropping columns,
+    # and its column of Nones is cast to the schema's type.
+    aligned = _align_table(pa.table({"c": pa.nulls(2), "a": [1, 2]}), unified)
+    assert aligned.schema == unified
     assert aligned.column("b").null_count == 2
 
 
 def test_engine_stream_parquet_chunk_table_branches(
     helsinki_pbf, tmp_path, monkeypatch
 ):
-    # Drive the chunked writer through its relations-only, ways-only and empty-chunk
-    # branches by feeding it crafted variants of the real collected building data.
+    # Drive the chunked writer through its relations-only, ways-only, empty-chunk and
+    # failed-chunk branches by feeding it crafted variants of the real collected building
+    # data.
     pytest.importorskip("pyarrow")
     import tempfile
     import shutil
@@ -718,12 +720,12 @@ def test_engine_stream_parquet_chunk_table_branches(
         )
         assert kept is not None and relations is not None  # helsinki has both
 
-        def write(collected):
+        def write(collected, output="o.parquet", chunk_size=250_000):
             monkeypatch.setattr(geoparquet, "_collect_layer", lambda *a, **k: collected)
             return geoparquet._stream_layer_to_parquet(
                 shards,
-                str(tmp_path / "o.parquet"),
-                250_000,
+                str(tmp_path / output),
+                chunk_size,
                 tac,
                 True,
                 filter_spec,
@@ -750,6 +752,24 @@ def test_engine_stream_parquet_chunk_table_branches(
         # a relation whose member ways are all absent assembles empty -> chunk skipped.
         empty_ways = {"id": np.empty(0, np.int64), "nodes": np.empty(0, dtype=object)}
         assert write((None, None, relations, empty_ways, nc)) is None
+        # a chunk that fails after the first was written leaves no file behind.
+        assemble, align = geoparquet._assemble_chunk, geoparquet._align_table
+        written = []
+
+        def assemble_once(*args, **kwargs):
+            if written:
+                raise MemoryError
+            return assemble(*args, **kwargs)
+
+        def align_and_count(table, schema):
+            written.append(table.num_rows)
+            return align(table, schema)
+
+        monkeypatch.setattr(geoparquet, "_assemble_chunk", assemble_once)
+        monkeypatch.setattr(geoparquet, "_align_table", align_and_count)
+        with pytest.raises(MemoryError):
+            write((None, kept, None, None, nc), "failed.parquet", chunk_size=10)
+        assert written and not (tmp_path / "failed.parquet").exists()
     finally:
         shutil.rmtree(shard_dir, ignore_errors=True)
 
