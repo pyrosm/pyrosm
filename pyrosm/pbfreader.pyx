@@ -26,25 +26,7 @@ from pyrosm.node_lookup import NodeLocations
 import numpy as np
 import pandas as pd
 from libc.stdlib cimport malloc, free
-
-_warned_slow_backend = False
-
-
-cdef _warn_if_slow_protobuf_backend():
-    global _warned_slow_backend
-    if _warned_slow_backend:
-        return
-    _warned_slow_backend = True
-    from google.protobuf.internal import api_implementation
-    if api_implementation.Type() == "python":
-        warnings.warn(
-            "protobuf is using its pure-Python backend; PBF parsing will be "
-            "much slower. Install a protobuf build with the C/upb backend for "
-            "full speed.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-
+from libc.stdint cimport int64_t
 
 def iter_primitive_blocks_and_string_tables(filepath, progress=None):
     # Generator: yield one (PrimitiveBlock, string_table) at a time so the parser
@@ -466,6 +448,208 @@ cdef parse_relations(data, string_table, unix_time_filter):
                 )]
 
 
+# Relation member type codes -> the labels of the members' ``member_type``.
+_MEMBER_TYPES = {0: b"node", 1: b"way", 2: b"relation"}
+
+
+def iter_decoded_blocks(filepath, progress=None):
+    """Yield each data block of ``filepath`` decoded by the raw block decoder, as
+    ``(string_table, header, nodes, ways, relations)`` (see
+    :func:`~pyrosm.primitive_block_decoder.decode_primitive_block`), with the string
+    table decoded to ``str``. The header block is checked first. ``progress(done, size)``
+    gets the bytes of the file read: 0 first, then after each block, and the file size at
+    the end."""
+    from pyrosm.engine.blobs import _index_blobs, _read_block
+    from pyrosm.pbf_export import read_header_block
+    from pyrosm.primitive_block_decoder import decode_primitive_block
+
+    valid_header_block(read_header_block(filepath))
+    with open(filepath, "rb") as f:
+        size = os.fstat(f.fileno()).st_size
+        if progress is not None:
+            progress(0, size)
+        for kind, offset, length in _index_blobs(filepath):
+            if kind != "OSMData":
+                continue
+            strings, header, nodes, ways, relations = decode_primitive_block(
+                _read_block(f, offset, length)
+            )
+            if progress is not None:
+                progress(offset + length, size)
+            yield [tounicode(s) for s in strings], header, nodes, ways, relations
+        if progress is not None:
+            progress(size, size)
+
+
+cdef _node_tags(const int64_t[::1] keys_vals, Py_ssize_t n, list strings):
+    """The tags of a block's nodes from their ``keys_vals`` stream (each node's key and
+    value ids followed by a 0): a dict per node with tags, in stream order, and None for a
+    node without (every node when the stream is empty)."""
+    tags = np.empty(n, dtype=object)
+    cdef Py_ssize_t node = 0, pos = 0, end = keys_vals.shape[0]
+    while pos < end:
+        if keys_vals[pos] != 0:
+            node_tags = {}
+            while keys_vals[pos] != 0:
+                node_tags[strings[keys_vals[pos]]] = strings[keys_vals[pos + 1]]
+                pos += 2
+            tags[node] = node_tags
+        pos += 1
+        node += 1
+    return tags
+
+
+cdef _or_zeros(values, Py_ssize_t n):
+    """``values``, or ``n`` zeros when the block has none (no metadata)."""
+    return values if len(values) else np.zeros(n, dtype=np.int64)
+
+
+cdef dict _node_columns(
+        dict header,
+        dict nodes,
+        list strings,
+        bounding_box,
+        unix_time_filter,
+        node_id_filter=None,
+        bint keep_metadata=True,
+):
+    """The node columns of a decoded block: ``id``, ``lon``, ``lat``, ``tags`` and
+    ``visible`` (False when the block has no visibility), and with metadata ``version``,
+    ``timestamp`` (seconds) and ``changeset``. Nodes outside ``bounding_box``, or not in
+    ``node_id_filter`` when given (a pass fetching the nodes of kept ways), and nodes
+    newer than ``unix_time_filter`` are left out."""
+    # History reads filter on the timestamp and visibility, so they always keep the
+    # metadata.
+    cdef bint keep_meta = keep_metadata or unix_time_filter is not None
+    ids = nodes["id"]
+    cdef Py_ssize_t n = len(ids)
+    granularity = header["granularity"]
+    lon = (nodes["lon"] * granularity + header["lon_offset"]) / 1000000000
+    lat = (nodes["lat"] * granularity + header["lat_offset"]) / 1000000000
+    visible = nodes["visible"].astype(bool)
+    if len(visible) == 0:
+        visible = np.zeros(n, dtype=bool)
+    columns = {
+        "id": ids,
+        "lon": lon,
+        "lat": lat,
+        "tags": _node_tags(nodes["keys_vals"], n, strings),
+        "visible": visible,
+    }
+    if keep_meta:
+        timestamp = nodes["timestamp"] * header["date_granularity"] / 1000
+        columns["version"] = _or_zeros(nodes["version"], n)
+        columns["timestamp"] = _or_zeros(timestamp.astype(int).astype(np.uint32), n)
+        columns["changeset"] = _or_zeros(nodes["changeset"].astype(np.int32), n)
+
+    mask = None
+    if node_id_filter is not None:
+        mask = np.isin(ids, node_id_filter)
+    elif bounding_box is not None:
+        xmin, ymin, xmax, ymax = bounding_box
+        mask = (xmin <= lon) & (lon <= xmax) & (ymin <= lat) & (lat <= ymax)
+    if unix_time_filter is not None:
+        in_time = columns["timestamp"] <= unix_time_filter
+        mask = in_time if mask is None else mask & in_time
+    if mask is not None:
+        columns = {name: values[mask] for name, values in columns.items()}
+    return columns
+
+
+cdef list _way_records(
+        dict ways,
+        list strings,
+        node_lookup,
+        unix_time_filter,
+        way_id_filter=None,
+):
+    """A dict per way of a decoded block: ``id``, ``version``, ``timestamp``,
+    ``visible``, ``nodes`` (the node ids), then the tags in order. A tag keyed ``id`` is
+    kept as ``id_tag``; a tag keyed like one of the other keys replaces its value, and a
+    tag keyed ``tags`` is dropped. Ways newer than ``unix_time_filter``, not in
+    ``way_id_filter`` when given, or without a node in ``node_lookup`` when given are left
+    out."""
+    cdef Py_ssize_t i, j
+    cdef Py_ssize_t n = len(ways["id"])
+    cdef const int64_t[::1] refs_off = ways["refs_off"]
+    cdef const int64_t[::1] tags_off = ways["tags_off"]
+    ids = ways["id"].tolist()
+    refs = ways["refs"].tolist()
+    keys = ways["keys"].tolist()
+    vals = ways["vals"].tolist()
+    version = ways["version"].tolist()
+    timestamp = ways["timestamp"].tolist()
+    visible = ways["visible"].astype(bool).tolist()
+    records = []
+    for i in range(n):
+        if unix_time_filter is not None and timestamp[i] > unix_time_filter:
+            continue
+        if way_id_filter is not None and ids[i] not in way_id_filter:
+            continue
+        nodes = refs[refs_off[i]:refs_off[i + 1]]
+        if node_lookup is not None and not nodes_for_way_exist_khash(nodes, node_lookup):
+            continue
+        way = {
+            "id": ids[i],
+            "version": version[i],
+            "timestamp": timestamp[i],
+            "visible": visible[i],
+            "tags": None,
+            "nodes": nodes,
+        }
+        for j in range(tags_off[i], tags_off[i + 1]):
+            key = strings[keys[j]]
+            way["id_tag" if key == "id" else key] = strings[vals[j]]
+        del way["tags"]
+        records.append(way)
+    return records
+
+
+cdef dict _relation_columns(dict relations, list strings, unix_time_filter):
+    """The relation columns of a decoded block: ``id``, ``version``, ``changeset``,
+    ``timestamp``, ``members`` (a dict per relation of ``member_id``, ``member_type`` and
+    ``member_role`` arrays), ``tags`` (a dict per relation) and ``visible``. Relations
+    newer than ``unix_time_filter`` are left out."""
+    cdef Py_ssize_t i, j, start, end
+    cdef Py_ssize_t n = len(relations["id"])
+    cdef const int64_t[::1] members_off = relations["members_off"]
+    cdef const int64_t[::1] tags_off = relations["tags_off"]
+    member_ids = relations["memids"]
+    types = relations["types"].tolist()
+    roles = relations["roles"].tolist()
+    keys = relations["keys"].tolist()
+    vals = relations["vals"].tolist()
+    members = np.empty(n, dtype=object)
+    tags = np.empty(n, dtype=object)
+    for i in range(n):
+        start = members_off[i]
+        end = members_off[i + 1]
+        members[i] = {
+            "member_id": member_ids[start:end].copy(),
+            "member_type": np.array(
+                [_MEMBER_TYPES[t] for t in types[start:end]], dtype=object
+            ),
+            "member_role": np.array([strings[r] for r in roles[start:end]], dtype=object),
+        }
+        relation_tags = {}
+        for j in range(tags_off[i], tags_off[i + 1]):
+            relation_tags[strings[keys[j]]] = strings[vals[j]]
+        tags[i] = relation_tags
+    columns = {
+        "id": relations["id"],
+        "version": relations["version"],
+        "changeset": relations["changeset"],
+        "timestamp": relations["timestamp"],
+        "members": members,
+        "tags": tags,
+        "visible": relations["visible"].astype(bool),
+    }
+    if unix_time_filter is not None:
+        mask = columns["timestamp"] <= unix_time_filter
+        columns = {name: values[mask] for name, values in columns.items()}
+    return columns
+
+
 cpdef parse_osm_data(
         filepath,
         bounding_box,
@@ -475,7 +659,6 @@ cpdef parse_osm_data(
         bint complete_relations=False,
         progress=None,
 ):
-    _warn_if_slow_protobuf_backend()
     return _parse_osm_data(filepath, bounding_box, exclude_relations,
                            unix_time_filter, keep_metadata, complete_relations,
                            progress)
@@ -493,36 +676,28 @@ cdef _parse_osm_data(
     all_ways = []
     all_nodes = []
     all_relations = []
-    node_lookup_created = False
+    node_lookup = None
+    node_blocks_in_lookup = 0
     # A history read applies the bounding box to each element's state at the timestamp
     # (below), not to every version: a deletion has no location, and an element can
     # move into or out of the box between versions.
     box = None if unix_time_filter is not None else bounding_box
 
-    for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath, progress):
-        for pgroup in pblock.primitivegroup:
-            if len(pgroup.dense.id) > 0:
-                all_nodes += parse_dense(pblock, pgroup.dense, str_table, box,
-                                         unix_time_filter, None, keep_metadata)
-            elif len(pgroup.nodes) > 0:
-                all_nodes += [parse_nodes(pblock, pgroup.nodes, str_table,
-                                          box, unix_time_filter, None,
-                                          keep_metadata)]
-            elif len(pgroup.ways) > 0:
-                # Once all the nodes have been parsed comes Ways
-                if box is not None:
-                    if not node_lookup_created:
-                        node_lookup = get_nodeid_lookup_khash(all_nodes)
-                    all_ways += parse_ways(pgroup.ways, str_table, node_lookup, unix_time_filter)
-                else:
-                    all_ways += parse_ways(pgroup.ways, str_table, None, unix_time_filter)
-            elif len(pgroup.relations) > 0:
-                if exclude_relations:
-                    continue
-                all_relations += parse_relations(pgroup.relations, str_table, unix_time_filter)
-
-    # Explode the way tags
-    all_ways = explode_way_tags(all_ways)
+    for strings, header, nodes, ways, relations in iter_decoded_blocks(filepath, progress):
+        if nodes is not None:
+            all_nodes.append(_node_columns(header, nodes, strings, box,
+                                           unix_time_filter, None, keep_metadata))
+        if ways is not None:
+            if box is None:
+                all_ways += _way_records(ways, strings, None, unix_time_filter)
+            elif len(all_nodes) > 0:
+                # A way is kept when one of its nodes read so far is in the box.
+                if node_blocks_in_lookup != len(all_nodes):
+                    node_lookup = get_nodeid_lookup_khash(all_nodes)
+                    node_blocks_in_lookup = len(all_nodes)
+                all_ways += _way_records(ways, strings, node_lookup, unix_time_filter)
+        if relations is not None and not exclude_relations:
+            all_relations.append(_relation_columns(relations, strings, unix_time_filter))
 
     # Concatenate nodes and create a DataFrame
     nodes_df = create_df(concatenate_dicts_of_arrays(all_nodes))
@@ -600,14 +775,12 @@ cdef _parse_osm_data(
                     missing_way_ids.add(wid)
 
         if len(missing_way_ids) > 0:
-            for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath, progress):
-                for pgroup in pblock.primitivegroup:
-                    if len(pgroup.ways) > 0:
-                        completed_relation_ways += parse_ways(
-                            pgroup.ways, str_table, None, unix_time_filter,
-                            missing_way_ids,
-                        )
-            completed_relation_ways = explode_way_tags(completed_relation_ways)
+            for strings, header, nodes, ways, relations in iter_decoded_blocks(
+                    filepath, progress):
+                if ways is not None:
+                    completed_relation_ways += _way_records(
+                        ways, strings, None, unix_time_filter, missing_way_ids
+                    )
             if unix_time_filter is not None and len(completed_relation_ways) > 0:
                 # Mirror the OSH latest-version selection applied to all_ways above.
                 cw_df = get_latest_version(pd.DataFrame(completed_relation_ways))
@@ -636,16 +809,13 @@ cdef _parse_osm_data(
         if len(missing_ids) > 0:
             node_id_filter = np.array(sorted(missing_ids), dtype=np.int64)
             boundary_nodes = []
-            for pblock, str_table in iter_primitive_blocks_and_string_tables(filepath, progress):
-                for pgroup in pblock.primitivegroup:
-                    if len(pgroup.dense.id) > 0:
-                        boundary_nodes += parse_dense(pblock, pgroup.dense, str_table,
-                                                      None, unix_time_filter,
-                                                      node_id_filter, keep_metadata)
-                    elif len(pgroup.nodes) > 0:
-                        boundary_nodes += [parse_nodes(pblock, pgroup.nodes, str_table,
-                                                       None, unix_time_filter,
-                                                       node_id_filter, keep_metadata)]
+            for strings, header, nodes, ways, relations in iter_decoded_blocks(
+                    filepath, progress):
+                if nodes is not None:
+                    boundary_nodes.append(_node_columns(
+                        header, nodes, strings, None, unix_time_filter,
+                        node_id_filter, keep_metadata,
+                    ))
             if len(boundary_nodes) > 0:
                 boundary_df = create_df(concatenate_dicts_of_arrays(boundary_nodes))
                 if "id" in boundary_df.columns:

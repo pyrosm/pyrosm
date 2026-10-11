@@ -166,37 +166,63 @@ def test_relation_ids_are_not_delta_decoded(test_pbf):
     assert ids.tolist() == [32694, 319589, 2265095, 2689634, 3179566]
 
 
-def test_id_tag_does_not_overwrite_osm_id():
+def _write_pbf(path, *blocks):
+    """Write a PBF of a header block and then ``blocks`` (``PrimitiveBlock``s)."""
+    import zlib
+    from struct import pack
+
+    from pyrosm.proto.fileformat_pb2 import Blob, BlobHeader
+    from pyrosm.proto.osmformat_pb2 import HeaderBlock
+
+    header = HeaderBlock()
+    header.required_features.extend(["OsmSchema-V0.6", "DenseNodes"])
+    with open(path, "wb") as f:
+        for kind, message in [("OSMHeader", header)] + [("OSMData", b) for b in blocks]:
+            data = message.SerializeToString()
+            blob = Blob(raw_size=len(data), zlib_data=zlib.compress(data))
+            blob_bytes = blob.SerializeToString()
+            blob_header = BlobHeader(type=kind, datasize=len(blob_bytes))
+            header_bytes = blob_header.SerializeToString()
+            f.write(pack("!L", len(header_bytes)) + header_bytes + blob_bytes)
+
+
+def test_id_tag_does_not_overwrite_osm_id(tmp_path):
     """Regression test for #233.
 
     An OSM tag literally keyed ``id`` would otherwise overwrite the element's
     OSM id when way tags are flattened. It must instead be surfaced under the
     ``id_tag`` column, leaving the element ``id`` intact.
     """
-    from pyrosm.tagparser import explode_way_tags
+    from pyrosm.pbfreader import parse_osm_data
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
 
-    ways = [
-        {
-            "id": 12345,
-            "version": 1,
-            "nodes": [1, 2, 3],
-            "tags": {"building": "yes", "id": "stray-tag-value"},
-        },
-        {
-            "id": 67890,
-            "version": 1,
-            "nodes": [4, 5],
-            "tags": {"highway": "residential"},
-        },
-    ]
+    strings = [b"", b"building", b"yes", b"id", b"stray-tag-value", b"highway", b"residential"]
+    nodes = PrimitiveBlock()
+    nodes.stringtable.s.extend(strings)
+    dense = nodes.primitivegroup.add().dense
+    dense.id.extend([1, 1])  # delta coded: nodes 1 and 2
+    dense.lat.extend([0, 1])
+    dense.lon.extend([0, 1])
+    ways = PrimitiveBlock()
+    ways.stringtable.s.extend(strings)
+    group = ways.primitivegroup.add()
+    for way_id, keys, vals in [(12345, [1, 3], [2, 4]), (67890, [5], [6])]:
+        way = group.ways.add(id=way_id)
+        way.keys.extend(keys)
+        way.vals.extend(vals)
+        way.refs.extend([1, 1])
+    fp = str(tmp_path / "id_tag.osm.pbf")
+    _write_pbf(fp, nodes, ways)
 
-    exploded = explode_way_tags(ways)
+    exploded = parse_osm_data(fp, None, False, None)[1]
 
     # The colliding 'id' tag is surfaced as 'id_tag', element id is preserved
     assert exploded[0]["id"] == 12345
     assert exploded[0]["id_tag"] == "stray-tag-value"
     assert exploded[0]["building"] == "yes"
-    assert "tags" not in exploded[0]
+    assert list(exploded[0]) == [
+        "id", "version", "timestamp", "visible", "nodes", "building", "id_tag"
+    ]
 
     # A way without an 'id' tag is unaffected (no spurious id_tag key)
     assert exploded[1]["id"] == 67890
