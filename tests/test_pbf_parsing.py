@@ -16,6 +16,7 @@ def helsinki_pbf():
 
 def test_parsing_basic_elements_from_pbf(test_pbf):
     from pyrosm import OSM
+    from pyrosm.way_store import NodeTags
     import numpy as np
 
     osm = OSM(filepath=test_pbf)
@@ -46,10 +47,11 @@ def test_parsing_basic_elements_from_pbf(test_pbf):
     ]
     for col in node_cols:
         assert col in nodes.keys()
-        # Nodes should be in numpy arrays
-        assert isinstance(nodes[col], np.ndarray), (
+        # Nodes should be in numpy arrays, and their tags in a NodeTags store
+        expected = NodeTags if col == "tags" else np.ndarray
+        assert isinstance(nodes[col], expected), (
             f"nodes should be in a dictionary with {node_cols} as keys"
-            f" and numpy arrays as values."
+            f" and numpy arrays (tags: NodeTags) as values."
         )
         # Check shape
         assert len(nodes[col]) == 14222
@@ -266,6 +268,55 @@ def test_way_store_candidate_rows(osm_keys, relation_way_ids, keep_all, rows):
     store = builder.build()
     assert store.candidate_rows(osm_keys, relation_way_ids, keep_all).tolist() == rows
     assert [way["id"] for way in store] == [10, 11, 12, 13]
+
+
+def _node_tags():
+    """Node tags of four nodes (shop=bakery; none; amenity=cafe and name=x; none), the
+    last one not kept."""
+    import numpy as np
+    from pyrosm.way_store import NodeTagsBuilder
+
+    strings = ["", "shop", "bakery", "amenity", "cafe", "name", "x"]
+    builder = NodeTagsBuilder()
+    builder.add(
+        np.array([1, 2, 0, 0, 3, 4, 5, 6, 0, 0]),
+        4,
+        strings,
+        keep=np.array([True, True, True, False]),
+    )
+    return builder.build()
+
+
+@pytest.mark.parametrize(
+    "osm_keys, keep_all, rows",
+    [
+        (["amenity"], False, [2]),
+        (["amenity", "shop"], False, [0, 2]),
+        (["missing"], False, []),
+        ([], True, [0, 2]),
+        ("amenity", False, [0, 2]),
+    ],
+    ids=["one_key", "two_keys", "absent_key", "keep_all", "keys_not_a_list"],
+)
+def test_node_tags_candidate_rows(osm_keys, keep_all, rows):
+    """The node rows the node filter can keep: the tagged nodes carrying one of the keys,
+    or every tagged node with keep_all or when the keys are not a list."""
+    assert _node_tags().candidate_rows(osm_keys, keep_all).tolist() == rows
+
+
+def test_node_tags_lookup():
+    """Node tags kept as arrays give each kept node's tags as a dict (None for an
+    untagged node) by row, by array of rows and by iterating."""
+    import numpy as np
+
+    tags = _node_tags()
+    cafe = {"amenity": "cafe", "name": "x"}
+    assert len(tags) == 3
+    assert list(tags) == [{"shop": "bakery"}, None, cafe]
+    assert tags[-1] == cafe
+    assert tags[np.array([2, 1])].tolist() == [cafe, None]
+    with pytest.raises(IndexError):
+        tags[3]
 
 
 @pytest.mark.parametrize(

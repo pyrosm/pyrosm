@@ -13,7 +13,9 @@ from cykhash.khashsets cimport isin_int64
 from pyrosm.utils import valid_header_block
 from pyrosm.frames import create_df
 from pyrosm.node_lookup import NodeLocations
-from pyrosm.way_store import WayStore, WayStoreBuilder, any_per_row
+from pyrosm.way_store import (
+    NodeTags, NodeTagsBuilder, WayStore, WayStoreBuilder, any_per_row,
+)
 import numpy as np
 import pandas as pd
 
@@ -81,12 +83,15 @@ cdef dict _node_columns(
         unix_time_filter,
         node_id_filter=None,
         bint keep_metadata=True,
+        tags_builder=None,
 ):
     """The node columns of a decoded block: ``id``, ``lon``, ``lat``, ``tags`` and
     ``visible`` (False when the block has no visibility), and with metadata ``version``,
     ``timestamp`` (seconds) and ``changeset``. Nodes outside ``bounding_box``, or not in
     ``node_id_filter`` when given (a pass fetching the nodes of kept ways), and nodes
-    newer than ``unix_time_filter`` are left out."""
+    newer than ``unix_time_filter`` are left out. With ``tags_builder`` (a
+    ``NodeTagsBuilder``) the tags of the nodes kept go there instead of the ``tags``
+    column."""
     # History reads filter on the timestamp and visibility, so they always keep the
     # metadata.
     cdef bint keep_meta = keep_metadata or unix_time_filter is not None
@@ -98,13 +103,10 @@ cdef dict _node_columns(
     visible = nodes["visible"].astype(bool)
     if len(visible) == 0:
         visible = np.zeros(n, dtype=bool)
-    columns = {
-        "id": ids,
-        "lon": lon,
-        "lat": lat,
-        "tags": _node_tags(nodes["keys_vals"], n, strings),
-        "visible": visible,
-    }
+    columns = {"id": ids, "lon": lon, "lat": lat}
+    if tags_builder is None:
+        columns["tags"] = _node_tags(nodes["keys_vals"], n, strings)
+    columns["visible"] = visible
     if keep_meta:
         timestamp = nodes["timestamp"] * header["date_granularity"] / 1000
         columns["version"] = _or_zeros(nodes["version"], n)
@@ -122,7 +124,28 @@ cdef dict _node_columns(
         mask = in_time if mask is None else mask & in_time
     if mask is not None:
         columns = {name: values[mask] for name, values in columns.items()}
+    if tags_builder is not None:
+        tags_builder.add(nodes["keys_vals"], n, strings, mask)
     return columns
+
+
+cdef dict _with_tags(dict columns, tags):
+    """``columns`` with ``tags`` as their ``tags`` column, after ``lat`` as in a block's
+    node columns."""
+    out = {}
+    for name, values in columns.items():
+        out[name] = values
+        if name == "lat":
+            out["tags"] = tags
+    return out
+
+
+cdef dict _tags_as_dicts(dict columns):
+    """``columns`` with a ``NodeTags`` column turned into an object array of dicts."""
+    return {
+        name: values[:] if isinstance(values, NodeTags) else values
+        for name, values in columns.items()
+    }
 
 
 cdef _way_mask(dict ways, node_lookup, unix_time_filter, way_ids=None):
@@ -229,6 +252,8 @@ cdef _parse_osm_data(
         progress=None,
 ):
     ways_builder = WayStoreBuilder()
+    # History reads select each node's state in a DataFrame, so they keep a dict per node.
+    tags_builder = NodeTagsBuilder() if unix_time_filter is None else None
     all_nodes = []
     all_relations = []
     node_lookup = None
@@ -241,7 +266,8 @@ cdef _parse_osm_data(
     for strings, header, nodes, ways, relations in iter_decoded_blocks(filepath, progress):
         if nodes is not None:
             all_nodes.append(_node_columns(header, nodes, strings, box,
-                                           unix_time_filter, None, keep_metadata))
+                                           unix_time_filter, None, keep_metadata,
+                                           tags_builder))
         if ways is not None:
             if box is None:
                 ways_builder.add(ways, strings, _way_mask(ways, None, unix_time_filter))
@@ -274,6 +300,8 @@ cdef _parse_osm_data(
             stacklevel=2,
         )
         return {}, [], {}, {}, []
+    if tags_builder is not None:
+        all_nodes = _with_tags(all_nodes, tags_builder.build())
 
     # Keep each element's state at the timestamp if filter is used
     if unix_time_filter is not None:
@@ -380,7 +408,8 @@ cdef _parse_osm_data(
                     if unix_time_filter is not None:
                         boundary_df = get_latest_version(boundary_df)
                     coords = pd.concat(
-                        [create_df(all_nodes), boundary_df], ignore_index=True
+                        [create_df(_tags_as_dicts(all_nodes)), boundary_df],
+                        ignore_index=True,
                     ).drop_duplicates(subset="id")
 
     # Compact node-coordinate store (cykhash id->index map + column arrays),

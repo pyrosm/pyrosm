@@ -1,6 +1,8 @@
-"""The in-memory reader's ways, kept as arrays and turned into record dicts on demand."""
+"""The in-memory reader's ways and node tags, kept as arrays and turned into dicts on
+demand."""
 
 import numpy as np
+from libc.stdint cimport int32_t, int64_t
 
 # The keys every way record has; a tag keyed like one of them replaces its value.
 _RECORD_KEYS = frozenset({"id", "version", "timestamp", "visible", "nodes"})
@@ -24,6 +26,22 @@ def any_per_row(hits, offsets):
     counts = np.zeros(len(hits) + 1, dtype=np.int64)
     np.cumsum(hits, out=counts[1:])
     return counts[offsets[1:]] > counts[offsets[:-1]]
+
+
+def _map_strings(dict string_ids, list table, list strings, used):
+    """The ids in ``table`` of the block ``strings`` at the positions ``used`` (0 at the
+    others), adding the strings ``table`` lacks; ``string_ids`` maps ``table``'s strings
+    to their ids."""
+    mapping = np.zeros(len(strings), dtype=np.int32)
+    for i in used.tolist():
+        string = strings[i]
+        j = string_ids.get(string)
+        if j is None:
+            j = len(table)
+            string_ids[string] = j
+            table.append(string)
+        mapping[i] = j
+    return mapping
 
 
 def _offsets(counts):
@@ -158,7 +176,6 @@ cdef class WayStoreBuilder:
         :func:`~pyrosm.primitive_block_decoder.decode_primitive_block`) that ``keep`` (a
         mask, or None for all) selects; ``strings`` is the block's decoded string
         table."""
-        cdef Py_ssize_t i
         ref_counts = np.diff(ways["refs_off"])
         tag_counts = np.diff(ways["tags_off"])
         refs, keys, vals = ways["refs"], ways["keys"], ways["vals"]
@@ -178,17 +195,10 @@ cdef class WayStoreBuilder:
             keys, vals = keys[tag_rows], vals[tag_rows]
             ref_counts, tag_counts = ref_counts[rows], tag_counts[rows]
         # The block's string ids used by these ways -> ids in the store's table.
-        string_ids = self._string_ids
-        table = self._strings
-        mapping = np.zeros(len(strings), dtype=np.int32)
-        for i in np.unique(np.concatenate([keys, vals])).tolist():
-            string = strings[i]
-            j = string_ids.get(string)
-            if j is None:
-                j = len(table)
-                string_ids[string] = j
-                table.append(string)
-            mapping[i] = j
+        mapping = _map_strings(
+            self._string_ids, self._strings, strings,
+            np.unique(np.concatenate([keys, vals])),
+        )
         part.update(
             refs=refs,
             ref_counts=ref_counts,
@@ -223,3 +233,164 @@ def _joined(list parts, str name, dtype):
     if not parts:
         return np.empty(0, dtype=dtype)
     return np.concatenate([part[name] for part in parts]).astype(dtype, copy=False)
+
+
+cdef class NodeTags:
+    """The tags of the parsed nodes: ``rows`` (the nodes with tags, ascending) and their
+    tags (``keys`` / ``vals`` ids into ``strings``, with ``tags_off`` over ``rows``).
+    ``len()`` is the number of nodes. Indexing with a node row gives its tags as a dict,
+    None for a node without tags; with an array of rows (or a mask, or a slice), an object
+    array of them."""
+
+    cdef readonly object rows, keys, vals, tags_off
+    cdef readonly list strings
+    cdef readonly Py_ssize_t n_nodes
+    cdef dict _string_ids
+    cdef const int64_t[::1] _rows
+    cdef const int64_t[::1] _offsets
+    cdef const int32_t[::1] _keys
+    cdef const int32_t[::1] _vals
+
+    def __init__(self, rows, keys, vals, tags_off, list strings, dict string_ids,
+                 Py_ssize_t n_nodes):
+        self.rows = rows
+        self.keys = keys
+        self.vals = vals
+        self.tags_off = tags_off
+        self.strings = strings
+        self._string_ids = string_ids
+        self.n_nodes = n_nodes
+        self._rows = rows
+        self._offsets = tags_off
+        self._keys = keys
+        self._vals = vals
+
+    def __len__(self):
+        return self.n_nodes
+
+    def __iter__(self):
+        return _iter_tags(self)
+
+    def __getitem__(self, index):
+        if isinstance(index, (int, np.integer)):
+            return self.tags_at(index)
+        if isinstance(index, slice):
+            index = np.arange(*index.indices(self.n_nodes))
+        index = np.asarray(index)
+        if index.dtype == bool:
+            index = np.flatnonzero(index)
+        return self.dicts(index)
+
+    cpdef object tags_at(self, Py_ssize_t row):
+        """The tags of node ``row``: a dict in their order, None for a node without
+        tags."""
+        cdef Py_ssize_t lo = 0, hi = self._rows.shape[0], mid, j
+        if row < 0:
+            row += self.n_nodes
+        if not 0 <= row < self.n_nodes:
+            raise IndexError("node row %d out of range" % row)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self._rows[mid] < row:
+                lo = mid + 1
+            else:
+                hi = mid
+        if lo == self._rows.shape[0] or self._rows[lo] != row:
+            return None
+        tags = {}
+        for j in range(self._offsets[lo], self._offsets[lo + 1]):
+            tags[self.strings[self._keys[j]]] = self.strings[self._vals[j]]
+        return tags
+
+    cpdef dicts(self, node_rows):
+        """The tags of the nodes at ``node_rows``, in order, as an object array (see
+        :meth:`tags_at`)."""
+        cdef Py_ssize_t i, n
+        node_rows = np.asarray(node_rows, dtype=np.int64)
+        n = len(node_rows)
+        out = np.empty(n, dtype=object)
+        for i in range(n):
+            out[i] = self.tags_at(node_rows[i])
+        return out
+
+    cpdef candidate_rows(self, osm_keys, bint keep_all):
+        """The rows, in order, of the nodes the node filter
+        (:func:`~pyrosm.data_filter.record_should_be_kept`) can keep: the nodes with a tag
+        keyed in ``osm_keys`` or, with ``keep_all`` (or ``osm_keys`` not a list of keys),
+        every node with tags."""
+        if keep_all or not isinstance(osm_keys, (list, tuple, set)):
+            return self.rows
+        key_ids = [self._string_ids[key] for key in osm_keys if key in self._string_ids]
+        if not key_ids:
+            return np.empty(0, dtype=np.int64)
+        return self.rows[any_per_row(np.isin(self.keys, key_ids), self.tags_off)]
+
+
+def _iter_tags(NodeTags tags):
+    cdef Py_ssize_t start, n = tags.n_nodes
+    for start in range(0, n, _CHUNK):
+        yield from tags.dicts(np.arange(start, min(start + _CHUNK, n), dtype=np.int64))
+
+
+cdef class NodeTagsBuilder:
+    """Collects the tags of decoded blocks' nodes into :class:`NodeTags`, numbering the
+    nodes kept in the order they are added, with one string table for all of them."""
+
+    cdef list _parts
+    cdef list _strings
+    cdef dict _string_ids
+    cdef Py_ssize_t _n_nodes
+
+    def __init__(self):
+        self._parts = []
+        self._strings = []
+        self._string_ids = {}
+        self._n_nodes = 0
+
+    def add(self, keys_vals, Py_ssize_t n, list strings, keep=None):
+        """Add the tags of a decoded block's ``n`` nodes from their ``keys_vals`` stream
+        (each node's key and value ids followed by a 0); ``keep`` (a mask, or None for
+        all) selects the nodes the parse keeps."""
+        keys_vals = np.asarray(keys_vals)
+        if len(keys_vals) == 0:
+            counts = np.zeros(n, dtype=np.int64)
+            pairs = keys_vals
+        else:
+            ends = np.flatnonzero(keys_vals == 0)
+            starts = np.zeros(n, dtype=np.int64)
+            starts[1:] = ends[:-1] + 1
+            counts = (ends - starts) // 2
+            # The ids other than the 0 delimiters are each node's keys and values in turn.
+            pairs = keys_vals[keys_vals != 0]
+        keys, vals = pairs[0::2], pairs[1::2]
+        if keep is not None:
+            rows = np.flatnonzero(keep)
+            tag_rows = _ranges(_offsets(counts)[rows], counts[rows])
+            keys, vals, counts = keys[tag_rows], vals[tag_rows], counts[rows]
+        tagged = np.flatnonzero(counts > 0)
+        mapping = _map_strings(
+            self._string_ids, self._strings, strings,
+            np.unique(np.concatenate([keys, vals])),
+        )
+        self._parts.append({
+            "rows": tagged + self._n_nodes,
+            "counts": counts[tagged],
+            "keys": mapping[keys],
+            "vals": mapping[vals],
+        })
+        self._n_nodes += len(counts)
+
+    def build(self):
+        """The :class:`NodeTags` of the nodes added."""
+        parts = self._parts
+        tags = NodeTags(
+            _joined(parts, "rows", np.int64),
+            _joined(parts, "keys", np.int32),
+            _joined(parts, "vals", np.int32),
+            _offsets(_joined(parts, "counts", np.int64)),
+            self._strings,
+            self._string_ids,
+            self._n_nodes,
+        )
+        self._parts = []
+        return tags

@@ -77,6 +77,21 @@ def _expected_selection(path, bbox, polygon=None):
     return expected_ways, expected_nodes, nodes_in
 
 
+def test_node_tag_records_reads_both_tag_columns():
+    """write_pbf takes the tagged nodes' tags from the node cache, whose tags column is
+    a NodeTags store, or an object column after a history read."""
+    from pyrosm.pbf_writer import _node_tag_records
+    from pyrosm.way_store import NodeTagsBuilder
+
+    builder = NodeTagsBuilder()
+    builder.add(np.array([0, 1, 2, 0]), 2, ["", "shop", "bakery"])
+    ids = np.array([10, 11])
+    column = np.array([None, {"shop": "bakery"}], dtype=object)
+    expected = {11: {"shop": "bakery"}}
+    assert _node_tag_records({"id": ids, "tags": builder.build()}) == expected
+    assert _node_tag_records({"id": ids, "tags": column}) == expected
+
+
 def test_to_pbf_roundtrip_readable(helsinki_pbf):
     osm = OSM(helsinki_pbf, bounding_box=CROP_BBOX)
     out = osm.to_pbf()

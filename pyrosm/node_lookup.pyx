@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from cykhash import Int64toInt64Map_from_buffers, Int64toInt64Map_to
+from pyrosm.way_store import NodeTags
 
 
 cdef class NodeLocations:
@@ -30,7 +31,10 @@ cdef class NodeLocations:
         # Every column except 'id' (re-added per record), in coords column
         # order, so a reconstructed node record matches the previous layout.
         self._column_order = [c for c in coords.keys() if c != "id"]
-        self._columns = {c: np.asarray(coords[c]) for c in self._column_order}
+        self._columns = {
+            c: coords[c] if isinstance(coords[c], NodeTags) else np.asarray(coords[c])
+            for c in self._column_order
+        }
 
         # Contiguous float64 arrays back the hot lon/lat reads; reuse the same
         # objects in _columns so a rebuilt record matches these coordinates.
@@ -80,7 +84,8 @@ cdef class NodeLocations:
         rows = np.asarray(rows, dtype=np.int64)
         columns = {}
         for c in self._column_order:
-            values = np.asarray(self._columns[c])[rows]
+            column = self._columns[c]
+            values = column[rows] if isinstance(column, NodeTags) else np.asarray(column)[rows]
             if values.dtype.kind in "iu":
                 values = values.astype(np.int64)
             elif values.dtype.kind == "f":
