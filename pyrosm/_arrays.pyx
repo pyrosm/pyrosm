@@ -28,35 +28,30 @@ cdef convert_way_records_to_lists(ways, tags_to_separate_as_arrays):
     given way its value is None, so every column stays the same length. Keys not in
     'tags_to_separate_as_arrays' are collected into the JSON 'tags' column.
     """
-    cdef int i, n = len(ways)
+    cdef Py_ssize_t i, n = len(ways)
     cdef bint any_other = False
     column_keys = list(dict.fromkeys(tags_to_separate_as_arrays))
     column_set = set(column_keys)
-    records = []
-    other_list = []
-    appearing = set()
+    # One pass over the ways puts each value straight into its column's list, created
+    # when the column's first value appears.
+    values = {}
+    other_list = [None] * n
 
     for i in range(0, n):
-        way = ways[i]
-        record = {}
         other_tags = {}
-        for k, v in way.items():
+        for k, v in ways[i].items():
             if k in column_set:
-                record[k] = v
-                appearing.add(k)
+                column = values.get(k)
+                if column is None:
+                    column = values[k] = [None] * n
+                column[i] = v
             else:
                 other_tags[k] = v
-        records.append(record)
         if len(other_tags) > 0:
-            other_list.append(dumps(other_tags))
+            other_list[i] = dumps(other_tags)
             any_other = True
-        else:
-            other_list.append(None)
 
-    data = {}
-    for k in column_keys:
-        if k in appearing:
-            data[k] = [record.get(k) for record in records]
+    data = {k: values[k] for k in column_keys if k in values}
     # The leftover-tags column is kept only when some way had leftover tags
     # (otherwise it would be all-None and was dropped downstream before).
     if any_other:
@@ -82,10 +77,11 @@ cdef convert_to_arrays_and_drop_empty(data):
         # Nodes are in a list and should always be kept
         elif not isinstance(value_list[0], list):
             # Keep tag only if it contains data
-            unique = list(set(value_list))
-            if len(unique) < 2:
-                if unique[0] is None:
-                    continue
+            if all(value is None for value in value_list):
+                continue
+            if get_dtype(key) is object and isinstance(value_list, list):
+                arrays[key] = np.fromiter(value_list, dtype=object, count=len(value_list))
+                continue
         try:
             arrays[key] = np.array(value_list, dtype=get_dtype(key))
         except ValueError as e:
