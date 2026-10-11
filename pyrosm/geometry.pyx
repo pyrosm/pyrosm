@@ -398,6 +398,17 @@ cdef _concatenated_ranges(starts, counts):
             + np.repeat(starts, counts))
 
 
+cdef dict _keep_rows(dict way_elements, rows, Py_ssize_t n):
+    """``way_elements`` restricted to ``rows`` (the positions of the ways that have
+    nodes); unchanged when that is all ``n`` of them."""
+    if len(rows) == n:
+        return way_elements
+    index = np.asarray(rows, dtype=np.intp)
+    for key in list(way_elements.keys()):
+        way_elements[key] = way_elements[key][index]
+    return way_elements
+
+
 cdef tuple _way_node_arrays(way_elements, NodeLocations nc):
     """The node ids of the ways that have nodes as one flat array with per-way offsets,
     with their store rows and coordinates (-1 and NaN for absent nodes) and whether each
@@ -453,8 +464,7 @@ cdef _create_network_lines(node_coordinates, way_elements):
         )
     for w in np.flatnonzero(~batched):
         geometries[w] = create_line_geometry(nodes_col[nonempty[w]], nc)
-    for key in list(way_elements.keys()):
-        way_elements[key] = way_elements[key][nonempty]
+    way_elements = _keep_rows(way_elements, nonempty, len(nodes_col))
     return way_elements, geometries, [], [], []
 
 
@@ -473,8 +483,7 @@ cpdef create_network_segments(node_coordinates, way_elements):
     nonempty, flat_nodes, offsets, rows, lon, lat, valid = _way_node_arrays(
         way_elements, nc
     )
-    for key in list(way_elements.keys()):
-        way_elements[key] = way_elements[key][nonempty]
+    way_elements = _keep_rows(way_elements, nonempty, len(nodes_col))
     way_lengths = np.diff(offsets)
     batched = _complete_ways(valid, offsets)
 
@@ -548,7 +557,6 @@ cdef _create_area_geometries_vectorized(node_coordinates, way_elements):
     cdef NodeLocations nc = node_coordinates
     cdef int n = len(way_elements['id'])
     cdef int i, w, W, poly_i
-    keys = list(way_elements.keys())
     nodes_col = way_elements['nodes']
 
     highway_arr = way_elements["highway"] if "highway" in way_elements else None
@@ -646,8 +654,7 @@ cdef _create_area_geometries_vectorized(node_coordinates, way_elements):
                     _has_linear_tag(highway_arr, barrier_arr, route_arr, i),
                 )
 
-    for key in keys:
-        way_elements[key] = way_elements[key][nonempty_idx]
+    way_elements = _keep_rows(way_elements, nonempty_idx, n)
 
     return way_elements, geometries, [], [], []
 

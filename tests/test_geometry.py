@@ -38,6 +38,31 @@ def test_creating_building_geometries(test_pbf):
     assert len(geometries) == len(ways["id"])
 
 
+@pytest.mark.parametrize("parse_network", [False, True], ids=["area_path", "network"])
+def test_way_geometries_drop_ways_without_nodes(parse_network):
+    """A way without nodes is left out of the way columns and the geometries alike, so
+    every other way keeps its own values."""
+    import numpy as np
+    import pandas as pd
+    from pyrosm.geometry import create_way_geometries
+    from pyrosm.node_lookup import NodeLocations
+
+    store = NodeLocations(
+        pd.DataFrame({"id": [1, 2, 3], "lon": [0.0, 1.0, 2.0], "lat": [0.0, 0.0, 0.0]})
+    )
+    nodes = np.empty(3, dtype=object)
+    nodes[:] = [np.array([1, 2]), np.array([], dtype=np.int64), np.array([2, 3])]
+    elements = {
+        "id": np.array([10, 11, 12]),
+        "nodes": nodes,
+        "name": np.array(["a", "b", "c"], dtype=object),
+    }
+    ways, geometries, _, _, _ = create_way_geometries(store, elements, parse_network)
+    assert ways["id"].tolist() == [10, 12]
+    assert ways["name"].tolist() == ["a", "c"]
+    assert [list(g.coords) for g in geometries] == [[(0, 0), (1, 0)], [(1, 0), (2, 0)]]
+
+
 def test_custom_filter_highway_does_not_linestringify_polygons():
     """#144 — a custom_filter that includes 'highway' must not flip unrelated
     closed-way polygons (buildings, etc.) into (Multi)LineStrings. The old code
