@@ -253,16 +253,6 @@ def _fake_executor(raise_init=None, raise_map=None):
     return _F
 
 
-def test_engine_parallel_decode_runs_and_matches_serial(
-    helsinki_pbf, monkeypatch, fresh_cache
-):
-    # The parallel branch (map over per-worker tasks, then flatten the shard paths) yields
-    # the same result as the single-process path.
-    monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor())
-    mine = get_buildings(helsinki_pbf, workers=3)
-    _assert_full_parity(mine, OSM(helsinki_pbf, engine="in_memory").get_buildings())
-
-
 @pytest.mark.parametrize("where", ["construction", "run"])
 def test_engine_parallel_decode_falls_back_to_serial(
     where, helsinki_pbf, monkeypatch, fresh_cache
@@ -282,57 +272,12 @@ def test_engine_parallel_decode_falls_back_to_serial(
     _assert_full_parity(mine, OSM(helsinki_pbf, engine="in_memory").get_buildings())
 
 
-def _make_way_partition(ids):
-    # A standalone-way column dict (as _collect_kept_ways returns) for `ids`, one node ref each.
-    nodes = np.empty(len(ids), dtype=object)
-    for i, wid in enumerate(ids):
-        nodes[i] = np.array([wid * 10], np.int64)
-    return {
-        "id": np.array(ids, np.int64),
-        "nodes": nodes,
-        "tags": np.array([{} for _ in ids], dtype=object),
-        "version": np.array([1] * len(ids), np.int64),
-        "timestamp": np.array([1] * len(ids), np.int64),
-        "visible": np.array([True] * len(ids)),
-    }
-
-
-def test_engine_concat_way_columns_preserves_order_and_skips_none():
-    # The parallel way read concatenates contiguous per-worker partitions; the combine must
-    # keep them in worker order (= serial shard order) and skip empty (None) partitions.
-    from pyrosm.engine.collect import _concat_way_columns
-
-    p1 = _make_way_partition([1, 2])
-    p2 = _make_way_partition([3, 4])
-    out = _concat_way_columns([p1, None, p2])
-    assert list(out["id"]) == [1, 2, 3, 4]
-    assert [n.tolist() for n in out["nodes"]] == [[10], [20], [30], [40]]
-    assert _concat_way_columns([None, None]) is None
-    assert _concat_way_columns([p1]) is p1  # single partition returned as-is
-
-
-def test_engine_scatter_node_coords_combines_partitions():
-    # The pooled node gather returns per-partition (pos, lon, lat) into `needed`; the scatter
-    # must place each hit at its needed position and drop ids no partition held.
-    from pyrosm.engine.collect import _scatter_node_coords
-
-    needed = np.array([10, 20, 30, 40], np.int64)
-    part_a = (np.array([0, 2]), np.array([1.0, 3.0]), np.array([1.5, 3.5]))
-    part_b = (np.array([1]), np.array([2.0]), np.array([2.5]))
-    nc = _scatter_node_coords([part_a, part_b], needed)
-    idx, lon, lat = nc.gather(needed)
-    # id 40 (position 3) was in no partition -> absent.
-    assert (idx >= 0).tolist() == [True, True, True, False]
-    assert lon[:3].tolist() == [1.0, 2.0, 3.0]
-    assert lat[:3].tolist() == [1.5, 2.5, 3.5]
-
-
 @pytest.mark.parametrize("read", ["buildings", "pois", "network"])
-def test_engine_parallel_collect_matches_serial(read, helsinki_pbf, monkeypatch):
-    # The parallel collect path (contiguous way-shard ranges concatenated in order + the pooled
-    # node-coordinate gather) must yield exactly the serial result -- same rows in the same
-    # order -- and match the in-memory reader. HAS_PYARROW=False bypasses the result cache so
-    # both reads actually run; the fake executor runs the pools in-process.
+def test_engine_parallel_decode_matches_serial(read, helsinki_pbf, monkeypatch):
+    # A pool decodes the file in many small tasks and returns their shards in file order, so
+    # the read yields exactly the serial result -- same rows in the same order -- and matches
+    # the in-memory reader. HAS_PYARROW=False bypasses the result cache so both reads actually
+    # run; the fake executor runs the pool in-process, without progress reports.
     from pyrosm.utils import _compat
 
     monkeypatch.setattr(_compat, "HAS_PYARROW", False)
@@ -346,31 +291,12 @@ def test_engine_parallel_collect_matches_serial(read, helsinki_pbf, monkeypatch)
         "network": lambda: OSM(helsinki_pbf, engine="in_memory").get_network(),
     }[read]()
 
-    parallel = fn(helsinki_pbf, workers=3)
-    serial = fn(helsinki_pbf, workers=1)
+    parallel = fn(helsinki_pbf, workers=3, progress=False)
+    serial = fn(helsinki_pbf, workers=1, progress=False)
     # Identical rows in identical order (the ordering contract), not just the same set.
     assert list(parallel["id"]) == list(serial["id"])
     assert parallel.geometry.geom_equals_exact(serial.geometry, tolerance=0).all()
     _assert_full_parity(parallel, ref)
-
-
-def test_engine_collect_stays_serial_after_decode_fallback(
-    helsinki_pbf, monkeypatch, fresh_cache
-):
-    # When the decode pool cannot start, the collect phase must run serial too (not re-attempt
-    # a pool that cannot start) and emit no second fallback warning -- exactly one warning, the
-    # decode's, and the result still matches the in-memory reader. fresh_cache forces the read
-    # to decode rather than serve a cached result.
-    import warnings as _warnings
-
-    monkeypatch.setattr(pool.os, "cpu_count", lambda: 8)
-    monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor(raise_init=OSError))
-    with _warnings.catch_warnings(record=True) as caught:
-        _warnings.simplefilter("always")
-        mine = get_buildings(helsinki_pbf, workers=3)
-    fallbacks = [w for w in caught if "single process" in str(w.message)]
-    assert len(fallbacks) == 1
-    _assert_full_parity(mine, OSM(helsinki_pbf, engine="in_memory").get_buildings())
 
 
 class _ThreadValue:
@@ -517,9 +443,8 @@ def test_engine_read_progress_in_a_process_pool(test_pbf, monkeypatch, fresh_cac
 
 
 def test_engine_run_pool_silent_fallback_without_warning(monkeypatch):
-    # _run_pool with no fallback_warning (the collect phase's call) must fall back to a single
-    # process *silently* when the pool cannot start -- the decode already warned, so a later
-    # phase does not warn a second time. Still runs every task and reports pool_ok=False.
+    # _run_pool without a fallback_warning falls back to a single process silently when the
+    # pool cannot start; it still runs every task and reports pool_ok=False.
     import warnings as _warnings
 
     monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor(raise_init=OSError))
@@ -1863,22 +1788,53 @@ def test_osm_workers_reach_the_reader_without_a_warning(
     assert not [w for w in caught if "CPU core" in str(w.message)]
 
 
-def test_auto_workers_picks_single_core_for_small_files(tmp_path, monkeypatch):
-    # "auto" reads small files on a single core; above the size threshold it uses one worker
-    # per CPU core, capped at the data-blob count.
+@pytest.mark.parametrize(
+    "size, cores, blobs, expected",
+    [
+        ("small", 10, 10_000, 1),
+        ("big", 10, 10_000, 8),
+        ("big", 16, 10_000, 8),
+        ("big", 4, 10_000, 2),
+        ("big", 2, 10_000, 1),
+        ("big", 10, 3, 3),
+    ],
+)
+def test_auto_workers(tmp_path, monkeypatch, size, cores, blobs, expected):
+    # "auto" reads small files on a single core; above the size threshold it uses the CPU
+    # cores less two, between 1 and 8 and at most the data-blob count.
     import os
 
-    monkeypatch.setattr(pool.os, "cpu_count", lambda: 8)
-    small = tmp_path / "small.osm.pbf"
-    small.touch()
-    os.truncate(small, pool._PARALLEL_MIN_FILE_BYTES - 1)
-    assert pool._auto_workers(str(small), 10_000) == 1
+    monkeypatch.setattr(pool.os, "cpu_count", lambda: cores)
+    fp = tmp_path / "file.osm.pbf"
+    fp.touch()
+    offset = -1 if size == "small" else 1
+    os.truncate(fp, pool._PARALLEL_MIN_FILE_BYTES + offset)
+    assert pool._auto_workers(str(fp), blobs) == expected
 
-    big = tmp_path / "big.osm.pbf"
-    big.touch()
-    os.truncate(big, pool._PARALLEL_MIN_FILE_BYTES + 1)
-    assert pool._auto_workers(str(big), 10_000) == 8  # cpu-bound
-    assert pool._auto_workers(str(big), 3) == 3  # blob-bound
+
+@pytest.mark.parametrize(
+    "spans, workers, per_worker, expected",
+    [
+        ([5, 5, 5], 1, 8, [[5, 5, 5]]),
+        ([1] * 32, 2, 8, [[1, 1]] * 16),
+        # Four shares of 6.5 bytes: the 10-byte blobs start in the first and third share.
+        ([1, 1, 1, 1, 10, 10, 1, 1], 2, 2, [[1, 1, 1, 1, 10], [10], [1, 1]]),
+        ([], 2, 8, []),
+    ],
+    ids=["one_worker", "equal_blobs", "unequal_blobs", "no_blobs"],
+)
+def test_decode_tasks_split_the_file_by_bytes(
+    monkeypatch, spans, workers, per_worker, expected
+):
+    # The decode tasks hold consecutive blobs in file order with unique ids, about
+    # _TASKS_PER_WORKER per worker of similar bytes (one task for a single worker); a blob goes
+    # to the task whose share of the bytes holds its start.
+    monkeypatch.setattr(pool, "_TASKS_PER_WORKER", per_worker)
+    blobs = [(i, span, span) for i, span in enumerate(spans)]
+    tasks = pool._decode_tasks(blobs, workers)
+    assert [task_id for task_id, _ in tasks] == list(range(len(tasks)))
+    assert [blob for _, task in tasks for blob in task] == blobs
+    assert [[span for _, _, span in task] for _, task in tasks] == expected
 
 
 def test_cap_workers_reduces_above_cpu_count(monkeypatch):
@@ -2017,7 +1973,7 @@ def test_gather_node_shards_matches_searching_every_id(tmp_path, needed):
     """The coordinate gather returns what searching every shard id returns, element for
     element: a sorted shard is searched within its id range, a shard that is not
     strictly increasing (unsorted, or with a repeated id) id by id."""
-    from pyrosm.engine.collect import _gather_node_shards
+    from pyrosm.engine.collect import _gather_node_shards, _node_lookup
 
     paths = []
     for name, ids in [
@@ -2038,6 +1994,14 @@ def test_gather_node_shards_matches_searching_every_id(tmp_path, needed):
     expected = _gather_every_shard_id(paths, needed)
     for got, want in zip(result, expected):
         np.testing.assert_array_equal(got, want)
+
+    # The lookup holds each found id once, with one of its gathered coordinates.
+    idx, lon, _ = _node_lookup(paths, needed).gather(needed)
+    gathered = {}
+    for pos, x in zip(*expected[:2]):
+        gathered.setdefault(int(pos), set()).add(float(x))
+    assert np.flatnonzero(idx >= 0).tolist() == sorted(gathered)
+    assert all(lon[pos] in gathered[pos] for pos in gathered)
 
 
 @pytest.mark.parametrize("requested", [None, [b"highway"]], ids=["all_tags", "minimal"])

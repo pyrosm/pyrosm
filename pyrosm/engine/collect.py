@@ -24,17 +24,16 @@ _MEMBER_TYPE = {0: b"node", 1: b"way", 2: b"relation"}
 # way id -- mixing types in the lookup would attach or drop the wrong way.
 _WAY_MEMBER = 1
 
+
 # The standalone-way columns are carried as a dict of parallel arrays (id / nodes / tags /
 # metadata) rather than a list of per-way dicts: the shards already hold them columnar, so
 # this skips building millions of intermediate dicts (and the per-way ``.tolist()`` on the
 # node refs) on the way to the assembly's column arrays. ``nodes`` is an object array whose
 # entries are each way's int64 node-ref array.
-_WAY_COLUMNS = ("id", "nodes", "tags", "version", "timestamp", "visible")
-
-
 def _read_way_columns(shard_paths):
-    """Read the spilled matching ways back as a dict of parallel arrays (the columns in
-    ``_WAY_COLUMNS``). ``None`` if no shard holds a way."""
+    """Read the spilled matching ways back as a dict of parallel arrays (``id``, ``nodes``,
+    ``tags``, ``version``, ``timestamp``, ``visible``). ``None`` if no shard holds a way.
+    """
     ids, nodes_list, tags, vers, tss, viss = [], [], [], [], [], []
     for path in shard_paths:
         z = np.load(path, allow_pickle=True)
@@ -76,19 +75,6 @@ def _slice_way_columns(cols, start, stop):
     """A row slice ``[start:stop]`` of every column -- the chunking the GeoParquet streamer
     uses in place of slicing a list of records."""
     return {k: v[start:stop] for k, v in cols.items()}
-
-
-def _concat_way_columns(parts):
-    """Concatenate per-partition way-column dicts (from :func:`_read_way_columns`) back into
-    one, preserving order -- the parallel way read partitions the shards into contiguous
-    ordered ranges, so concatenating the parts in order reproduces the serial shard order.
-    ``None`` if every part is empty."""
-    parts = [p for p in parts if p is not None]
-    if not parts:
-        return None
-    if len(parts) == 1:
-        return parts[0]
-    return {k: np.concatenate([p[k] for p in parts]) for k in _WAY_COLUMNS}
 
 
 def _collect_node_features(shard_paths, tags_as_columns, keep_metadata, keep):
@@ -133,16 +119,16 @@ def _collect_node_features(shard_paths, tags_as_columns, keep_metadata, keep):
     return node_arrays
 
 
-def _gather_node_shards(shard_subset, needed):
-    """Gather the coordinates of the ``needed`` (sorted) node ids that a subset of shards
-    holds. Returns ``(pos, lon, lat)``: ``pos`` indexes into ``needed`` for the ids found, and
+def _gather_node_shards(shard_paths, needed):
+    """Gather the coordinates of the ``needed`` (sorted) node ids that the shards hold.
+    Returns ``(pos, lon, lat)``: ``pos`` indexes into ``needed`` for the ids found, and
     ``lon`` / ``lat`` their coordinates. A shard whose ids increase (a PBF sorted by type and
     id) searches only the needed ids within its id range; any other shard searches each of
-    its ids in ``needed``. Splitting the shards across workers is what parallelises it.
+    its ids in ``needed``.
     """
     n = len(needed)
     pos_parts, lon_parts, lat_parts = [], [], []
-    for path in shard_subset:
+    for path in shard_paths:
         z = np.load(path, allow_pickle=True)
         nid = z["node_id"]
         if len(nid) == 0:
@@ -171,10 +157,9 @@ def _gather_node_shards(shard_subset, needed):
     )
 
 
-def _scatter_node_coords(parts, needed):
-    """Scatter the per-partition ``(pos, lon, lat)`` gathers into one coordinate store for
-    ``needed``, dropping ids no shard held (left ``NaN``). Order-independent: each hit is
-    written at its own ``needed`` position, so the partitions may arrive in any order.
+def _node_lookup(shard_paths, needed):
+    """Gather only the coordinates of ``needed`` node ids from the shards (bounded memory) and
+    wrap them in a ``NodeLocations`` for geometry assembly, without the ids no shard holds.
     """
     import pandas as pd
 
@@ -182,62 +167,15 @@ def _scatter_node_coords(parts, needed):
 
     lon = np.full(len(needed), np.nan)
     lat = np.full(len(needed), np.nan)
-    for pos, lon_part, lat_part in parts:
-        lon[pos] = lon_part
-        lat[pos] = lat_part
+    # Node-only results (the filter matched no ways/relations) need no coordinates.
+    if len(needed):
+        pos, lon_found, lat_found = _gather_node_shards(shard_paths, needed)
+        lon[pos] = lon_found
+        lat[pos] = lat_found
     present = ~np.isnan(lon)
     return NodeLocations(
         pd.DataFrame({"id": needed[present], "lon": lon[present], "lat": lat[present]})
     )
-
-
-# Worker-side state for the parallel node gather: the sorted ``needed`` array, shared
-# read-only via a memory-mapped ``.npy`` so the OS page cache backs it across workers rather
-# than pickling it to each.
-_GATHER_NEEDED = None
-
-
-def _init_node_gather(needed_path):
-    global _GATHER_NEEDED
-    _GATHER_NEEDED = np.load(needed_path, mmap_mode="r")
-
-
-def _node_gather_worker(shard_subset):
-    return _gather_node_shards(shard_subset, _GATHER_NEEDED)
-
-
-def _node_lookup(shard_paths, needed, workers=1):
-    """Gather only the coordinates of ``needed`` node ids from the shards (bounded memory) and
-    wrap them in a ``NodeLocations`` for geometry assembly. With ``workers > 1`` the shards are
-    split across a process pool -- each worker gathers its shards against ``needed`` (shared
-    read-only via a memory-mapped ``.npy``) and the hits are scattered back -- which
-    parallelises the dominant per-shard decompress + searchsorted work; ``workers == 1`` runs
-    the same gather in this process."""
-    import pandas as pd
-
-    from pyrosm.node_lookup import NodeLocations
-
-    if len(needed) == 0:
-        # Node-only result (the filter matched no ways/relations): no coordinates needed.
-        empty = np.empty(0, np.int64)
-        return NodeLocations(
-            pd.DataFrame({"id": empty, "lon": np.empty(0), "lat": np.empty(0)})
-        )
-
-    if workers > 1:
-        from pathlib import Path
-
-        from pyrosm.engine.pool import _run_pool
-
-        needed_path = str(Path(shard_paths[0]).parent / "needed.npy")
-        np.save(needed_path, needed)
-        partitions = [shard_paths[i::workers] for i in range(workers)]
-        parts, _ = _run_pool(
-            _node_gather_worker, partitions, workers, _init_node_gather, (needed_path,)
-        )
-        return _scatter_node_coords(parts, needed)
-
-    return _scatter_node_coords([_gather_node_shards(shard_paths, needed)], needed)
 
 
 # Node-record column dtypes for the graph-export gather (id/coords + element metadata).
@@ -331,9 +269,7 @@ def _filter_way_columns(cols, exclude_ids, keep, in_box):
 def _keep_fn(filter_spec):
     """The exact value-filter predicate for a layer: keep an element whose resolved tags pass
     ``filter_spec`` = ``(osm_keys, data_filter, filter_type)``. A ``None`` ``data_filter``
-    (network ``all`` / ``driving_psv``) keeps every candidate. Rebuilt from the picklable
-    ``filter_spec`` inside each parallel worker, so the serial and parallel reads filter
-    identically."""
+    (network ``all`` / ``driving_psv``) keeps every candidate."""
     osm_keys, data_filter, filter_type = filter_spec
 
     def keep(tag):
@@ -344,52 +280,10 @@ def _keep_fn(filter_spec):
     return keep
 
 
-def _contiguous_partitions(items, workers):
-    """Split ``items`` into ``workers`` contiguous (non-strided) blocks, dropping empties --
-    so concatenating the per-block results in order reproduces the serial order."""
-    per = (len(items) + workers - 1) // workers
-    blocks = [items[i * per : (i + 1) * per] for i in range(workers)]
-    return [b for b in blocks if b]
-
-
-# Worker-side state for the parallel standalone-way read: the value-filter predicate plus the
-# relation-member exclusion set and the bounding-box node set, set once per worker.
-_WAY_COLLECT_STATE = None
-
-
-def _init_way_collect(filter_spec, exclude_ids, in_box):
-    global _WAY_COLLECT_STATE
-    _WAY_COLLECT_STATE = (_keep_fn(filter_spec), exclude_ids, in_box)
-
-
-def _way_collect_worker(shard_subset):
-    keep, exclude_ids, in_box = _WAY_COLLECT_STATE
-    return _filter_way_columns(
-        _read_way_columns(shard_subset), exclude_ids, keep, in_box
-    )
-
-
-def _collect_kept_ways(
-    shard_paths, exclude_ids, keep, in_box=None, workers=1, filter_spec=None
-):
+def _collect_kept_ways(shard_paths, exclude_ids, keep, in_box=None):
     """The standalone way columns to output: read the spilled candidates and refine them by
     the value filter, the bounding box, and the relation-member exclusion (see
-    :func:`_filter_way_columns`). With ``workers > 1`` (and a ``filter_spec`` to rebuild the
-    predicate worker-side) the shards are split into contiguous ordered ranges across a process
-    pool and the per-range columns concatenated back in order -- identical rows in identical
-    order to the serial read. ``None`` if nothing survives."""
-    if workers > 1 and filter_spec is not None:
-        from pyrosm.engine.pool import _run_pool
-
-        partitions = _contiguous_partitions(shard_paths, workers)
-        parts, _ = _run_pool(
-            _way_collect_worker,
-            partitions,
-            workers,
-            _init_way_collect,
-            (filter_spec, exclude_ids, in_box),
-        )
-        return _concat_way_columns(parts)
+    :func:`_filter_way_columns`). ``None`` if nothing survives."""
     return _filter_way_columns(
         _read_way_columns(shard_paths), exclude_ids, keep, in_box
     )
@@ -610,7 +504,6 @@ def _collect_layer(
     keep_relations=True,
     bounding_box=None,
     complete_relations=False,
-    workers=1,
 ):
     """Shared collection for both output modes: node features, standalone ways, relations,
     their member ways and the node coordinates the ways/relations reference. ``filter_spec``
@@ -618,10 +511,8 @@ def _collect_layer(
     refined here by pyrosm's exact value filter. ``keep_ways`` / ``keep_relations`` drop
     those element kinds from the output (``get_data_by_custom_criteria``). With a
     ``bounding_box`` only in-box ways/nodes are kept; relation member ways are likewise
-    restricted to in-box (partial geometry) unless ``complete_relations``. ``workers > 1``
-    splits the standalone-way read and the node-coordinate gather (the dominant costs) across a
-    process pool; the comparatively small relation and node-feature reads stay serial.
-    ``None`` if there is nothing to assemble."""
+    restricted to in-box (partial geometry) unless ``complete_relations``. ``None`` if there
+    is nothing to assemble."""
     keep = _keep_fn(filter_spec)
 
     in_box = _in_box_nodes(shard_paths) if bounding_box is not None else None
@@ -648,23 +539,12 @@ def _collect_layer(
         # been members stay as standalone ways (matching get_data_by_custom_criteria).
         relations, relation_ways, member_ids = None, None, np.empty(0, np.int64)
     kept = (
-        _collect_kept_ways(
-            shard_paths,
-            member_ids,
-            keep,
-            in_box,
-            workers=workers,
-            filter_spec=filter_spec,
-        )
-        if keep_ways
-        else None
+        _collect_kept_ways(shard_paths, member_ids, keep, in_box) if keep_ways else None
     )
     node_features = _collect_node_features(
         shard_paths, tags_as_columns, keep_metadata, keep
     )
     if kept is None and relations is None and node_features is None:
         return None
-    node_coordinates = _node_lookup(
-        shard_paths, _needed_node_ids(kept, relation_ways), workers
-    )
+    node_coordinates = _node_lookup(shard_paths, _needed_node_ids(kept, relation_ways))
     return node_features, kept, relations, relation_ways, node_coordinates

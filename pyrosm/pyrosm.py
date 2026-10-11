@@ -133,8 +133,8 @@ class OSM:
         Number of worker processes the `'out_of_core'` engine uses to decode the
         file. By default (`None`) the engine reads on a single core. Pass
         `workers="auto"` to let pyrosm choose the count automatically -- a single
-        core for small files and one worker per CPU core for larger files -- or
-        `workers=N` for an explicit count (a count above the available CPU cores is
+        core for small files; for larger files the CPU cores less two, up to eight --
+        or `workers=N` for an explicit count (a count above the available CPU cores is
         reduced to the core count, with a warning). Parallel reads need the
         `if __name__ == "__main__":` guard on macOS/Windows. Has no effect on the
         `'in_memory'` engine.

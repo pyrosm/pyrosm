@@ -490,7 +490,7 @@ def _decode_batch(task):
     one shard's worth of blocks rather than the whole batch, while the file count -- and the
     per-file overhead collect pays re-reading them -- drops by one to two orders of magnitude).
     Returns the list of shard paths."""
-    worker_id, blobs = task
+    task_id, blobs = task
     paths = []
     pending = []
     pending_bytes = 0
@@ -499,7 +499,7 @@ def _decode_batch(task):
         nonlocal pending, pending_bytes
         if not pending:
             return
-        path = Path(_SHARD_DIR) / ("shard_%d_%d.npz" % (worker_id, len(paths)))
+        path = Path(_SHARD_DIR) / ("shard_%d_%d.npz" % (task_id, len(paths)))
         np.savez(path, **_merge_shards(pending))
         paths.append(path)
         pending, pending_bytes = [], 0

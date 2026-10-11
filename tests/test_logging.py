@@ -139,7 +139,7 @@ def test_reads_are_logged(caplog, tmp_path, monkeypatch):
     # One decode for the buildings and one for the empty layer; the cached reads decode nothing.
     assert len(find("index file=test.osm.pbf blobs=3 ")) == 2
     assert len(find("decode workers=1 blobs=3 pool=False ")) == 2
-    assert len(find("collect workers=1 ")) == 2
+    assert len(find("collect seconds=")) == 2
     cache_events = [shlex.split(m)[1:] for m in find("cache ")]
     assert [status for status, _ in cache_events] == [
         "status=miss",

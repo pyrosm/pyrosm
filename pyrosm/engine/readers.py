@@ -1,5 +1,5 @@
 """Public out-of-core readers (one per layer). Each indexes the file's blobs, decodes them
-into per-worker shards selecting the layer's elements (and, for point layers, the matching
+into shards selecting the layer's elements (and, for point layers, the matching
 nodes), then collects and assembles (or streams to GeoParquet) the requested layer. A
 ``bounding_box`` restricts the read to that area."""
 
@@ -121,7 +121,7 @@ def _get_layer(
                 osm_key_bytes,
                 include_nodes,
                 workers,
-                lambda shard_paths, collect_workers, report: geoparquet._stream_layer_to_parquet(
+                lambda shard_paths, report: geoparquet._stream_layer_to_parquet(
                     shard_paths,
                     tmp_path,
                     geoparquet._OUTPUT_CHUNK_SIZE,
@@ -133,7 +133,6 @@ def _get_layer(
                     bounding_box,
                     complete_relations,
                     keep_other_tags=keep_other_tags,
-                    workers=collect_workers,
                     keep_node_info=keep_node_info,
                 ),
                 bbox_bounds=bounds,
@@ -145,7 +144,7 @@ def _get_layer(
         )
         return _node_lists(result)
 
-    def run(shard_paths, collect_workers, report):
+    def run(shard_paths, report):
         if output is None:
             return _assemble_layer(
                 shard_paths,
@@ -157,7 +156,6 @@ def _get_layer(
                 bounding_box,
                 complete_relations,
                 keep_other_tags=keep_other_tags,
-                workers=collect_workers,
                 keep_node_info=keep_node_info,
             )
         return geoparquet._stream_layer_to_parquet(
@@ -172,7 +170,6 @@ def _get_layer(
             bounding_box,
             complete_relations,
             keep_other_tags=keep_other_tags,
-            workers=collect_workers,
             keep_node_info=keep_node_info,
         )
 
@@ -686,7 +683,7 @@ def get_network(
     if output is not None:
         _compat.require_pyarrow()
 
-    def assemble(shard_paths, collect_workers, report):
+    def assemble(shard_paths, report):
         edges, node_gdf = _assemble_network(
             shard_paths,
             tags_as_columns,
@@ -695,7 +692,6 @@ def get_network(
             nodes,
             bounding_box,
             filepath=filepath,
-            workers=collect_workers,
             progress=report,
             keep_node_info=keep_node_info,
         )

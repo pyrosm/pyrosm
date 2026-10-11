@@ -71,11 +71,9 @@ def _assemble_layer(
     bounding_box=None,
     complete_relations=False,
     keep_other_tags=True,
-    workers=1,
     keep_node_info=False,
 ):
-    """Assemble all matching nodes, ways and relations into one in-memory GeoDataFrame.
-    ``workers > 1`` runs the collect phase across a process pool."""
+    """Assemble all matching nodes, ways and relations into one in-memory GeoDataFrame."""
     collected = _collect_layer(
         shard_paths,
         tags_as_columns,
@@ -85,7 +83,6 @@ def _assemble_layer(
         keep_relations,
         bounding_box,
         complete_relations,
-        workers=workers,
     )
     if collected is None:
         return None
@@ -113,7 +110,6 @@ def _assemble_network(
     segments,
     bounding_box,
     filepath=None,
-    workers=1,
     progress=None,
     keep_node_info=False,
 ):
@@ -123,8 +119,7 @@ def _assemble_network(
     (``get_network(nodes=True)``), which needs the node tags + metadata, so the coordinate
     store is gathered with a second pass over ``filepath`` rather than the lean shard lookup.
     A ``None`` ``data_filter`` (network types ``all`` / ``driving_psv``) keeps every highway
-    way. ``workers > 1`` runs the way read and (when ``segments`` is False) the node gather
-    across a process pool. ``progress`` is passed to the second pass (see
+    way. ``progress`` is passed to the second pass (see
     :func:`~pyrosm.engine.collect._gather_node_records`)."""
     from pyrosm.frames import prepare_geodataframe
     from pyrosm.engine.collect import _keep_fn
@@ -132,14 +127,7 @@ def _assemble_network(
     keep = _keep_fn(filter_spec)
 
     in_box = _in_box_nodes(shard_paths) if bounding_box is not None else None
-    kept = _collect_kept_ways(
-        shard_paths,
-        np.empty(0, np.int64),
-        keep,
-        in_box,
-        workers=workers,
-        filter_spec=filter_spec,
-    )
+    kept = _collect_kept_ways(shard_paths, np.empty(0, np.int64), keep, in_box)
     if kept is None:
         return None, None
     needed = _needed_node_ids(kept, None)
@@ -148,7 +136,7 @@ def _assemble_network(
             filepath, needed, keep_metadata, progress
         )
     else:
-        node_coordinates = _node_lookup(shard_paths, needed, workers)
+        node_coordinates = _node_lookup(shard_paths, needed)
     ways = _ways_arrays(kept, tags_as_columns, keep_metadata)
     # The tag dicts are in the way columns now; free them before the frame is built.
     kept["tags"] = None
