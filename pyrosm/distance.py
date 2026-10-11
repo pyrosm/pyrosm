@@ -74,8 +74,29 @@ def haversine(lat1, lng1, lat2, lng2, unit=Unit.KILOMETERS):
     return 2 * avg_earth_radius * np.arcsin(np.sqrt(d))
 
 
-def calculate_geom_length(geom):
-    return calculate_geom_array_length(geom).sum().round(0)
+def calculate_line_lengths(lines):
+    """The length of each LineString in ``lines`` in metres: the haversine distances of its
+    segments rounded to millimetres, summed and rounded to metres."""
+    coords, owner = get_coordinates(lines, return_index=True)
+    lengths = np.zeros(len(lines))
+    same_line = owner[1:] == owner[:-1]
+    lon, lat = coords[:, 0], coords[:, 1]
+    segments = haversine(
+        lat[:-1][same_line],
+        lon[:-1][same_line],
+        lat[1:][same_line],
+        lon[1:][same_line],
+        unit=Unit.METERS,
+    ).round(3)
+    counts = np.bincount(owner[1:][same_line], minlength=len(lines))
+    starts = np.zeros(len(lines), dtype=np.int64)
+    np.cumsum(counts[:-1], out=starts[1:])
+    # Sum the lines with the same number of segments as the rows of one block, which adds
+    # each line's segments in the order ndarray.sum adds one line's array.
+    for n in np.unique(counts[counts > 0]):
+        rows = np.flatnonzero(counts == n)
+        lengths[rows] = segments[starts[rows][:, None] + np.arange(n)].sum(axis=1)
+    return lengths.round(0)
 
 
 def calculate_geom_array_length(geom_array):

@@ -4,13 +4,12 @@ import geopandas as gpd
 import numpy as np
 from pyrosm._arrays cimport concatenate_dicts_of_arrays
 from pyrosm.geometry cimport _create_point_geometries
-from pyrosm.geometry cimport create_way_geometries
+from pyrosm.geometry cimport create_way_geometries, create_network_segments
 from pyrosm.geometry import orient_polygons
 from pyrosm.relations import prepare_relations
 from shapely.geometry import box
 from pyrosm.data_filter import get_mask_by_osmid, _filter_array_dict_by_indices_or_mask
-from shapely import multilinestrings
-from pyrosm.distance import calculate_geom_length, calculate_geom_array_length
+from pyrosm.distance import calculate_line_lengths, calculate_geom_array_length
 
 cpdef create_nodes_gdf(nodes, osmids_to_keep=None):
     cdef str k
@@ -45,14 +44,22 @@ cpdef create_df(data_arrays):
     return pd.DataFrame(columns)
 
 cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengths):
+    if ways is not None and parse_network and calculate_seg_lengths:
+        # Graph export: one row per segment, repeating its way's columns, and the
+        # attribute columns of the nodes the segments use
+        (ways, segment_counts, segments, from_ids, to_ids, node_ids,
+         node_rows) = create_network_segments(node_coordinates, ways)
+        way_rows = np.repeat(np.arange(len(segment_counts)), segment_counts)
+        way_gdf = create_df(ways).iloc[way_rows].reset_index(drop=True)
+        way_gdf = way_gdf.assign(osm_type="way", geometry=segments, u=from_ids, v=to_ids)
+        way_gdf = gpd.GeoDataFrame(way_gdf, geometry="geometry", crs="epsg:4326")
+        way_gdf = way_gdf.assign(length=calculate_geom_array_length(segments))
+        node_attributes = dict(node_coordinates.columns_at(node_rows), id=node_ids)
+        return way_gdf, node_attributes
+
     if ways is not None:
-        # from/to ids and node-attribute records are only consumed when building
-        # segment-level graph edges; skip them otherwise (plain get_network).
-        ways, geometries, from_ids, to_ids, node_attributes = create_way_geometries(
-            node_coordinates,
-            ways,
-            parse_network,
-            calculate_seg_lengths
+        ways, geometries, _, _, _ = create_way_geometries(
+            node_coordinates, ways, parse_network
         )
 
         # .assign (not df[col]=...) avoids the spurious Cython CoW warning
@@ -60,54 +67,21 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
 
         # In case network is parsed, include way-level length info
         if parse_network and not calculate_seg_lengths:
-            # Drop rows without geometry
+            # Drop rows without geometry; each remaining way is one LineString
             way_gdf = way_gdf.dropna(subset=['geometry']).reset_index(drop=True)
-
-            # Create MultiLineStrings and calculate the length
-            geoms = [multilinestrings(geom) for geom in way_gdf["geometry"]]
             way_gdf = way_gdf.assign(
-                geometry=geoms,
-                length=[calculate_geom_length(geom) for geom in geoms],
+                length=calculate_line_lengths(way_gdf["geometry"].to_numpy())
             )
             way_gdf = gpd.GeoDataFrame(way_gdf, geometry="geometry", crs="epsg:4326")
-
-            # If only edges are requested, clean node_attributes
-            node_attributes = None
-
-        # In case network is parsed and requested for graph export,
-        # include segment-level length info
-        elif parse_network and calculate_seg_lengths:
-            # Insert way-level from/to ids
-            way_gdf = way_gdf.assign(u=from_ids, v=to_ids)
-
-            # Drop rows without geometry
-            way_gdf = way_gdf.dropna(subset=['geometry']).reset_index(drop=True)
-
-            # Parse segment level from/to-ids
-            u = np.concatenate(way_gdf["u"].to_list())
-            v = np.concatenate(way_gdf["v"].to_list())
-
-            # Explode multi-geometries
-            way_gdf = way_gdf.explode("geometry").reset_index(drop=True)
-            way_gdf = gpd.GeoDataFrame(way_gdf, geometry="geometry", crs="epsg:4326")
-
-            # Update from/to-ids and calculate the length of the geometries
-            way_gdf = way_gdf.assign(
-                u=u,
-                v=v,
-                length=calculate_geom_array_length(way_gdf.geometry.values.to_numpy()),
-            )
 
         # For cases not related to networks
         else:
             way_gdf = gpd.GeoDataFrame(way_gdf, geometry="geometry", crs="epsg:4326")
-            node_attributes = None
 
     else:
         way_gdf = gpd.GeoDataFrame()
-        node_attributes = None
 
-    return way_gdf, node_attributes
+    return way_gdf, None
 
 cpdef prepare_node_gdf(nodes):
     if nodes is not None:
@@ -201,15 +175,20 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
     else:
         node_gdf = gpd.GeoDataFrame()
 
-    # Merge all
-    gdf = pd.concat([node_gdf, way_gdf, relation_gdf])
+    # Merge all. A network has only ways, which prepare_way_gdf has already indexed and
+    # stripped of missing geometries.
+    if parse_network:
+        gdf = way_gdf
+    else:
+        gdf = pd.concat([node_gdf, way_gdf, relation_gdf])
 
     if len(gdf) == 0:
         if parse_network:
             return None, None
         return None
 
-    gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
+    if not parse_network:
+        gdf = gdf.dropna(subset=['geometry']).reset_index(drop=True)
 
     # Normalize polygon ring orientation to the OGC/GeoJSON right-hand rule
     # (exterior CCW, holes CW); non-polygonal geometries are untouched (#230).

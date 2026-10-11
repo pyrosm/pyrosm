@@ -5,8 +5,8 @@ spilling it once it reaches ``_SHARD_TARGET_BYTES`` (so a country file produces 
 shards rather than one per ~8k-element block -- far less per-file open/read overhead when
 collect re-reads them -- while peak memory stays bounded by one shard's worth of blocks).
 Each shard holds the node coordinates, the matching layer features (ways, point nodes and
-relations -- selected by filter-key presence) and *every* way (id + refs, for relation-member
-lookup).
+relations -- selected by filter-key presence) and, for reads that look up relation members,
+*every* way (id + refs).
 """
 
 from pathlib import Path
@@ -39,6 +39,8 @@ _BBOX_BOUNDS = None
 # When not None, the only tag keys (utf-8 bytes) to resolve into the element tag dicts
 # (the ``keep_other_tags=False`` minimal-tags mode); None resolves every tag.
 _REQUESTED_TAG_KEYS = None
+# Whether to spill every way's id and node refs, which only relation-member lookup reads.
+_SPILL_ALL_WAYS = True
 # When not None, where each decoded blob's length in the file is added (see ``_advance``).
 _PROGRESS = None
 
@@ -50,16 +52,18 @@ def _init_worker(
     include_nodes,
     bbox_bounds,
     requested_tag_keys=None,
+    spill_all_ways=True,
     progress=None,
 ):
     global _FILEPATH, _SHARD_DIR, _OSM_KEYS, _INCLUDE_NODES, _BBOX_BOUNDS
-    global _REQUESTED_TAG_KEYS, _PROGRESS
+    global _REQUESTED_TAG_KEYS, _SPILL_ALL_WAYS, _PROGRESS
     _FILEPATH = filepath
     _SHARD_DIR = shard_dir
     _OSM_KEYS = osm_keys
     _INCLUDE_NODES = include_nodes
     _BBOX_BOUNDS = bbox_bounds
     _REQUESTED_TAG_KEYS = requested_tag_keys
+    _SPILL_ALL_WAYS = spill_all_ways
     _PROGRESS = progress
 
 
@@ -319,8 +323,9 @@ def _object_array(items):
 def _decode_one_block(string_table, header, nodes, ways, relations):
     """Decode one primitive block into the per-shard arrays: node coordinates, the matching
     layer point nodes, the matching layer ways (refs + resolved tags + metadata), *all* ways
-    (id + refs, for relation-member lookup) and the matching layer relations. Returns a dict
-    of the npz arrays ``_write_shard`` spills (every key present, empty when absent)."""
+    (id + refs, for relation-member lookup; empty unless ``_SPILL_ALL_WAYS``) and the matching
+    layer relations. Returns a dict of the npz arrays ``_write_shard`` spills (every key
+    present, empty when absent)."""
     node_id, node_lon, node_lat, in_box = [], [], [], []
     nf = {k: [] for k in ("id", "lon", "lat", "tags", "meta")}
     way_match_id, way_match_refs, way_match_tags = [], [], []
@@ -362,9 +367,10 @@ def _decode_one_block(string_table, header, nodes, ways, relations):
                 )
             )
     if ways is not None:
-        all_id.append(ways["id"])
-        all_refs.append(ways["refs"])
-        all_count.append(np.diff(ways["refs_off"]))
+        if _SPILL_ALL_WAYS:
+            all_id.append(ways["id"])
+            all_refs.append(ways["refs"])
+            all_count.append(np.diff(ways["refs_off"]))
         found = _matching_ways(string_table, ways, _OSM_KEYS)
         if found is not None:
             way_match_id.append(found["id"])

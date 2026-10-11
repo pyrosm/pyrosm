@@ -72,7 +72,7 @@ def test_closed_highway_without_area_is_linestring():
     )
     way = gdf[(gdf["osm_type"] == "way") & (gdf["id"] == 8035241)]
     assert len(way) == 1
-    assert way.iloc[0].geometry.geom_type in ("LineString", "MultiLineString")
+    assert way.iloc[0].geometry.geom_type == "LineString"
 
 
 def test_closed_highway_area_yes_is_polygon():

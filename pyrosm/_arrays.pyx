@@ -119,17 +119,18 @@ cpdef concatenate_dicts_of_arrays(dict_list_of_arrays):
     # In the order the keys first appear, so the columns come out in the same order on
     # every run.
     keys = list(dict.fromkeys([k for d in dict_list_of_arrays for k in d.keys()]))
-    result_dict = {key: [] for key in keys}
+    parts = {key: [] for key in keys}
 
     for dicts in dict_list_of_arrays:
         for k, v in dicts.items():
-            result_dict[k] += v.tolist()
+            parts[k].append(v)
 
-    # Convert to arrays
+    # Join each key's arrays as arrays, without a Python object per value
     result_arrays = {}
-    for k, v in result_dict.items():
-        if len(v) > 0:
-            result_arrays[k] = np.array(v, dtype=get_dtype(k))
+    for k, arrays in parts.items():
+        joined = np.concatenate(arrays)
+        if len(joined) > 0:
+            result_arrays[k] = joined.astype(get_dtype(k), copy=False)
 
     # The length of all arrays must match
     length = None

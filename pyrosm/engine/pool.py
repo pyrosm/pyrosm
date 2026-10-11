@@ -168,12 +168,15 @@ def _decode_all(
     bbox_bounds=None,
     requested_tag_keys=None,
     progress=None,
+    spill_all_ways=True,
 ):
     """Decode every data blob (``(offset, size, span)``, see
     :func:`~pyrosm.engine.blobs._data_blob_spans`) into per-block shards (each worker spills one
     shard per block as it is decoded). Returns ``(shard_paths, pool_ok)`` -- the flat list of
     shard paths and whether the decode pool ran (so the collect phase can mirror it instead of
     re-attempting a pool that could not start). ``progress`` is as for :func:`_run_pool`.
+    ``spill_all_ways=False`` leaves out every way's id and node refs, which only the lookup of
+    relation members reads.
     """
     n = len(blobs)
     per = (n + workers - 1) // workers
@@ -189,6 +192,7 @@ def _decode_all(
         include_nodes,
         bbox_bounds,
         requested_tag_keys,
+        spill_all_ways,
     )
     results, pool_ok = _run_pool(
         _decode_batch,
@@ -211,6 +215,7 @@ def _decode_and_run(
     bbox_bounds=None,
     requested_tag_keys=None,
     progress=False,
+    spill_all_ways=True,
 ):
     """Index + parallel-decode ``filepath`` into a temp shard dir, call
     ``run(shard_paths, collect_workers, report)`` and clean up. The shared front half of every
@@ -253,6 +258,7 @@ def _decode_and_run(
                     bbox_bounds,
                     requested_tag_keys,
                     None if report is None else (report, header_bytes, total),
+                    spill_all_ways,
                 )
                 fields["pool"] = pool_ok
             collect_workers = workers if pool_ok else 1

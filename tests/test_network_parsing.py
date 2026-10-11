@@ -32,12 +32,12 @@ def test_output_dir():
 def test_filter_network_by_walking(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
-    from shapely.geometry import MultiLineString
+    from shapely.geometry import LineString
 
     osm = OSM(filepath=test_pbf)
     gdf = osm.get_network(network_type="walking")
 
-    assert isinstance(gdf.loc[0, "geometry"], MultiLineString)
+    assert isinstance(gdf.loc[0, "geometry"], LineString)
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
@@ -71,12 +71,12 @@ def test_filter_network_by_walking(test_pbf):
 def test_filter_network_by_driving(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
-    from shapely.geometry import MultiLineString
+    from shapely.geometry import LineString
 
     osm = OSM(filepath=test_pbf)
     gdf = osm.get_network(network_type="driving")
 
-    assert isinstance(gdf.loc[0, "geometry"], MultiLineString)
+    assert isinstance(gdf.loc[0, "geometry"], LineString)
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
@@ -109,12 +109,12 @@ def test_filter_network_by_driving(test_pbf):
 def test_filter_network_by_driving_with_service_roads(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
-    from shapely.geometry import MultiLineString
+    from shapely.geometry import LineString
 
     osm = OSM(filepath=test_pbf)
     gdf = osm.get_network(network_type="driving+service")
 
-    assert isinstance(gdf.loc[0, "geometry"], MultiLineString)
+    assert isinstance(gdf.loc[0, "geometry"], LineString)
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
@@ -149,12 +149,12 @@ def test_filter_network_by_driving_with_service_roads(test_pbf):
 def test_filter_network_by_cycling(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
-    from shapely.geometry import MultiLineString
+    from shapely.geometry import LineString
 
     osm = OSM(filepath=test_pbf)
     gdf = osm.get_network(network_type="cycling")
 
-    assert isinstance(gdf.loc[0, "geometry"], MultiLineString)
+    assert isinstance(gdf.loc[0, "geometry"], LineString)
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
@@ -191,12 +191,12 @@ def test_filter_network_by_cycling(test_pbf):
 def test_filter_network_by_all(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
-    from shapely.geometry import MultiLineString
+    from shapely.geometry import LineString
 
     osm = OSM(filepath=test_pbf)
     gdf = osm.get_network(network_type="all")
 
-    assert isinstance(gdf.loc[0, "geometry"], MultiLineString)
+    assert isinstance(gdf.loc[0, "geometry"], LineString)
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
@@ -265,14 +265,14 @@ def test_saving_network_to_shapefile(test_pbf, test_output_dir):
 def test_parse_network_with_bbox(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
-    from shapely.geometry import MultiLineString
+    from shapely.geometry import LineString
 
     bounds = [26.94, 60.525, 26.96, 60.535]
     # Init with bounding box
     osm = OSM(filepath=test_pbf, bounding_box=bounds)
     gdf = osm.get_network()
 
-    assert isinstance(gdf.loc[0, "geometry"], MultiLineString)
+    assert isinstance(gdf.loc[0, "geometry"], LineString)
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape (#236: edges crossing the bbox edge are now returned complete
@@ -314,14 +314,14 @@ def test_parse_network_with_bbox(test_pbf):
 def test_parse_network_with_shapely_bbox(test_pbf):
     from pyrosm import OSM
     from geopandas import GeoDataFrame
-    from shapely.geometry import MultiLineString, box
+    from shapely.geometry import LineString, box
 
     bounds = box(*[26.94, 60.525, 26.96, 60.535])
     # Init with bounding box
     osm = OSM(filepath=test_pbf, bounding_box=bounds)
     gdf = osm.get_network()
 
-    assert isinstance(gdf.loc[0, "geometry"], MultiLineString)
+    assert isinstance(gdf.loc[0, "geometry"], LineString)
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape (#236: edges crossing the bbox edge are now returned complete
@@ -513,7 +513,7 @@ def test_reading_network_from_osh(helsinki_history_pbf):
     from pyrosm.utils import datetime_to_unix_time
     import pandas as pd
     from geopandas import GeoDataFrame
-    from shapely.geometry import MultiLineString
+    from shapely.geometry import LineString
 
     timestamp = "2010-01-01"
     dt = pd.to_datetime(timestamp, utc=True)
@@ -523,7 +523,7 @@ def test_reading_network_from_osh(helsinki_history_pbf):
     gdf = osm.get_network(timestamp=timestamp)
 
     assert isinstance(gdf, GeoDataFrame)
-    assert isinstance(gdf.loc[0, "geometry"], MultiLineString)
+    assert isinstance(gdf.loc[0, "geometry"], LineString)
     assert gdf.shape == (171, 21)
 
     required_cols = ["highway", "id", "timestamp", "version", "geometry"]

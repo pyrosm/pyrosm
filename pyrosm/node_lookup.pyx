@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from cykhash import Int64toInt64Map_from_buffers, Int64toInt64Map_to
 
 
@@ -67,6 +68,24 @@ cdef class NodeLocations:
         lon[found] = np.asarray(self._lon)[rows]
         lat[found] = np.asarray(self._lat)[rows]
         return idx, lon, lat
+
+    def columns_at(self, rows):
+        """The store's columns other than ``id`` at ``rows``, in the order of a node
+        record, with the dtypes a frame of node records gets: integers as int64, floats
+        as float64 and object columns as pandas infers them (e.g. bools as bool)."""
+        cdef str c
+        rows = np.asarray(rows, dtype=np.int64)
+        columns = {}
+        for c in self._column_order:
+            values = np.asarray(self._columns[c])[rows]
+            if values.dtype.kind in "iu":
+                values = values.astype(np.int64)
+            elif values.dtype.kind == "f":
+                values = values.astype(np.float64)
+            elif values.dtype == object:
+                values = pd.Series(values, dtype=object).infer_objects().to_numpy()
+            columns[c] = values
+        return columns
 
     cdef dict _base_record(self, long long idx):
         cdef str c

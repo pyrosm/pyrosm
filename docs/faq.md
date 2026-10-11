@@ -157,8 +157,10 @@ the graph directly.
 
 :::{dropdown} How do I find street intersections and their coordinates?
 
-Build a graph with `to_graph(..., simplify=True)`. Simplification reduces the network to its
-topological nodes — every node is a real intersection or a dead-end — and each node carries
+Build a graph with `to_graph(..., simplify_kwargs={"edge_attrs_differ": None})`. This
+simplification reduces the network to its topological nodes — every node is a real intersection
+or a dead-end (the default one also keeps the nodes where the speed limit or road class
+changes) — and each node carries
 `x`/`y` (longitude/latitude in EPSG:4326), a Point `geometry`, and a `street_count` (how many
 streets meet there). Keep the nodes where three or more streets meet:
 
@@ -168,7 +170,9 @@ from pyrosm import OSM, get_data
 
 osm = OSM(get_data("Helsinki"))
 nodes, edges = osm.get_network(network_type="driving", nodes=True)
-G = osm.to_graph(nodes, edges, graph_type="networkx", simplify=True)
+G = osm.to_graph(
+    nodes, edges, graph_type="networkx", simplify_kwargs={"edge_attrs_differ": None}
+)
 
 intersections = gpd.GeoDataFrame(
     [

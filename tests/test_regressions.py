@@ -264,7 +264,9 @@ def test_get_network_custom_filter_graph_export():
         nodes=True,
     )
 
-    graph = OSM.to_graph(nodes, edges, graph_type="networkx", retain_all=True)
+    graph = OSM.to_graph(
+        nodes, edges, graph_type="networkx", retain_all=True, simplify=False
+    )
     assert graph.number_of_nodes() > 0
     assert graph.number_of_nodes() == len(nodes)
 
@@ -1529,6 +1531,7 @@ def test_networkx_export_accepts_edges_with_gaps_in_index():
         graph_type="networkx",
         network_type="walking",
         retain_all=True,
+        simplify=False,
     )
     # Walking edges are bidirectional, so each row gives an edge to both directions.
     assert graph.number_of_edges() == 2 * len(subset)
@@ -1562,6 +1565,7 @@ def test_directed_edges_handle_duplicate_index_labels():
         graph_type="networkx",
         network_type="driving",
         retain_all=True,
+        simplify=False,
     )
     assert graph.number_of_edges() == len(directed)
 
@@ -2084,3 +2088,213 @@ def test_history_read_before_the_first_way_finds_no_network(bounding_box):
     osm = OSM(get_data("helsinki_test_history_pbf"), bounding_box=bounding_box)
     with pytest.warns(UserWarning, match="Could not find any edges"):
         assert osm.get_network(timestamp="2007-01-15") is None
+
+
+def test_parse_joins_block_arrays_in_each_keys_dtype():
+    """The parse joins its per-block arrays per key, in block order and in each key's
+    dtype; tag dicts stay the same objects, a key without values is left out, and blocks
+    whose columns differ in length are refused."""
+    import numpy as np
+    from pyrosm._arrays import concatenate_dicts_of_arrays
+
+    tags = np.empty(2, dtype=object)
+    tags[:] = [{"amenity": "cafe"}, None]
+    first = {
+        "id": np.array([1, 2]),
+        "version": np.array([3, 4]),
+        "timestamp": np.array([5, 6]),
+        "changeset": np.array([7, 8]),
+        "lon": np.array([24.5, 24.6]),
+        "visible": np.array([True, False]),
+        "tags": tags,
+        "empty": np.empty(0),
+    }
+    second = {key: values[:1] for key, values in first.items()}
+    joined = concatenate_dicts_of_arrays([first, second])
+
+    expected = {
+        "id": ("int64", [1, 2, 1]),
+        "version": ("int32", [3, 4, 3]),
+        "timestamp": ("uint32", [5, 6, 5]),
+        "changeset": ("int32", [7, 8, 7]),
+        "lon": ("float64", [24.5, 24.6, 24.5]),
+        "visible": ("object", [True, False, True]),
+        "tags": ("object", [tags[0], None, tags[0]]),
+    }
+    assert list(joined) == list(expected)
+    for key, (dtype, values) in expected.items():
+        assert joined[key].dtype == dtype
+        assert joined[key].tolist() == values
+    assert joined["tags"][0] is tags[0] and joined["tags"][2] is tags[0]
+    assert all(type(value) is bool for value in joined["visible"])
+    with pytest.raises(AssertionError):
+        concatenate_dicts_of_arrays([{"id": np.array([1]), "lon": np.array([1.0, 2.0])}])
+
+
+def test_orient_polygons_returns_points_and_lines_as_they_are():
+    """Ring orientation (#230) applies to polygons, multipolygons and the polygons of a
+    geometry collection; points, lines and missing geometries come back as the same
+    objects instead of copies."""
+    import numpy as np
+    import shapely
+    from shapely.geometry import GeometryCollection, LineString, Point, Polygon
+    from pyrosm.geometry import orient_polygons
+
+    clockwise = Polygon(
+        [(0, 0), (0, 4), (4, 4), (4, 0)], [[(1, 1), (2, 1), (2, 2), (1, 2)]]
+    )
+    geometries = np.array(
+        [
+            Point(0, 0),
+            LineString([(0, 0), (1, 1)]),
+            clockwise,
+            GeometryCollection([clockwise, Point(5, 5)]),
+            None,
+        ],
+        dtype=object,
+    )
+    oriented = orient_polygons(geometries)
+
+    assert oriented[0] is geometries[0]
+    assert oriented[1] is geometries[1]
+    assert oriented[4] is None
+    expected = shapely.orient_polygons(geometries[2:4], exterior_cw=False)
+    assert shapely.equals_exact(oriented[2:4], expected, tolerance=0).all()
+    assert oriented[2].exterior.is_ccw and not oriented[2].interiors[0].is_ccw
+    assert oriented[3].geoms[0].exterior.is_ccw
+
+
+def test_network_edges_are_one_linestring_per_way():
+    """Each network edge is one LineString through its way's nodes that have valid
+    coordinates, in the way's order, and its length is the haversine sum of its segments
+    (millimetres per segment, metres per edge)."""
+    import numpy as np
+    from pyrosm import OSM, get_data
+    from pyrosm.distance import Unit, haversine
+
+    osm = OSM(get_data("helsinki_pbf"), keep_node_info=True)
+    edges = osm.get_network("all")
+    assert set(edges.geometry.geom_type) == {"LineString"}
+
+    partial = 0
+    for nodes, line, length in zip(edges["nodes"], edges.geometry, edges["length"]):
+        idx, lon, lat = osm._node_coordinates.gather(np.asarray(nodes, dtype=np.int64))
+        kept = (idx >= 0) & (np.abs(lon) <= 180) & (np.abs(lat) <= 90)
+        partial += not kept.all()
+        lon, lat = lon[kept], lat[kept]
+        assert np.array_equal(np.asarray(line.coords), np.column_stack([lon, lat]))
+        segments = haversine(lat[:-1], lon[:-1], lat[1:], lon[1:], unit=Unit.METERS)
+        assert length == segments.round(3).sum().round(0)
+    assert partial > 0
+
+
+def test_result_cache_key_changes_with_its_format(monkeypatch):
+    """A result cached under another cache format is not served: the format number is part
+    of the result's cache key."""
+    from pyrosm import get_data
+    from pyrosm.engine import cache
+
+    fp = get_data("test_pbf")
+    before = cache.result_path(fp, {"network": True})
+    monkeypatch.setattr(cache, "_RESULT_FORMAT", cache._RESULT_FORMAT + 1)
+    assert cache.result_path(fp, {"network": True}) != before
+
+
+def test_line_ways_of_other_layers_are_one_linestring():
+    """Outside the network, a way that is not an area is one LineString through its nodes
+    that have valid coordinates: an open way, a closed highway ring and a closed
+    ``area=no`` way alike; a closed way without such tags stays a Polygon."""
+    import numpy as np
+    import pandas as pd
+    from pyrosm.geometry import create_way_geometries
+    from pyrosm.node_lookup import NodeLocations
+
+    xy = {1: (0.0, 0.0), 2: (1.0, 0.0), 3: (1.0, 1.0), 4: (0.0, 1.0)}
+    store = NodeLocations(
+        pd.DataFrame(
+            {
+                "id": np.array(list(xy), dtype=np.int64),
+                "lon": [x for x, _ in xy.values()],
+                "lat": [y for _, y in xy.values()],
+            }
+        )
+    )
+    ring = [1, 2, 3, 4, 1]
+    ways = [
+        ([1, 2, 3], None, None, [1, 2, 3], "LineString"),
+        ([1, 2], None, None, [1, 2], "LineString"),
+        (ring, "residential", None, ring, "LineString"),
+        (ring, None, "no", ring, "LineString"),
+        (ring, None, None, ring, "Polygon"),
+        ([1, 99, 3], None, None, [1, 3], "LineString"),
+    ]
+    nodes = np.empty(len(ways), dtype=object)
+    nodes[:] = [np.array(w[0], dtype=np.int64) for w in ways]
+    elements = {
+        "id": np.arange(len(ways), dtype=np.int64),
+        "nodes": nodes,
+        "highway": np.array([w[1] for w in ways], dtype=object),
+        "area": np.array([w[2] for w in ways], dtype=object),
+    }
+    _, geometries, _, _, _ = create_way_geometries(store, elements, False)
+
+    for geometry, (_, _, _, expected, kind) in zip(geometries, ways):
+        assert geometry.geom_type == kind
+        coords = geometry.exterior.coords if kind == "Polygon" else geometry.coords
+        assert [tuple(c) for c in coords] == [xy[n] for n in expected]
+
+
+def test_graph_edges_join_consecutive_nodes_of_each_way():
+    """``get_network(nodes=True)`` returns one 2-point edge per pair of consecutive way
+    nodes with valid coordinates (from ``u`` to ``v``), and one node row per node those
+    edges use, with the node columns' dtypes."""
+    import numpy as np
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), keep_node_info=True)
+    nodes, edges = osm.get_network("all", nodes=True)
+
+    expected_u, expected_v = [], []
+    for way_nodes in edges.drop_duplicates("id")["nodes"]:
+        idx, lon, lat = osm._node_coordinates.gather(np.asarray(way_nodes, dtype=np.int64))
+        kept = np.asarray(way_nodes)[(idx >= 0) & (np.abs(lon) <= 180) & (np.abs(lat) <= 90)]
+        expected_u.extend(kept[:-1])
+        expected_v.extend(kept[1:])
+    assert edges["u"].tolist() == expected_u
+    assert edges["v"].tolist() == expected_v
+    assert (edges.geometry.apply(lambda g: len(g.coords)) == 2).all()
+
+    assert nodes["id"].is_unique
+    assert set(nodes["id"]) == set(edges["u"]) | set(edges["v"])
+    assert nodes.dtypes[["lon", "lat"]].tolist() == ["float64", "float64"]
+    assert nodes.dtypes[["version", "timestamp", "changeset", "id"]].tolist() == ["int64"] * 4
+    assert nodes["visible"].dtype == bool
+
+
+def test_decode_spills_every_ways_refs_only_for_relation_lookups(monkeypatch):
+    """The out-of-core decode spills every way's id and node refs, which only the lookup of
+    relation members reads, unless told not to (as for a network read)."""
+    from pyrosm import get_data
+    from pyrosm.engine import decode
+    from pyrosm.engine.blobs import _index_blobs, _read_block
+    from pyrosm.primitive_block_decoder import decode_primitive_block
+
+    fp = get_data("test_pbf")
+    with open(fp, "rb") as f:
+        blocks = [
+            decode_primitive_block(_read_block(f, offset, size))
+            for kind, offset, size in _index_blobs(fp)
+            if kind == "OSMData"
+        ]
+    monkeypatch.setattr(decode, "_OSM_KEYS", [b"highway"])
+    monkeypatch.setattr(decode, "_INCLUDE_NODES", False)
+    monkeypatch.setattr(decode, "_BBOX_BOUNDS", None)
+    monkeypatch.setattr(decode, "_REQUESTED_TAG_KEYS", None)
+    spilled = {}
+    for spill in (True, False):
+        monkeypatch.setattr(decode, "_SPILL_ALL_WAYS", spill)
+        shards = [decode._decode_one_block(*block) for block in blocks]
+        spilled[spill] = sum(len(shard["all_refs"]) for shard in shards)
+        assert sum(len(shard["way_id"]) for shard in shards) > 0
+    assert spilled[True] > 0
+    assert spilled[False] == 0

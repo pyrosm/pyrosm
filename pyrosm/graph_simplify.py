@@ -256,7 +256,7 @@ def simplify_graph(
     to_id_col="v",
     node_id_col="id",
     length_cols=("length",),
-    edge_attrs_differ=None,
+    edge_attrs_differ=("maxspeed", "highway"),
     node_attrs_include=None,
     remove_rings=True,
     track_merged=False,
@@ -268,6 +268,11 @@ def simplify_graph(
     the semantics of ``osmnx.simplification.simplify_graph``. Operates on the *directed*
     representation pyrosm builds in ``get_directed_edges`` (two reciprocal rows per two-way
     street), before the data is handed to an exporter.
+
+    A chain is not merged across a change of ``maxspeed`` or ``highway`` (the default
+    ``edge_attrs_differ``; a missing value next to a set one counts as a change), so each
+    simplified edge has one speed limit and one road class; ``edge_attrs_differ=None``
+    merges across them as OSMnx does by default.
 
     Where two or more edges run between the same two consecutive nodes of a chain
     (typically duplicate OSM ways drawn over one street), only the first is kept, as in
