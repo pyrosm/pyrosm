@@ -83,18 +83,33 @@ def _key_indices(string_table, osm_keys):
     return [string_table.index(k) for k in osm_keys if k in string_table]
 
 
-def _resolve_tags(string_table, keys, vals, start, end, keep_indices=None):
-    """The ``{key: value}`` tag dict for one element, resolved through the string table
-    (decoded to str, as pyrosm's protobuf path produces). When ``keep_indices`` is given,
-    only the pairs whose key is one of those string-table indices are resolved -- the
-    ``keep_other_tags=False`` minimal-tags mode that skips the unwanted tags entirely.
+def _decoded(string_table):
+    """A function returning the block's string table as str (decoded as pyrosm's protobuf
+    path decodes it). It decodes the table on its first call only, so the block's way and
+    relation tags decode each string once and share their string objects."""
+    table = []
+
+    def strings():
+        if not table:
+            table.append([s.decode("utf-8", "replace") for s in string_table])
+        return table[0]
+
+    return strings
+
+
+def _resolve_tags(strings, keys, vals, start, end, keep_indices=None):
+    """The ``{key: value}`` tag dict for one element, resolved through the block's decoded
+    string table ``strings``; ``keys``/``vals`` are lists of string ids. When
+    ``keep_indices`` is given, only the pairs whose key is one of those string-table
+    indices are resolved -- the ``keep_other_tags=False`` minimal-tags mode that skips the
+    unwanted tags entirely.
     """
+    if keep_indices is None:
+        return {strings[keys[p]]: strings[vals[p]] for p in range(start, end)}
     return {
-        string_table[keys[p]]
-        .decode("utf-8", "replace"): string_table[vals[p]]
-        .decode("utf-8", "replace")
+        strings[keys[p]]: strings[vals[p]]
         for p in range(start, end)
-        if keep_indices is None or keys[p] in keep_indices
+        if keys[p] in keep_indices
     }
 
 
@@ -106,10 +121,11 @@ def _requested_keep_indices(string_table):
     return set(_key_indices(string_table, _REQUESTED_TAG_KEYS))
 
 
-def _matching_ways(string_table, ways, osm_keys):
+def _matching_ways(string_table, ways, osm_keys, strings=None):
     """Select the ways carrying any of ``osm_keys`` and return, per matching way, its
     node-ref slice, full (resolved) tag dict and ``version``/``timestamp``/``visible``
-    metadata -- everything pyrosm's way record carries. Returns a dict of parallel
+    metadata -- everything pyrosm's way record carries. ``strings`` is the block's
+    :func:`_decoded` table (made here when not given). Returns a dict of parallel
     arrays/lists, or ``None``."""
     if ways is None:
         return None
@@ -125,14 +141,16 @@ def _matching_ways(string_table, ways, osm_keys):
     way_index = np.unique(np.searchsorted(tags_off, key_positions, side="right") - 1)
     refs, refs_off = ways["refs"], ways["refs_off"]
     keep_indices = _requested_keep_indices(string_table)
+    strings = (strings or _decoded(string_table))()
+    keys, vals, tags_off = keys.tolist(), vals.tolist(), tags_off.tolist()
     return {
         "id": ways["id"][way_index],
         "refs": [refs[refs_off[i] : refs_off[i + 1]] for i in way_index],
         "tags": [
             _resolve_tags(
-                string_table, keys, vals, tags_off[i], tags_off[i + 1], keep_indices
+                strings, keys, vals, tags_off[i], tags_off[i + 1], keep_indices
             )
-            for i in way_index
+            for i in way_index.tolist()
         ],
         "version": ways["version"][way_index],
         "timestamp": ways["timestamp"][way_index],
@@ -256,11 +274,12 @@ def _node_records_by_id(string_table, header, nodes, wanted, keep_metadata):
     return record
 
 
-def _layer_relations(string_table, relations, osm_keys):
+def _layer_relations(string_table, relations, osm_keys, strings=None):
     """The relations carrying any of ``osm_keys`` in this block. Yields, per relation, its
     id, member id/type/role arrays, full tag dict and ``version``/``timestamp``/
     ``changeset`` metadata -- everything pyrosm needs to assemble the (multi)polygon and
-    its columns. Member roles and tags are resolved through the block's string table."""
+    its columns. Member roles and tags are resolved through the block's string table,
+    ``strings`` being its :func:`_decoded` table (made here when not given)."""
     if relations is None:
         return
     key_indices = _key_indices(string_table, osm_keys)
@@ -284,14 +303,13 @@ def _layer_relations(string_table, relations, osm_keys):
         relations["members_off"],
     )
     keep_indices = _requested_keep_indices(string_table)
+    strings = (strings or _decoded(string_table))()
+    keys, vals = keys.tolist(), vals.tolist()
     for i in rel_index:
         s, e = moff[i], moff[i + 1]
-        member_role = np.array(
-            [string_table[r].decode("utf-8", "replace") for r in roles[s:e]],
-            dtype=object,
-        )
+        member_role = np.array([strings[r] for r in roles[s:e]], dtype=object)
         tags = _resolve_tags(
-            string_table, keys, vals, tags_off[i], tags_off[i + 1], keep_indices
+            strings, keys, vals, tags_off[i], tags_off[i + 1], keep_indices
         )
         yield {
             "id": ids[i],
@@ -332,6 +350,7 @@ def _decode_one_block(string_table, header, nodes, ways, relations):
     way_version, way_timestamp, way_visible = [], [], []
     all_id, all_refs, all_count = [], [], []
     rel = {k: [] for k in ("id", "memid", "memtype", "memrole", "tags", "meta")}
+    strings = _decoded(string_table)
 
     if nodes is not None:
         gran = header["granularity"]
@@ -371,7 +390,7 @@ def _decode_one_block(string_table, header, nodes, ways, relations):
             all_id.append(ways["id"])
             all_refs.append(ways["refs"])
             all_count.append(np.diff(ways["refs_off"]))
-        found = _matching_ways(string_table, ways, _OSM_KEYS)
+        found = _matching_ways(string_table, ways, _OSM_KEYS, strings)
         if found is not None:
             way_match_id.append(found["id"])
             way_match_refs.extend(found["refs"])
@@ -379,7 +398,7 @@ def _decode_one_block(string_table, header, nodes, ways, relations):
             way_version.append(found["version"])
             way_timestamp.append(found["timestamp"])
             way_visible.append(found["visible"])
-    for r in _layer_relations(string_table, relations, _OSM_KEYS):
+    for r in _layer_relations(string_table, relations, _OSM_KEYS, strings):
         rel["id"].append(r["id"])
         rel["memid"].append(r["memid"])
         rel["memtype"].append(r["memtype"])

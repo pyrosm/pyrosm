@@ -2112,3 +2112,74 @@ def test_gather_node_shards_matches_searching_every_id(tmp_path, needed):
     expected = _gather_every_shard_id(paths, needed)
     for got, want in zip(result, expected):
         np.testing.assert_array_equal(got, want)
+
+
+@pytest.mark.parametrize("requested", [None, [b"highway"]], ids=["all_tags", "minimal"])
+def test_way_tags_replace_invalid_utf8(monkeypatch, requested):
+    """Way tags resolve through the block's string table with invalid UTF-8 bytes
+    replaced, resolving every tag or (minimal-tags mode) only the requested keys."""
+    from pyrosm.engine import decode
+
+    monkeypatch.setattr(decode, "_REQUESTED_TAG_KEYS", requested)
+    string_table = [b"", b"highway", b"bad\xffvalue", b"name"]
+    ways = {
+        "id": np.array([1, 2]),
+        "keys": np.array([1, 3, 1]),
+        "vals": np.array([2, 2, 2]),
+        "tags_off": np.array([0, 2, 3]),
+        "refs": np.array([10, 11, 12]),
+        "refs_off": np.array([0, 2, 3]),
+        "version": np.array([1, 1]),
+        "timestamp": np.array([0, 0]),
+        "visible": np.array([1, 1]),
+    }
+    found = decode._matching_ways(string_table, ways, [b"highway"])
+    value = "bad\ufffdvalue"
+    first = {"highway": value} if requested else {"highway": value, "name": value}
+    assert found["tags"] == [first, {"highway": value}]
+
+
+def test_block_tags_share_one_decoded_string_table(monkeypatch):
+    """A block's way and relation tags resolve through one decode of its string table:
+    their strings are the same objects, with invalid UTF-8 bytes replaced."""
+    from pyrosm.engine import decode
+
+    for name, value in [
+        ("_OSM_KEYS", [b"building"]),
+        ("_INCLUDE_NODES", False),
+        ("_BBOX_BOUNDS", None),
+        ("_REQUESTED_TAG_KEYS", None),
+        ("_SPILL_ALL_WAYS", False),
+    ]:
+        monkeypatch.setattr(decode, name, value)
+    string_table = [b"", b"building", b"ye\xffs", b"type", b"multipolygon", b"outer"]
+    meta = {"version": np.array([1]), "timestamp": np.array([0])}
+    ways = {
+        "id": np.array([1]),
+        "keys": np.array([1]),
+        "vals": np.array([2]),
+        "tags_off": np.array([0, 1]),
+        "refs": np.array([10, 11, 10]),
+        "refs_off": np.array([0, 3]),
+        "visible": np.array([1]),
+        **meta,
+    }
+    relations = {
+        "id": np.array([9]),
+        "keys": np.array([1, 3]),
+        "vals": np.array([2, 4]),
+        "tags_off": np.array([0, 2]),
+        "memids": np.array([1]),
+        "members_off": np.array([0, 1]),
+        "types": np.array([1]),
+        "roles": np.array([5]),
+        "changeset": np.array([0]),
+        **meta,
+    }
+    header = {"granularity": 100, "lat_offset": 0, "lon_offset": 0}
+    shard = decode._decode_one_block(string_table, header, None, ways, relations)
+    way_tags, relation_tags = shard["way_tags"][0], shard["rel_tags"][0]
+    assert way_tags == {"building": "ye\ufffds"}
+    assert relation_tags == {"building": "ye\ufffds", "type": "multipolygon"}
+    assert way_tags["building"] is relation_tags["building"]
+    assert shard["rel_memrole"].tolist() == ["outer"]
