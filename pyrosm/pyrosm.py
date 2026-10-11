@@ -1137,12 +1137,6 @@ class OSM:
         """
 
         if self._use_engine(timestamp):
-            if custom_filter is None:
-                raise NotImplementedError(
-                    "get_data_by_custom_criteria(custom_filter=None) ('return everything') "
-                    "is not yet supported by the out-of-core engine; pass an explicit "
-                    "custom_filter."
-                )
             return self._read_engine(
                 engine_backend.get_data_by_custom_criteria,
                 custom_filter=custom_filter,
@@ -1201,10 +1195,7 @@ class OSM:
                 # No key filter to derive columns from: expose the default columns
                 # of every known feature, so common tags become columns and the
                 # rest land in the JSON 'tags' column.
-                tags_as_columns = []
-                for k in self.conf.tags.available:
-                    tags_as_columns += getattr(self.conf.tags, k)
-                tags_as_columns = list(dict.fromkeys(tags_as_columns))
+                tags_as_columns = self.conf.tags._every_feature_columns()
             else:
                 tags_as_columns = []
                 for k in custom_filter.keys():

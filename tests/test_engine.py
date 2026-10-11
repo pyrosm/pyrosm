@@ -1825,8 +1825,6 @@ def test_osm_engine_validation_and_unsupported_combos(helsinki_pbf):
     # (history timestamps require an .osh.pbf) -- the engine does not silently ignore it.
     with pytest.raises(ValueError):
         ooc.get_buildings(timestamp="2021-01-01 00:00:00")
-    with pytest.raises(NotImplementedError):
-        ooc.get_data_by_custom_criteria(custom_filter=None)
 
 
 def test_osm_workers_validation(test_pbf):
@@ -2223,3 +2221,66 @@ def test_keep_node_info_is_part_of_a_cached_read(test_pbf, fresh_cache, monkeypa
     for frame in (kept, cached):
         _assert_full_parity(frame, ref)
         assert all(isinstance(v, list) and type(v[0]) is int for v in frame["nodes"])
+
+
+def _untagged_relation_member_ways(fp):
+    """How many ways of ``fp`` are untagged members of a tagged relation."""
+    from pyrosm.engine.blobs import _index_blobs, _read_block
+    from pyrosm.primitive_block_decoder import decode_primitive_block
+
+    untagged, members = set(), set()
+    with open(fp, "rb") as f:
+        for kind, offset, size in _index_blobs(fp):
+            if kind != "OSMData":
+                continue
+            block = decode_primitive_block(_read_block(f, offset, size))
+            ways, relations = block[3], block[4]
+            if ways is not None:
+                untagged |= set(ways["id"][np.diff(ways["tags_off"]) == 0].tolist())
+            if relations is not None:
+                counts = np.diff(relations["members_off"])
+                owner = np.repeat(np.arange(len(counts)), counts)
+                tagged = np.diff(relations["tags_off"]) > 0
+                way_member = (relations["types"] == 1) & tagged[owner]
+                members |= set(relations["memids"][way_member].tolist())
+    return len(untagged & members)
+
+
+@pytest.mark.parametrize(
+    "fixture, options, constructor",
+    [
+        ("helsinki_pbf", {}, {}),
+        ("test_pbf", {}, {}),
+        ("test_pbf", {"keep_nodes": False}, {}),
+        ("test_pbf", {"keep_ways": False}, {}),
+        ("test_pbf", {"keep_relations": False}, {}),
+        ("test_pbf", {}, {"keep_metadata": False}),
+        ("test_pbf", {"filter_type": "exclude"}, {}),
+    ],
+    ids=[
+        "helsinki",
+        "all",
+        "no_nodes",
+        "no_ways",
+        "no_relations",
+        "no_metadata",
+        "exclude",
+    ],
+)
+def test_osm_custom_criteria_everything_matches_in_memory(
+    fixture, options, constructor, request
+):
+    """custom_filter=None reads every tagged element with the out-of-core engine as the
+    in-memory reader does: tagged nodes, ways and relations -- on Helsinki also relations
+    whose member ways are untagged -- with each element kind left out, without metadata,
+    and with a filter_type, which it does not use."""
+    fp = request.getfixturevalue(fixture)
+    mine = OSM(
+        fp, engine="out_of_core", workers=1, **constructor
+    ).get_data_by_custom_criteria(None, **options)
+    ref = OSM(fp, **constructor).get_data_by_custom_criteria(None, **options)
+    if not options and not constructor:
+        assert {"node", "way", "relation"} <= set(ref["osm_type"])
+    if fixture == "helsinki_pbf":
+        assert _untagged_relation_member_ways(fp) > 0
+    _assert_full_parity(mine, ref)

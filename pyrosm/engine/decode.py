@@ -121,24 +121,33 @@ def _requested_keep_indices(string_table):
     return set(_key_indices(string_table, _REQUESTED_TAG_KEYS))
 
 
-def _matching_ways(string_table, ways, osm_keys, strings=None):
-    """Select the ways carrying any of ``osm_keys`` and return, per matching way, its
-    node-ref slice, full (resolved) tag dict and ``version``/``timestamp``/``visible``
-    metadata -- everything pyrosm's way record carries. ``strings`` is the block's
-    :func:`_decoded` table (made here when not given). Returns a dict of parallel
-    arrays/lists, or ``None``."""
-    if ways is None:
-        return None
+def _tagged_elements(string_table, elements, osm_keys):
+    """Indices of the ways or relations in ``elements`` carrying any of ``osm_keys``, or
+    any tag at all when ``osm_keys`` is ``None`` (a read with no key filter)."""
+    tags_off = elements["tags_off"]
+    if osm_keys is None:
+        return np.flatnonzero(np.diff(tags_off) > 0)
     key_indices = _key_indices(string_table, osm_keys)
     if not key_indices:
+        return np.empty(0, dtype=np.int64)
+    key_positions = np.nonzero(np.isin(elements["keys"], key_indices))[0]
+    # A tag key belongs to the element whose [tags_off[i], tags_off[i+1]) slice contains
+    # it; an element may carry several filter keys, so de-duplicate.
+    return np.unique(np.searchsorted(tags_off, key_positions, side="right") - 1)
+
+
+def _matching_ways(string_table, ways, osm_keys, strings=None):
+    """Select the ways carrying any of ``osm_keys`` (any tag when ``None``) and return,
+    per matching way, its node-ref slice, full (resolved) tag dict and
+    ``version``/``timestamp``/``visible`` metadata -- everything pyrosm's way record
+    carries. ``strings`` is the block's :func:`_decoded` table (made here when not given).
+    Returns a dict of parallel arrays/lists, or ``None``."""
+    if ways is None:
+        return None
+    way_index = _tagged_elements(string_table, ways, osm_keys)
+    if len(way_index) == 0:
         return None
     keys, vals, tags_off = ways["keys"], ways["vals"], ways["tags_off"]
-    key_positions = np.nonzero(np.isin(keys, key_indices))[0]
-    if len(key_positions) == 0:
-        return None
-    # A tag key belongs to the way whose [tags_off[i], tags_off[i+1]) slice contains it;
-    # a way may carry several filter keys, so de-duplicate.
-    way_index = np.unique(np.searchsorted(tags_off, key_positions, side="right") - 1)
     refs, refs_off = ways["refs"], ways["refs_off"]
     keep_indices = _requested_keep_indices(string_table)
     strings = (strings or _decoded(string_table))()
@@ -159,16 +168,19 @@ def _matching_ways(string_table, ways, osm_keys, strings=None):
 
 
 def _matching_nodes(string_table, nodes, osm_keys, node_lon, node_lat):
-    """Dense nodes carrying any of ``osm_keys`` -> a dict of parallel arrays/lists
-    (``id`` / ``lon`` / ``lat`` / ``tags`` + ``version`` / ``timestamp`` / ``changeset`` /
-    ``visible`` metadata) for the matching nodes, or ``None``. Tags are parsed from the
-    block's dense ``keys_vals`` stream; untagged nodes (the vast majority) cost nothing.
+    """Dense nodes carrying any of ``osm_keys`` (any tag when ``None``) -> a dict of
+    parallel arrays/lists (``id`` / ``lon`` / ``lat`` / ``tags`` + ``version`` /
+    ``timestamp`` / ``changeset`` / ``visible`` metadata) for the matching nodes, or
+    ``None``. Tags are parsed from the block's dense ``keys_vals`` stream; untagged nodes
+    (the vast majority) cost nothing.
     """
     if nodes is None:
         return None
-    key_indices = set(_key_indices(string_table, osm_keys))
+    key_indices = (
+        None if osm_keys is None else set(_key_indices(string_table, osm_keys))
+    )
     keys_vals = nodes["keys_vals"]
-    if not key_indices or len(keys_vals) == 0:
+    if key_indices == set() or len(keys_vals) == 0:
         return None
     keep_indices = _requested_keep_indices(string_table)
     ids = nodes["id"]
@@ -181,7 +193,7 @@ def _matching_nodes(string_table, nodes, osm_keys, node_lon, node_lat):
             k, v = keys_vals[p], keys_vals[p + 1]
             p += 2
             pairs.append((k, v))
-            if k in key_indices:
+            if key_indices is None or k in key_indices:
                 matched = True
         p += 1  # skip the per-node 0 terminator
         if matched:
@@ -275,21 +287,18 @@ def _node_records_by_id(string_table, header, nodes, wanted, keep_metadata):
 
 
 def _layer_relations(string_table, relations, osm_keys, strings=None):
-    """The relations carrying any of ``osm_keys`` in this block. Yields, per relation, its
-    id, member id/type/role arrays, full tag dict and ``version``/``timestamp``/
-    ``changeset`` metadata -- everything pyrosm needs to assemble the (multi)polygon and
-    its columns. Member roles and tags are resolved through the block's string table,
-    ``strings`` being its :func:`_decoded` table (made here when not given)."""
+    """The relations carrying any of ``osm_keys`` (any tag when ``None``) in this block.
+    Yields, per relation, its id, member id/type/role arrays, full tag dict and
+    ``version``/``timestamp``/``changeset`` metadata -- everything pyrosm needs to
+    assemble the (multi)polygon and its columns. Member roles and tags are resolved
+    through the block's string table, ``strings`` being its :func:`_decoded` table (made
+    here when not given)."""
     if relations is None:
         return
-    key_indices = _key_indices(string_table, osm_keys)
-    if not key_indices:
-        return
-    key_positions = np.nonzero(np.isin(relations["keys"], key_indices))[0]
-    if len(key_positions) == 0:
+    rel_index = _tagged_elements(string_table, relations, osm_keys)
+    if len(rel_index) == 0:
         return
     tags_off = relations["tags_off"]
-    rel_index = np.unique(np.searchsorted(tags_off, key_positions, side="right") - 1)
     ids, keys, vals = relations["id"], relations["keys"], relations["vals"]
     version, timestamp, changeset = (
         relations["version"],
