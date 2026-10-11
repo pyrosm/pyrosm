@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from cykhash import Int64toInt64Map_from_buffers, Int64toInt64Map_to
+from pyrosm.way_store import NodeTags
 
 
 cdef class NodeLocations:
@@ -13,21 +14,27 @@ cdef class NodeLocations:
     graph-node attributes) is rebuilt on demand from the column arrays in the
     original column order, so the observable output is unchanged."""
 
-    def __init__(self, coords_df):
+    def __init__(self, coords):
+        """``coords``: the node columns, with ``id``, as a DataFrame or a dict of
+        arrays."""
         cdef str c
         # from_buffers takes writable int64 buffers; pandas' to_numpy() can be
-        # read-only, so ensure a writable copy for the (transient) build inputs.
-        ids = np.ascontiguousarray(coords_df["id"].to_numpy(), dtype=np.int64)
+        # read-only, so a read-only id array is copied. A writable int64 one (from a
+        # dict) is used as is, shared with its owner.
+        ids = np.ascontiguousarray(np.asarray(coords["id"]), dtype=np.int64)
         if not ids.flags.writeable:
             ids = ids.copy()
         self._ids = ids
         indices = np.arange(len(ids), dtype=np.int64)
         self._id2idx = Int64toInt64Map_from_buffers(ids, indices)
 
-        # Every column except 'id' (re-added per record), in coords_df column
+        # Every column except 'id' (re-added per record), in coords column
         # order, so a reconstructed node record matches the previous layout.
-        self._column_order = [c for c in coords_df.columns if c != "id"]
-        self._columns = {c: coords_df[c].to_numpy() for c in self._column_order}
+        self._column_order = [c for c in coords.keys() if c != "id"]
+        self._columns = {
+            c: coords[c] if isinstance(coords[c], NodeTags) else np.asarray(coords[c])
+            for c in self._column_order
+        }
 
         # Contiguous float64 arrays back the hot lon/lat reads; reuse the same
         # objects in _columns so a rebuilt record matches these coordinates.
@@ -77,7 +84,8 @@ cdef class NodeLocations:
         rows = np.asarray(rows, dtype=np.int64)
         columns = {}
         for c in self._column_order:
-            values = np.asarray(self._columns[c])[rows]
+            column = self._columns[c]
+            values = column[rows] if isinstance(column, NodeTags) else np.asarray(column)[rows]
             if values.dtype.kind in "iu":
                 values = values.astype(np.int64)
             elif values.dtype.kind == "f":

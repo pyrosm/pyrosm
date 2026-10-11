@@ -16,6 +16,7 @@ def helsinki_pbf():
 
 def test_parsing_basic_elements_from_pbf(test_pbf):
     from pyrosm import OSM
+    from pyrosm.way_store import NodeTags
     import numpy as np
 
     osm = OSM(filepath=test_pbf)
@@ -46,10 +47,11 @@ def test_parsing_basic_elements_from_pbf(test_pbf):
     ]
     for col in node_cols:
         assert col in nodes.keys()
-        # Nodes should be in numpy arrays
-        assert isinstance(nodes[col], np.ndarray), (
+        # Nodes should be in numpy arrays, and their tags in a NodeTags store
+        expected = NodeTags if col == "tags" else np.ndarray
+        assert isinstance(nodes[col], expected), (
             f"nodes should be in a dictionary with {node_cols} as keys"
-            f" and numpy arrays as values."
+            f" and numpy arrays (tags: NodeTags) as values."
         )
         # Check shape
         assert len(nodes[col]) == 14222
@@ -57,10 +59,7 @@ def test_parsing_basic_elements_from_pbf(test_pbf):
     # WAYS
     # ----
 
-    # Ways should be a list of dictionaries
-    assert isinstance(
-        ways, list
-    ), f"way_records should be a list of dictionaries, got '{type(ways)}'."
+    # The way store yields a dictionary per way
     for way in ways:
         assert isinstance(way, dict)
 
@@ -166,41 +165,158 @@ def test_relation_ids_are_not_delta_decoded(test_pbf):
     assert ids.tolist() == [32694, 319589, 2265095, 2689634, 3179566]
 
 
-def test_id_tag_does_not_overwrite_osm_id():
+def _write_pbf(path, *blocks):
+    """Write a PBF of a header block and then ``blocks`` (``PrimitiveBlock``s)."""
+    import zlib
+    from struct import pack
+
+    from pyrosm.proto.fileformat_pb2 import Blob, BlobHeader
+    from pyrosm.proto.osmformat_pb2 import HeaderBlock
+
+    header = HeaderBlock()
+    header.required_features.extend(["OsmSchema-V0.6", "DenseNodes"])
+    with open(path, "wb") as f:
+        for kind, message in [("OSMHeader", header)] + [("OSMData", b) for b in blocks]:
+            data = message.SerializeToString()
+            blob = Blob(raw_size=len(data), zlib_data=zlib.compress(data))
+            blob_bytes = blob.SerializeToString()
+            blob_header = BlobHeader(type=kind, datasize=len(blob_bytes))
+            header_bytes = blob_header.SerializeToString()
+            f.write(pack("!L", len(header_bytes)) + header_bytes + blob_bytes)
+
+
+def test_id_tag_does_not_overwrite_osm_id(tmp_path):
     """Regression test for #233.
 
     An OSM tag literally keyed ``id`` would otherwise overwrite the element's
     OSM id when way tags are flattened. It must instead be surfaced under the
     ``id_tag`` column, leaving the element ``id`` intact.
     """
-    from pyrosm.tagparser import explode_way_tags
+    from pyrosm.pbfreader import parse_osm_data
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
 
-    ways = [
-        {
-            "id": 12345,
-            "version": 1,
-            "nodes": [1, 2, 3],
-            "tags": {"building": "yes", "id": "stray-tag-value"},
-        },
-        {
-            "id": 67890,
-            "version": 1,
-            "nodes": [4, 5],
-            "tags": {"highway": "residential"},
-        },
-    ]
+    strings = [b"", b"building", b"yes", b"id", b"stray-tag-value", b"highway", b"residential"]
+    nodes = PrimitiveBlock()
+    nodes.stringtable.s.extend(strings)
+    dense = nodes.primitivegroup.add().dense
+    dense.id.extend([1, 1])  # delta coded: nodes 1 and 2
+    dense.lat.extend([0, 1])
+    dense.lon.extend([0, 1])
+    ways = PrimitiveBlock()
+    ways.stringtable.s.extend(strings)
+    group = ways.primitivegroup.add()
+    for way_id, keys, vals in [(12345, [1, 3], [2, 4]), (67890, [5], [6])]:
+        way = group.ways.add(id=way_id)
+        way.keys.extend(keys)
+        way.vals.extend(vals)
+        way.refs.extend([1, 1])
+    fp = str(tmp_path / "id_tag.osm.pbf")
+    _write_pbf(fp, nodes, ways)
 
-    exploded = explode_way_tags(ways)
+    exploded = list(parse_osm_data(fp, None, False, None)[1])
 
     # The colliding 'id' tag is surfaced as 'id_tag', element id is preserved
     assert exploded[0]["id"] == 12345
     assert exploded[0]["id_tag"] == "stray-tag-value"
     assert exploded[0]["building"] == "yes"
-    assert "tags" not in exploded[0]
+    assert list(exploded[0]) == [
+        "id", "version", "timestamp", "visible", "nodes", "building", "id_tag"
+    ]
 
     # A way without an 'id' tag is unaffected (no spurious id_tag key)
     assert exploded[1]["id"] == 67890
     assert "id_tag" not in exploded[1]
+
+
+@pytest.mark.parametrize(
+    "osm_keys, relation_way_ids, keep_all, rows",
+    [
+        (["highway"], None, False, [0]),
+        (["id_tag"], None, False, [1]),
+        (["version"], None, False, [0, 1, 2, 3]),
+        (["building"], [13], False, [2, 3]),
+        ([], None, True, [0, 1, 2]),
+    ],
+    ids=["tag_key", "id_tag", "record_key", "relation_member", "keep_all"],
+)
+def test_way_store_candidate_rows(osm_keys, relation_way_ids, keep_all, rows):
+    """A way store selects the ways the key check of filter_osm_records can keep: ways
+    with a tag keyed in osm_keys (an id tag for id_tag), every way for a key every
+    record has, ways with any tag with keep_all, and relation members."""
+    import numpy as np
+    from pyrosm.way_store import WayStoreBuilder
+
+    strings = ["", "highway", "primary", "id", "x", "building", "yes"]
+    tags = [[(1, 2)], [(3, 4)], [(5, 6)], []]
+    keys = [k for way in tags for k, _ in way]
+    vals = [v for way in tags for _, v in way]
+    builder = WayStoreBuilder()
+    builder.add(
+        {
+            "id": np.array([10, 11, 12, 13]),
+            "version": np.ones(4, dtype=np.int64),
+            "timestamp": np.ones(4, dtype=np.int64),
+            "visible": np.ones(4, dtype=np.int64),
+            "refs": np.array([1, 2, 3, 4, 5]),
+            "refs_off": np.array([0, 2, 3, 4, 5]),
+            "keys": np.array(keys),
+            "vals": np.array(vals),
+            "tags_off": np.array([0, 1, 2, 3, 3]),
+        },
+        strings,
+    )
+    store = builder.build()
+    assert store.candidate_rows(osm_keys, relation_way_ids, keep_all).tolist() == rows
+    assert [way["id"] for way in store] == [10, 11, 12, 13]
+
+
+def _node_tags():
+    """Node tags of four nodes (shop=bakery; none; amenity=cafe and name=x; none), the
+    last one not kept."""
+    import numpy as np
+    from pyrosm.way_store import NodeTagsBuilder
+
+    strings = ["", "shop", "bakery", "amenity", "cafe", "name", "x"]
+    builder = NodeTagsBuilder()
+    builder.add(
+        np.array([1, 2, 0, 0, 3, 4, 5, 6, 0, 0]),
+        4,
+        strings,
+        keep=np.array([True, True, True, False]),
+    )
+    return builder.build()
+
+
+@pytest.mark.parametrize(
+    "osm_keys, keep_all, rows",
+    [
+        (["amenity"], False, [2]),
+        (["amenity", "shop"], False, [0, 2]),
+        (["missing"], False, []),
+        ([], True, [0, 2]),
+        ("amenity", False, [0, 2]),
+    ],
+    ids=["one_key", "two_keys", "absent_key", "keep_all", "keys_not_a_list"],
+)
+def test_node_tags_candidate_rows(osm_keys, keep_all, rows):
+    """The node rows the node filter can keep: the tagged nodes carrying one of the keys,
+    or every tagged node with keep_all or when the keys are not a list."""
+    assert _node_tags().candidate_rows(osm_keys, keep_all).tolist() == rows
+
+
+def test_node_tags_lookup():
+    """Node tags kept as arrays give each kept node's tags as a dict (None for an
+    untagged node) by row, by array of rows and by iterating."""
+    import numpy as np
+
+    tags = _node_tags()
+    cafe = {"amenity": "cafe", "name": "x"}
+    assert len(tags) == 3
+    assert list(tags) == [{"shop": "bakery"}, None, cafe]
+    assert tags[-1] == cafe
+    assert tags[np.array([2, 1])].tolist() == [cafe, None]
+    with pytest.raises(IndexError):
+        tags[3]
 
 
 @pytest.mark.parametrize(

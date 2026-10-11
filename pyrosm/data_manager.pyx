@@ -3,6 +3,7 @@ from pyrosm.data_filter cimport filter_osm_records, filter_node_indices, \
 from pyrosm._arrays cimport convert_to_arrays_and_drop_empty, convert_way_records_to_lists, concatenate_dicts_of_arrays
 from pyrosm.tagparser cimport explode_tag_array
 from pyrosm.filter_compiler import compile_custom_filter, CompiledFilter
+from pyrosm.way_store import NodeTags, WayStore
 import numpy as np
 
 cdef get_data_filter_and_osm_keys(custom_filter):
@@ -84,6 +85,13 @@ cdef separate_relation_ways(way_records, relation_way_ids):
     return normal_ways, relation_ways
 
 cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, data_filter, filter_type, relation_member_ways=None, bint keep_all=False):
+    # From a WayStore, build the records of only the ways the key check of
+    # filter_osm_records can keep.
+    if isinstance(way_records, WayStore):
+        way_records = way_records.records(
+            way_records.candidate_rows(osm_keys, relation_way_ids, keep_all)
+        )
+
     # Get all ways including the ones associated with relations
     ways = filter_osm_records(way_records,
                       data_filter,
@@ -176,8 +184,15 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
     return ways, relation_ways, filtered_relations
 
 cdef get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter, filter_type, bint keep_all=False):
-    # Get indices for Nodes that passes data_filter
-    indices = filter_node_indices(node_arrays, osm_keys, data_filter, filter_type, keep_all)
+    tags = node_arrays["tags"]
+    if isinstance(tags, NodeTags):
+        # Check only the tagged nodes that carry one of the keys
+        rows = tags.candidate_rows(osm_keys, keep_all)
+        kept = filter_node_indices({"tags": tags[rows]}, osm_keys, data_filter, filter_type, keep_all)
+        indices = rows[np.asarray(kept, dtype=np.int64)]
+    else:
+        # Get indices for Nodes that passes data_filter
+        indices = filter_node_indices(node_arrays, osm_keys, data_filter, filter_type, keep_all)
     # If no nodes were found, return None
     if len(indices) == 0:
         return None

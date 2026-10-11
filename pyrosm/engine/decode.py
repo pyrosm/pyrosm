@@ -212,7 +212,7 @@ def _matching_nodes(string_table, nodes, osm_keys, node_lon, node_lat):
     idx = np.array(idx, dtype=np.int64)
 
     # DenseInfo metadata is optional; when a field is absent the decoder returns an empty
-    # array, so default it like pyrosm's parse_dense (visible -> False, the rest -> 0).
+    # array, so default it like the in-memory parse (visible -> False, the rest -> 0).
     def meta(name):
         arr = nodes[name]
         return arr[idx] if len(arr) == len(ids) else np.zeros(len(idx), dtype=np.int64)

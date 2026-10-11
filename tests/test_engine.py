@@ -171,6 +171,11 @@ def test_engine_buildings_raw_blob_matches(helsinki_pbf, tmp_path):
     _assert_matches(
         raw_buildings, zlib_buildings.sort_values("id").reset_index(drop=True)
     )
+    # The in-memory reader reads them too.
+    _assert_full_parity(
+        OSM(raw_fp, engine="in_memory").get_buildings(),
+        OSM(helsinki_pbf, engine="in_memory").get_buildings(),
+    )
 
 
 def test_engine_buildings_output_parquet_matches(helsinki_pbf, tmp_path):

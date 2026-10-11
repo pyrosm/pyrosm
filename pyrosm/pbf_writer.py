@@ -22,6 +22,7 @@ import pandas as pd
 from geopandas import GeoDataFrame
 
 from pyrosm.pbf_export import write_pbf_from_records
+from pyrosm.way_store import NodeTags
 
 # Columns that are structural attributes / pyrosm-computed, never OSM tags.
 _NON_TAG_COLS = {
@@ -737,7 +738,9 @@ def _node_tag_records(nodes_cache):
     nd = nodes_cache or {}
     if "id" in nd and "tags" in nd:
         nd_ids, nd_tags = nd["id"], nd["tags"]
-        for i in range(len(nd_ids)):
+        # NodeTags lists its tagged nodes; an object column is checked node by node.
+        rows = nd_tags.rows if isinstance(nd_tags, NodeTags) else range(len(nd_ids))
+        for i in rows:
             t = nd_tags[i]
             if isinstance(t, dict):
                 out[int(nd_ids[i])] = t
