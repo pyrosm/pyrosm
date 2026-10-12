@@ -381,8 +381,11 @@ class OSM:
               - `'all'`
               - `'all_public'`.
 
-            The filters follow the way filters of OSMnx, and the OSMnx name of a
-            network type is accepted as well.
+            The filters follow the way filters of OSMnx closely and in most cases
+            select the same ways. Where the two differ, pyrosm follows OSM's
+            access rules: a way tagged `access=no` is left out unless a tag of the
+            network's mode of transport, such as `foot=yes`, allows the use. The
+            OSMnx name of a network type is accepted as well.
 
             When `custom_filter` is given, `network_type` no longer selects the
             ways to keep; it only determines the graph semantics used by

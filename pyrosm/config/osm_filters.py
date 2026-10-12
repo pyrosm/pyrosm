@@ -1,10 +1,13 @@
-"""Predefined network filters, following the way filters of OSMnx.
+"""Predefined network filters.
 
 Each filter is an "exclude" dict of ``{osm_key: [values]}``: a way is dropped when it
-carries one of the listed values for that key. The filters mirror
-``osmnx._overpass._get_network_filter``, with the OSMnx regular expressions written out
-as the OSM values they match (``"motor"`` matches ``motor``, ``motorway`` and
-``motorway_link``).
+carries one of the listed values for that key. The filters follow the way filters of
+OSMnx (``osmnx._overpass._get_network_filter``) closely and in most cases select the same
+ways, with the OSMnx regular expressions written out as the OSM values they match
+(``"motor"`` matches ``motor``, ``motorway`` and ``motorway_link``). Where the two differ,
+the filters follow OSM's access rules: the ``access`` entry of a filter is an
+:class:`AccessRule`, so ``access=no`` excludes a way unless a tag of the network's mode
+of transport, such as ``foot=yes``, allows the use.
 """
 
 
@@ -14,9 +17,9 @@ class MultiValue(list):
     An OSM tag can hold several values separated by a semicolon
     (``access=private;delivery``). OSMnx matches its filters against the raw tag value
     with a regular expression, so such a tag matches when any of its values is listed.
-    These values do the same, which keeps the predefined networks equal to the OSMnx
-    ones. A ``custom_filter`` is unaffected and keeps matching values exactly; use a
-    compiled regular expression there to match a multi-value tag.
+    These values match it the same way. A ``custom_filter`` is unaffected and keeps
+    matching values exactly; use a compiled regular expression there to match a
+    multi-value tag.
     """
 
     def __contains__(self, value):
@@ -27,6 +30,37 @@ class MultiValue(list):
                 list.__contains__(self, part.strip()) for part in value.split(";")
             )
         return False
+
+
+# The values of an access tag that close a way to the public.
+_CLOSED = MultiValue(["no", "private"])
+
+
+class AccessRule:
+    """The access tags of a mode of transport, in OSM's access hierarchy.
+
+    ``mode_keys`` are the access tags of the mode from the most specific one
+    (``"motorcar", "motor_vehicle", "vehicle"`` for driving), followed by the general
+    ``access`` tag. The most specific of them that a way carries decides: the way is
+    closed when that tag is ``no`` or ``private``, also as one of several values
+    (``private;delivery``). In a walking network, ``access=no`` with ``foot=yes`` and
+    ``access=private`` with ``foot=yes`` stay, while ``access=no`` alone and with
+    ``foot=private`` are excluded.
+    """
+
+    def __init__(self, *mode_keys):
+        self.keys = mode_keys + ("access",)
+
+    def closes(self, tags):
+        """Whether the access tags in ``tags`` close the way."""
+        for key in self.keys:
+            value = tags.get(key)
+            if value is not None:
+                return value in _CLOSED
+        return False
+
+    def __repr__(self):
+        return "AccessRule(keys=%r, closed=%r)" % (self.keys, list(_CLOSED))
 
 
 # Excluded by every network type: areas are not routable ways, and these highway values
@@ -79,11 +113,12 @@ def get_osm_filter(network_type):
 
 
 def driving_filter(include_service_roads=False):
-    """Drivable ways, as in OSMnx for 'drive'.
+    """Drivable ways, following OSMnx's 'drive'.
 
-    Filters out un-drivable ways, private ways, anything specifying motor=no, and
-    service roads. With 'include_service_roads' service roads are kept except those
-    providing parking, private or emergency access, as in OSMnx for 'drive_service'.
+    Filters out un-drivable ways, ways closed to cars (motorcar, motor_vehicle, vehicle
+    and access tags, see AccessRule), and service roads. With 'include_service_roads'
+    service roads are kept except those providing parking, private or emergency access,
+    following OSMnx's 'drive_service'.
     """
     excluded_highway = _ALWAYS_EXCLUDED_HIGHWAY + [
         "bridleway",
@@ -106,29 +141,27 @@ def driving_filter(include_service_roads=False):
 
     return dict(
         area=MultiValue(["yes"]),
-        access=MultiValue(["private"]),
+        access=AccessRule("motorcar", "motor_vehicle", "vehicle"),
         highway=MultiValue(excluded_highway),
-        motor_vehicle=MultiValue(["no"]),
-        motorcar=MultiValue(["no"]),
         service=MultiValue(excluded_service),
     )
 
 
 def walking_filter():
-    """Walkable ways, as in OSMnx for 'walk'.
+    """Walkable ways, following OSMnx's 'walk'.
 
-    Filters out cycle ways, motor ways, private ways, and anything specifying foot=no.
+    Filters out cycle ways, motor ways, and ways closed to pedestrians (foot and access
+    tags, see AccessRule).
     Service roads are kept, permitting things like parking lot lanes and alleys that you
     *can* walk on even if they are not exactly pleasant walks. Ways whose sidewalk is
     mapped as a separate way are excluded, so that the sidewalk is not counted twice.
     """
     return dict(
         area=MultiValue(["yes"]),
-        access=MultiValue(["private"]),
+        access=AccessRule("foot"),
         highway=MultiValue(
             _ALWAYS_EXCLUDED_HIGHWAY + ["bus_guideway", "cycleway"] + _MOTOR_HIGHWAY
         ),
-        foot=MultiValue(["no"]),
         service=MultiValue(["private"]),
         sidewalk=MultiValue(["separate"]),
         **{
@@ -140,14 +173,14 @@ def walking_filter():
 
 
 def cycling_filter():
-    """Cyclable ways, as in OSMnx for 'bike'.
+    """Cyclable ways, following OSMnx's 'bike'.
 
-    Filters out foot ways, motor ways, private ways, and anything specifying
-    bicycle=no.
+    Filters out foot ways, motor ways, and ways closed to cyclists (bicycle, vehicle and
+    access tags, see AccessRule).
     """
     return dict(
         area=MultiValue(["yes"]),
-        access=MultiValue(["private"]),
+        access=AccessRule("bicycle", "vehicle"),
         highway=MultiValue(
             _ALWAYS_EXCLUDED_HIGHWAY
             + [
@@ -160,22 +193,22 @@ def cycling_filter():
             ]
             + _MOTOR_HIGHWAY
         ),
-        bicycle=MultiValue(["no"]),
         service=MultiValue(["private"]),
     )
 
 
 def all_filter(public_only=False):
-    """Every way of the street network, as in OSMnx for 'all'.
+    """Every way of the street network, following OSMnx's 'all'.
 
-    No mode-specific restrictions are applied. With 'public_only' the privately
-    accessible ways are left out as well, as in OSMnx for 'all_public'.
+    No mode-specific restrictions are applied. With 'public_only' the ways that the
+    access tag closes to the public (see AccessRule) are left out as well, following
+    OSMnx's 'all_public'.
     """
     network_filter = dict(
         area=MultiValue(["yes"]), highway=MultiValue(_ALWAYS_EXCLUDED_HIGHWAY)
     )
     if public_only:
-        network_filter["access"] = MultiValue(["private"])
+        network_filter["access"] = AccessRule()
         network_filter["service"] = MultiValue(["private"])
     return network_filter
 

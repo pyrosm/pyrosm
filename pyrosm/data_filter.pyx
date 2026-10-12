@@ -3,6 +3,7 @@ import pandas as pd
 from cykhash.khashsets cimport any_int64_from_iter, isin_int64, Int64Set_from_buffer
 from cpython cimport array
 from pyrosm.filter_compiler import CompiledFilter
+from pyrosm.config.osm_filters import AccessRule
 
 
 # Structural fields the parser attaches to every (flattened) way record; any other
@@ -167,8 +168,15 @@ cdef filter_osm_records(data_records,
         if data_filter is not None:
             matched = False
             for k in filter_keys:
-                if k in record:
-                    if solver.isin_check(record[k], data_filter[k]):
+                values = data_filter[k]
+                # An access rule reads the access tags together (the most specific
+                # one present decides), so it applies whether or not 'k' is present.
+                if isinstance(values, AccessRule):
+                    if values.closes(record):
+                        matched = True
+                        break
+                elif k in record:
+                    if solver.isin_check(record[k], values):
                         matched = True
                         break
 
@@ -274,6 +282,10 @@ cdef record_should_be_kept(tag, osm_keys, data_filter, filter_type, bint keep_al
 
     # If there is a filter, check if match is found
     for k, v in data_filter.items():
+        if isinstance(v, AccessRule):
+            if v.closes(tag):
+                return filter_type == "keep"
+            continue
         if k in tag_keys:
             # Check match with data filter
             if tag[k] in v:
