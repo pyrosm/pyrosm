@@ -52,5 +52,6 @@ dependencies:
   - r-sf
   - r-irkernel
   - r-remotes
+  - r-jsonlite
   - pip:
       - pyrosm==0.19.1
