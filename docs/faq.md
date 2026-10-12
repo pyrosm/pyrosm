@@ -192,12 +192,20 @@ crossings for those modes instead.
 ## Installation
 
 :::{dropdown} How should I install pyrosm, and what if installation fails?
-The recommended way is from **conda-forge** (with `mamba`/`micromamba` or `conda`):
+Install it with pip, which installs prebuilt wheels, so nothing is compiled:
+
+```
+pip install pyrosm
+```
+
+or from **conda-forge** (with `mamba`/`micromamba` or `conda`):
 
 ```
 mamba install -c conda-forge pyrosm
 ```
 
-`pip install pyrosm` also works. On **Windows**, install GeoPandas first, because pip-installing
-its native dependencies there is error-prone. See [Installation](installation.ipynb) for details.
+Wheels are published for CPython 3.10–3.14 on glibc-based Linux (x86_64 and aarch64), macOS
+(Intel and Apple silicon) and Windows on x86_64. Elsewhere pip builds pyrosm from source, which
+needs a C compiler; see [Installation](installation.ipynb) for musl-based Linux (Alpine) and
+Windows on ARM, where GeoPandas' dependency pyogrio needs building too.
 :::
