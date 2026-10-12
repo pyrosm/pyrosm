@@ -9,7 +9,6 @@ from pyrosm.data_filter cimport (
     get_latest_version,
     clean_empty_values_from_ways,
 )
-from cykhash.khashsets cimport isin_int64
 from pyrosm.utils import valid_header_block
 from pyrosm.frames import create_df
 from pyrosm.node_lookup import NodeLocations
@@ -160,9 +159,7 @@ cdef _way_mask(dict ways, node_lookup, unix_time_filter, way_ids=None):
         keep = listed if keep is None else keep & listed
     if node_lookup is not None:
         refs = ways["refs"]
-        hits = np.zeros(len(refs), dtype=bool)
-        if len(refs) > 0:
-            isin_int64(refs, node_lookup, hits)
+        hits = node_lookup.isin(refs)
         in_box = any_per_row(hits, ways["refs_off"])
         keep = in_box if keep is None else keep & in_box
     return keep
@@ -412,7 +409,7 @@ cdef _parse_osm_data(
                         ignore_index=True,
                     ).drop_duplicates(subset="id")
 
-    # Compact node-coordinate store (cykhash id->index map + column arrays),
+    # Compact node-coordinate store (id->index hash map + column arrays),
     # replacing the per-node dict-of-dicts; geometry/graph code reads through it.
     node_coordinates_lookup = NodeLocations(coords)
 

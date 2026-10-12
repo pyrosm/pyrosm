@@ -65,8 +65,8 @@ jobs:
 
       - name: Install pyrosm
         shell: bash -l {0}
-        # Build the Cython extensions against the conda-provided build deps
-        # (Cython, cykhash) instead of recompiling them in an isolated env.
+        # Build the Cython extensions against the conda-provided Cython
+        # instead of refetching it in an isolated env.
         run: pip install -e . --no-build-isolation
 
       - name: Check environment

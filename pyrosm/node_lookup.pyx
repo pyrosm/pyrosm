@@ -1,11 +1,10 @@
 import numpy as np
 import pandas as pd
-from cykhash import Int64toInt64Map_from_buffers, Int64toInt64Map_to
 from pyrosm.way_store import NodeTags
 
 
 cdef class NodeLocations:
-    """Compact node-coordinate store: a cykhash id->row-index map plus the node
+    """Compact node-coordinate store: an id->row-index hash map plus the node
     column arrays, replacing the per-node dict-of-dicts produced previously by
     ``coords_df.set_index("id").to_dict(orient="index")``.
 
@@ -18,15 +17,9 @@ cdef class NodeLocations:
         """``coords``: the node columns, with ``id``, as a DataFrame or a dict of
         arrays."""
         cdef str c
-        # from_buffers takes writable int64 buffers; pandas' to_numpy() can be
-        # read-only, so a read-only id array is copied. A writable int64 one (from a
-        # dict) is used as is, shared with its owner.
         ids = np.ascontiguousarray(np.asarray(coords["id"]), dtype=np.int64)
-        if not ids.flags.writeable:
-            ids = ids.copy()
         self._ids = ids
-        indices = np.arange(len(ids), dtype=np.int64)
-        self._id2idx = Int64toInt64Map_from_buffers(ids, indices)
+        self._id2idx = Int64Map(ids, np.arange(len(ids), dtype=np.int64))
 
         # Every column except 'id' (re-added per record), in coords column
         # order, so a reconstructed node record matches the previous layout.
@@ -49,7 +42,10 @@ cdef class NodeLocations:
         return self._id2idx.contains(node)
 
     cdef long long index(self, long long node):
-        return self._id2idx.cget(node)
+        cdef long long idx = self._id2idx.get(node, -1)
+        if idx < 0:
+            raise KeyError(node)
+        return idx
 
     cdef double lon_at(self, long long idx):
         return self._lon[idx]
@@ -64,10 +60,7 @@ cdef class NodeLocations:
         coordinates (NaN where ``idx == -1``, which callers mask out via
         ``idx >= 0``)."""
         keys = np.ascontiguousarray(node_ids, dtype=np.int64)
-        if not keys.flags.writeable:
-            keys = keys.copy()
-        idx = np.empty(len(keys), dtype=np.int64)
-        Int64toInt64Map_to(self._id2idx, keys, idx, stop_at_unknown=False, default_value=-1)
+        idx = self._id2idx.get_many(keys, -1)
         found = idx >= 0
         rows = idx[found]
         lon = np.full(len(keys), np.nan)

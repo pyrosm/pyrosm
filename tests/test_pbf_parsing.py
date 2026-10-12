@@ -98,7 +98,7 @@ def test_parsing_basic_elements_from_pbf(test_pbf):
 
     # NODE COORDINATES
     # ----------------
-    # Compact store (cykhash id->index map + column arrays) replacing the former
+    # Compact store (id->index hash map + column arrays) replacing the former
     # dict-of-dicts; it still iterates as (id, record) pairs.
     from pyrosm.node_lookup import NodeLocations
 
