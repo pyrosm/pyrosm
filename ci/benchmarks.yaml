@@ -2,17 +2,15 @@
 # (docs/benchmarks/benchmarks_scaling.ipynb + the companion
 # docs/benchmarks/osmextract_benchmark_scaling.ipynb).
 #
-# Bundles the pyrosm dev/runtime environment (ci/312-conda.yaml + setup.py),
-# the tools pyrosm is benchmarked against (osmnx, QuackOSM, pyosmium, and Osmosis
-# via openjdk), the notebook/plotting deps, and the R stack for osmextract.
-# osmextract is not on conda-forge -- install it from CRAN after the env exists.
+# Holds the released pyrosm (the wheel from PyPI) with its dependencies, the tools pyrosm is
+# benchmarked against at pinned versions (OSMnx, QuackOSM, pyosmium, osmium-tool, and the Java
+# runtime for Osmosis), the notebook and plotting packages, and the R stack for osmextract.
+# Osmosis and osmextract are installed after the environment exists:
 #
 #   mamba env create -f ci/benchmarks.yaml
 #   mamba activate pyrosm-benchmarks
-#   pip install -e .                      # build the LOCAL pyrosm into the env
-#                                         # (needs a C compiler; on conda add
-#                                         #  c-compiler cxx-compiler if you lack one)
-#   R -e 'install.packages("osmextract", repos="https://cloud.r-project.org")'
+#   # Osmosis 0.49.2: https://github.com/openstreetmap/osmosis/releases (put `osmosis` on PATH)
+#   R -e 'remotes::install_version("osmextract", version = "0.6.0", repos = "https://cloud.r-project.org")'
 #   R -e 'IRkernel::installspec()'        # register the R kernel for Jupyter
 #
 name: pyrosm-benchmarks
@@ -21,10 +19,9 @@ channels:
   - conda-forge
 
 dependencies:
-  # === pyrosm environment (ci/312-conda.yaml + setup.py install_requires) ===
   - python=3.12
-  # required
-  - cython
+  - pip
+  # === pyrosm's dependencies (pyrosm itself is installed from PyPI below) ===
   - cykhash>=2
   - geopandas>=0.12.0
   - shapely>=2.1
@@ -32,39 +29,28 @@ dependencies:
   - python-rapidjson
   - tqdm>=4.66
   - certifi
-  - setuptools>=18.0
-  - pip
-  # optional (graph export)
-  - networkx
-  - pandana
-  - pandarm
-  - python-igraph
-  # testing
-  - osmnx
-  - pyosmium
-  - black
-  - codecov
-  - pytest
-  - pytest-cov
-  - requests
-  # === extra tools pyrosm is benchmarked against ===
-  - quackosm
-  - openjdk            # JRE for Osmosis (download the Osmosis launcher separately)
-  # === benchmark notebook deps (Jupyter / plotting / dataframes) ===
+  - pyarrow
+  # === the tools pyrosm is benchmarked against ===
+  - osmnx=2.1.1
+  - quackosm=0.19.0
+  - pyosmium=4.3.1
+  - osmium-tool=1.19.1
+  - openjdk            # Java runtime for Osmosis (download the Osmosis launcher separately)
+  # === benchmark notebook packages (Jupyter, plotting, data frames, process memory) ===
   - jupyterlab
   - notebook
   - ipykernel
   - ipywidgets
-  - nbformat
-  - nbclient
   - matplotlib
   - pandas
   - numpy
+  - psutil
   # === R stack for the osmextract companion notebook ===
   # (r-sf brings its own GDAL/GEOS/PROJ; conda-forge normally shares these with
   #  geopandas, but if the solver fights, install R in a separate env instead.)
   - r-base
   - r-sf
   - r-irkernel
-  # osmextract is installed from CRAN (not on conda-forge):
-  #   R -e 'install.packages("osmextract", repos="https://cloud.r-project.org")'
+  - r-remotes
+  - pip:
+      - pyrosm==0.19.1

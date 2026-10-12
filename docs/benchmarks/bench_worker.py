@@ -32,7 +32,7 @@ def _count_lines(geodataframe):
 def pyrosm_in_memory(pbf):
     from pyrosm import OSM
 
-    return OSM(pbf).get_buildings()
+    return OSM(pbf, engine="in_memory").get_buildings()
 
 
 def pyrosm_out_of_core(pbf):
@@ -126,7 +126,7 @@ def osmium_tool(pbf):
 def net_pyrosm_in_memory(pbf):
     from pyrosm import OSM
 
-    return OSM(pbf).get_data_by_custom_criteria(
+    return OSM(pbf, engine="in_memory").get_data_by_custom_criteria(
         {"highway": True}, filter_type="keep", keep_nodes=False, keep_relations=False)
 
 
