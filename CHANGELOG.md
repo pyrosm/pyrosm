@@ -5,6 +5,7 @@ Unreleased
 ----------
 
 - CHANGED: pyrosm no longer depends on `cykhash`, which PyPI offers only as source code, so pip installs pyrosm's wheels without compiling anything. The sets of OSM ids and the map from node id to row that pyrosm uses are now its own, built on klib's `khash.h`, the hash table `cykhash` uses too. Reads return the same results; on Finland's 95 million node ids, building and querying these tables takes 10-40 % less time ([#478](https://github.com/pyrosm/pyrosm/pull/478))
+- DOCS: The installation guide, the README and the FAQ put `pip install pyrosm` first and list the platforms with wheels (CPython 3.10–3.14 on glibc-based Linux on x86_64 and aarch64, macOS, and Windows on x86_64). The advice to install GeoPandas first on Windows and the list of dependencies that needed installing beforehand, which still named `cykhash`, are removed ([#479](https://github.com/pyrosm/pyrosm/pull/479))
 
 v0.19.1
 -------
