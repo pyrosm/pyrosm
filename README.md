@@ -110,7 +110,7 @@ You can install a local development version of the tool by 1) creating an enviro
  2. build pyrosm development version from master (activate the environment first):
  
     - `pip install -e . --no-build-isolation`
-    - (`--no-build-isolation` builds the Cython extensions against the build dependencies provided by the environment, i.e. Cython and `cykhash`, instead of refetching and recompiling them in an isolated build environment)
+    - (`--no-build-isolation` builds the Cython extensions against the build dependencies provided by the environment, i.e. Cython, instead of refetching and recompiling it in an isolated build environment)
 
 You can run tests with `pytest` by executing:
  

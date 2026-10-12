@@ -9,7 +9,6 @@ dependencies:
   - cython
   - pip
   - setuptools
-  - cykhash>=2
   - geopandas
   - protobuf>=6.33.5
   - python-rapidjson

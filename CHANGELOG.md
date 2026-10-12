@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- CHANGED: pyrosm no longer depends on `cykhash`, which PyPI offers only as source code, so pip installs pyrosm's wheels without compiling anything. The sets of OSM ids and the map from node id to row that pyrosm uses are now its own, built on klib's `khash.h`, the hash table `cykhash` uses too. Reads return the same results; on Finland's 95 million node ids, building and querying these tables takes 10-40 % less time ([#478](https://github.com/pyrosm/pyrosm/pull/478))
+
 v0.19.1
 -------
 

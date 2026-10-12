@@ -92,7 +92,7 @@ point you can do a *development* install, as detailed in the next sections.
 The ``ci/<version>-conda.yaml`` environment file you used in the previous step
 already installs all of *pyrosm*'s dependencies from conda-forge -- the required
 runtime packages (``geopandas``, ``protobuf``, ``python-rapidjson``), the build
-tools (``cython``, ``cykhash``), the optional graph backends (``networkx``,
+tool (``cython``), the optional graph backends (``networkx``,
 ``python-igraph``, ``pandarm``) and the tools for running the tests and the
 formatter (``pytest``, ``pytest-cov``, ``black``) -- so there is nothing extra to
 install. If you ever need to refresh them, re-create the environment from the
@@ -108,8 +108,8 @@ clone of the *pyrosm* repository and running::
     pip install -e . --no-build-isolation
 
 This installs pyrosm in editable mode and compiles the Cython extensions against
-the build dependencies provided by the environment (``cython`` and ``cykhash``),
-instead of refetching and recompiling them in an isolated build environment.
+the build dependency provided by the environment (``cython``), instead of
+refetching it in an isolated build environment.
 Editing any ``.pyx``/``.pxd`` file requires re-running this command to rebuild.
 
 5. Making changes and writing tests
