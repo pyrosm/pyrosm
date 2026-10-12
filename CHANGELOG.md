@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- FIXED: The predefined networks no longer include ways that `access=no` closes to the public, unless a tag of the network's mode of transport allows the use. The most specific access tag present decides, as in OSM's access hierarchy (walking: `foot`, `access`; cycling: `bicycle`, `vehicle`, `access`; driving: `motorcar`, `motor_vehicle`, `vehicle`, `access`), and a way is left out when that tag is `no` or `private`: `access=no` with `foot=yes` stays in the walking network, `access=private` with `foot=yes` is now kept, and `all_public` leaves out `access=no` as well. In the walking network of central Helsinki, the Suomenlinna maintenance tunnel is no longer included, so the island is no longer joined to the mainland ([#474](https://github.com/pyrosm/pyrosm/pull/474))
+
 v0.19.0
 -------
 

@@ -448,7 +448,7 @@ def test_pdgraph_connectivity():
     # Find the distance to nearest 5 restaurants from each node
     nearest_restaurants = g.nearest_pois(1000, "restaurants", num_pois=5)
     assert isinstance(nearest_restaurants, pd.DataFrame)
-    assert nearest_restaurants.shape == (5266, 5)
+    assert nearest_restaurants.shape == (5262, 5)
 
     # Get closest node_ids for each restaurant
     node_ids = g.get_node_ids(x, y)
@@ -462,7 +462,7 @@ def test_pdgraph_connectivity():
     # Aggregate the number of employees within 500 meters from each node
     access = g.aggregate(500, type="sum", decay="linear", name="employee_cnt")
     assert isinstance(access, pd.Series)
-    assert len(access) == 5266
+    assert len(access) == 5262
 
     # Test shortest path calculations
     shortest_distances = g.shortest_path_lengths(
@@ -736,7 +736,7 @@ def test_pandarm_connectivity():
 
     nearest_restaurants = g.nearest_pois(1000, "restaurants", num_pois=5)
     assert isinstance(nearest_restaurants, pd.DataFrame)
-    assert nearest_restaurants.shape == (5266, 5)
+    assert nearest_restaurants.shape == (5262, 5)
 
     node_ids = g.get_node_ids(x, y)
     assert isinstance(node_ids, pd.Series)
@@ -747,7 +747,7 @@ def test_pandarm_connectivity():
 
     access = g.aggregate(500, type="sum", decay="linear", name="employee_cnt")
     assert isinstance(access, pd.Series)
-    assert len(access) == 5266
+    assert len(access) == 5262
 
     shortest_distances = g.shortest_path_lengths(
         node_ids[0:100], node_ids[100:200], imp_name="length"
