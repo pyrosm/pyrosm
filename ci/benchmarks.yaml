@@ -22,7 +22,6 @@ dependencies:
   - python=3.12
   - pip
   # === pyrosm's dependencies (pyrosm itself is installed from PyPI below) ===
-  - cykhash>=2
   - geopandas>=0.12.0
   - shapely>=2.1
   - protobuf>=6.33.5
@@ -54,4 +53,4 @@ dependencies:
   - r-remotes
   - r-jsonlite
   - pip:
-      - pyrosm==0.19.1
+      - pyrosm==0.20.0
