@@ -74,7 +74,7 @@ or, with micromamba:
 
 ### Troubleshooting
 
-If pip starts building pyrosm from source, no wheel matches your platform or Python version: building needs a C compiler, which installing from conda-forge avoids.
+If pip starts building pyrosm from source, no wheel matches your platform or Python version, and the build needs a C compiler. On musl-based Linux such as Alpine, and on Windows on ARM, GeoPandas' dependency pyogrio has no wheels either, and building it needs the GDAL library; in Docker, a Debian-based image such as `python:3.12-slim` gets wheels for everything. On the platforms conda-forge supports, which do not include musl-based Linux, installing from conda-forge avoids building from source.
 
 ## When should I use Pyrosm?
 

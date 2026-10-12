@@ -206,5 +206,6 @@ mamba install -c conda-forge pyrosm
 
 Wheels are published for CPython 3.10–3.14 on glibc-based Linux (x86_64 and aarch64), macOS
 (Intel and Apple silicon) and Windows on x86_64. Elsewhere pip builds pyrosm from source, which
-needs a C compiler; installing from conda-forge avoids that.
+needs a C compiler; see [Installation](installation.ipynb) for musl-based Linux (Alpine) and
+Windows on ARM, where GeoPandas' dependency pyogrio needs building too.
 :::
