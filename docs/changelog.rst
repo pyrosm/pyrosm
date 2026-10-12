@@ -1,8 +1,10 @@
 Changelog
 =========
 
-Unreleased
-----------
+v0.19.0 (Oct 12, 2026)
+----------------------
+
+This release reads with the out-of-core engine by default and makes both readers faster and leaner: ``OSM(...)`` reads country-sized files with bounded memory, and both engines return the same columns in the same order. ``get_network()`` returns each edge as one LineString and ``to_graph`` simplifies the graph by default. It also fixes history reads that returned deleted elements, graphs that took the network type of the last read, and out-of-core reads of files whose nodes are not in the dense format.
 
 - CHANGED: ``get_network()`` returns each edge as one LineString through its way's nodes instead of a MultiLineString of two-point segments, and the other layers return each line way (an open way, or a closed way with a ``highway``, ``barrier`` or ``route`` tag or ``area=no``) as one LineString too; relations keep their MultiLineStrings. The coordinates are the same and in the same order, and the ``length`` column keeps its values. Results that the out-of-core engine cached with an older version are not reused (`#446 <https://github.com/pyrosm/pyrosm/pull/446>`__, `#447 <https://github.com/pyrosm/pyrosm/pull/447>`__)
 - CHANGED: ``to_graph`` simplifies the graph by default, and so do ``pyrosm.graphs.to_networkx``, ``to_igraph``, ``to_pandana``, ``to_pandarm`` and ``graph_tables``, which the graph stage of recipes uses. A chain is no longer merged across a change of ``maxspeed`` or ``highway`` (a missing value next to a set one counts as a change), so each edge has one speed limit and one road class, and pandana and pandarm graphs sum their weight columns along a merged chain like ``length``. ``simplify=False`` keeps one edge per segment, and ``simplify_kwargs={"edge_attrs_differ": None}`` merges as OSMnx does by default (`#449 <https://github.com/pyrosm/pyrosm/pull/449>`__)
