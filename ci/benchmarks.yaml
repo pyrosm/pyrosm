@@ -1,12 +1,13 @@
 # Conda environment for running the pyrosm benchmarks
-# (benchmarks/benchmarks.ipynb + the companion benchmarks/osmextract_benchmark.ipynb).
+# (docs/benchmarks/benchmarks_scaling.ipynb + the companion
+# docs/benchmarks/osmextract_benchmark_scaling.ipynb).
 #
 # Bundles the pyrosm dev/runtime environment (ci/312-conda.yaml + setup.py),
 # the tools pyrosm is benchmarked against (osmnx, QuackOSM, pyosmium, and Osmosis
 # via openjdk), the notebook/plotting deps, and the R stack for osmextract.
 # osmextract is not on conda-forge -- install it from CRAN after the env exists.
 #
-#   mamba env create -f benchmarks/benchmarks.yaml
+#   mamba env create -f ci/benchmarks.yaml
 #   mamba activate pyrosm-benchmarks
 #   pip install -e .                      # build the LOCAL pyrosm into the env
 #                                         # (needs a C compiler; on conda add
