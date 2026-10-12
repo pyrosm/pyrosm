@@ -1,9 +1,9 @@
 import numpy as np
 import pandas as pd
-from cykhash.khashsets cimport any_int64_from_iter, isin_int64, Int64Set_from_buffer
 from cpython cimport array
 from pyrosm.filter_compiler import CompiledFilter
 from pyrosm.config.osm_filters import AccessRule
+from pyrosm.int64_hash import Int64Set
 
 
 # Structural fields the parser attaches to every (flattened) way record; any other
@@ -206,11 +206,7 @@ cdef filter_array_dict_by_indices_or_mask(array_dict, indices):
 
 
 cdef get_lookup_khash_for_int64(int64_id_array):
-    return Int64Set_from_buffer(
-        memoryview(
-            int64_id_array
-        )
-    )
+    return Int64Set(int64_id_array)
 
 
 cdef get_nodeid_lookup_khash(nodes):
@@ -221,7 +217,7 @@ cdef get_nodeid_lookup_khash(nodes):
 
 
 cdef nodes_for_way_exist_khash(nodes, node_lookup):
-    return any_int64_from_iter(nodes, node_lookup)
+    return node_lookup.contains_any(nodes)
 
 
 cpdef get_mask_by_osmid(src_array, osm_ids):
@@ -230,11 +226,7 @@ cpdef get_mask_by_osmid(src_array, osm_ids):
     all items that exist in the 'osm_ids' array. Can be used to filter items
     e.g. from OSM node data arrays.
     """
-    n = len(src_array)
-    lookup = Int64Set_from_buffer(osm_ids)
-    result = np.empty(src_array.size, dtype=np.bool_)
-    isin_int64(src_array, lookup, result)
-    return result
+    return Int64Set(osm_ids).isin(src_array)
 
 
 cdef record_should_be_kept(tag, osm_keys, data_filter, filter_type, bint keep_all=False):

@@ -56,7 +56,13 @@ memory. Pyrosm decodes the PBF data with [Google's Protocol Buffers](https://pro
 
 Pyrosm is distributed via PyPI and conda-forge.
 
-The recommended way to install pyrosm is from conda-forge with [mamba](https://mamba.readthedocs.io/) (or its standalone variant [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html)), a fast drop-in replacement for `conda`. If you don't have it yet, download and install mamba via Miniforge from the [conda-forge download page](https://conda-forge.org/download/) — it ships mamba preconfigured with the conda-forge channel. Then install pyrosm with:
+Install pyrosm with pip:
+
+`$ pip install pyrosm`
+
+pip installs prebuilt wheels of pyrosm and its dependencies, so nothing is compiled. Wheels are published for CPython 3.10–3.14 on glibc-based Linux (x86_64 and aarch64), macOS (Intel and Apple silicon) and Windows on x86_64.
+
+You can also install pyrosm from conda-forge with [mamba](https://mamba.readthedocs.io/) (or its standalone variant [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html)), a fast drop-in replacement for `conda`. If you don't have it yet, download and install mamba via Miniforge from the [conda-forge download page](https://conda-forge.org/download/) — it ships mamba preconfigured with the conda-forge channel. Then install pyrosm with:
 
 `$ mamba install -c conda-forge pyrosm`
 
@@ -64,17 +70,11 @@ or, with micromamba:
 
 `$ micromamba install -c conda-forge pyrosm`
 
-(the same command works with `conda` if you have it). You can also install the package with pip:
-
-`$ pip install pyrosm`
+(the same command works with `conda` if you have it).
 
 ### Troubleshooting
 
-Notice that `pyrosm` requires geopandas to work. 
-On Linux and Mac installing geopandas with `pip` should work without a problem, which is handled automatically when installing pyrosm. 
-
-However, on Windows installing geopandas with pip is likely to cause issues, hence, it is recommended to install Geopandas before installing
-`pyrosm`. See instructions from [Geopandas website](https://geopandas.org/install.html#installation).
+If pip starts building pyrosm from source, no wheel matches your platform or Python version, and the build needs a C compiler. On musl-based Linux such as Alpine, and on Windows on ARM, GeoPandas' dependency pyogrio has no wheels either, and building it needs the GDAL library; in Docker, a Debian-based image such as `python:3.12-slim` gets wheels for everything. On the platforms conda-forge supports, which do not include musl-based Linux, installing from conda-forge avoids building from source.
 
 ## When should I use Pyrosm?
 
@@ -110,7 +110,7 @@ You can install a local development version of the tool by 1) creating an enviro
  2. build pyrosm development version from master (activate the environment first):
  
     - `pip install -e . --no-build-isolation`
-    - (`--no-build-isolation` builds the Cython extensions against the build dependencies provided by the environment, i.e. Cython and `cykhash`, instead of refetching and recompiling them in an isolated build environment)
+    - (`--no-build-isolation` builds the Cython extensions against the build dependencies provided by the environment, i.e. Cython, instead of refetching and recompiling it in an isolated build environment)
 
 You can run tests with `pytest` by executing:
  

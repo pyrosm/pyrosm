@@ -1150,7 +1150,7 @@ def test_tags_to_keep_applies_to_all_feature_methods():
 
 
 def test_compact_node_store_preserves_graph_node_attributes():
-    """#53 — the compact node-coordinate store (a cykhash id->index map plus
+    """#53 — the compact node-coordinate store (an id->index hash map plus
     column arrays) that replaced the per-node dict-of-dicts must reproduce the
     graph node attributes unchanged. In particular the rebuilt records yield
     Python scalars, so the metadata columns keep their int64/float64 dtypes

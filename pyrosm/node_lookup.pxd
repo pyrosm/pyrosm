@@ -1,8 +1,8 @@
-from cykhash.khashmaps cimport Int64toInt64Map
+from pyrosm.int64_hash cimport Int64Map
 
 
 cdef class NodeLocations:
-    cdef Int64toInt64Map _id2idx
+    cdef Int64Map _id2idx
     cdef const double[::1] _lon
     cdef const double[::1] _lat
     cdef object _ids

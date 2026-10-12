@@ -42,8 +42,7 @@ from pyrosm.proto.osmformat_pb2 import (
 )
 from pyrosm.delta_compression cimport delta_encode
 
-from cykhash import Int64Set
-from cykhash.khashsets cimport isin_int64, Int64Set_from_buffer
+from pyrosm.int64_hash import Int64Set
 
 DIV = 1000000000
 
@@ -255,22 +254,14 @@ cdef _read_header(filepath):
 
 
 # ---------------------------------------------------------------------------
-# Id-set helpers (cykhash int64 sets for memory-efficient membership)
+# Id-set helpers (int64 hash sets for memory-efficient membership)
 # ---------------------------------------------------------------------------
 cdef _to_set(id_array):
-    arr = np.ascontiguousarray(id_array, dtype=np.int64)
-    if len(arr) == 0:
-        return Int64Set()
-    return Int64Set_from_buffer(memoryview(arr))
+    return Int64Set(id_array)
 
 
 cdef _isin(values, lookup):
-    cdef int n = len(values)
-    arr = np.ascontiguousarray(values, dtype=np.int64)
-    result = np.empty(n, dtype=bool)
-    if n > 0:
-        isin_int64(arr, lookup, result)
-    return result
+    return lookup.isin(values)
 
 
 cdef _unique_concat(arrays):

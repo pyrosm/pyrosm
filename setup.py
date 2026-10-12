@@ -29,7 +29,6 @@ requirements = [
     "setuptools>=18.0",
     "geopandas>=0.12.0",
     "shapely>=2.1",
-    "cykhash",
     "protobuf>=6.33.5",
     "certifi",
     "tqdm>=4.66",
@@ -63,7 +62,7 @@ if _linetrace:
 
 setup(
     name="pyrosm",
-    version="0.19.1",
+    version="0.20.0",
     license="MIT",
     description="A Python tool to parse OSM data from Protobuf format into GeoDataFrame.",
     long_description=read_long_description(),
