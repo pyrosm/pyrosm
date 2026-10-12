@@ -239,7 +239,8 @@ def _gather_node_records(filepath, node_ids, keep_metadata, progress=None):
         for c in cols
     }
     frame["tags"] = tags
-    return NodeLocations(pd.DataFrame(frame))
+    # The in-memory node store's column order: the tags follow the coordinates.
+    return NodeLocations(pd.DataFrame(frame, columns=cols[:3] + ["tags"] + cols[3:]))
 
 
 def _filter_way_columns(cols, exclude_ids, keep, in_box):
@@ -399,7 +400,24 @@ def _restrict_relations_to_box(relations, present_ids):
     return kept, member_ids
 
 
-def _ways_arrays(cols, tags_as_columns, keep_metadata, keep_other_tags=True):
+# The way fields that are not tags: the id, the node refs and the metadata.
+_WAY_FIELDS = ("id", "nodes", "version", "timestamp", "visible")
+
+
+def _way_column_keys(tags_as_columns, keep_metadata):
+    """The way columns in the in-memory reader's order -- the requested tags, ``id``,
+    ``nodes`` and, with ``keep_metadata``, ``timestamp`` and ``version`` -- and the tag
+    columns among them."""
+    keys = list(tags_as_columns) + ["id", "nodes"]
+    if keep_metadata:
+        keys += ["timestamp", "version"]
+    keys = list(dict.fromkeys(keys))
+    return keys, [k for k in keys if k not in _WAY_FIELDS]
+
+
+def _ways_arrays(
+    cols, tags_as_columns, keep_metadata, keep_other_tags=True, columns=None
+):
     """Convert the standalone way columns (from :func:`_collect_kept_ways`) into the
     ``way_elements`` dict (all occurring tag columns + the JSON ``tags`` column + metadata)
     pyrosm's assembly expects, matching the in-memory reader column for column.
@@ -417,16 +435,17 @@ def _ways_arrays(cols, tags_as_columns, keep_metadata, keep_other_tags=True):
     With ``keep_other_tags=False`` the leftover JSON ``tags`` column is dropped by the caller,
     so it is not built at all here -- only the requested tag columns are filled. This skips a
     per-way ``rapidjson.dumps`` (the metadata/leftover serialisation) that would otherwise be
-    discarded, which is a noticeable saving on country-scale minimal-tags reads."""
+    discarded, which is a noticeable saving on country-scale minimal-tags reads.
+
+    The columns come in the in-memory reader's order (see :func:`_way_column_keys`), then
+    the JSON ``tags`` column. ``columns``, when given, are the tag columns of the whole
+    result (:func:`_result_tag_columns`): one these ways lack is added as Nones, so every
+    chunk of the result carries the same columns."""
     ids, nodes, tags = cols["id"], cols["nodes"], cols["tags"]
     version, timestamp, visible = cols["version"], cols["timestamp"], cols["visible"]
     n = len(ids)
-    column_keys = list(dict.fromkeys(list(tags_as_columns) + ["id", "nodes"]))
-    if keep_metadata:
-        column_keys += ["timestamp", "version"]
+    column_keys, tag_cols = _way_column_keys(tags_as_columns, keep_metadata)
     column_set = set(column_keys)
-    structural = ("id", "nodes", "version", "timestamp", "visible")
-    tag_cols = [k for k in column_keys if k not in structural]
     tag_col_set = set(tag_cols)
     version_col = "version" in column_set
     timestamp_col = "timestamp" in column_set
@@ -472,7 +491,33 @@ def _ways_arrays(cols, tags_as_columns, keep_metadata, keep_other_tags=True):
         data["tags"] = leftover
     ways = columns_to_arrays(data)
     ways["nodes"] = nodes
-    return ways
+    for key in columns or ():
+        if key not in ways:
+            ways[key] = np.full(n, None, dtype=object)
+    return {key: ways[key] for key in column_keys + ["tags"] if key in ways}
+
+
+def _result_tag_columns(kept, tags_as_columns, keep_metadata, keep_other_tags=True):
+    """The tag columns :func:`_ways_arrays` gives all the ``kept`` ways together: the
+    requested tags that occur in any of them (a tag keyed ``id`` as ``id_tag``) and, when
+    any way has leftover tags or metadata, the JSON ``tags`` column."""
+    column_keys, tag_cols = _way_column_keys(tags_as_columns, keep_metadata)
+    tag_col_set = set(tag_cols)
+    tags = kept["tags"]
+    columns = set()
+    leftover = not {"version", "timestamp", "visible"}.issubset(column_keys)
+    # The keys of a batch of ways at a time, so that only the requested ones are kept.
+    batch = 10_000
+    for start in range(0, len(tags), batch):
+        keys = set().union(*tags[start : start + batch])
+        if "id" in keys:
+            keys.discard("id")
+            keys.add("id_tag")
+        columns |= keys & tag_col_set
+        leftover = leftover or not keys <= tag_col_set
+    if keep_other_tags and leftover and len(tags) > 0:
+        columns.add("tags")
+    return columns
 
 
 def _needed_node_ids(kept, relation_ways):
