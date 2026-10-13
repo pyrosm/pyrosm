@@ -853,6 +853,27 @@ cdef int _collect_nodes(const unsigned char* buf, Py_ssize_t start, Py_ssize_t e
     return 0
 
 
+cdef dict _default_header():
+    """The block header values a block that leaves them out has (the proto2 defaults)."""
+    return {"granularity": 100, "date_granularity": 1000, "lat_offset": 0, "lon_offset": 0}
+
+
+cdef int _read_header_value(const unsigned char* buf, Py_ssize_t* pos, Py_ssize_t end,
+                            int field, dict header) except -1:
+    """Read the varint of block field ``field`` into ``header`` when it is one of the
+    header's values, or skip it."""
+    cdef int64_t value = <int64_t>_read_varint(buf, pos, end)
+    if field == PB_GRANULARITY:
+        header["granularity"] = value
+    elif field == PB_DATE_GRANULARITY:
+        header["date_granularity"] = value
+    elif field == PB_LAT_OFFSET:
+        header["lat_offset"] = value
+    elif field == PB_LON_OFFSET:
+        header["lon_offset"] = value
+    return 0
+
+
 def decode_primitive_block(const unsigned char[::1] data, bint keep_metadata=True):
     """Decode a decompressed ``PrimitiveBlock`` into ``(string_table, header, nodes,
     ways, relations)``.
@@ -865,8 +886,7 @@ def decode_primitive_block(const unsigned char[::1] data, bint keep_metadata=Tru
     """
     cdef Py_ssize_t end = data.shape[0]
     if end == 0:
-        return [], {"granularity": 100, "date_granularity": 1000,
-                    "lat_offset": 0, "lon_offset": 0}, None, None, None
+        return [], _default_header(), None, None, None
     cdef const unsigned char* buf = &data[0]
     cdef Py_ssize_t pos = 0
     cdef int field, wire
@@ -874,24 +894,14 @@ def decode_primitive_block(const unsigned char[::1] data, bint keep_metadata=Tru
     cdef Py_ssize_t f_start
 
     string_table = []
-    header = {"granularity": 100, "date_granularity": 1000,
-              "lat_offset": 0, "lon_offset": 0}
+    header = _default_header()
     node_groups = []
     group_ranges = []
 
     while pos < end:
         _read_tag(buf, &pos, end, &field, &wire)
         if wire == WIRE_VARINT:
-            if field == PB_GRANULARITY:
-                header["granularity"] = <int64_t>_read_varint(buf, &pos, end)
-            elif field == PB_DATE_GRANULARITY:
-                header["date_granularity"] = <int64_t>_read_varint(buf, &pos, end)
-            elif field == PB_LAT_OFFSET:
-                header["lat_offset"] = <int64_t>_read_varint(buf, &pos, end)
-            elif field == PB_LON_OFFSET:
-                header["lon_offset"] = <int64_t>_read_varint(buf, &pos, end)
-            else:
-                _read_varint(buf, &pos, end)
+            _read_header_value(buf, &pos, end, field, header)
         elif wire == WIRE_LENGTH:
             length = _read_varint(buf, &pos, end)
             f_start = pos
@@ -911,3 +921,126 @@ def decode_primitive_block(const unsigned char[::1] data, bint keep_metadata=Tru
     ways = _decode_elements(buf, group_ranges, GROUP_WAYS, keep_metadata, False)
     relations = _decode_elements(buf, group_ranges, GROUP_RELATIONS, keep_metadata, True)
     return string_table, header, nodes, ways, relations
+
+
+cdef int _check_fields(const unsigned char* buf, Py_ssize_t start,
+                       Py_ssize_t end) except -1:
+    """Raise unless ``buf[start:end]`` is a run of well-formed fields."""
+    cdef Py_ssize_t pos = start
+    cdef int field, wire
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        _skip_field(buf, &pos, end, wire)
+    return _check_end(pos, end)
+
+
+cdef int64_t _element_id(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                         bint is_signed) except? -1:
+    """The id of the plain node, way or relation stored in ``buf[start:end]``, zig-zag
+    decoded when ``is_signed`` (a node's): the last one, as protobuf and the decoder read
+    it, or 0, the proto2 default, when it has none. Raises unless the element and its
+    ``Info`` are well-formed fields; the three number the id and ``Info`` alike."""
+    cdef Py_ssize_t pos = start, f_start
+    cdef int field, wire
+    cdef uint64_t value = 0, length
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if field == NODE_ID and wire == WIRE_VARINT:
+            value = _read_varint(buf, &pos, end)
+        elif field == NODE_INFO and wire == WIRE_LENGTH:
+            length = _read_varint(buf, &pos, end)
+            f_start = pos
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                break
+            _check_fields(buf, f_start, pos)
+        else:
+            _skip_field(buf, &pos, end, wire)
+    _check_end(pos, end)
+    return _zig_zag_decode(value) if is_signed else <int64_t>value
+
+
+cdef inline bint _is_element(int field, int wire) nogil:
+    """Whether a group field holds a plain node, a way or a relation."""
+    return wire == WIRE_LENGTH and (
+        field == GROUP_NODES or field == GROUP_WAYS or field == GROUP_RELATIONS)
+
+
+cdef dict _group_layout(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end):
+    """The parts of one ``PrimitiveGroup``, for ``element_layout``."""
+    cdef Py_ssize_t pos = start, f_start, tag_start, n = 0, i = 0
+    cdef int field, wire
+    cdef uint64_t length
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        _skip_field(buf, &pos, end, wire)
+        n += _is_element(field, wire)
+    _check_end(pos, end)
+
+    group = {"dense": None}
+    for name in ("kind", "id", "start", "end"):
+        group[name] = np.empty(n, dtype=np.int64)
+    cdef int64_t[::1] kinds = group["kind"], ids = group["id"]
+    cdef int64_t[::1] starts = group["start"], ends = group["end"]
+    pos = start
+    while pos < end:
+        tag_start = pos
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        f_start = pos
+        pos = _field_end(pos, length, end)
+        if pos > end:
+            break
+        if field == GROUP_DENSE:
+            group["dense"] = _decode_dense_group(buf, f_start, pos, True)
+        elif _is_element(field, wire):
+            kinds[i] = field
+            ids[i] = _element_id(buf, f_start, pos, field == GROUP_NODES)
+            starts[i] = tag_start
+            ends[i] = pos
+            i += 1
+    return group
+
+
+def element_layout(const unsigned char[::1] data):
+    """Where the parts of a decompressed ``PrimitiveBlock`` lie, for copying its elements
+    without decoding them: ``(header, string_table, groups)``.
+
+    ``header`` is as in ``decode_primitive_block``; ``string_table`` is the (start, end)
+    of the string table's bytes, or None when the block has none. Each group is a dict:
+    ``dense`` is the dict ``decode_primitive_block`` gives for its ``DenseNodes`` (with
+    metadata), or None, and ``kind``, ``id``, ``start`` and ``end`` hold, for each plain
+    node, way and relation in it, its group field number, its id, and where its field
+    (tag and length included) starts and ends in ``data``.
+    """
+    cdef Py_ssize_t end = data.shape[0]
+    header = _default_header()
+    if end == 0:
+        return header, None, []
+    cdef const unsigned char* buf = &data[0]
+    cdef Py_ssize_t pos = 0, f_start
+    cdef int field, wire
+    cdef uint64_t length
+    string_table = None
+    groups = []
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire == WIRE_VARINT:
+            _read_header_value(buf, &pos, end, field, header)
+        elif wire == WIRE_LENGTH:
+            length = _read_varint(buf, &pos, end)
+            f_start = pos
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                break
+            if field == PB_STRINGTABLE:
+                string_table = (f_start, pos)
+            elif field == PB_PRIMITIVEGROUP:
+                groups.append(_group_layout(buf, f_start, pos))
+        else:
+            _skip_field(buf, &pos, end, wire)
+    _check_end(pos, end)
+    return header, string_table, groups

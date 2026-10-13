@@ -31,19 +31,23 @@ from struct import pack, unpack
 
 import numpy as np
 
+cimport cython
+from libc.stdint cimport int64_t, uint8_t, uint64_t
+
 from google.protobuf.message import DecodeError
 from pyrosm.exceptions import InvalidOSMFileError
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
-from pyrosm.proto.osmformat_pb2 import (
-    HeaderBlock,
-    PrimitiveBlock,
-    DenseNodes,
-    DenseInfo,
-)
+from pyrosm.proto.osmformat_pb2 import HeaderBlock, PrimitiveBlock
 from pyrosm.delta_compression cimport delta_encode
+from pyrosm.primitive_block_decoder cimport (
+    DENSE_DENSEINFO, DENSE_ID, DENSE_KEYS_VALS, DENSE_LAT, DENSE_LON, DI_CHANGESET,
+    DI_TIMESTAMP, DI_UID, DI_USER_SID, DI_VERSION, DI_VISIBLE, GROUP_DENSE, GROUP_NODES,
+    GROUP_RELATIONS, GROUP_WAYS, PB_DATE_GRANULARITY, PB_GRANULARITY, PB_LAT_OFFSET,
+    PB_LON_OFFSET, PB_PRIMITIVEGROUP, PB_STRINGTABLE,
+)
 
 from pyrosm.int64_hash import Int64Set
-from pyrosm.primitive_block_decoder import decode_primitive_block
+from pyrosm.primitive_block_decoder import decode_primitive_block, element_layout
 
 DIV = 1000000000
 
@@ -516,113 +520,146 @@ cdef _split_keys_vals(keys_vals, int n_nodes):
     return segments
 
 
-cdef _build_denseinfo(di, mask):
-    """Rebuild a DenseInfo for the masked subset, re-delta-encoding delta fields."""
-    new_di = DenseInfo()
-    any_set = False
-    if len(di.version) > 0:
-        v = np.fromiter(di.version, dtype=np.int64, count=len(di.version))[mask]
-        new_di.version.extend(v.tolist())
-        any_set = True
-    if len(di.timestamp) > 0:
-        t = np.cumsum(
-            np.fromiter(di.timestamp, dtype=np.int64, count=len(di.timestamp))
-        )[mask]
-        new_di.timestamp.extend(delta_encode(t).tolist())
-        any_set = True
-    if len(di.changeset) > 0:
-        c = np.cumsum(
-            np.fromiter(di.changeset, dtype=np.int64, count=len(di.changeset))
-        )[mask]
-        new_di.changeset.extend(delta_encode(c).tolist())
-        any_set = True
-    if len(di.uid) > 0:
-        u = np.cumsum(np.fromiter(di.uid, dtype=np.int64, count=len(di.uid)))[mask]
-        new_di.uid.extend(delta_encode(u).tolist())
-        any_set = True
-    if len(di.user_sid) > 0:
-        s = np.cumsum(
-            np.fromiter(di.user_sid, dtype=np.int64, count=len(di.user_sid))
-        )[mask]
-        new_di.user_sid.extend(delta_encode(s).tolist())
-        any_set = True
-    if len(di.visible) > 0:
-        vis = np.fromiter(di.visible, dtype=bool, count=len(di.visible))[mask]
-        new_di.visible.extend(vis.tolist())
-        any_set = True
-    return new_di if any_set else None
+# The DenseInfo fields as (field number, name, delta coded); the delta-coded ones are
+# also zig-zag encoded (``sint``).
+_DENSE_INFO = (
+    (DI_VERSION, "version", False),
+    (DI_TIMESTAMP, "timestamp", True),
+    (DI_CHANGESET, "changeset", True),
+    (DI_UID, "uid", True),
+    (DI_USER_SID, "user_sid", True),
+    (DI_VISIBLE, "visible", False),
+)
 
 
-cdef _build_dense_group(dense, kept_nodes_set):
-    """Filter a dense group to `kept_nodes_set`; return a new DenseNodes or None."""
-    ids = np.cumsum(np.fromiter(dense.id, dtype=np.int64, count=len(dense.id)))
-    mask = _isin(ids, kept_nodes_set)
-    if not mask.any():
-        return None
-    lat_raw = np.cumsum(np.fromiter(dense.lat, dtype=np.int64, count=len(dense.lat)))
-    lon_raw = np.cumsum(np.fromiter(dense.lon, dtype=np.int64, count=len(dense.lon)))
-
-    new_dense = DenseNodes()
-    new_dense.id.extend(delta_encode(ids[mask]).tolist())
-    new_dense.lat.extend(delta_encode(lat_raw[mask]).tolist())
-    new_dense.lon.extend(delta_encode(lon_raw[mask]).tolist())
-
-    di = _build_denseinfo(dense.denseinfo, mask)
-    if di is not None:
-        new_dense.denseinfo.CopyFrom(di)
-
-    if len(dense.keys_vals) > 0:
-        segments = _split_keys_vals(dense.keys_vals, len(ids))
-        keys_vals = []
-        for i in range(len(ids)):
-            if mask[i]:
-                keys_vals.extend(segments[i])
-                keys_vals.append(0)
-        new_dense.keys_vals.extend(keys_vals)
-    return new_dense
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef bytes _packed(values, bint zigzag):
+    """The int64 `values` as protobuf varints, one after another, zig-zag encoded first
+    when `zigzag` (as `sint` fields are)."""
+    cdef const int64_t[::1] v = np.ascontiguousarray(values, dtype=np.int64)
+    out = np.empty(10 * v.shape[0], dtype=np.uint8)  # a varint takes at most 10 bytes
+    cdef unsigned char[::1] o = out
+    cdef Py_ssize_t i, n = 0
+    cdef uint64_t x
+    for i in range(v.shape[0]):
+        if zigzag:
+            x = (<uint64_t>v[i] << 1) ^ <uint64_t>(v[i] >> 63)
+        else:
+            x = <uint64_t>v[i]
+        while x >= 0x80:
+            o[n] = <unsigned char>((x & 0x7F) | 0x80)
+            x >>= 7
+            n += 1
+        o[n] = <unsigned char>x
+        n += 1
+    return out[:n].tobytes()
 
 
-cdef _build_output_block(pblock, kept_nodes_set, kept_ways_set, kept_rel_set,
-                         compact=False):
-    """Build a cropped copy of `pblock`, or None if nothing is kept.
+cdef bytes _field(int number, payload):
+    """A length-delimited protobuf field: its tag and length, then `payload`."""
+    return _packed(np.array([(number << 3) | 2, len(payload)]), False) + payload
 
-    With `compact=True` the copied string table is pruned to only the strings the
-    kept elements reference (smaller output); otherwise it is copied verbatim.
+
+cdef bytes _varint_field(int number, value):
+    """A varint protobuf field holding `value`."""
+    return _packed(np.array([number << 3, value]), False)
+
+
+cdef _kept_keys_vals(const int64_t[::1] keys_vals, keep):
+    """The tag stream (each node's key and value ids followed by a 0) of the nodes that
+    `keep` marks, out of `keys_vals`, the stream of all of them."""
+    cdef const uint8_t[::1] kept = keep.view(np.uint8)
+    out = np.empty(keys_vals.shape[0], dtype=np.int64)
+    cdef int64_t[::1] o = out
+    cdef Py_ssize_t i = 0, n = 0, node = 0, end = keys_vals.shape[0]
+    while i < end:
+        if keys_vals[i] == 0:
+            if kept[node]:
+                o[n] = 0
+                n += 1
+            node += 1
+            i += 1
+        else:
+            if kept[node]:
+                o[n] = keys_vals[i]
+                o[n + 1] = keys_vals[i + 1]
+                n += 2
+            i += 2
+    return out[:n]
+
+
+cdef bytes _dense_bytes(dense, keep):
+    """The DenseNodes bytes of the nodes of the decoded group `dense` that `keep` marks."""
+    parts = [_field(DENSE_ID, _packed(delta_encode(dense["id"][keep]), True))]
+    info = [
+        _field(number, _packed(delta_encode(dense[name][keep]), True) if delta
+               else _packed(dense[name][keep], False))
+        for number, name, delta in _DENSE_INFO
+        if len(dense[name]) > 0
+    ]
+    if info:
+        parts.append(_field(DENSE_DENSEINFO, b"".join(info)))
+    parts.append(_field(DENSE_LAT, _packed(delta_encode(dense["lat"][keep]), True)))
+    parts.append(_field(DENSE_LON, _packed(delta_encode(dense["lon"][keep]), True)))
+    if len(dense["keys_vals"]) > 0:
+        parts.append(_field(
+            DENSE_KEYS_VALS, _packed(_kept_keys_vals(dense["keys_vals"], keep), False)
+        ))
+    return b"".join(parts)
+
+
+cdef bytes _kept_elements(data, group, int kind, kept_set):
+    """The fields of the elements of `kind` in `group` (see `element_layout`) that are in
+    `kept_set`, copied from `data` as they are."""
+    rows = np.flatnonzero(group["kind"] == kind)
+    rows = rows[_isin(group["id"][rows], kept_set)]
+    return b"".join([
+        data[start:end]
+        for start, end in zip(group["start"][rows].tolist(), group["end"][rows].tolist())
+    ])
+
+
+cdef _crop_block(data, kept_nodes_set, kept_ways_set, kept_rel_set, compact, filepath):
+    """The cropped copy of the decompressed block `data` of `filepath`, serialized, or
+    None if nothing in it is kept.
+
+    Kept plain nodes, ways and relations are copied as they are stored, and kept dense
+    nodes encoded again. With `compact=True` the string table is pruned to only the
+    strings the kept elements reference (smaller output); otherwise it is copied.
     """
-    out_block = PrimitiveBlock()
-    out_block.stringtable.CopyFrom(pblock.stringtable)
-    out_block.granularity = pblock.granularity
-    out_block.lat_offset = pblock.lat_offset
-    out_block.lon_offset = pblock.lon_offset
-    out_block.date_granularity = pblock.date_granularity
-
-    has_data = False
-    for g in pblock.primitivegroup:
-        if len(g.dense.id) > 0:
-            new_dense = _build_dense_group(g.dense, kept_nodes_set)
-            if new_dense is not None:
-                out_block.primitivegroup.add().dense.CopyFrom(new_dense)
-                has_data = True
-        elif len(g.nodes) > 0:
-            kept = [node for node in g.nodes if node.id in kept_nodes_set]
-            if kept:
-                out_block.primitivegroup.add().nodes.extend(kept)
-                has_data = True
-        elif len(g.ways) > 0:
-            kept = [way for way in g.ways if way.id in kept_ways_set]
-            if kept:
-                out_block.primitivegroup.add().ways.extend(kept)
-                has_data = True
-        elif len(g.relations) > 0:
-            kept = [rel for rel in g.relations if rel.id in kept_rel_set]
-            if kept:
-                out_block.primitivegroup.add().relations.extend(kept)
-                has_data = True
-    if not has_data:
+    try:
+        header, string_table, groups = element_layout(np.frombuffer(data, dtype=np.uint8))
+    except InvalidOSMFileError as err:
+        raise _invalid(filepath, err) from None
+    parts = []
+    for group in groups:
+        dense = group["dense"]
+        if dense is not None and len(dense["id"]) > 0:
+            keep = _isin(dense["id"], kept_nodes_set)
+            body = _field(GROUP_DENSE, _dense_bytes(dense, keep)) if keep.any() else b""
+        elif (group["kind"] == GROUP_NODES).any():
+            body = _kept_elements(data, group, GROUP_NODES, kept_nodes_set)
+        elif (group["kind"] == GROUP_WAYS).any():
+            body = _kept_elements(data, group, GROUP_WAYS, kept_ways_set)
+        else:
+            body = _kept_elements(data, group, GROUP_RELATIONS, kept_rel_set)
+        if body:
+            parts.append(_field(PB_PRIMITIVEGROUP, body))
+    if not parts:
         return None
+    table = b"" if string_table is None else data[string_table[0]:string_table[1]]
+    block = b"".join([_field(PB_STRINGTABLE, table)] + parts + [
+        _varint_field(PB_GRANULARITY, header["granularity"]),
+        _varint_field(PB_DATE_GRANULARITY, header["date_granularity"]),
+        _varint_field(PB_LAT_OFFSET, header["lat_offset"]),
+        _varint_field(PB_LON_OFFSET, header["lon_offset"]),
+    ])
     if compact:
+        out_block = _parse(PrimitiveBlock(), block, filepath)
         _compact_string_table(out_block)
-    return out_block
+        block = out_block.SerializeToString()
+    return block
 
 
 cdef _remap_repeated(field, new_index):
@@ -727,9 +764,8 @@ cdef _compact_string_table(out_block):
     out_block.stringtable.s.extend(new_strings)
 
 
-cdef _frame_blob(blob_type, message):
-    """Serialize+compress `message` into the on-disk blob framing bytes."""
-    data = message.SerializeToString()
+cdef _frame_blob(blob_type, data):
+    """Compress the serialized message `data` into the on-disk blob framing bytes."""
     blob = Blob()
     blob.raw_size = len(data)
     blob.zlib_data = zlib.compress(data)
@@ -742,7 +778,7 @@ cdef _frame_blob(blob_type, message):
 
 
 cdef _write_blob(out, blob_type, message):
-    out.write(_frame_blob(blob_type, message))
+    out.write(_frame_blob(blob_type, message.SerializeToString()))
 
 
 cdef _write_header(out, bounds, sorted_output=False):
@@ -765,12 +801,12 @@ cdef _write_pbf(filepath, output_path, kept_nodes_set, kept_ways_set, kept_rel_s
                 bounds, compact=False):
     with open(output_path, "wb") as out:
         _write_header(out, bounds)
-        for pblock in _iter_primitive_blocks(filepath):
-            out_block = _build_output_block(
-                pblock, kept_nodes_set, kept_ways_set, kept_rel_set, compact
+        for data in _iter_block_data(filepath):
+            block = _crop_block(
+                data, kept_nodes_set, kept_ways_set, kept_rel_set, compact, filepath
             )
-            if out_block is not None:
-                _write_blob(out, "OSMData", out_block)
+            if block is not None:
+                out.write(_frame_blob("OSMData", block))
 
 
 # ---------------------------------------------------------------------------
@@ -1038,17 +1074,17 @@ def _w_stage3(payload):
 
 
 def _w_write(payload):
-    pblock = _payload_to_block(payload)
-    out_block = _build_output_block(
-        pblock,
+    block = _crop_block(
+        _payload_data(payload),
         _w_get_set("kept_nodes"),
         _w_get_set("kept_ways"),
         _w_get_set("kept_rel"),
         _W_COMPACT,
+        payload[0],
     )
-    if out_block is None:
+    if block is None:
         return None
-    return _frame_blob("OSMData", out_block)
+    return _frame_blob("OSMData", block)
 
 
 cdef _broadcast(tmpdir, name, arr):
