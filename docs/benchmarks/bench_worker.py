@@ -92,14 +92,24 @@ def pyosmium(pbf):
     return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
 
 
+def _osmnx():
+    """OSMnx without its cache, so each run really queries Overpass, and with a user agent and
+    referer that identify these benchmarks."""
+    import osmnx as ox
+
+    ox.settings.use_cache = False
+    ox.settings.http_user_agent = "pyrosm-benchmarks (https://github.com/pyrosm/pyrosm)"
+    ox.settings.http_referer = "https://github.com/pyrosm/pyrosm"
+    return ox
+
+
 def osmnx_buildings(pbf, west, south, east, north):
     # OSMnx ignores the local file and downloads buildings for the bounding box from the
     # Overpass API; the work happens in the cloud, so its time and memory are not directly
     # comparable to the local-file readers.
-    import osmnx as ox
     from shapely.geometry import box
 
-    ox.settings.use_cache = False  # each run really hits Overpass
+    ox = _osmnx()
     polygon = box(float(west), float(south), float(east), float(north))
     return ox.features_from_polygon(polygon, tags={"building": True})
 
@@ -207,10 +217,9 @@ def net_osmium_tool(pbf):
 def net_osmnx(pbf, west, south, east, north):
     # OSMnx returns a simplified routing graph from Overpass (not the raw ways), so its line count
     # is higher and not directly comparable; the work happens in the cloud.
-    import osmnx as ox
     from shapely.geometry import box
 
-    ox.settings.use_cache = False  # each run really hits Overpass
+    ox = _osmnx()
     polygon = box(float(west), float(south), float(east), float(north))
     graph = ox.graph_from_polygon(polygon, network_type="all", retain_all=True)
     return ox.graph_to_gdfs(graph, nodes=False)

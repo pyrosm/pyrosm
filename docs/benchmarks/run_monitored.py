@@ -31,6 +31,9 @@ import psutil
 SAMPLE_SECONDS = 0.05
 LOG_FILE = "benchmark.log"
 LOG_EVERY_SECONDS = 30
+# A failed command's last error line is read in chunks of this size, and a longer line keeps
+# this much of its start and of its end.
+ERROR_CHUNK_BYTES = 4096
 # The pause after a run: half as long as the run took, at least 2 s and at most 5 minutes.
 COOLDOWN_RATIO = 0.5
 COOLDOWN_MIN = 2
@@ -113,12 +116,40 @@ def _stop(proc, process):
             pass
 
 
+def _last_line(stream):
+    """The last non-empty line of the binary file ``stream``, found by reading backwards from its
+    end; of a line longer than ERROR_CHUNK_BYTES only its start and end are read."""
+    stream.seek(0, os.SEEK_END)
+    end = stream.tell()
+    while end > 0:
+        stream.seek(end - 1)
+        if stream.read(1) not in b" \t\r\n":
+            break
+        end -= 1
+    start = end
+    while start > 0:
+        size = min(ERROR_CHUNK_BYTES, start)
+        stream.seek(start - size)
+        newline = stream.read(size).rfind(b"\n")
+        if newline >= 0:
+            start = start - size + newline + 1
+            break
+        start -= size
+    stream.seek(start)
+    if end - start <= 2 * ERROR_CHUNK_BYTES:
+        return stream.read(end - start).decode("utf-8", "replace").strip()
+    head = stream.read(ERROR_CHUNK_BYTES).decode("utf-8", "replace")
+    stream.seek(end - ERROR_CHUNK_BYTES)
+    return head + " ... " + stream.read(ERROR_CHUNK_BYTES).decode("utf-8", "replace")
+
+
 def run_monitored(command, timeout, env=None, label=None):
     """Run ``command`` (a list) for at most ``timeout`` seconds, with the environment ``env``;
     ``label`` names the run in the log.
 
-    Returns a dict with the ``status`` ("ok", "timeout" or "OOM/crash (exit N)"), the
-    ``wall_seconds`` the run took, the ``peak_mb`` of the process and its child processes,
+    Returns a dict with the ``status`` ("ok", "timeout", "OOM/crash (exit -N)" when a signal
+    such as an out-of-memory kill stopped it, or "error (exit N): <the last line of its error
+    output>" when it exited with an error; a long line keeps its start and end), the ``wall_seconds`` the run took, the ``peak_mb`` of the process and its child processes,
     and the ``stdout`` of the command.
     """
     label = label or " ".join(str(part) for part in command[-2:])
@@ -126,9 +157,9 @@ def run_monitored(command, timeout, env=None, label=None):
     started = time.perf_counter()
     next_log = LOG_EVERY_SECONDS
     # The output goes to a file, so a command that prints a lot cannot fill a pipe and stall.
-    with tempfile.TemporaryFile("w+") as output:
+    with tempfile.TemporaryFile("w+") as output, tempfile.TemporaryFile("w+b") as errors:
         proc = subprocess.Popen(
-            command, stdout=output, stderr=subprocess.DEVNULL, env=env,
+            command, stdout=output, stderr=errors, env=env,
             start_new_session=os.name == "posix",
         )
         process = psutil.Process(proc.pid)
@@ -155,12 +186,18 @@ def run_monitored(command, timeout, env=None, label=None):
             proc.wait()
         output.seek(0)
         stdout = output.read()
+        last_error = _last_line(errors)
     if timed_out:
         status = "timeout"
     elif proc.returncode == 0:
         status = "ok"
-    else:
+    elif proc.returncode < 0:
         status = "OOM/crash (exit %d)" % proc.returncode
+    else:
+        status = "error (exit %d)" % proc.returncode
+        if last_error:
+            status += ": " + (last_error if len(last_error) <= 240
+                              else last_error[:80] + " ... " + last_error[-155:])
     wall_seconds = round(time.perf_counter() - started, 2)
     log("end      %s  %s, %.0f s, %.1f GB peak" % (label, status, wall_seconds, peak / 1e9))
     return {
