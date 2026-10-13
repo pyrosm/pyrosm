@@ -43,6 +43,7 @@ from pyrosm.proto.osmformat_pb2 import (
 from pyrosm.delta_compression cimport delta_encode
 
 from pyrosm.int64_hash import Int64Set
+from pyrosm.primitive_block_decoder import decode_primitive_block
 
 DIV = 1000000000
 
@@ -126,12 +127,12 @@ cdef _read_exact(f, n):
     return data
 
 
-cdef _parse(message, data, f, reason=None):
-    """Parse `data` into `message`, naming the file of `f` when it is not valid."""
+cdef _parse(message, data, filepath, reason=None):
+    """Parse `data` into `message`, naming `filepath` when it is not valid."""
     try:
         message.ParseFromString(data)
     except DecodeError as err:
-        raise _invalid(f.name, reason or err) from None
+        raise _invalid(filepath, reason or err) from None
     return message
 
 
@@ -150,7 +151,7 @@ cdef _read_blob_header(f):
             % (msg_len, _MAX_BLOB_HEADER_SIZE),
         )
     blob_header = _parse(
-        BlobHeader(), _read_exact(f, msg_len), f, "the BlobHeader could not be parsed"
+        BlobHeader(), _read_exact(f, msg_len), f.name, "the BlobHeader could not be parsed"
     )
     if not 0 <= blob_header.datasize <= _MAX_BLOB_SIZE:
         raise _invalid(
@@ -163,7 +164,7 @@ cdef _read_blob_header(f):
 
 cdef _read_blob(f, datasize):
     """Read the raw or zlib Blob of `datasize` bytes at the position of `f`."""
-    blob = _parse(Blob(), _read_exact(f, datasize), f)
+    blob = _parse(Blob(), _read_exact(f, datasize), f.name)
     if not (blob.HasField("raw") or blob.HasField("zlib_data")):
         raise ValueError(
             "'%s' uses a blob compression other than raw and zlib, which pyrosm "
@@ -207,17 +208,40 @@ cdef _read_next_blob(f):
     return blob_header, _decompress(blob.zlib_data, _raw_size(blob), f.name)
 
 
-def _iter_primitive_blocks(filepath):
-    """Yield each parsed OSMData `PrimitiveBlock` (skips the leading OSMHeader)."""
+def _iter_block_data(filepath):
+    """Yield the decompressed bytes of each OSMData block (skips the leading OSMHeader)."""
     with open(filepath, "rb") as f:
         _read_next_blob(f)  # header blob, validated separately in _read_header
         while True:
             blob_header, data = _read_next_blob(f)
             if blob_header is None:
                 break
-            if blob_header.type != "OSMData":
-                continue
-            yield _parse(PrimitiveBlock(), data, f)
+            if blob_header.type == "OSMData":
+                yield data
+
+
+cdef _decode_block(data, filepath):
+    """The header, nodes, ways and relations of the decompressed block `data` of
+    `filepath`, decoded without the elements' metadata (see `decode_primitive_block`)."""
+    try:
+        _, header, nodes, ways, relations = decode_primitive_block(
+            np.frombuffer(data, dtype=np.uint8), False
+        )
+    except InvalidOSMFileError as err:
+        raise _invalid(filepath, err) from None
+    return header, nodes, ways, relations
+
+
+def _iter_primitive_blocks(filepath):
+    """Yield each parsed OSMData `PrimitiveBlock` (skips the leading OSMHeader)."""
+    for data in _iter_block_data(filepath):
+        yield _parse(PrimitiveBlock(), data, filepath)
+
+
+def _iter_decoded_blocks(filepath):
+    """Yield each OSMData block decoded by `_decode_block`."""
+    for data in _iter_block_data(filepath):
+        yield _decode_block(data, filepath)
 
 
 cpdef read_header_block(filepath):
@@ -234,7 +258,7 @@ cpdef read_header_block(filepath):
             raise _invalid(
                 f.name, "first block is '%s', expected 'OSMHeader'" % blob_header.type
             )
-        return _parse(HeaderBlock(), data, f)
+        return _parse(HeaderBlock(), data, f.name)
 
 
 cdef _read_header(filepath):
@@ -273,98 +297,124 @@ cdef _unique_concat(arrays):
 # ---------------------------------------------------------------------------
 # Selection stages (each re-streams the whole file, inspecting one element type)
 # ---------------------------------------------------------------------------
-cdef _node_coords(pblock, g):
-    """Absolute (ids, lons, lats) of the nodes of group `g` in degrees."""
-    granularity = pblock.granularity
-    lat_offset = pblock.lat_offset
-    lon_offset = pblock.lon_offset
-    if len(g.dense.id) > 0:
-        dense = g.dense
-        ids = np.cumsum(np.fromiter(dense.id, dtype=np.int64, count=len(dense.id)))
-        lat_raw = np.cumsum(np.fromiter(dense.lat, dtype=np.int64, count=len(dense.lat)))
-        lon_raw = np.cumsum(np.fromiter(dense.lon, dtype=np.int64, count=len(dense.lon)))
-    else:
-        n = len(g.nodes)
-        ids = np.fromiter((node.id for node in g.nodes), dtype=np.int64, count=n)
-        lat_raw = np.fromiter((node.lat for node in g.nodes), dtype=np.int64, count=n)
-        lon_raw = np.fromiter((node.lon for node in g.nodes), dtype=np.int64, count=n)
-    lats = (lat_raw * granularity + lat_offset) / DIV
-    lons = (lon_raw * granularity + lon_offset) / DIV
-    return ids, lons, lats
-
-
-cdef _block_nodes_inside(pblock, bounds, polygon):
-    """Ids of the nodes in `pblock` inside the box `bounds` and, when `polygon` is
-    given, inside it or on its boundary."""
+cdef _nodes_inside(header, nodes, bounds, polygon):
+    """Ids of the decoded `nodes` of a block inside the box `bounds` and, when `polygon`
+    is given, inside it or on its boundary."""
+    if nodes is None or len(nodes["id"]) == 0:
+        return np.empty(0, dtype=np.int64)
     xmin, ymin, xmax, ymax = bounds
-    selected = []
-    for g in pblock.primitivegroup:
-        if len(g.dense.id) == 0 and len(g.nodes) == 0:
-            continue
-        ids, lons, lats = _node_coords(pblock, g)
-        mask = (xmin <= lons) & (lons <= xmax) & (ymin <= lats) & (lats <= ymax)
-        if polygon is not None and mask.any():
-            import shapely
+    lats = (nodes["lat"] * header["granularity"] + header["lat_offset"]) / DIV
+    lons = (nodes["lon"] * header["granularity"] + header["lon_offset"]) / DIV
+    mask = (xmin <= lons) & (lons <= xmax) & (ymin <= lats) & (lats <= ymax)
+    if polygon is not None and mask.any():
+        import shapely
 
-            mask[mask] = shapely.intersects_xy(polygon, lons[mask], lats[mask])
-        if mask.any():
-            selected.append(ids[mask])
-    return _unique_concat(selected)
+        mask[mask] = shapely.intersects_xy(polygon, lons[mask], lats[mask])
+    return nodes["id"][mask]
+
+
+cdef _any_member(hits, offsets):
+    """Whether each element has a hit among its members: `hits` holds one value per
+    member, laid out by the elements' CSR `offsets`."""
+    counts = np.diff(offsets)
+    out = np.zeros(len(counts), dtype=bool)
+    nonempty = counts > 0
+    if nonempty.any():
+        out[nonempty] = np.logical_or.reduceat(hits, offsets[:-1][nonempty])
+    return out
+
+
+cdef _ways_touching(ways, nodes_set):
+    """Ids of the decoded `ways` of a block with a node in `nodes_set`, and the nodes of
+    those ways."""
+    if ways is None:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+    refs, offsets = ways["refs"], ways["refs_off"]
+    touching = _any_member(_isin(refs, nodes_set), offsets)
+    return ways["id"][touching], refs[np.repeat(touching, np.diff(offsets))]
+
+
+cdef _relations_touching(relations, nodes_set, ways_set):
+    """Ids of the decoded `relations` of a block with a node member in `nodes_set` or a
+    way member in `ways_set`."""
+    if relations is None:
+        return np.empty(0, dtype=np.int64)
+    memids, types = relations["memids"], relations["types"]
+    hits = np.zeros(len(memids), dtype=bool)
+    is_node = types == _MEMBER_NODE
+    is_way = types == _MEMBER_WAY
+    hits[is_node] = _isin(memids[is_node], nodes_set)
+    hits[is_way] = _isin(memids[is_way], ways_set)
+    return relations["id"][_any_member(hits, relations["members_off"])]
 
 
 cdef _stage1_nodes_inside(filepath, region):
     bounds, polygon = region
-    return _unique_concat(
-        [_block_nodes_inside(pb, bounds, polygon) for pb in _iter_primitive_blocks(filepath)]
-    )
+    return _unique_concat([
+        _nodes_inside(header, nodes, bounds, polygon)
+        for header, nodes, _, _ in _iter_decoded_blocks(filepath)
+    ])
 
 
 cdef _stage2_ways(filepath, nodes_in_bbox_set):
     kept_way_ids = []
     extra_nodes = []
-    for pblock in _iter_primitive_blocks(filepath):
-        for g in pblock.primitivegroup:
-            if len(g.ways) == 0:
-                continue
-            for way in g.ways:
-                refs = np.cumsum(
-                    np.fromiter(way.refs, dtype=np.int64, count=len(way.refs))
-                )
-                if len(refs) == 0:
-                    continue
-                if _isin(refs, nodes_in_bbox_set).any():
-                    kept_way_ids.append(way.id)
-                    extra_nodes.append(refs)
-    return (
-        np.array(kept_way_ids, dtype=np.int64),
-        _unique_concat(extra_nodes),
+    for _, _, ways, _ in _iter_decoded_blocks(filepath):
+        ids, refs = _ways_touching(ways, nodes_in_bbox_set)
+        kept_way_ids.append(ids)
+        extra_nodes.append(refs)
+    return np.concatenate(kept_way_ids or [np.empty(0, dtype=np.int64)]), _unique_concat(
+        extra_nodes
     )
 
 
 cdef _stage3_relations(filepath, kept_nodes_set, kept_ways_set):
-    kept_rel_ids = []
-    for pblock in _iter_primitive_blocks(filepath):
-        for g in pblock.primitivegroup:
-            if len(g.relations) == 0:
-                continue
-            for rel in g.relations:
-                memids = np.cumsum(
-                    np.fromiter(rel.memids, dtype=np.int64, count=len(rel.memids))
+    return np.concatenate([
+        _relations_touching(relations, kept_nodes_set, kept_ways_set)
+        for _, _, _, relations in _iter_decoded_blocks(filepath)
+    ] or [np.empty(0, dtype=np.int64)])
+
+
+cdef _select_one_pass(filepath, region, keep_relations):
+    """The crop selection of `filepath` in one pass, as (kept node ids, [kept way ids],
+    [kept relation ids]) like `_select`, for a file whose blocks hold every node before
+    every way and every way before every relation, as a file sorted by type then id
+    does. None when a block breaks that order."""
+    bounds, polygon = region
+    inside, way_ids, way_refs, rel_ids = [], [], [], []
+    nodes_set = kept_nodes_set = kept_ways_set = None
+    seen_ways = seen_relations = False
+    for header, nodes, ways, relations in _iter_decoded_blocks(filepath):
+        has_nodes = nodes is not None and len(nodes["id"]) > 0
+        if (has_nodes and seen_ways) or (
+            (has_nodes or ways is not None) and seen_relations
+        ):
+            return None
+        if has_nodes:
+            inside.append(_nodes_inside(header, nodes, bounds, polygon))
+        if ways is not None:
+            if nodes_set is None:
+                nodes_set = _to_set(_unique_concat(inside))
+            ids, refs = _ways_touching(ways, nodes_set)
+            way_ids.append(ids)
+            way_refs.append(refs)
+            seen_ways = True
+        if relations is not None:
+            seen_relations = True
+            if keep_relations:
+                if kept_nodes_set is None:
+                    kept_nodes_set = _to_set(_unique_concat(inside + way_refs))
+                    kept_ways_set = _to_set(np.concatenate(
+                        way_ids or [np.empty(0, dtype=np.int64)]))
+                rel_ids.append(
+                    _relations_touching(relations, kept_nodes_set, kept_ways_set)
                 )
-                if len(memids) == 0:
-                    continue
-                types = np.fromiter(rel.types, dtype=np.int64, count=len(rel.types))
-                node_members = memids[types == _MEMBER_NODE]
-                way_members = memids[types == _MEMBER_WAY]
-                keep = False
-                if len(node_members) > 0 and _isin(node_members, kept_nodes_set).any():
-                    keep = True
-                if not keep and len(way_members) > 0 and \
-                        _isin(way_members, kept_ways_set).any():
-                    keep = True
-                if keep:
-                    kept_rel_ids.append(rel.id)
-    return np.array(kept_rel_ids, dtype=np.int64)
+    empty = np.empty(0, dtype=np.int64)
+    return (
+        _unique_concat(inside + way_refs),
+        [np.concatenate(way_ids or [empty])],
+        [np.concatenate(rel_ids or [empty])],
+    )
 
 
 cdef _block_way_copies(pblock, candidates, nodes_in_bbox_set):
@@ -815,6 +865,11 @@ cdef _select(sources, region, keep_relations, pool, tmpdir):
     With a `pool`, each stage spreads a file's blocks over the workers, which read
     the id sets the stage needs from `tmpdir`.
     """
+    if pool is None and len(sources) == 1:
+        selection = _select_one_pass(sources[0], region, keep_relations)
+        if selection is not None:
+            return selection
+
     # Stage 1: nodes inside the bbox (or polygon).
     if pool is None:
         nodes_in_bbox = _unique_concat(
@@ -916,7 +971,8 @@ def _iter_payloads(filepath):
             yield filepath, identity, offset, blob_header.datasize
 
 
-cdef _payload_to_block(payload):
+cdef _payload_data(payload):
+    """The decompressed bytes of the blob a payload of `_iter_payloads` points at."""
     filepath, identity, offset, size = payload
     with open(filepath, "rb") as f:
         if _identity(f) != identity:
@@ -924,15 +980,16 @@ cdef _payload_to_block(payload):
         f.seek(offset)
         blob = _read_blob(f, size)
     if blob.HasField("raw"):
-        data = blob.raw
-    else:
-        data = _decompress(blob.zlib_data, _raw_size(blob), filepath)
-    pblock = PrimitiveBlock()
-    try:
-        pblock.ParseFromString(data)
-    except DecodeError as err:
-        raise _invalid(filepath, err) from None
-    return pblock
+        return blob.raw
+    return _decompress(blob.zlib_data, _raw_size(blob), filepath)
+
+
+cdef _payload_to_block(payload):
+    return _parse(PrimitiveBlock(), _payload_data(payload), payload[0])
+
+
+cdef _payload_decoded(payload):
+    return _decode_block(_payload_data(payload), payload[0])
 
 
 def _winit(bounds, polygon_wkb, tmpdir, compact):
@@ -955,25 +1012,14 @@ def _w_get_set(name):
 
 
 def _w_stage1(payload):
-    return _block_nodes_inside(_payload_to_block(payload), _W_BOUNDS, _W_POLYGON)
+    header, nodes, _, _ = _payload_decoded(payload)
+    return np.unique(_nodes_inside(header, nodes, _W_BOUNDS, _W_POLYGON))
 
 
 def _w_stage2(payload):
-    pblock = _payload_to_block(payload)
-    nodes_set = _w_get_set("nodes_in_bbox")
-    kept_way_ids = []
-    extra_nodes = []
-    for g in pblock.primitivegroup:
-        if len(g.ways) == 0:
-            continue
-        for way in g.ways:
-            refs = np.cumsum(np.fromiter(way.refs, dtype=np.int64, count=len(way.refs)))
-            if len(refs) == 0:
-                continue
-            if _isin(refs, nodes_set).any():
-                kept_way_ids.append(way.id)
-                extra_nodes.append(refs)
-    return (np.array(kept_way_ids, dtype=np.int64), _unique_concat(extra_nodes))
+    _, _, ways, _ = _payload_decoded(payload)
+    ids, refs = _ways_touching(ways, _w_get_set("nodes_in_bbox"))
+    return ids, np.unique(refs)
 
 
 def _w_way_copies(payload):
@@ -985,31 +1031,10 @@ def _w_way_copies(payload):
 
 
 def _w_stage3(payload):
-    pblock = _payload_to_block(payload)
-    nodes_set = _w_get_set("kept_nodes")
-    ways_set = _w_get_set("kept_ways")
-    kept_rel_ids = []
-    for g in pblock.primitivegroup:
-        if len(g.relations) == 0:
-            continue
-        for rel in g.relations:
-            memids = np.cumsum(
-                np.fromiter(rel.memids, dtype=np.int64, count=len(rel.memids))
-            )
-            if len(memids) == 0:
-                continue
-            types = np.fromiter(rel.types, dtype=np.int64, count=len(rel.types))
-            node_members = memids[types == _MEMBER_NODE]
-            way_members = memids[types == _MEMBER_WAY]
-            keep = False
-            if len(node_members) > 0 and _isin(node_members, nodes_set).any():
-                keep = True
-            if not keep and len(way_members) > 0 and \
-                    _isin(way_members, ways_set).any():
-                keep = True
-            if keep:
-                kept_rel_ids.append(rel.id)
-    return np.array(kept_rel_ids, dtype=np.int64)
+    _, _, _, relations = _payload_decoded(payload)
+    return _relations_touching(
+        relations, _w_get_set("kept_nodes"), _w_get_set("kept_ways")
+    )
 
 
 def _w_write(payload):
