@@ -2439,3 +2439,108 @@ def test_read_that_finds_nothing_warns(engine, read, found, fresh_cache):
         UserWarning, match="Could not find any %s for given area" % found
     ):
         assert read(osm) is None
+
+
+def _malformed_block(case):
+    """The bytes of a PrimitiveBlock whose arrays break the PBF schema as `case` says."""
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    block = PrimitiveBlock()
+    block.stringtable.s.append(b"")
+    group = block.primitivegroup.add()
+    if case == "way with more values than keys":
+        group.ways.add(id=1, keys=[1], vals=[1, 2])
+    elif case == "relation with fewer member types than ids":
+        group.relations.add(id=1, memids=[1, 1], types=[0], roles_sid=[0, 0])
+    elif case == "dense nodes with fewer latitudes than ids":
+        group.dense.id.extend([1, 1])
+        group.dense.lat.extend([1])
+        group.dense.lon.extend([1, 1])
+    elif case == "dense tags without the 0 that ends a node":
+        group.dense.id.extend([1])
+        group.dense.lat.extend([1])
+        group.dense.lon.extend([1])
+        group.dense.keys_vals.extend([1, 1])
+    elif case == "dense metadata with more versions than nodes":
+        group.dense.id.extend([1])
+        group.dense.lat.extend([1])
+        group.dense.lon.extend([1])
+        group.dense.denseinfo.version.extend([1, 1])
+    return block.SerializeToString()
+
+
+@pytest.mark.parametrize(
+    "case, data, match",
+    [
+        ("varint cut off", b"\xff\xff", "does not fit"),
+        ("field longer than the block", b"\x12\x10\x0a", "does not fit"),
+        ("string longer than the string table", b"\x0a\x04\x0a\x05ab", "does not fit"),
+        ("varint longer than 10 bytes", b"\x88\x01" + b"\x80" * 10 + b"\x01", "does not fit"),
+        ("varint above 64 bits", b"\x88\x01" + b"\xff" * 9 + b"\x02", "does not fit"),
+        ("field number 0", b"\x00\x00", "does not fit"),
+        ("field number 2**32 + 17", b"\x88\x81\x80\x80\x80\x01\x64", "does not fit"),
+        ("unknown wire type", b"\x0f\x00", "does not fit"),
+        ("fixed64 field cut off", b"\x99\x06abc", "does not fit"),
+        ("way refs cut off", b"\x12\x08\x1a\x06\x08\x01\x42\x02\x02\x80", "does not fit"),
+        ("way with more values than keys", None, "a way has 1 tag keys but 2 values"),
+        ("relation with fewer member types than ids", None, "2 member ids but 1 member types"),
+        ("dense nodes with fewer latitudes than ids", None, "2 ids but 1 latitudes"),
+        ("dense tags without the 0 that ends a node", None, "do not end once for each"),
+        ("dense metadata with more versions than nodes", None, "1 nodes but 2 values of version"),
+    ],
+)
+def test_block_decoder_rejects_malformed_blocks(case, data, match):
+    """#483 — the raw block decoder raises on a block that breaks the wire format or the
+    PBF schema, instead of reading or writing past its data."""
+    import numpy as np
+
+    from pyrosm.exceptions import InvalidOSMFileError
+    from pyrosm.primitive_block_decoder import decode_primitive_block
+
+    if data is None:
+        data = _malformed_block(case)
+    for keep_metadata in (True,) if "metadata" in case else (True, False):
+        with pytest.raises(InvalidOSMFileError, match=match):
+            decode_primitive_block(np.frombuffer(data, dtype=np.uint8), keep_metadata)
+
+
+def test_block_decoder_joins_split_packed_runs():
+    """#483 — a packed field written in several runs is read as one array, with the
+    delta coding continuing from one run to the next."""
+    import numpy as np
+
+    from pyrosm.primitive_block_decoder import decode_primitive_block
+
+    def field(tag, payload):
+        return bytes([tag, len(payload)]) + payload
+
+    def runs(tag, *payloads):
+        return b"".join(field(tag, payload) for payload in payloads)
+
+    info = runs(0x0A, b"\x05", b"\x07\x09")  # versions 5, 7, 9
+    info += runs(0x12, b"\x14", b"\x02", b"\x02")  # timestamp deltas 10, 1, 1
+    dense = runs(0x0A, b"\x02", b"\x04", b"\x06")  # id deltas 1, 2, 3
+    dense += runs(0x42, b"\x02\x02\x02")  # lat deltas 1, 1, 1
+    dense += runs(0x4A, b"\x06", b"\x01\x02")  # lon deltas 3, -1, 1
+    dense += runs(0x52, b"\x00", b"\x00", b"\x00") + field(0x2A, info)
+    way = b"\x08\x05" + runs(0x12, b"\x01", b"\x02") + runs(0x1A, b"\x03\x04")
+    way += runs(0x42, b"\x14", b"\x02")  # ref deltas 10, 1
+    relation = b"\x08\x07" + runs(0x42, b"\x00", b"\x00")
+    relation += runs(0x4A, b"\x14", b"\x0a")  # member id deltas 10, 5
+    relation += runs(0x52, b"\x00", b"\x01")
+    groups = field(0x12, dense) + field(0x1A, way), field(0x22, relation)
+    data = field(0x0A, b"") + runs(0x12, *groups)
+
+    _, _, nodes, ways, relations = decode_primitive_block(
+        np.frombuffer(data, dtype=np.uint8), True
+    )
+    assert ways["keys"].tolist() == [1, 2] and ways["vals"].tolist() == [3, 4]
+    assert ways["refs"].tolist() == [10, 11]
+    assert relations["memids"].tolist() == [10, 15]
+    assert relations["types"].tolist() == [0, 1]
+    assert relations["roles"].tolist() == [0, 0]
+    assert nodes["id"].tolist() == [1, 3, 6]
+    assert nodes["lon"].tolist() == [3, 2, 3]
+    assert nodes["keys_vals"].tolist() == [0, 0, 0]
+    assert nodes["version"].tolist() == [5, 7, 9]
+    assert nodes["timestamp"].tolist() == [10, 11, 12]
