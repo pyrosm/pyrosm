@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- DOCS: The menu button of the documentation on phones opens the navigation sidebar again. The documentation is built with sphinx-book-theme 1.2.0, since its later versions use pydata-sphinx-theme 0.17-0.20, whose mobile sidebar button does nothing ([#482](https://github.com/pyrosm/pyrosm/pull/482))
+
 v0.20.0
 -------
 

@@ -10,7 +10,9 @@
 # Sphinx + MyST-NB Markdown/notebook rendering
 myst-nb>=1.0,<2.0
 sphinx>=7.0,<9.0
-sphinx-book-theme>=1.1,<2.0
+# 1.3.0 and later require pydata-sphinx-theme 0.17-0.20, whose mobile sidebar button does not
+# open the sidebar (pydata/pydata-sphinx-theme#2451, executablebooks/sphinx-book-theme#988).
+sphinx-book-theme==1.2.0
 # Collapsible "dropdown" directive used on the landing page
 sphinx-design>=0.5,<1.0
 
