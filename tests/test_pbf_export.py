@@ -1185,8 +1185,9 @@ def test_merge_pbf_mixed_metadata(tmp_path):
 def test_to_pbf_writes_each_kind_of_group(tmp_path):
     # Kept plain nodes, ways and relations are copied as they are stored, and kept dense
     # nodes (here without tags and metadata) encoded again; each written block is
-    # encoded as protobuf itself encodes it.
-    from pyrosm.pbf_export import _iter_block_data
+    # encoded as protobuf itself encodes it, and a group without elements is left out.
+    # A re-packed crop keeps the same elements.
+    from pyrosm.pbf_export import _iter_block_data, _iter_primitive_blocks
     from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
 
     blk = PrimitiveBlock(granularity=100, date_granularity=1000)
@@ -1200,6 +1201,7 @@ def test_to_pbf_writes_each_kind_of_group(tmp_path):
     relations = blk.primitivegroup.add().relations
     relations.add(id=20, memids=[10], types=[1], roles_sid=[0])
     relations.add(id=21, memids=[3], types=[0], roles_sid=[0])
+    blk.primitivegroup.add()
     dense = PrimitiveBlock(granularity=100, date_granularity=1000)
     dense.stringtable.s.append(b"")
     d = dense.primitivegroup.add().dense
@@ -1221,6 +1223,15 @@ def test_to_pbf_writes_each_kind_of_group(tmp_path):
     kept_dense = written[1].primitivegroup[0].dense
     assert list(kept_dense.id) == [4] and len(kept_dense.keys_vals) == 0
     assert not kept_dense.HasField("denseinfo")
+
+    repacked = OSM(src, bounding_box=[24.9, 60.1, 25.0, 60.2]).to_pbf(
+        str(tmp_path / "repacked.osm.pbf"), repack=True
+    )
+    nodes, _ = _dense_nodes(repacked)
+    assert nodes == {1: (3, {"amenity": "cafe"}), 2: (None, {}), 4: (None, {})}
+    groups = [g for pb in _iter_primitive_blocks(repacked) for g in pb.primitivegroup]
+    assert [way.id for g in groups for way in g.ways] == [10]
+    assert [rel.id for g in groups for rel in g.relations] == [20]
 
 
 @pytest.mark.parametrize(
