@@ -5,6 +5,7 @@ import struct
 import zlib
 
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
+from pyrosm.zlib_blob import zlib_decompress
 
 
 def _index_blobs(filepath):
@@ -47,6 +48,10 @@ def _read_block(f, offset, size):
     blob = Blob()
     blob.ParseFromString(f.read(size))
     if blob.HasField("zlib_data"):
+        if blob.HasField("raw_size"):
+            data = zlib_decompress(blob.zlib_data, blob.raw_size)
+            if data is not None:
+                return data
         return zlib.decompress(blob.zlib_data)
     if blob.HasField("raw"):
         return blob.raw

@@ -51,6 +51,7 @@ from pyrosm.primitive_block_decoder cimport (
 )
 
 from pyrosm.int64_hash import Int64Set, SortedInt64Set
+from pyrosm.zlib_blob import zlib_decompress
 from pyrosm.primitive_block_decoder import (
     decode_elements, decode_primitive_block, element_layout,
 )
@@ -184,7 +185,13 @@ cdef _read_blob(f, datasize):
 
 
 cdef _decompress(data, raw_size, filepath):
-    """Decompress a zlib blob of at most 32 MiB, checking it against `raw_size`."""
+    """Decompress a zlib blob of at most 32 MiB, checking it against `raw_size`: with
+    libdeflate when the blob declares its size, otherwise, or to report what is wrong
+    with a blob libdeflate cannot decompress, with zlib."""
+    if raw_size is not None:
+        out = zlib_decompress(data, raw_size)
+        if out is not None:
+            return out
     decompressor = zlib.decompressobj()
     try:
         out = decompressor.decompress(data, _MAX_BLOB_SIZE)
