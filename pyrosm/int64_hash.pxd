@@ -7,6 +7,7 @@ cdef extern from "int64_hash.h" nogil:
     ctypedef struct kh_i64set_t:
         khint_t n_buckets
         khint_t size
+        int64_t *keys
 
     ctypedef struct kh_i64map_t:
         khint_t n_buckets
@@ -18,6 +19,7 @@ cdef extern from "int64_hash.h" nogil:
     int kh_resize_i64set(kh_i64set_t *h, khint_t new_n_buckets)
     khint_t kh_put_i64set(kh_i64set_t *h, int64_t key, int *ret)
     khint_t kh_get_i64set(const kh_i64set_t *h, int64_t key)
+    bint kh_exist(const kh_i64set_t *h, khint_t slot)
 
     kh_i64map_t *kh_init_i64map()
     void kh_destroy_i64map(kh_i64map_t *h)

@@ -64,6 +64,19 @@ cdef class Int64Set:
     def __len__(self):
         return self.table.size
 
+    def values(self):
+        """The values of the set, as an int64 array in no particular order."""
+        result = np.empty(self.table.size, dtype=np.int64)
+        cdef int64_t[::1] out = result
+        cdef khint_t slot
+        cdef Py_ssize_t i = 0
+        with nogil:
+            for slot in range(self.table.n_buckets):
+                if kh_exist(self.table, slot):
+                    out[i] = self.table.keys[slot]
+                    i += 1
+        return result
+
     def isin(self, values):
         """A boolean array: whether each of ``values`` is in the set."""
         cdef const int64_t[::1] keys = _int64_array(values)

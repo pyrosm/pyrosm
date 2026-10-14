@@ -302,9 +302,10 @@ cdef _isin(values, lookup):
 
 
 cdef _unique_concat(arrays):
+    """The distinct ids of the id arrays `arrays`, in no particular order."""
     if len(arrays) == 0:
         return np.empty(0, dtype=np.int64)
-    return np.unique(np.concatenate(arrays))
+    return Int64Set(np.concatenate(arrays)).values()
 
 
 # ---------------------------------------------------------------------------
