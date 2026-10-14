@@ -45,7 +45,7 @@ from pyrosm.primitive_block_decoder cimport (
     DENSE_DENSEINFO, DENSE_ID, DENSE_KEYS_VALS, DENSE_LAT, DENSE_LON, DI_CHANGESET,
     DI_TIMESTAMP, DI_UID, DI_USER_SID, DI_VERSION, DI_VISIBLE, GROUP_DENSE, GROUP_NODES,
     GROUP_RELATIONS, GROUP_WAYS, PB_DATE_GRANULARITY, PB_GRANULARITY, PB_LAT_OFFSET,
-    PB_LON_OFFSET, PB_PRIMITIVEGROUP, PB_STRINGTABLE,
+    PB_LON_OFFSET, PB_PRIMITIVEGROUP, PB_STRINGTABLE, ST_S,
 )
 
 from pyrosm.int64_hash import Int64Set, SortedInt64Set
@@ -529,6 +529,25 @@ _DENSE_INFO = (
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
+cdef inline Py_ssize_t _write_varint(unsigned char* out, uint64_t x) noexcept nogil:
+    """Write `x` as a protobuf varint at `out` (room for 10 bytes); return its length."""
+    cdef Py_ssize_t n = 0
+    while x >= 0x80:
+        out[n] = <unsigned char>((x & 0x7F) | 0x80)
+        x >>= 7
+        n += 1
+    out[n] = <unsigned char>x
+    return n + 1
+
+
+cdef bytes _varint(uint64_t x):
+    """`x` as a protobuf varint."""
+    cdef unsigned char buf[10]
+    return buf[:_write_varint(buf, x)]
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
 cdef bytes _packed(values, bint zigzag):
     """The int64 `values` as protobuf varints, one after another, zig-zag encoded first
     when `zigzag` (as `sint` fields are)."""
@@ -542,23 +561,42 @@ cdef bytes _packed(values, bint zigzag):
             x = (<uint64_t>v[i] << 1) ^ <uint64_t>(v[i] >> 63)
         else:
             x = <uint64_t>v[i]
-        while x >= 0x80:
-            o[n] = <unsigned char>((x & 0x7F) | 0x80)
-            x >>= 7
-            n += 1
-        o[n] = <unsigned char>x
-        n += 1
+        n += _write_varint(&o[n], x)
     return out[:n].tobytes()
 
 
 cdef bytes _field(int number, payload):
     """A length-delimited protobuf field: its tag and length, then `payload`."""
-    return _packed(np.array([(number << 3) | 2, len(payload)]), False) + payload
+    return _varint((number << 3) | 2) + _varint(len(payload)) + payload
 
 
-cdef bytes _varint_field(int number, value):
+cdef bytes _varint_field(int number, int64_t value):
     """A varint protobuf field holding `value`."""
-    return _packed(np.array([number << 3, value]), False)
+    return _varint(number << 3) + _varint(<uint64_t>value)
+
+
+cdef bytes _string_table_bytes(list strings):
+    """The bytes of a StringTable holding `strings` in order."""
+    cdef bytes tag = _varint((ST_S << 3) | 2)
+    return b"".join([tag + _varint(len(s)) + s for s in strings])
+
+
+# The block header of the blocks the re-pack writer builds: the standard grid.
+_STANDARD_GRID = {"granularity": 100, "date_granularity": 1000, "lat_offset": 0,
+                  "lon_offset": 0}
+
+
+cdef bytes _block_bytes(table, list groups, header):
+    """A serialized PrimitiveBlock: the string table bytes `table`, the serialized
+    groups `groups` and the grid of `header`, in protobuf's field order."""
+    return b"".join([_field(PB_STRINGTABLE, table)] + [
+        _field(PB_PRIMITIVEGROUP, group) for group in groups
+    ] + [
+        _varint_field(PB_GRANULARITY, header["granularity"]),
+        _varint_field(PB_DATE_GRANULARITY, header["date_granularity"]),
+        _varint_field(PB_LAT_OFFSET, header["lat_offset"]),
+        _varint_field(PB_LON_OFFSET, header["lon_offset"]),
+    ])
 
 
 cdef _kept_keys_vals(const int64_t[::1] keys_vals, keep):
@@ -680,16 +718,11 @@ cdef _crop_block(data, kept_nodes_set, kept_ways_set, kept_rel_set, compact, fil
         else:
             body = _kept_elements(data, group, _GROUP_FIELD[kind], kept[kind])
         if body:
-            parts.append(_field(PB_PRIMITIVEGROUP, body))
+            parts.append(body)
     if not parts:
         return None
     table = b"" if string_table is None else data[string_table[0]:string_table[1]]
-    block = b"".join([_field(PB_STRINGTABLE, table)] + parts + [
-        _varint_field(PB_GRANULARITY, header["granularity"]),
-        _varint_field(PB_DATE_GRANULARITY, header["date_granularity"]),
-        _varint_field(PB_LAT_OFFSET, header["lat_offset"]),
-        _varint_field(PB_LON_OFFSET, header["lon_offset"]),
-    ])
+    block = _block_bytes(table, parts, header)
     if compact:
         out_block = _parse(PrimitiveBlock(), block, filepath)
         _compact_string_table(out_block)
@@ -1423,7 +1456,6 @@ cdef _too_large(block, n_elements):
 
 
 cdef _emit_repack_node_block(out, ids, lat_raw, lon_raw, tags_list, meta):
-    block = _new_block()
     st = _StringTable()
     has_tags = False
     keys_vals = []
@@ -1435,32 +1467,20 @@ cdef _emit_repack_node_block(out, ids, lat_raw, lon_raw, tags_list, meta):
                 keys_vals.append(st.intern(v))
         keys_vals.append(0)
 
-    group = block.primitivegroup.add()
-    dense = group.dense
-    dense.id.extend(delta_encode(ids).tolist())
-    dense.lat.extend(delta_encode(lat_raw).tolist())
-    dense.lon.extend(delta_encode(lon_raw).tolist())
-    if has_tags:
-        dense.keys_vals.extend(keys_vals)
-    if meta is not None:
-        di = dense.denseinfo
-        if "version" in meta:
-            di.version.extend([int(v) for v in meta["version"]])
-        if "timestamp" in meta:
-            di.timestamp.extend(delta_encode(meta["timestamp"]).tolist())
-        if "changeset" in meta:
-            di.changeset.extend(delta_encode(meta["changeset"]).tolist())
-        if "uid" in meta:
-            di.uid.extend(delta_encode(meta["uid"]).tolist())
-        if "user" in meta:
-            sids = np.asarray([st.intern(u) for u in meta["user"]], dtype=np.int64)
-            di.user_sid.extend(delta_encode(sids).tolist())
-        if "visible" in meta:
-            di.visible.extend([bool(x) for x in meta["visible"]])
-
-    for s in st.strings:
-        block.stringtable.s.append(s)
-    if _too_large(block, len(ids)):
+    empty = np.empty(0, dtype=np.int64)
+    fields = meta or {}
+    dense = {"id": ids, "lat": lat_raw, "lon": lon_raw, "user_sid": empty,
+             "keys_vals": np.asarray(keys_vals, dtype=np.int64) if has_tags else empty}
+    for name in ("version", "timestamp", "changeset", "uid", "visible"):
+        dense[name] = fields.get(name, empty)
+    if "user" in fields:
+        users = fields["user"]
+        for user in dict.fromkeys(users):
+            st.intern(user)
+        dense["user_sid"] = np.array([st.index[user] for user in users], dtype=np.int64)
+    group = _field(GROUP_DENSE, _dense_bytes(dense, np.ones(len(ids), dtype=bool)))
+    block = _block_bytes(_string_table_bytes(st.strings), [group], _STANDARD_GRID)
+    if len(ids) > 1 and len(block) > _MAX_PACKED_BLOCK_SIZE:
         half = len(ids) // 2
         _emit_repack_node_block(
             out, ids[:half], lat_raw[:half], lon_raw[:half], tags_list[:half],
@@ -1471,7 +1491,7 @@ cdef _emit_repack_node_block(out, ids, lat_raw, lon_raw, tags_list, meta):
             _slice_meta(meta, slice(half, None)),
         )
         return
-    _write_blob(out, "OSMData", block)
+    out.write(_frame_blob("OSMData", block))
 
 
 cdef _emit_repack_info(info_msg, _StringTable st, info):
