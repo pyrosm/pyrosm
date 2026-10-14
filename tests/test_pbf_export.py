@@ -1186,20 +1186,22 @@ def test_to_pbf_writes_each_kind_of_group(tmp_path):
     # Kept plain nodes, ways and relations are copied as they are stored, and kept dense
     # nodes (here without tags and metadata) encoded again; each written block is
     # encoded as protobuf itself encodes it, and a group without elements is left out.
-    # A re-packed crop keeps the same elements.
+    # A re-packed crop keeps the same elements, each way's and relation's Info fields
+    # as present in the source, and a repeated tag key once, with its last value.
     from pyrosm.pbf_export import _iter_block_data, _iter_primitive_blocks
     from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
 
     blk = PrimitiveBlock(granularity=100, date_granularity=1000)
-    blk.stringtable.s.extend([b"", b"amenity", b"cafe"])
+    blk.stringtable.s.extend([b"", b"amenity", b"cafe", b"bar"])
     plain = blk.primitivegroup.add().nodes
     plain.add(id=1, lat=601700000, lon=249440000, keys=[1], vals=[2]).info.version = 3
     plain.add(id=2, lat=611700000, lon=259440000)
     ways = blk.primitivegroup.add().ways
-    ways.add(id=10, refs=[1, 1])  # nodes 1 and 2
+    ways.add(id=10, refs=[1, 1], keys=[1, 1], vals=[2, 3]).info.version = 4  # nodes 1, 2
     ways.add(id=11, refs=[2])
     relations = blk.primitivegroup.add().relations
-    relations.add(id=20, memids=[10], types=[1], roles_sid=[0])
+    rel = relations.add(id=20, memids=[10], types=[1], roles_sid=[2])
+    rel.info.uid, rel.info.user_sid = 7, 3
     relations.add(id=21, memids=[3], types=[0], roles_sid=[0])
     blk.primitivegroup.add()
     dense = PrimitiveBlock(granularity=100, date_granularity=1000)
@@ -1229,9 +1231,17 @@ def test_to_pbf_writes_each_kind_of_group(tmp_path):
     )
     nodes, _ = _dense_nodes(repacked)
     assert nodes == {1: (3, {"amenity": "cafe"}), 2: (None, {}), 4: (None, {})}
-    groups = [g for pb in _iter_primitive_blocks(repacked) for g in pb.primitivegroup]
-    assert [way.id for g in groups for way in g.ways] == [10]
-    assert [rel.id for g in groups for rel in g.relations] == [20]
+    blocks = list(_iter_primitive_blocks(repacked))
+    ((way, st),) = [(w, b.stringtable.s) for b in blocks for g in b.primitivegroup
+                    for w in g.ways]
+    assert way.id == 10 and np.cumsum(way.refs).tolist() == [1, 2]
+    assert [(st[k], st[v]) for k, v in zip(way.keys, way.vals)] == [(b"amenity", b"bar")]
+    assert way.info.version == 4 and not way.info.HasField("timestamp")
+    ((rel, st),) = [(r, b.stringtable.s) for b in blocks for g in b.primitivegroup
+                    for r in g.relations]
+    assert rel.id == 20 and (rel.info.uid, st[rel.info.user_sid]) == (7, b"bar")
+    assert not rel.info.HasField("version")
+    assert [st[r] for r in rel.roles_sid] == [b"cafe"] and list(rel.types) == [1]
 
 
 @pytest.mark.parametrize(

@@ -400,20 +400,21 @@ cdef class _ElementArrays:
     memids; ``types``/``roles`` are relation-only. ``*_off`` are CSR offsets so element
     ``i`` owns ``members[members_off[i]:members_off[i + 1]]`` (and likewise its tags)."""
     cdef int64_t[::1] ids, keys, vals, tags_off, members, members_off, types, roles
-    cdef int64_t[::1] version, timestamp, changeset, uid, user_sid, visible
-    cdef bint keep_metadata, is_relation
+    cdef int64_t[::1] version, timestamp, changeset, uid, user_sid, visible, info_fields
+    cdef bint keep_metadata, is_relation, track_info
     cdef Py_ssize_t ei, ti, mi          # next element / tag / member write position
     cdef dict _arr                      # the owning numpy arrays, by name
 
     def __cinit__(self, Py_ssize_t n_elem, Py_ssize_t n_tags, Py_ssize_t n_members,
-                  bint keep_metadata, bint is_relation):
+                  bint keep_metadata, bint is_relation, bint info_fields=False):
         self.keep_metadata = keep_metadata
         self.is_relation = is_relation
+        self.track_info = keep_metadata and info_fields
         self.ei = 0
         self.ti = 0
         self.mi = 0
         self._arr = {
-            "id": np.empty(n_elem, np.int64),
+            "id": np.zeros(n_elem, np.int64),  # 0, the proto2 default, when absent
             "keys": np.empty(n_tags, np.int64),
             "vals": np.empty(n_tags, np.int64),
             "tags_off": np.empty(n_elem + 1, np.int64),
@@ -437,6 +438,9 @@ cdef class _ElementArrays:
         if is_relation:
             self.types = self._arr["types"]
             self.roles = self._arr["roles"]
+        if self.track_info:
+            self._arr["info_fields"] = np.zeros(n_elem, np.int64)
+            self.info_fields = self._arr["info_fields"]
         if keep_metadata:
             self.version = self._arr["version"]
             self.timestamp = self._arr["timestamp"]
@@ -462,15 +466,19 @@ cdef class _ElementArrays:
         if self.keep_metadata:
             for name in _META_COLS:
                 out[name] = self._arr[name]
+        if self.track_info:
+            out["info_fields"] = self._arr["info_fields"]
         return out
 
 
 cdef int _fill_metadata(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
                         _ElementArrays b, Py_ssize_t i) except -1:
     """Decode an ``Info`` sub-message (or the proto2 default when absent) into ``b``'s
-    per-element metadata arrays at index ``i``. Info fields are plain absolute values."""
+    per-element metadata arrays at index ``i``. Info fields are plain absolute values;
+    when ``b`` tracks them, ``info_fields`` gets bit ``1 << (n - 1)`` for each field
+    number ``n`` the Info holds."""
     cdef int64_t version = -1, timestamp = 0, changeset = 0
-    cdef int64_t uid = 0, user_sid = 0, visible = 0
+    cdef int64_t uid = 0, user_sid = 0, visible = 0, present = 0
     cdef Py_ssize_t pos
     cdef int field, wire
     if start >= 0:
@@ -480,16 +488,22 @@ cdef int _fill_metadata(const unsigned char* buf, Py_ssize_t start, Py_ssize_t e
             if wire == WIRE_VARINT:
                 if field == INFO_VERSION:
                     version = <int64_t>_read_varint(buf, &pos, end)
+                    present |= 1 << (INFO_VERSION - 1)
                 elif field == INFO_TIMESTAMP:
                     timestamp = <int64_t>_read_varint(buf, &pos, end)
+                    present |= 1 << (INFO_TIMESTAMP - 1)
                 elif field == INFO_CHANGESET:
                     changeset = <int64_t>_read_varint(buf, &pos, end)
+                    present |= 1 << (INFO_CHANGESET - 1)
                 elif field == INFO_UID:
                     uid = <int64_t>_read_varint(buf, &pos, end)
+                    present |= 1 << (INFO_UID - 1)
                 elif field == INFO_USER_SID:
                     user_sid = <int64_t>_read_varint(buf, &pos, end)
+                    present |= 1 << (INFO_USER_SID - 1)
                 elif field == INFO_VISIBLE:
                     visible = <int64_t>_read_varint(buf, &pos, end)
+                    present |= 1 << (INFO_VISIBLE - 1)
                 else:
                     _read_varint(buf, &pos, end)
             else:
@@ -501,6 +515,8 @@ cdef int _fill_metadata(const unsigned char* buf, Py_ssize_t start, Py_ssize_t e
     b.uid[i] = uid
     b.user_sid[i] = user_sid
     b.visible[i] = visible
+    if b.track_info:
+        b.info_fields[i] = present
     return 0
 
 
@@ -800,8 +816,8 @@ cdef dict _decode_plain_nodes(const unsigned char* buf, list spans, bint keep_me
                 "A node in the PBF has %d tag keys but %d values." % (n_keys, n_vals))
         n_tags += n_keys
     cdef _ElementArrays b = _ElementArrays(n, n_tags, 0, keep_metadata, False)
-    lat = np.empty(n, dtype=np.int64)
-    lon = np.empty(n, dtype=np.int64)
+    lat = np.zeros(n, dtype=np.int64)  # 0, the proto2 default, when absent
+    lon = np.zeros(n, dtype=np.int64)
     cdef int64_t[::1] lat_view = lat
     cdef int64_t[::1] lon_view = lon
     for start, end in spans:
@@ -1044,3 +1060,36 @@ def element_layout(const unsigned char[::1] data):
             _skip_field(buf, &pos, end, wire)
     _check_end(pos, end)
     return header, string_table, groups
+
+
+def decode_elements(const unsigned char[::1] data, starts, ends, bint is_relation):
+    """Decode the ways (or, with ``is_relation``, the relations) whose fields (tag and
+    length included) lie at ``data[starts[i]:ends[i]]``, as ``element_layout`` gives
+    them, into the dict ``decode_primitive_block`` gives, with metadata and
+    ``info_fields``: a bit ``1 << (n - 1)`` for each ``Info`` field number ``n`` an
+    element holds."""
+    cdef Py_ssize_t n = len(starts), n_tags = 0, n_members = 0, i
+    cdef Py_ssize_t pos, end, payload, size = data.shape[0]
+    cdef int field, wire
+    cdef uint64_t length
+    cdef const unsigned char* buf = &data[0] if size > 0 else NULL
+    spans = []
+    for i in range(n):
+        pos = starts[i]
+        end = ends[i]
+        if pos < 0 or pos > end or end > size:
+            _corrupt("an element does not fit in the data that holds it")
+        _read_tag(buf, &pos, end, &field, &wire)
+        length = _read_varint(buf, &pos, end)
+        payload = _field_end(pos, length, end)
+        if wire != WIRE_LENGTH or payload != end:
+            _corrupt("an element does not fit in the data that holds it")
+        spans.append((pos, end))
+        _count_element(buf, pos, end, is_relation, &n_tags, &n_members)
+    cdef _ElementArrays b = _ElementArrays(n, n_tags, n_members, True, is_relation, True)
+    for pos, end in spans:
+        if is_relation:
+            _fill_relation(buf, pos, end, b)
+        else:
+            _fill_way(buf, pos, end, b)
+    return b.result()

@@ -2504,6 +2504,26 @@ def test_block_decoder_rejects_malformed_blocks(case, data, match):
             decode_primitive_block(np.frombuffer(data, dtype=np.uint8), keep_metadata)
 
 
+def test_block_decoder_defaults_a_missing_id_or_coordinate():
+    """An element without its id, or a plain node without its latitude, decodes with 0,
+    the proto2 default, as protobuf reads it."""
+    import numpy as np
+
+    from pyrosm.primitive_block_decoder import decode_primitive_block
+
+    def field(tag, payload):
+        return bytes([tag, len(payload)]) + payload
+
+    groups = field(0x12, field(0x0A, b"\x48\x02"))  # a plain node with only lon 1
+    groups += field(0x12, field(0x1A, b"\x42\x01\x02"))  # a way with only ref 1
+    groups += field(0x12, field(0x22, b"\x4A\x01\x02\x52\x01\x00\x42\x01\x00"))
+    data = np.frombuffer(field(0x0A, b"") + groups, dtype=np.uint8)
+    for keep_metadata in (True, False):
+        _, _, nodes, ways, relations = decode_primitive_block(data, keep_metadata)
+        assert (nodes["id"].tolist(), nodes["lat"].tolist()) == ([0], [0])
+        assert ways["id"].tolist() == [0] and relations["id"].tolist() == [0]
+
+
 def test_block_decoder_joins_split_packed_runs():
     """#483 — a packed field written in several runs is read as one array, with the
     delta coding continuing from one run to the next."""

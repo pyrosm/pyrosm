@@ -3,11 +3,11 @@ import pytest
 
 
 def test_int64_hash_tables():
-    """Int64Set and Int64Map answer membership and lookups for int64 ids, also from
-    read-only arrays and lists; a set gives back its distinct values, a key given twice
-    maps to its last value, and more keys than one table holds raise a MemoryError
-    before the input is copied."""
-    from pyrosm.int64_hash import Int64Map, Int64Set
+    """Int64Set, SortedInt64Set and Int64Map answer membership and lookups for int64 ids,
+    also from read-only arrays and lists; a set gives back its distinct values, a key
+    given twice maps to its last value, and more keys than one table holds raise a
+    MemoryError before the input is copied."""
+    from pyrosm.int64_hash import Int64Map, Int64Set, SortedInt64Set
 
     ids = np.array([5, -3, 2**62, 5], dtype=np.int64)
     ids.flags.writeable = False
@@ -23,6 +23,18 @@ def test_int64_hash_tables():
     assert len(Int64Set()) == 0
     assert Int64Set().values().tolist() == []
     assert Int64Set().isin([1]).tolist() == [False]
+
+    big = Int64Set(np.arange(0, 200, 3))  # longer than the prefetch distance
+    assert np.flatnonzero(big.isin(np.arange(100))).tolist() == list(range(0, 100, 3))
+
+    sorted_set = SortedInt64Set([9, 3, 7, 3, 1])
+    for values, expected in (
+        ([0, 1, 1, 2, 3, 7, 8, 9, 10], [0, 1, 1, 0, 1, 1, 0, 1, 0]),  # ascending
+        ([9, 0, 3, 10, 7], [1, 0, 1, 0, 1]),  # in no order
+        ([], []),
+    ):
+        assert sorted_set.isin(values).astype(int).tolist() == expected
+    assert SortedInt64Set().isin([1, 2]).tolist() == [False, False]
 
     rows = Int64Map(ids, np.arange(4))
     assert len(rows) == 3
