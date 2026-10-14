@@ -1,4 +1,5 @@
 graft pyrosm
+graft vendor
 graft ci
 graft proto
 graft tests

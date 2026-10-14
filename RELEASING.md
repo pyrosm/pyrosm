@@ -7,12 +7,14 @@ PyPI, and creates the GitHub release.
 
 ## Cutting a release
 
-1. Bump `version` in [setup.py](setup.py) (and `version = release` in
+1. Check the libraries in [vendor/](vendor/README.md) against their upstream releases,
+   and update them when a release fixes a bug in the code pyrosm uses.
+2. Bump `version` in [setup.py](setup.py) (and `version = release` in
    [docs/conf.py](docs/conf.py)) to the new `X.Y.Z`.
-2. Move the `Unreleased` notes under a new `vX.Y.Z` heading in
+3. Move the `Unreleased` notes under a new `vX.Y.Z` heading in
    [CHANGELOG.md](CHANGELOG.md) and [docs/changelog.rst](docs/changelog.rst).
-3. Merge the above to `master`.
-4. Tag and push — the tag must be `v` + the exact `setup.py` version:
+4. Merge the above to `master`.
+5. Tag and push — the tag must be `v` + the exact `setup.py` version:
 
    ```bash
    git checkout master && git pull

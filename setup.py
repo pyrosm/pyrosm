@@ -52,6 +52,10 @@ _ext_modules = cythonize(
     compiler_directives=_directives,
     force=_linetrace,
 )
+# Vendored C libraries (see vendor/README.md): every extension can include their headers.
+for _ext in _ext_modules:
+    _ext.include_dirs.append(str(Path("vendor") / "khash"))
+
 if _linetrace:
     for _ext in _ext_modules:
         # CYTHON_TRACE enables per-line trace hooks; CYTHON_TRACE_NOGIL extends
@@ -64,6 +68,7 @@ setup(
     name="pyrosm",
     version="0.20.0",
     license="MIT",
+    license_files=["LICENSE", "vendor/khash/LICENSE"],
     description="A Python tool to parse OSM data from Protobuf format into GeoDataFrame.",
     long_description=read_long_description(),
     long_description_content_type="text/markdown",
