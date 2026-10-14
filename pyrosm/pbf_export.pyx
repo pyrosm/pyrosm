@@ -37,7 +37,9 @@ from libc.stdint cimport int64_t, uint8_t, uint64_t
 from google.protobuf.message import DecodeError
 from pyrosm.exceptions import InvalidOSMFileError
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
-from pyrosm.proto.osmformat_pb2 import HeaderBlock, PrimitiveBlock
+from pyrosm.proto.osmformat_pb2 import (
+    HeaderBlock, PrimitiveBlock, PrimitiveGroup, StringTable,
+)
 from pyrosm.delta_compression cimport delta_encode
 from pyrosm.primitive_block_decoder cimport (
     DENSE_DENSEINFO, DENSE_ID, DENSE_KEYS_VALS, DENSE_LAT, DENSE_LON, DI_CHANGESET,
@@ -224,15 +226,22 @@ def _iter_block_data(filepath):
                 yield data
 
 
+cdef _raw_decoded(decode, data, filepath, args=()):
+    """`decode(block, *args)`, a function of the raw block decoder, applied to the
+    decompressed block `data` of `filepath`; a corrupt block raises the error naming the
+    file."""
+    try:
+        return decode(np.frombuffer(data, dtype=np.uint8), *args)
+    except InvalidOSMFileError as err:
+        raise _invalid(filepath, err) from None
+
+
 cdef _decode_block(data, filepath):
     """The header, nodes, ways and relations of the decompressed block `data` of
     `filepath`, decoded without the elements' metadata (see `decode_primitive_block`)."""
-    try:
-        _, header, nodes, ways, relations = decode_primitive_block(
-            np.frombuffer(data, dtype=np.uint8), False
-        )
-    except InvalidOSMFileError as err:
-        raise _invalid(filepath, err) from None
+    _, header, nodes, ways, relations = _raw_decoded(
+        decode_primitive_block, data, filepath, (False,)
+    )
     return header, nodes, ways, relations
 
 
@@ -499,27 +508,6 @@ cdef _way_winners(sources, touching, nodes_in_bbox, pool, tmpdir):
 # ---------------------------------------------------------------------------
 # Write pass
 # ---------------------------------------------------------------------------
-cdef _split_keys_vals(keys_vals, int n_nodes):
-    """Split a dense `keys_vals` array into one (key,val,...) segment per node.
-
-    Layout per node is ``(<keyid> <valid>)* 0``; the trailing 0 delimits nodes.
-    """
-    segments = [[] for _ in range(n_nodes)]
-    cdef int node_i = 0
-    cdef int i = 0
-    cdef int m = len(keys_vals)
-    while i < m and node_i < n_nodes:
-        v = keys_vals[i]
-        if v == 0:
-            node_i += 1
-            i += 1
-            continue
-        segments[node_i].append(v)
-        segments[node_i].append(keys_vals[i + 1])
-        i += 2
-    return segments
-
-
 # The DenseInfo fields as (field number, name, delta coded); the delta-coded ones are
 # also zig-zag encoded (``sint``).
 _DENSE_INFO = (
@@ -609,11 +597,54 @@ cdef bytes _dense_bytes(dense, keep):
     return b"".join(parts)
 
 
+cdef list _tag_dicts(const int64_t[::1] keys_vals, strings):
+    """The tags of each node of the tag stream `keys_vals` (each node's key and value ids
+    followed by a 0) as a dict of the `strings` they index, or None for a node without."""
+    cdef Py_ssize_t i = 0, end = keys_vals.shape[0]
+    tags_list = []
+    tags = None
+    while i < end:
+        if keys_vals[i] == 0:
+            tags_list.append(tags)
+            tags = None
+            i += 1
+        else:
+            if tags is None:
+                tags = {}
+            tags[strings[keys_vals[i]]] = strings[keys_vals[i + 1]]
+            i += 2
+    return tags_list
+
+
+# The group field of each kind of element, indexed by `_NODES`, `_WAYS`, `_RELATIONS`.
+_GROUP_FIELD = (GROUP_NODES, GROUP_WAYS, GROUP_RELATIONS)
+
+
+cdef _dense_nodes(group):
+    """The decoded dense nodes of a group of `element_layout`, or None when it has none."""
+    dense = group["dense"]
+    return dense if dense is not None and len(dense["id"]) > 0 else None
+
+
+cdef _group_kind(group):
+    """The kind of elements (`_NODES`, `_WAYS` or `_RELATIONS`) a group of
+    `element_layout` holds: nodes when it has dense or plain nodes, else ways, else
+    relations; None when it holds no element."""
+    if _dense_nodes(group) is not None:
+        return _NODES
+    for kind in (_NODES, _WAYS, _RELATIONS):
+        if (group["kind"] == _GROUP_FIELD[kind]).any():
+            return kind
+    return None
+
+
 cdef bytes _kept_elements(data, group, int kind, kept_set):
-    """The fields of the elements of `kind` in `group` (see `element_layout`) that are in
-    `kept_set`, copied from `data` as they are."""
+    """The fields of the elements of `kind` (a group field number) in `group` (see
+    `element_layout`) that are in `kept_set` (all when None), copied from `data` as they
+    are."""
     rows = np.flatnonzero(group["kind"] == kind)
-    rows = rows[_isin(group["id"][rows], kept_set)]
+    if kept_set is not None:
+        rows = rows[_isin(group["id"][rows], kept_set)]
     return b"".join([
         data[start:end]
         for start, end in zip(group["start"][rows].tolist(), group["end"][rows].tolist())
@@ -628,22 +659,19 @@ cdef _crop_block(data, kept_nodes_set, kept_ways_set, kept_rel_set, compact, fil
     nodes encoded again. With `compact=True` the string table is pruned to only the
     strings the kept elements reference (smaller output); otherwise it is copied.
     """
-    try:
-        header, string_table, groups = element_layout(np.frombuffer(data, dtype=np.uint8))
-    except InvalidOSMFileError as err:
-        raise _invalid(filepath, err) from None
+    header, string_table, groups = _raw_decoded(element_layout, data, filepath)
+    kept = (kept_nodes_set, kept_ways_set, kept_rel_set)
     parts = []
     for group in groups:
-        dense = group["dense"]
-        if dense is not None and len(dense["id"]) > 0:
+        kind = _group_kind(group)
+        dense = _dense_nodes(group)
+        if kind is None:
+            continue
+        if dense is not None:
             keep = _isin(dense["id"], kept_nodes_set)
             body = _field(GROUP_DENSE, _dense_bytes(dense, keep)) if keep.any() else b""
-        elif (group["kind"] == GROUP_NODES).any():
-            body = _kept_elements(data, group, GROUP_NODES, kept_nodes_set)
-        elif (group["kind"] == GROUP_WAYS).any():
-            body = _kept_elements(data, group, GROUP_WAYS, kept_ways_set)
         else:
-            body = _kept_elements(data, group, GROUP_RELATIONS, kept_rel_set)
+            body = _kept_elements(data, group, _GROUP_FIELD[kind], kept[kind])
         if body:
             parts.append(_field(PB_PRIMITIVEGROUP, body))
     if not parts:
@@ -1535,61 +1563,60 @@ cdef _decode_info(info_msg):
     return info if info else None
 
 
-cdef _decode_kept_dense_nodes(dense, stringtable, kept_nodes_set):
-    """Dense group -> (ids, lat, lon, tags, meta) of the nodes in `kept_nodes_set`.
+cdef class _Block:
+    """A decompressed block of a PBF, with its string table parsed on first use."""
+    cdef readonly object data
+    cdef readonly object filepath
+    cdef object _table
+    cdef object _strings
+
+    def __cinit__(self, data, table, filepath):
+        self.data = data
+        self.filepath = filepath
+        self._table = table
+        self._strings = None
+
+    def strings(self):
+        """The block's string table (`StringTable.s`): `table` is where its bytes lie in
+        `data`, None for a block without one."""
+        if self._strings is None:
+            table = StringTable()
+            if self._table is not None:
+                start, end = self._table
+                _parse(table, self.data[start:end], self.filepath)
+            self._strings = table.s
+        return self._strings
+
+
+cdef _decode_kept_dense_nodes(dense, _Block block, kept_nodes_set):
+    """(ids, lat, lon, tags, meta) of the nodes of the decoded dense group `dense` of
+    `block` in `kept_nodes_set`.
 
     Every node is kept when `kept_nodes_set` is None; None when no node is kept.
     """
-    cdef int n = len(dense.id)
-    ids = np.cumsum(np.fromiter(dense.id, dtype=np.int64, count=n))
+    ids = dense["id"]
     if kept_nodes_set is None:
-        mask = np.ones(n, dtype=bool)
+        keep = np.ones(len(ids), dtype=bool)
     else:
-        mask = _isin(ids, kept_nodes_set)
-    if not mask.any():
+        keep = _isin(ids, kept_nodes_set)
+    if not keep.any():
         return None
-    lat = np.cumsum(np.fromiter(dense.lat, dtype=np.int64, count=n))[mask]
-    lon = np.cumsum(np.fromiter(dense.lon, dtype=np.int64, count=n))[mask]
-    kept_ids = ids[mask]
-    keep_pos = np.flatnonzero(mask)
-
-    tags_list = []
-    if len(dense.keys_vals) > 0:
-        segments = _split_keys_vals(dense.keys_vals, n)
-        for i in keep_pos:
-            seg = segments[i]
-            if seg:
-                d = {}
-                for j in range(0, len(seg), 2):
-                    d[stringtable[seg[j]]] = stringtable[seg[j + 1]]
-                tags_list.append(d)
-            else:
-                tags_list.append(None)
+    strings = block.strings()
+    if len(dense["keys_vals"]) > 0:
+        tags_list = _tag_dicts(_kept_keys_vals(dense["keys_vals"], keep), strings)
     else:
-        tags_list = [None] * len(kept_ids)
+        tags_list = [None] * int(keep.sum())
 
-    di = dense.denseinfo
     meta = {}
-    if len(di.version) > 0:
-        meta["version"] = np.fromiter(di.version, dtype=np.int64, count=len(di.version))[mask]
-    if len(di.timestamp) > 0:
-        meta["timestamp"] = np.cumsum(
-            np.fromiter(di.timestamp, dtype=np.int64, count=len(di.timestamp)))[mask]
-    if len(di.changeset) > 0:
-        meta["changeset"] = np.cumsum(
-            np.fromiter(di.changeset, dtype=np.int64, count=len(di.changeset)))[mask]
-    if len(di.uid) > 0:
-        meta["uid"] = np.cumsum(
-            np.fromiter(di.uid, dtype=np.int64, count=len(di.uid)))[mask]
-    if len(di.user_sid) > 0:
-        sids = np.cumsum(
-            np.fromiter(di.user_sid, dtype=np.int64, count=len(di.user_sid)))[mask]
-        meta["user"] = np.array([stringtable[s] for s in sids.tolist()], dtype=object)
-    if len(di.visible) > 0:
-        meta["visible"] = np.array(list(di.visible), dtype=bool)[mask]
-    if not meta:
-        meta = None
-    return kept_ids, lat, lon, tags_list, meta
+    for name in ("version", "timestamp", "changeset", "uid"):
+        if len(dense[name]) > 0:
+            meta[name] = dense[name][keep]
+    if len(dense["user_sid"]) > 0:
+        sids = dense["user_sid"][keep]
+        meta["user"] = np.array([strings[s] for s in sids.tolist()], dtype=object)
+    if len(dense["visible"]) > 0:
+        meta["visible"] = dense["visible"][keep].astype(bool)
+    return ids[keep], dense["lat"][keep], dense["lon"][keep], tags_list, meta or None
 
 
 cdef _plain_nodes_chunk(run):
@@ -1612,14 +1639,12 @@ cdef _plain_nodes_chunk(run):
     return ids, lat, lon, tags_list, meta
 
 
-cdef _decode_kept_plain_nodes(nodes, stringtable, kept_nodes_set):
-    """Non-dense node group -> chunks of the dense chunk shape, one per run of
-    consecutive kept nodes with the same metadata schema (a dense block's DenseInfo
-    is all-or-nothing per field)."""
+cdef _decode_kept_plain_nodes(nodes, stringtable):
+    """Kept plain nodes -> chunks of the dense chunk shape, one per run of consecutive
+    nodes with the same metadata schema (a dense block's DenseInfo is all-or-nothing per
+    field)."""
     chunks, run = [], []
     for node in nodes:
-        if kept_nodes_set is not None and node.id not in kept_nodes_set:
-            continue
         tags = {stringtable[k]: stringtable[v]
                 for k, v in zip(node.keys, node.vals)} if len(node.keys) > 0 else None
         info = _decode_info(node.info)
@@ -1634,11 +1659,9 @@ cdef _decode_kept_plain_nodes(nodes, stringtable, kept_nodes_set):
     return chunks
 
 
-cdef _decode_kept_ways(ways, stringtable, kept_ways_set):
+cdef _decode_kept_ways(ways, stringtable):
     records = []
     for way in ways:
-        if kept_ways_set is not None and way.id not in kept_ways_set:
-            continue
         tags = {stringtable[k]: stringtable[v]
                 for k, v in zip(way.keys, way.vals)} if len(way.keys) > 0 else None
         info = _decode_info(way.info)
@@ -1649,11 +1672,9 @@ cdef _decode_kept_ways(ways, stringtable, kept_ways_set):
     return records
 
 
-cdef _decode_kept_relations(relations, stringtable, kept_rel_set):
+cdef _decode_kept_relations(relations, stringtable):
     records = []
     for rel in relations:
-        if kept_rel_set is not None and rel.id not in kept_rel_set:
-            continue
         tags = {stringtable[k]: stringtable[v]
                 for k, v in zip(rel.keys, rel.vals)} if len(rel.keys) > 0 else None
         info = _decode_info(rel.info)
@@ -1779,9 +1800,9 @@ cdef class _RepackWriter:
             self.rel_buf = []
 
 
-cdef _check_standard_grid(pblock, filepath):
-    if (pblock.granularity != 100 or pblock.lat_offset != 0
-            or pblock.lon_offset != 0 or pblock.date_granularity != 1000):
+cdef _check_standard_grid(header, filepath):
+    if (header["granularity"] != 100 or header["lat_offset"] != 0
+            or header["lon_offset"] != 0 or header["date_granularity"] != 1000):
         raise ValueError(
             "to_pbf(repack=True) and merge_pbf() require the standard PBF grid "
             "(granularity 100, zero lat/lon offsets, date_granularity 1000), which "
@@ -1790,31 +1811,36 @@ cdef _check_standard_grid(pblock, filepath):
 
 
 def _iter_groups(filepath):
-    """Yield (kind, string table, group) for each primitive group of a PBF."""
-    for pblock in _iter_primitive_blocks(filepath):
-        _check_standard_grid(pblock, filepath)
-        st = pblock.stringtable.s
-        for g in pblock.primitivegroup:
-            if len(g.dense.id) > 0 or len(g.nodes) > 0:
-                yield _NODES, st, g
-            elif len(g.ways) > 0:
-                yield _WAYS, st, g
-            elif len(g.relations) > 0:
-                yield _RELATIONS, st, g
+    """Yield (kind, block, group) for each primitive group of a PBF that holds elements:
+    `group` as `element_layout` gives it and `block` the `_Block` it is in."""
+    for data in _iter_block_data(filepath):
+        header, table, groups = _raw_decoded(element_layout, data, filepath)
+        _check_standard_grid(header, filepath)
+        block = _Block(data, table, filepath)
+        for group in groups:
+            kind = _group_kind(group)
+            if kind is not None:
+                yield kind, block, group
 
 
-cdef _decode_group(kind, st, g, kept):
-    """Decoded chunks of the elements of `g` in the id set `kept` (all when None);
-    an empty list when none is kept."""
+cdef _decode_group(kind, _Block block, group, kept):
+    """Decoded chunks of the elements of `group` in the id set `kept` (all when None); an
+    empty list when none is kept. Protobuf parses only the kept plain nodes, ways and
+    relations."""
+    dense = _dense_nodes(group)
+    if dense is not None:
+        chunk = _decode_kept_dense_nodes(dense, block, kept)
+        return [chunk] if chunk is not None else []
+    elements = _kept_elements(block.data, group, _GROUP_FIELD[kind], kept)
+    if not elements:
+        return []
+    parsed = _parse(PrimitiveGroup(), elements, block.filepath)
     if kind == _NODES:
-        if len(g.dense.id) > 0:
-            chunk = _decode_kept_dense_nodes(g.dense, st, kept)
-            return [chunk] if chunk is not None else []
-        return _decode_kept_plain_nodes(g.nodes, st, kept)
+        return _decode_kept_plain_nodes(parsed.nodes, block.strings())
     if kind == _WAYS:
-        records = _decode_kept_ways(g.ways, st, kept)
+        records = _decode_kept_ways(parsed.ways, block.strings())
     else:
-        records = _decode_kept_relations(g.relations, st, kept)
+        records = _decode_kept_relations(parsed.relations, block.strings())
     return [records] if records else []
 
 
@@ -1825,8 +1851,8 @@ cdef _repack_write(source_path, output_path, kept_nodes_set, kept_ways_set,
     with open(output_path, "wb") as out:
         _write_header(out, bounds)
         writer = _RepackWriter(out)
-        for kind, st, g in _iter_groups(source_path):
-            for chunk in _decode_group(kind, st, g, kept[kind]):
+        for kind, block, group in _iter_groups(source_path):
+            for chunk in _decode_group(kind, block, group, kept[kind]):
                 writer.add(kind, chunk)
         writer.close()
     return output_path
@@ -1875,15 +1901,12 @@ cdef _take(kind, chunk, idx):
     return [chunk[i] for i in idx]
 
 
-cdef _group_ids(kind, g):
-    """Ids of all elements of a primitive group, in file order."""
-    if kind == _NODES:
-        if len(g.dense.id) > 0:
-            return np.cumsum(np.fromiter(g.dense.id, dtype=np.int64, count=len(g.dense.id)))
-        return np.array([node.id for node in g.nodes], dtype=np.int64)
-    if kind == _WAYS:
-        return np.array([way.id for way in g.ways], dtype=np.int64)
-    return np.array([rel.id for rel in g.relations], dtype=np.int64)
+cdef _group_ids(kind, group):
+    """Ids of all elements of `kind` in a group of `element_layout`, in file order."""
+    dense = _dense_nodes(group)
+    if dense is not None:
+        return dense["id"]
+    return group["id"][group["kind"] == _GROUP_FIELD[kind]]
 
 
 class _SortedInput:
@@ -1898,18 +1921,18 @@ class _SortedInput:
         """Yield (chunk, ids, versions, timestamps) for the elements of `kind` in `kept`."""
         last_id = None
         while self._next is not None and self._next[0] <= kind:
-            group_kind, st, g = self._next
+            group_kind, block, group = self._next
             if group_kind < kind:
                 raise _not_sorted(self.filepath)
             self._next = next(self._groups, None)
             # Every element counts for the order, not only the kept ones.
-            group_ids = _group_ids(kind, g)
+            group_ids = _group_ids(kind, group)
             if (group_ids[1:] <= group_ids[:-1]).any() or (
                 last_id is not None and group_ids[0] <= last_id
             ):
                 raise _not_sorted(self.filepath)
             last_id = group_ids[-1]
-            for chunk in _decode_group(kind, st, g, kept):
+            for chunk in _decode_group(kind, block, group, kept):
                 versions, timestamps = _chunk_ranks(kind, chunk)
                 yield chunk, _chunk_ids(kind, chunk), versions, timestamps
 
