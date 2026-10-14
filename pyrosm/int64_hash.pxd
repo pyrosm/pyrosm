@@ -7,6 +7,7 @@ cdef extern from "int64_hash.h" nogil:
     ctypedef struct kh_i64set_t:
         khint_t n_buckets
         khint_t size
+        uint32_t *flags
         int64_t *keys
 
     ctypedef struct kh_i64map_t:
@@ -20,6 +21,8 @@ cdef extern from "int64_hash.h" nogil:
     khint_t kh_put_i64set(kh_i64set_t *h, int64_t key, int *ret)
     khint_t kh_get_i64set(const kh_i64set_t *h, int64_t key)
     bint kh_exist(const kh_i64set_t *h, khint_t slot)
+    khint_t pyrosm_hash_int64(int64_t key)
+    void pyrosm_prefetch(const void *addr)
 
     kh_i64map_t *kh_init_i64map()
     void kh_destroy_i64map(kh_i64map_t *h)
@@ -31,6 +34,10 @@ cdef extern from "int64_hash.h" nogil:
 cdef class Int64Set:
     cdef kh_i64set_t *table
     cdef bint contains(self, int64_t key) noexcept nogil
+
+
+cdef class SortedInt64Set:
+    cdef object _sorted
 
 
 cdef class Int64Map:

@@ -27,6 +27,16 @@ static kh_inline khint_t pyrosm_hash_int64(int64_t key)
 
 #define pyrosm_int64_equal(a, b) ((a) == (b))
 
+/* Start loading the memory at `addr` into the cache. */
+#if defined(__GNUC__) || defined(__clang__)
+#define pyrosm_prefetch(addr) __builtin_prefetch(addr)
+#elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <xmmintrin.h>
+#define pyrosm_prefetch(addr) _mm_prefetch((const char *)(addr), _MM_HINT_T0)
+#else
+#define pyrosm_prefetch(addr) ((void)0)
+#endif
+
 KHASH_INIT(i64set, int64_t, char, 0, pyrosm_hash_int64, pyrosm_int64_equal)
 KHASH_INIT(i64map, int64_t, int64_t, 1, pyrosm_hash_int64, pyrosm_int64_equal)
 

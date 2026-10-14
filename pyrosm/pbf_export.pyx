@@ -48,7 +48,7 @@ from pyrosm.primitive_block_decoder cimport (
     PB_LON_OFFSET, PB_PRIMITIVEGROUP, PB_STRINGTABLE,
 )
 
-from pyrosm.int64_hash import Int64Set
+from pyrosm.int64_hash import Int64Set, SortedInt64Set
 from pyrosm.primitive_block_decoder import decode_primitive_block, element_layout
 
 DIV = 1000000000
@@ -295,6 +295,12 @@ cdef _read_header(filepath):
 # ---------------------------------------------------------------------------
 cdef _to_set(id_array):
     return Int64Set(id_array)
+
+
+cdef _to_sorted_set(id_array):
+    """The kept node ids `id_array` as the set the write passes test each block's
+    ascending node ids against."""
+    return SortedInt64Set(id_array)
 
 
 cdef _isin(values, lookup):
@@ -901,7 +907,7 @@ def _crop_run(source_path, output_path, region, keep_relations, compact, repack,
     kept_ways, kept_rel = kept_ways[0], kept_rel[0]
     if repack:
         _repack_write(
-            source_path, output_path, _to_set(kept_nodes), _to_set(kept_ways),
+            source_path, output_path, _to_sorted_set(kept_nodes), _to_set(kept_ways),
             _to_set(kept_rel), bounds
         )
     elif pool is not None:
@@ -916,7 +922,7 @@ def _crop_run(source_path, output_path, region, keep_relations, compact, repack,
                     out.write(blob_bytes)
     else:
         _write_pbf(
-            source_path, output_path, _to_set(kept_nodes), _to_set(kept_ways),
+            source_path, output_path, _to_sorted_set(kept_nodes), _to_set(kept_ways),
             _to_set(kept_rel), bounds, compact
         )
 
@@ -1066,13 +1072,14 @@ def _winit(bounds, polygon_wkb, tmpdir, compact):
     _W_COMPACT = compact
 
 
-def _w_get_set(name):
-    """Lazily load + cache the broadcast id set `name` from the temp dir."""
-    s = _W_CACHE.get(name)
+def _w_get_set(name, sorted_ids=False):
+    """Lazily load + cache the broadcast id set `name` from the temp dir; with
+    `sorted_ids`, as the set `_to_sorted_set` builds."""
+    s = _W_CACHE.get((name, sorted_ids))
     if s is None:
         arr = np.load(Path(_W_TMPDIR) / (name + ".npy"))
-        s = _to_set(arr)
-        _W_CACHE[name] = s
+        s = _to_sorted_set(arr) if sorted_ids else _to_set(arr)
+        _W_CACHE[(name, sorted_ids)] = s
     return s
 
 
@@ -1105,7 +1112,7 @@ def _w_stage3(payload):
 def _w_write(payload):
     block = _crop_block(
         _payload_data(payload),
-        _w_get_set("kept_nodes"),
+        _w_get_set("kept_nodes", True),
         _w_get_set("kept_ways"),
         _w_get_set("kept_rel"),
         _W_COMPACT,
@@ -2134,7 +2141,7 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
             False,
         )
         kept = (
-            _to_set(kept_nodes),
+            _to_sorted_set(kept_nodes),
             _to_set(_unique_concat(kept_ways)),
             _to_set(_unique_concat(kept_rel)),
         )
