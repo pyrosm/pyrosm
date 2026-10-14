@@ -853,6 +853,7 @@ def _pbf_file(path, *blocks, features=("OsmSchema-V0.6", "DenseNodes")):
         ("corrupt zlib data", 1, "InvalidOSMFileError", "decompressing"),
         ("corrupt zlib data", 2, "InvalidOSMFileError", "decompressing"),
         ("corrupt block", 1, "InvalidOSMFileError", "not a valid OSM PBF file"),
+        ("corrupt Info of a kept way", 1, "InvalidOSMFileError", "data block of the PBF is"),
         ("negative blob size", 1, "InvalidOSMFileError", "declared blob size -5"),
         ("oversized blob", 1, "InvalidOSMFileError", "larger than 32 MiB"),
         ("truncated zlib stream", 1, "InvalidOSMFileError", "zlib blob is truncated"),
@@ -889,6 +890,20 @@ def test_crop_pbf_rejects_unreadable_input(
         _pbf_file(bad, *valid, Blob(zlib_data=b"not zlib"))
     elif case == "corrupt block":
         _pbf_file(bad, Blob(raw=b"\xff\xff"))
+    elif case == "corrupt Info of a kept way":
+        from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+        blk = PrimitiveBlock(granularity=100)
+        blk.stringtable.s.append(b"")
+        node = blk.primitivegroup.add().dense
+        node.id.append(1)
+        node.lat.append(round(sum(CROP_BBOX[1::2]) / 2 * 1e7))
+        node.lon.append(round(sum(CROP_BBOX[0::2]) / 2 * 1e7))
+        # Way 5 refs node 1; its Info holds a field tag without a value.
+        way = b"\x08\x05\x22\x01\x08\x42\x01\x02"
+        group = b"\x1a" + bytes([len(way)]) + way
+        data = blk.SerializeToString() + b"\x12" + bytes([len(group)]) + group
+        _pbf_file(bad, Blob(raw=data, raw_size=len(data)))
     elif case == "negative blob size":
         _pbf_file(bad)
         header = BlobHeader(type="OSMData", datasize=-5).SerializeToString()
@@ -1165,6 +1180,47 @@ def test_merge_pbf_mixed_metadata(tmp_path):
         pois = OSM(path).get_pois(custom_filter={"amenity": ["cafe"]})
         assert sorted(pois["id"]) == sorted(expected[name])
     Path(outputs["single"]).unlink()
+
+
+def test_to_pbf_writes_each_kind_of_group(tmp_path):
+    # Kept plain nodes, ways and relations are copied as they are stored, and kept dense
+    # nodes (here without tags and metadata) encoded again; each written block is
+    # encoded as protobuf itself encodes it.
+    from pyrosm.pbf_export import _iter_block_data
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    blk = PrimitiveBlock(granularity=100, date_granularity=1000)
+    blk.stringtable.s.extend([b"", b"amenity", b"cafe"])
+    plain = blk.primitivegroup.add().nodes
+    plain.add(id=1, lat=601700000, lon=249440000, keys=[1], vals=[2]).info.version = 3
+    plain.add(id=2, lat=611700000, lon=259440000)
+    ways = blk.primitivegroup.add().ways
+    ways.add(id=10, refs=[1, 1])  # nodes 1 and 2
+    ways.add(id=11, refs=[2])
+    relations = blk.primitivegroup.add().relations
+    relations.add(id=20, memids=[10], types=[1], roles_sid=[0])
+    relations.add(id=21, memids=[3], types=[0], roles_sid=[0])
+    dense = PrimitiveBlock(granularity=100, date_granularity=1000)
+    dense.stringtable.s.append(b"")
+    d = dense.primitivegroup.add().dense
+    d.id.extend([4, 1])
+    d.lat.extend([601700000, 10000000])  # node 5 one degree further north
+    d.lon.extend([249440000, 0])
+    src = _pbf_file(tmp_path / "kinds.osm.pbf", blk, dense)
+
+    out = OSM(src, bounding_box=[24.9, 60.1, 25.0, 60.2]).to_pbf(
+        str(tmp_path / "out.osm.pbf")
+    )
+    written = [PrimitiveBlock.FromString(data) for data in _iter_block_data(out)]
+    assert [data == block.SerializeToString()
+            for data, block in zip(_iter_block_data(out), written)] == [True, True]
+    groups = written[0].primitivegroup
+    assert list(groups[0].nodes) == list(plain)
+    assert list(groups[1].ways) == [ways[0]]
+    assert list(groups[2].relations) == [relations[0]]
+    kept_dense = written[1].primitivegroup[0].dense
+    assert list(kept_dense.id) == [4] and len(kept_dense.keys_vals) == 0
+    assert not kept_dense.HasField("denseinfo")
 
 
 @pytest.mark.parametrize(

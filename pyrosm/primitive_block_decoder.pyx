@@ -29,6 +29,7 @@ easy to compare against the protobuf path in tests.
 """
 import numpy as np
 
+from cpython.pyport cimport PY_SSIZE_T_MAX
 from libc.stdint cimport int64_t, uint64_t
 
 from pyrosm.exceptions import InvalidOSMFileError
@@ -48,20 +49,52 @@ cdef enum WireType:
 
 # --- low-level wire-format primitives -------------------------------------------------
 
+# The position a read moves to when the data does not follow the wire format: a varint
+# cut off at the end of its data or longer than 10 bytes, a field that does not fit in
+# the data that holds it, or an unknown wire type. It lies past the end of any data, so
+# the loop over that data stops; the function that owns the loop then raises.
+cdef Py_ssize_t _CORRUPT = PY_SSIZE_T_MAX
+
+
+cdef int _corrupt(str reason) except -1:
+    """Raise the error for a data block that does not follow the PBF schema."""
+    raise InvalidOSMFileError("A data block of the PBF is corrupt: %s." % reason)
+
+
+cdef int _check_end(Py_ssize_t pos, Py_ssize_t end) except -1:
+    """Raise unless a loop over data that ends at ``end`` stopped exactly there."""
+    if pos != end:
+        _corrupt("a field or a number does not fit in the data that holds it")
+    return 0
+
+
 cdef inline uint64_t _read_varint(const unsigned char* buf, Py_ssize_t* pos,
                                   Py_ssize_t end) nogil:
-    """Read one base-128 varint at ``pos`` and advance ``pos`` past it."""
+    """Read one base-128 varint at ``pos`` and advance ``pos`` past it. A varint cut off
+    at ``end`` or larger than 64 bits moves ``pos`` to ``_CORRUPT``."""
     cdef uint64_t result = 0
     cdef int shift = 0
     cdef unsigned char byte
-    while pos[0] < end:
+    while pos[0] < end and shift < 64:
         byte = buf[pos[0]]
         pos[0] += 1
         result |= (<uint64_t>(byte & 0x7F)) << shift
         if (byte & 0x80) == 0:
-            break
+            if shift == 63 and byte > 1:
+                break
+            return result
         shift += 7
-    return result
+    pos[0] = _CORRUPT
+    return 0
+
+
+cdef inline Py_ssize_t _field_end(Py_ssize_t pos, uint64_t length,
+                                  Py_ssize_t end) nogil:
+    """The end of a field of ``length`` bytes that starts at ``pos``, or ``_CORRUPT``
+    when the field does not fit in data that ends at ``end``."""
+    if pos > end or length > <uint64_t>(end - pos):
+        return _CORRUPT
+    return pos + <Py_ssize_t>length
 
 
 cdef inline int64_t _zig_zag_decode(uint64_t value) nogil:
@@ -71,8 +104,12 @@ cdef inline int64_t _zig_zag_decode(uint64_t value) nogil:
 
 cdef inline void _read_tag(const unsigned char* buf, Py_ssize_t* pos, Py_ssize_t end,
                            int* field_number, int* wire_type) nogil:
-    """Read a field tag and split it into its field number and wire type."""
+    """Read a field tag and split it into its field number and wire type. A field
+    number outside 1 to 2**29 - 1 moves ``pos`` to ``_CORRUPT``."""
     cdef uint64_t tag = _read_varint(buf, pos, end)
+    if tag < 8 or (tag >> 32) != 0:
+        pos[0] = _CORRUPT
+        tag = 0
     field_number[0] = <int>(tag >> 3)
     wire_type[0] = <int>(tag & 0x7)
 
@@ -85,30 +122,36 @@ cdef inline void _skip_field(const unsigned char* buf, Py_ssize_t* pos,
         _read_varint(buf, pos, end)
     elif wire_type == WIRE_LENGTH:
         length = _read_varint(buf, pos, end)
-        pos[0] += <Py_ssize_t>length
+        pos[0] = _field_end(pos[0], length, end)
     elif wire_type == WIRE_FIXED64:
-        pos[0] += 8
+        pos[0] = _field_end(pos[0], 8, end)
     elif wire_type == WIRE_FIXED32:
-        pos[0] += 4
+        pos[0] = _field_end(pos[0], 4, end)
+    else:
+        pos[0] = _CORRUPT
 
 
 cdef inline Py_ssize_t _count_packed(const unsigned char* buf, Py_ssize_t start,
                                      Py_ssize_t end) nogil:
     """Count the varints packed in ``buf[start:end]`` (one ends per continuation-clear
-    byte) without decoding them -- used by the way/relation sizing pass."""
+    byte, plus one cut off at ``end``) without decoding them -- used to size the arrays
+    the ``_fill_packed*`` calls write."""
     cdef Py_ssize_t pos = start
     cdef Py_ssize_t count = 0
     while pos < end:
         if (buf[pos] & 0x80) == 0:
             count += 1
         pos += 1
+    if end > start and (buf[end - 1] & 0x80) != 0:
+        count += 1
     return count
 
 
 cdef Py_ssize_t _fill_packed(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
                              bint is_signed, int64_t[::1] out, Py_ssize_t at) nogil:
-    """Decode a packed run of varints into ``out[at:]``; return how many were written.
-    ``is_signed`` zig-zag-decodes each value."""
+    """Decode a packed run of varints into ``out[at:]``; return how many were written,
+    or -1 when a varint is cut off or larger than 64 bits. ``is_signed`` zig-zag-decodes
+    each value. ``out`` has a slot for each varint ``_count_packed`` counts."""
     cdef Py_ssize_t pos = start
     cdef Py_ssize_t i = at
     cdef uint64_t raw
@@ -119,35 +162,87 @@ cdef Py_ssize_t _fill_packed(const unsigned char* buf, Py_ssize_t start, Py_ssiz
         else:
             out[i] = <int64_t>raw
         i += 1
+    if pos != end:
+        return -1
     return i - at
 
 
 cdef Py_ssize_t _fill_packed_delta(const unsigned char* buf, Py_ssize_t start,
-                                   Py_ssize_t end, int64_t[::1] out,
-                                   Py_ssize_t at) nogil:
+                                   Py_ssize_t end, int64_t[::1] out, Py_ssize_t at,
+                                   int64_t running) nogil:
     """Like ``_fill_packed`` for a delta-coded ``sint`` field: write the running
-    cumulative sum into ``out[at:]`` and return how many were written."""
+    cumulative sum, which starts from ``running``, into ``out[at:]`` and return how many
+    were written, or -1."""
     cdef Py_ssize_t pos = start
     cdef Py_ssize_t i = at
-    cdef int64_t running = 0
     while pos < end:
         running += _zig_zag_decode(_read_varint(buf, &pos, end))
         out[i] = running
         i += 1
+    if pos != end:
+        return -1
     return i - at
+
+
+cdef inline Py_ssize_t _filled(Py_ssize_t n) except -1:
+    """``n``, the count a ``_fill_packed*`` call wrote; raise when it met a varint that
+    is cut off or larger than 64 bits (-1)."""
+    if n < 0:
+        _corrupt("a number does not fit in the data that holds it")
+    return n
 
 
 cdef _read_packed(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
                   bint is_signed):
     """Decode a packed run of varints into a freshly allocated ``int64`` array (used by
     the dense-node path, which is naturally flat)."""
-    out = np.empty(_count_packed(buf, start, end), dtype=np.int64)
+    cdef Py_ssize_t n = _count_packed(buf, start, end)
+    out = np.empty(n, dtype=np.int64)
     cdef int64_t[::1] values = out
-    _fill_packed(buf, start, end, is_signed, values, 0)
+    if _fill_packed(buf, start, end, is_signed, values, 0) != n:
+        _corrupt("a number does not fit in the data that holds it")
     return out
 
 
+cdef int _check_keys_vals(const int64_t[::1] keys_vals, Py_ssize_t n) except -1:
+    """Raise unless the tag stream of ``n`` dense nodes is empty or holds, for each node
+    in turn, its key and value ids followed by a 0."""
+    cdef Py_ssize_t i, ends = 0
+    # Masks (0 or -1) rather than branches: whether the next id is a key, whether it is
+    # 0, and whether it ended a node.
+    cdef int64_t at_key = -1, zero, ended = 0
+    if keys_vals.shape[0] == 0:
+        return 0
+    for i in range(keys_vals.shape[0]):
+        zero = -<int64_t>(keys_vals[i] == 0)
+        ended = at_key & zero
+        ends -= ended
+        at_key = ~at_key | zero
+    if ends != n or ended == 0:
+        _corrupt("the tags of a dense node group do not end once for each of its %d "
+                 "nodes" % n)
+    return 0
+
+
 # --- string table & dense nodes -------------------------------------------------------
+
+cdef _add_run(dict node, dict repeats, str name, values):
+    """Store a packed run of field ``name`` in ``node``. A field that comes in several
+    runs collects them in ``repeats``, for ``_join_runs`` to join once."""
+    previous = node.get(name)
+    if previous is None or len(previous) == 0:
+        node[name] = values
+    elif name in repeats:
+        repeats[name].append(values)
+    else:
+        repeats[name] = [previous, values]
+
+
+cdef _join_runs(dict node, dict repeats):
+    """Replace each field of ``node`` that came in several runs by the runs joined."""
+    for name, runs in repeats.items():
+        node[name] = np.concatenate(runs)
+
 
 cdef list _decode_string_table(const unsigned char* buf, Py_ssize_t start,
                                Py_ssize_t end):
@@ -162,11 +257,14 @@ cdef list _decode_string_table(const unsigned char* buf, Py_ssize_t start,
         if wire == WIRE_LENGTH:
             length = _read_varint(buf, &pos, end)
             s_start = pos
-            pos += <Py_ssize_t>length
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                break
             if field == ST_S:
                 strings.append((<char*>buf)[s_start:pos])
         else:
             _skip_field(buf, &pos, end, wire)
+    _check_end(pos, end)
     return strings
 
 
@@ -178,26 +276,33 @@ cdef _decode_dense_info(const unsigned char* buf, Py_ssize_t start, Py_ssize_t e
     cdef int field, wire
     cdef uint64_t length
     cdef Py_ssize_t f_start
+    repeats = {}
     while pos < end:
         _read_tag(buf, &pos, end, &field, &wire)
         if wire == WIRE_LENGTH:
             length = _read_varint(buf, &pos, end)
             f_start = pos
-            pos += <Py_ssize_t>length
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                break
             if field == DI_VERSION:
-                node["version"] = _read_packed(buf, f_start, pos, False)
+                _add_run(node, repeats, "version", _read_packed(buf, f_start, pos, False))
             elif field == DI_TIMESTAMP:
-                node["timestamp"] = np.cumsum(_read_packed(buf, f_start, pos, True))
+                _add_run(node, repeats, "timestamp", _read_packed(buf, f_start, pos, True))
             elif field == DI_CHANGESET:
-                node["changeset"] = np.cumsum(_read_packed(buf, f_start, pos, True))
+                _add_run(node, repeats, "changeset", _read_packed(buf, f_start, pos, True))
             elif field == DI_UID:
-                node["uid"] = np.cumsum(_read_packed(buf, f_start, pos, True))
+                _add_run(node, repeats, "uid", _read_packed(buf, f_start, pos, True))
             elif field == DI_USER_SID:
-                node["user_sid"] = np.cumsum(_read_packed(buf, f_start, pos, True))
+                _add_run(node, repeats, "user_sid", _read_packed(buf, f_start, pos, True))
             elif field == DI_VISIBLE:
-                node["visible"] = _read_packed(buf, f_start, pos, False)
+                _add_run(node, repeats, "visible", _read_packed(buf, f_start, pos, False))
         else:
             _skip_field(buf, &pos, end, wire)
+    _check_end(pos, end)
+    _join_runs(node, repeats)
+    for name in ("timestamp", "changeset", "uid", "user_sid"):
+        node[name] = np.cumsum(node[name])
 
 
 cdef dict _decode_dense_group(const unsigned char* buf, Py_ssize_t start,
@@ -209,8 +314,8 @@ cdef dict _decode_dense_group(const unsigned char* buf, Py_ssize_t start,
     cdef uint64_t length
     cdef Py_ssize_t f_start
     cdef Py_ssize_t info_start = -1, info_end = -1
-    node = {"id": None, "lat": None, "lon": None,
-            "keys_vals": np.empty(0, dtype=np.int64)}
+    node = {"keys_vals": np.empty(0, dtype=np.int64)}
+    repeats = {}
     # A DenseInfo field that is absent (e.g. ``visible`` outside history files) stays
     # an empty array, matching what the protobuf path returns for it.
     if keep_metadata:
@@ -221,22 +326,39 @@ cdef dict _decode_dense_group(const unsigned char* buf, Py_ssize_t start,
         if wire == WIRE_LENGTH:
             length = _read_varint(buf, &pos, end)
             f_start = pos
-            pos += <Py_ssize_t>length
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                break
             if field == DENSE_ID:
-                node["id"] = np.cumsum(_read_packed(buf, f_start, pos, True))
+                _add_run(node, repeats, "id", _read_packed(buf, f_start, pos, True))
             elif field == DENSE_LAT:
-                node["lat"] = np.cumsum(_read_packed(buf, f_start, pos, True))
+                _add_run(node, repeats, "lat", _read_packed(buf, f_start, pos, True))
             elif field == DENSE_LON:
-                node["lon"] = np.cumsum(_read_packed(buf, f_start, pos, True))
+                _add_run(node, repeats, "lon", _read_packed(buf, f_start, pos, True))
             elif field == DENSE_KEYS_VALS:
-                node["keys_vals"] = _read_packed(buf, f_start, pos, False)
+                _add_run(node, repeats, "keys_vals",
+                         _read_packed(buf, f_start, pos, False))
             elif field == DENSE_DENSEINFO:
                 info_start = f_start
                 info_end = pos
         else:
             _skip_field(buf, &pos, end, wire)
+    _check_end(pos, end)
+    _join_runs(node, repeats)
+    for name in ("id", "lat", "lon"):
+        node[name] = np.cumsum(node[name]) if name in node else np.empty(0, dtype=np.int64)
     if keep_metadata and info_start >= 0:
         _decode_dense_info(buf, info_start, info_end, node)
+    n = len(node["id"])
+    if len(node["lat"]) != n or len(node["lon"]) != n:
+        _corrupt("a dense node group has %d ids but %d latitudes and %d longitudes"
+                 % (n, len(node["lat"]), len(node["lon"])))
+    _check_keys_vals(node["keys_vals"], n)
+    if keep_metadata:
+        for name in _META_COLS:
+            if len(node[name]) not in (0, n):
+                _corrupt("a dense node group has %d nodes but %d values of %s"
+                         % (n, len(node[name]), name))
     return node
 
 
@@ -343,8 +465,8 @@ cdef class _ElementArrays:
         return out
 
 
-cdef void _fill_metadata(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
-                         _ElementArrays b, Py_ssize_t i):
+cdef int _fill_metadata(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                        _ElementArrays b, Py_ssize_t i) except -1:
     """Decode an ``Info`` sub-message (or the proto2 default when absent) into ``b``'s
     per-element metadata arrays at index ``i``. Info fields are plain absolute values."""
     cdef int64_t version = -1, timestamp = 0, changeset = 0
@@ -372,46 +494,68 @@ cdef void _fill_metadata(const unsigned char* buf, Py_ssize_t start, Py_ssize_t 
                     _read_varint(buf, &pos, end)
             else:
                 _skip_field(buf, &pos, end, wire)
+        _check_end(pos, end)
     b.version[i] = version
     b.timestamp[i] = timestamp
     b.changeset[i] = changeset
     b.uid[i] = uid
     b.user_sid[i] = user_sid
     b.visible[i] = visible
+    return 0
 
 
-cdef void _count_element(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
-                         int keys_field, int members_field, Py_ssize_t* n_tags,
-                         Py_ssize_t* n_members) nogil:
+cdef int _count_element(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                        bint is_relation, Py_ssize_t* n_tags,
+                        Py_ssize_t* n_members) except -1:
     """Add one way/relation's tag and member counts to the running totals, so the flat
-    arrays can be sized exactly. (keys and vals share a count; types/roles share the
-    member count.)"""
+    arrays can be sized exactly. Keys and vals share a count, and so do a relation's
+    member ids, types and roles; raise when they differ."""
     cdef Py_ssize_t pos = start, f_start
     cdef int field, wire
     cdef uint64_t length
+    cdef Py_ssize_t keys = 0, vals = 0, members = 0, types = 0, roles = 0
+    cdef int members_field = <int>REL_MEMIDS if is_relation else <int>WAY_REFS
     while pos < end:
         _read_tag(buf, &pos, end, &field, &wire)
         if wire == WIRE_LENGTH:
             length = _read_varint(buf, &pos, end)
             f_start = pos
-            pos += <Py_ssize_t>length
-            if field == keys_field:
-                n_tags[0] += _count_packed(buf, f_start, pos)
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                break
+            if field == WAY_KEYS:
+                keys += _count_packed(buf, f_start, pos)
+            elif field == WAY_VALS:
+                vals += _count_packed(buf, f_start, pos)
             elif field == members_field:
-                n_members[0] += _count_packed(buf, f_start, pos)
+                members += _count_packed(buf, f_start, pos)
+            elif is_relation and field == REL_TYPES:
+                types += _count_packed(buf, f_start, pos)
+            elif is_relation and field == REL_ROLES_SID:
+                roles += _count_packed(buf, f_start, pos)
         else:
             _skip_field(buf, &pos, end, wire)
+    _check_end(pos, end)
+    if keys != vals:
+        _corrupt("a %s has %d tag keys but %d values"
+                 % ("relation" if is_relation else "way", keys, vals))
+    if is_relation and (types != members or roles != members):
+        _corrupt("a relation has %d member ids but %d member types and %d roles"
+                 % (members, types, roles))
+    n_tags[0] += keys
+    n_members[0] += members
+    return 0
 
 
-cdef void _fill_way(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
-                    _ElementArrays b):
-    """Decode one ``Way`` into the builder at its current write positions."""
+cdef int _fill_way(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                   _ElementArrays b) except -1:
+    """Decode one ``Way`` into the builder at its current write positions. A packed field
+    may come in several runs, which follow each other."""
     cdef Py_ssize_t pos = start, f_start
     cdef Py_ssize_t info_start = -1, info_end = -1
     cdef int field, wire
     cdef uint64_t length
-    cdef Py_ssize_t tstart = b.ti, mstart = b.mi
-    cdef Py_ssize_t n_keys = 0, n_refs = 0
+    cdef Py_ssize_t kpos = b.ti, vpos = b.ti, mpos = b.mi
     while pos < end:
         _read_tag(buf, &pos, end, &field, &wire)
         if wire == WIRE_VARINT:
@@ -422,37 +566,42 @@ cdef void _fill_way(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
         elif wire == WIRE_LENGTH:
             length = _read_varint(buf, &pos, end)
             f_start = pos
-            pos += <Py_ssize_t>length
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                break
             if field == WAY_KEYS:
-                n_keys = _fill_packed(buf, f_start, pos, False, b.keys, tstart)
+                kpos += _filled(_fill_packed(buf, f_start, pos, False, b.keys, kpos))
             elif field == WAY_VALS:
-                _fill_packed(buf, f_start, pos, False, b.vals, tstart)
+                vpos += _filled(_fill_packed(buf, f_start, pos, False, b.vals, vpos))
             elif field == WAY_REFS:
-                n_refs = _fill_packed_delta(buf, f_start, pos, b.members, mstart)
+                mpos += _filled(_fill_packed_delta(
+                    buf, f_start, pos, b.members, mpos,
+                    b.members[mpos - 1] if mpos > b.mi else 0))
             elif field == WAY_INFO:
                 info_start = f_start
                 info_end = pos
         else:
             _skip_field(buf, &pos, end, wire)
-    b.ti = tstart + n_keys
-    b.mi = mstart + n_refs
+    _check_end(pos, end)
+    b.ti = kpos
+    b.mi = mpos
     b.tags_off[b.ei + 1] = b.ti
     b.members_off[b.ei + 1] = b.mi
     if b.keep_metadata:
         _fill_metadata(buf, info_start, info_end, b, b.ei)
     b.ei += 1
+    return 0
 
 
-cdef void _fill_relation(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
-                         _ElementArrays b):
+cdef int _fill_relation(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                        _ElementArrays b) except -1:
     """Decode one ``Relation`` into the builder. Members carry an id (delta), a type and
     a role, all the same count, sharing the member offsets."""
     cdef Py_ssize_t pos = start, f_start
     cdef Py_ssize_t info_start = -1, info_end = -1
     cdef int field, wire
     cdef uint64_t length
-    cdef Py_ssize_t tstart = b.ti, mstart = b.mi
-    cdef Py_ssize_t n_keys = 0, n_members = 0
+    cdef Py_ssize_t kpos = b.ti, vpos = b.ti, mpos = b.mi, tpos = b.mi, rpos = b.mi
     while pos < end:
         _read_tag(buf, &pos, end, &field, &wire)
         if wire == WIRE_VARINT:
@@ -463,34 +612,39 @@ cdef void _fill_relation(const unsigned char* buf, Py_ssize_t start, Py_ssize_t 
         elif wire == WIRE_LENGTH:
             length = _read_varint(buf, &pos, end)
             f_start = pos
-            pos += <Py_ssize_t>length
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                break
             if field == REL_KEYS:
-                n_keys = _fill_packed(buf, f_start, pos, False, b.keys, tstart)
+                kpos += _filled(_fill_packed(buf, f_start, pos, False, b.keys, kpos))
             elif field == REL_VALS:
-                _fill_packed(buf, f_start, pos, False, b.vals, tstart)
+                vpos += _filled(_fill_packed(buf, f_start, pos, False, b.vals, vpos))
             elif field == REL_MEMIDS:
-                n_members = _fill_packed_delta(buf, f_start, pos, b.members, mstart)
+                mpos += _filled(_fill_packed_delta(
+                    buf, f_start, pos, b.members, mpos,
+                    b.members[mpos - 1] if mpos > b.mi else 0))
             elif field == REL_TYPES:
-                _fill_packed(buf, f_start, pos, False, b.types, mstart)
+                tpos += _filled(_fill_packed(buf, f_start, pos, False, b.types, tpos))
             elif field == REL_ROLES_SID:
-                _fill_packed(buf, f_start, pos, False, b.roles, mstart)
+                rpos += _filled(_fill_packed(buf, f_start, pos, False, b.roles, rpos))
             elif field == REL_INFO:
                 info_start = f_start
                 info_end = pos
         else:
             _skip_field(buf, &pos, end, wire)
-    b.ti = tstart + n_keys
-    b.mi = mstart + n_members
+    _check_end(pos, end)
+    b.ti = kpos
+    b.mi = mpos
     b.tags_off[b.ei + 1] = b.ti
     b.members_off[b.ei + 1] = b.mi
     if b.keep_metadata:
         _fill_metadata(buf, info_start, info_end, b, b.ei)
     b.ei += 1
+    return 0
 
 
 cdef dict _decode_elements(const unsigned char* buf, list group_ranges,
-                           int element_field, int keys_field, int members_field,
-                           bint keep_metadata, bint is_relation):
+                           int element_field, bint keep_metadata, bint is_relation):
     """Two-pass decode of every ``element_field`` (way or relation) across the block's
     groups: count to size the flat arrays, then fill them. Returns ``None`` if there
     are none."""
@@ -508,13 +662,15 @@ cdef dict _decode_elements(const unsigned char* buf, list group_ranges,
             if wire == WIRE_LENGTH:
                 length = _read_varint(buf, &pos, ge)
                 f_start = pos
-                pos += <Py_ssize_t>length
+                pos = _field_end(pos, length, ge)
+                if pos > ge:
+                    break
                 if field == element_field:
                     n_elem += 1
-                    _count_element(buf, f_start, pos, keys_field, members_field,
-                                   &n_tags, &n_members)
+                    _count_element(buf, f_start, pos, is_relation, &n_tags, &n_members)
             else:
                 _skip_field(buf, &pos, ge, wire)
+        _check_end(pos, ge)
     if n_elem == 0:
         return None
 
@@ -529,7 +685,9 @@ cdef dict _decode_elements(const unsigned char* buf, list group_ranges,
             if wire == WIRE_LENGTH:
                 length = _read_varint(buf, &pos, ge)
                 f_start = pos
-                pos += <Py_ssize_t>length
+                pos = _field_end(pos, length, ge)
+                if pos > ge:
+                    break
                 if field == element_field:
                     if is_relation:
                         _fill_relation(buf, f_start, pos, b)
@@ -537,11 +695,12 @@ cdef dict _decode_elements(const unsigned char* buf, list group_ranges,
                         _fill_way(buf, f_start, pos, b)
             else:
                 _skip_field(buf, &pos, ge, wire)
+        _check_end(pos, ge)
     return b.result()
 
 
-cdef void _count_node_tags(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
-                           Py_ssize_t* n_keys, Py_ssize_t* n_vals) nogil:
+cdef int _count_node_tags(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                          Py_ssize_t* n_keys, Py_ssize_t* n_vals) except -1:
     """Count one plain ``Node``'s key ids and value ids, whether packed (in one run or
     several) or not."""
     cdef Py_ssize_t pos = start, f_start
@@ -552,7 +711,9 @@ cdef void _count_node_tags(const unsigned char* buf, Py_ssize_t start, Py_ssize_
         if wire == WIRE_LENGTH:
             length = _read_varint(buf, &pos, end)
             f_start = pos
-            pos += <Py_ssize_t>length
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                break
             if field == NODE_KEYS:
                 n_keys[0] += _count_packed(buf, f_start, pos)
             elif field == NODE_VALS:
@@ -565,10 +726,13 @@ cdef void _count_node_tags(const unsigned char* buf, Py_ssize_t start, Py_ssize_
                 n_vals[0] += 1
         else:
             _skip_field(buf, &pos, end, wire)
+    _check_end(pos, end)
+    return 0
 
 
-cdef void _fill_plain_node(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
-                           _ElementArrays b, int64_t[::1] lat, int64_t[::1] lon):
+cdef int _fill_plain_node(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                          _ElementArrays b, int64_t[::1] lat,
+                          int64_t[::1] lon) except -1:
     """Decode one plain ``Node`` into the builder (its tags as ``keys``/``vals``) and its
     coordinates into ``lat``/``lon``. Its id and coordinates are absolute, not delta
     coded; key and value ids may come packed (in one run or several) or not."""
@@ -597,22 +761,26 @@ cdef void _fill_plain_node(const unsigned char* buf, Py_ssize_t start, Py_ssize_
         elif wire == WIRE_LENGTH:
             length = _read_varint(buf, &pos, end)
             f_start = pos
-            pos += <Py_ssize_t>length
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                break
             if field == NODE_KEYS:
-                kpos += _fill_packed(buf, f_start, pos, False, b.keys, kpos)
+                kpos += _filled(_fill_packed(buf, f_start, pos, False, b.keys, kpos))
             elif field == NODE_VALS:
-                vpos += _fill_packed(buf, f_start, pos, False, b.vals, vpos)
+                vpos += _filled(_fill_packed(buf, f_start, pos, False, b.vals, vpos))
             elif field == NODE_INFO:
                 info_start = f_start
                 info_end = pos
         else:
             _skip_field(buf, &pos, end, wire)
+    _check_end(pos, end)
     b.ti = kpos
     b.tags_off[b.ei + 1] = b.ti
     b.members_off[b.ei + 1] = 0
     if b.keep_metadata:
         _fill_metadata(buf, info_start, info_end, b, b.ei)
     b.ei += 1
+    return 0
 
 
 cdef dict _decode_plain_nodes(const unsigned char* buf, list spans, bint keep_metadata):
@@ -656,8 +824,8 @@ cdef dict _decode_plain_nodes(const unsigned char* buf, list spans, bint keep_me
     return node
 
 
-cdef void _collect_nodes(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
-                         bint keep_metadata, list node_groups):
+cdef int _collect_nodes(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                        bint keep_metadata, list node_groups) except -1:
     """Decode the nodes of one group into ``node_groups``: each ``DenseNodes`` block,
     and the group's plain ``Node`` messages as one more entry of the same form."""
     cdef Py_ssize_t pos = start, f_start
@@ -669,7 +837,9 @@ cdef void _collect_nodes(const unsigned char* buf, Py_ssize_t start, Py_ssize_t 
         if wire == WIRE_LENGTH:
             length = _read_varint(buf, &pos, end)
             f_start = pos
-            pos += <Py_ssize_t>length
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                break
             if field == GROUP_DENSE:
                 node_groups.append(
                     _decode_dense_group(buf, f_start, pos, keep_metadata))
@@ -677,8 +847,31 @@ cdef void _collect_nodes(const unsigned char* buf, Py_ssize_t start, Py_ssize_t 
                 plain.append((f_start, pos))
         else:
             _skip_field(buf, &pos, end, wire)
+    _check_end(pos, end)
     if plain:
         node_groups.append(_decode_plain_nodes(buf, plain, keep_metadata))
+    return 0
+
+
+cdef dict _default_header():
+    """The block header values a block that leaves them out has (the proto2 defaults)."""
+    return {"granularity": 100, "date_granularity": 1000, "lat_offset": 0, "lon_offset": 0}
+
+
+cdef int _read_header_value(const unsigned char* buf, Py_ssize_t* pos, Py_ssize_t end,
+                            int field, dict header) except -1:
+    """Read the varint of block field ``field`` into ``header`` when it is one of the
+    header's values, or skip it."""
+    cdef int64_t value = <int64_t>_read_varint(buf, pos, end)
+    if field == PB_GRANULARITY:
+        header["granularity"] = value
+    elif field == PB_DATE_GRANULARITY:
+        header["date_granularity"] = value
+    elif field == PB_LAT_OFFSET:
+        header["lat_offset"] = value
+    elif field == PB_LON_OFFSET:
+        header["lon_offset"] = value
+    return 0
 
 
 def decode_primitive_block(const unsigned char[::1] data, bint keep_metadata=True):
@@ -693,8 +886,7 @@ def decode_primitive_block(const unsigned char[::1] data, bint keep_metadata=Tru
     """
     cdef Py_ssize_t end = data.shape[0]
     if end == 0:
-        return [], {"granularity": 100, "date_granularity": 1000,
-                    "lat_offset": 0, "lon_offset": 0}, None, None, None
+        return [], _default_header(), None, None, None
     cdef const unsigned char* buf = &data[0]
     cdef Py_ssize_t pos = 0
     cdef int field, wire
@@ -702,28 +894,20 @@ def decode_primitive_block(const unsigned char[::1] data, bint keep_metadata=Tru
     cdef Py_ssize_t f_start
 
     string_table = []
-    header = {"granularity": 100, "date_granularity": 1000,
-              "lat_offset": 0, "lon_offset": 0}
+    header = _default_header()
     node_groups = []
     group_ranges = []
 
     while pos < end:
         _read_tag(buf, &pos, end, &field, &wire)
         if wire == WIRE_VARINT:
-            if field == PB_GRANULARITY:
-                header["granularity"] = <int64_t>_read_varint(buf, &pos, end)
-            elif field == PB_DATE_GRANULARITY:
-                header["date_granularity"] = <int64_t>_read_varint(buf, &pos, end)
-            elif field == PB_LAT_OFFSET:
-                header["lat_offset"] = <int64_t>_read_varint(buf, &pos, end)
-            elif field == PB_LON_OFFSET:
-                header["lon_offset"] = <int64_t>_read_varint(buf, &pos, end)
-            else:
-                _read_varint(buf, &pos, end)
+            _read_header_value(buf, &pos, end, field, header)
         elif wire == WIRE_LENGTH:
             length = _read_varint(buf, &pos, end)
             f_start = pos
-            pos += <Py_ssize_t>length
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                break
             if field == PB_STRINGTABLE:
                 string_table = _decode_string_table(buf, f_start, pos)
             elif field == PB_PRIMITIVEGROUP:
@@ -731,10 +915,132 @@ def decode_primitive_block(const unsigned char[::1] data, bint keep_metadata=Tru
                 _collect_nodes(buf, f_start, pos, keep_metadata, node_groups)
         else:
             _skip_field(buf, &pos, end, wire)
+    _check_end(pos, end)
 
     nodes = _merge_dense(node_groups, keep_metadata)
-    ways = _decode_elements(buf, group_ranges, GROUP_WAYS, WAY_KEYS, WAY_REFS,
-                            keep_metadata, False)
-    relations = _decode_elements(buf, group_ranges, GROUP_RELATIONS, REL_KEYS,
-                                 REL_MEMIDS, keep_metadata, True)
+    ways = _decode_elements(buf, group_ranges, GROUP_WAYS, keep_metadata, False)
+    relations = _decode_elements(buf, group_ranges, GROUP_RELATIONS, keep_metadata, True)
     return string_table, header, nodes, ways, relations
+
+
+cdef int _check_fields(const unsigned char* buf, Py_ssize_t start,
+                       Py_ssize_t end) except -1:
+    """Raise unless ``buf[start:end]`` is a run of well-formed fields."""
+    cdef Py_ssize_t pos = start
+    cdef int field, wire
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        _skip_field(buf, &pos, end, wire)
+    return _check_end(pos, end)
+
+
+cdef int64_t _element_id(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                         bint is_signed) except? -1:
+    """The id of the plain node, way or relation stored in ``buf[start:end]``, zig-zag
+    decoded when ``is_signed`` (a node's): the last one, as protobuf and the decoder read
+    it, or 0, the proto2 default, when it has none. Raises unless the element and its
+    ``Info`` are well-formed fields; the three number the id and ``Info`` alike."""
+    cdef Py_ssize_t pos = start, f_start
+    cdef int field, wire
+    cdef uint64_t value = 0, length
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if field == NODE_ID and wire == WIRE_VARINT:
+            value = _read_varint(buf, &pos, end)
+        elif field == NODE_INFO and wire == WIRE_LENGTH:
+            length = _read_varint(buf, &pos, end)
+            f_start = pos
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                break
+            _check_fields(buf, f_start, pos)
+        else:
+            _skip_field(buf, &pos, end, wire)
+    _check_end(pos, end)
+    return _zig_zag_decode(value) if is_signed else <int64_t>value
+
+
+cdef inline bint _is_element(int field, int wire) nogil:
+    """Whether a group field holds a plain node, a way or a relation."""
+    return wire == WIRE_LENGTH and (
+        field == GROUP_NODES or field == GROUP_WAYS or field == GROUP_RELATIONS)
+
+
+cdef dict _group_layout(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end):
+    """The parts of one ``PrimitiveGroup``, for ``element_layout``."""
+    cdef Py_ssize_t pos = start, f_start, tag_start, n = 0, i = 0
+    cdef int field, wire
+    cdef uint64_t length
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        _skip_field(buf, &pos, end, wire)
+        n += _is_element(field, wire)
+    _check_end(pos, end)
+
+    group = {"dense": None}
+    for name in ("kind", "id", "start", "end"):
+        group[name] = np.empty(n, dtype=np.int64)
+    cdef int64_t[::1] kinds = group["kind"], ids = group["id"]
+    cdef int64_t[::1] starts = group["start"], ends = group["end"]
+    pos = start
+    while pos < end:
+        tag_start = pos
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        f_start = pos
+        pos = _field_end(pos, length, end)
+        if pos > end:
+            break
+        if field == GROUP_DENSE:
+            group["dense"] = _decode_dense_group(buf, f_start, pos, True)
+        elif _is_element(field, wire):
+            kinds[i] = field
+            ids[i] = _element_id(buf, f_start, pos, field == GROUP_NODES)
+            starts[i] = tag_start
+            ends[i] = pos
+            i += 1
+    return group
+
+
+def element_layout(const unsigned char[::1] data):
+    """Where the parts of a decompressed ``PrimitiveBlock`` lie, for copying its elements
+    without decoding them: ``(header, string_table, groups)``.
+
+    ``header`` is as in ``decode_primitive_block``; ``string_table`` is the (start, end)
+    of the string table's bytes, or None when the block has none. Each group is a dict:
+    ``dense`` is the dict ``decode_primitive_block`` gives for its ``DenseNodes`` (with
+    metadata), or None, and ``kind``, ``id``, ``start`` and ``end`` hold, for each plain
+    node, way and relation in it, its group field number, its id, and where its field
+    (tag and length included) starts and ends in ``data``.
+    """
+    cdef Py_ssize_t end = data.shape[0]
+    header = _default_header()
+    if end == 0:
+        return header, None, []
+    cdef const unsigned char* buf = &data[0]
+    cdef Py_ssize_t pos = 0, f_start
+    cdef int field, wire
+    cdef uint64_t length
+    string_table = None
+    groups = []
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire == WIRE_VARINT:
+            _read_header_value(buf, &pos, end, field, header)
+        elif wire == WIRE_LENGTH:
+            length = _read_varint(buf, &pos, end)
+            f_start = pos
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                break
+            if field == PB_STRINGTABLE:
+                string_table = (f_start, pos)
+            elif field == PB_PRIMITIVEGROUP:
+                groups.append(_group_layout(buf, f_start, pos))
+        else:
+            _skip_field(buf, &pos, end, wire)
+    _check_end(pos, end)
+    return header, string_table, groups

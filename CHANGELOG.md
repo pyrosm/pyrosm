@@ -1,6 +1,12 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- FIXED: The raw block decoder, which every reader and the crop use, raises `InvalidOSMFileError` for a corrupt block instead of reading or writing past the block's data: a field or a number that does not fit in its data, a field number protobuf does not allow, ways or relations whose keys and values (or member ids, types and roles) differ in number, and dense node groups whose coordinates, metadata or tag stream do not match their ids. A packed field written in several runs is read whole, as protobuf reads it ([#483](https://github.com/pyrosm/pyrosm/pull/483))
+- CHANGED: `crop_pbf` and `OSM.to_pbf` crop faster. The selection decodes blocks with the raw block decoder and tests the elements of a block together, reading a file whose blocks hold nodes, then ways, then relations once instead of three times. The write pass copies the kept ways and relations as they are stored and encodes the kept dense nodes from arrays instead of rebuilding each block through protobuf messages. On Finland (771 MB, one process) a crop of the Helsinki region takes 28-33 s instead of 100-111 s, and 53-61 s instead of 104-122 s with `repack=True`; the output is the same byte for byte ([#484](https://github.com/pyrosm/pyrosm/pull/484), [#485](https://github.com/pyrosm/pyrosm/pull/485))
+
 v0.20.0
 -------
 
