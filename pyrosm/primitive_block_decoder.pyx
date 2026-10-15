@@ -208,17 +208,16 @@ cdef int _check_keys_vals(const int64_t[::1] keys_vals, Py_ssize_t n) except -1:
     """Raise unless the tag stream of ``n`` dense nodes is empty or holds, for each node
     in turn, its key and value ids followed by a 0."""
     cdef Py_ssize_t i, ends = 0
-    # Masks (0 or -1) rather than branches: whether the next id is a key, whether it is
-    # 0, and whether it ended a node.
-    cdef int64_t at_key = -1, zero, ended = 0
+    cdef bint at_key = True, ended = False
     if keys_vals.shape[0] == 0:
         return 0
     for i in range(keys_vals.shape[0]):
-        zero = -<int64_t>(keys_vals[i] == 0)
-        ended = at_key & zero
-        ends -= ended
-        at_key = ~at_key | zero
-    if ends != n or ended == 0:
+        ended = at_key and keys_vals[i] == 0
+        if ended:
+            ends += 1
+        else:
+            at_key = not at_key
+    if ends != n or not ended:
         _corrupt("the tags of a dense node group do not end once for each of its %d "
                  "nodes" % n)
     return 0
