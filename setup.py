@@ -52,9 +52,20 @@ _ext_modules = cythonize(
     compiler_directives=_directives,
     force=_linetrace,
 )
-# Vendored C libraries (see vendor/README.md): every extension can include their headers.
+# Vendored C libraries (see vendor/README.md): every extension can include their headers,
+# and the one that wraps libdeflate compiles its sources.
+_VENDOR = Path("vendor")
+_LIBDEFLATE_SOURCES = [
+    str(_VENDOR / "libdeflate" / "lib" / name)
+    for name in (
+        "adler32.c", "deflate_decompress.c", "utils.c", "zlib_decompress.c",
+        "arm/cpu_features.c", "x86/cpu_features.c",
+    )
+]
 for _ext in _ext_modules:
-    _ext.include_dirs.append(str(Path("vendor") / "khash"))
+    _ext.include_dirs += [str(_VENDOR / "khash"), str(_VENDOR / "libdeflate")]
+    if _ext.name == "pyrosm.zlib_blob":
+        _ext.sources += _LIBDEFLATE_SOURCES
 
 if _linetrace:
     for _ext in _ext_modules:
@@ -68,7 +79,7 @@ setup(
     name="pyrosm",
     version="0.20.0",
     license="MIT",
-    license_files=["LICENSE", "vendor/khash/LICENSE"],
+    license_files=["LICENSE", "vendor/khash/LICENSE", "vendor/libdeflate/COPYING"],
     description="A Python tool to parse OSM data from Protobuf format into GeoDataFrame.",
     long_description=read_long_description(),
     long_description_content_type="text/markdown",

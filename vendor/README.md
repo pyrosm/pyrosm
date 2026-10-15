@@ -12,3 +12,16 @@ and update its entry below.
 - Upstream: klib, https://github.com/attractivechaos/klib, `khash.h` version 0.2.8.
 - Licence: MIT, `khash/LICENSE` (also at the top of `khash.h`).
 - Files: `khash.h`.
+
+## libdeflate
+
+- What: zlib decompression of PBF blobs, through `pyrosm.zlib_blob`.
+- Upstream: https://github.com/ebiggers/libdeflate, release 1.26 (commit 92e6a0d).
+- Licence: MIT, `libdeflate/COPYING`.
+- Files: the ones zlib decompression needs, at their upstream paths: `libdeflate.h`,
+  `common_defs.h`, and in `lib/`: `adler32.c`, `cpu_features_common.h`,
+  `decompress_template.h`, `deflate_constants.h`, `deflate_decompress.c`,
+  `lib_common.h`, `utils.c`, `zlib_constants.h`, `zlib_decompress.c`, with
+  `arm/adler32_impl.h`, `arm/cpu_features.c`, `arm/cpu_features.h`,
+  `x86/adler32_impl.h`, `x86/adler32_template.h`, `x86/cpu_features.c`,
+  `x86/cpu_features.h` and `x86/decompress_impl.h`.

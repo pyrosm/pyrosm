@@ -2,6 +2,7 @@
 pyrobuf
 *.pyd
 *.c
+!vendor/**/*.c
 *.html
 *.so
 build
