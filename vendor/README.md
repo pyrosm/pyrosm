@@ -15,13 +15,16 @@ and update its entry below.
 
 ## libdeflate
 
-- What: zlib decompression of PBF blobs, through `pyrosm.zlib_blob`.
+- What: zlib compression and decompression of PBF blobs, through `pyrosm.zlib_blob`.
 - Upstream: https://github.com/ebiggers/libdeflate, release 1.26 (commit 92e6a0d).
 - Licence: MIT, `libdeflate/COPYING`.
-- Files: the ones zlib decompression needs, at their upstream paths: `libdeflate.h`,
-  `common_defs.h`, and in `lib/`: `adler32.c`, `cpu_features_common.h`,
-  `decompress_template.h`, `deflate_constants.h`, `deflate_decompress.c`,
-  `lib_common.h`, `utils.c`, `zlib_constants.h`, `zlib_decompress.c`, with
+- Files: the ones zlib compression and decompression need, at their upstream paths:
+  `libdeflate.h`, `common_defs.h`, and in `lib/`: `adler32.c`, `bt_matchfinder.h`,
+  `cpu_features_common.h`, `decompress_template.h`, `deflate_compress.c`,
+  `deflate_compress.h`, `deflate_constants.h`, `deflate_decompress.c`,
+  `hc_matchfinder.h`, `ht_matchfinder.h`, `lib_common.h`, `matchfinder_common.h`,
+  `utils.c`, `zlib_compress.c`, `zlib_constants.h`, `zlib_decompress.c`, with
   `arm/adler32_impl.h`, `arm/cpu_features.c`, `arm/cpu_features.h`,
-  `x86/adler32_impl.h`, `x86/adler32_template.h`, `x86/cpu_features.c`,
-  `x86/cpu_features.h` and `x86/decompress_impl.h`.
+  `arm/matchfinder_impl.h`, `riscv/matchfinder_impl.h`, `x86/adler32_impl.h`,
+  `x86/adler32_template.h`, `x86/cpu_features.c`, `x86/cpu_features.h`,
+  `x86/decompress_impl.h` and `x86/matchfinder_impl.h`.

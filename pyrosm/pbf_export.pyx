@@ -51,7 +51,7 @@ from pyrosm.primitive_block_decoder cimport (
 )
 
 from pyrosm.int64_hash import Int64Set, SortedInt64Set
-from pyrosm.zlib_blob import zlib_decompress
+from pyrosm.zlib_blob import zlib_compress, zlib_decompress
 from pyrosm.primitive_block_decoder import (
     decode_elements, decode_primitive_block, element_layout,
 )
@@ -854,7 +854,7 @@ cdef _frame_blob(blob_type, data):
     """Compress the serialized message `data` into the on-disk blob framing bytes."""
     blob = Blob()
     blob.raw_size = len(data)
-    blob.zlib_data = zlib.compress(data)
+    blob.zlib_data = zlib_compress(data)
     blob_bytes = blob.SerializeToString()
     blob_header = BlobHeader()
     blob_header.type = blob_type
