@@ -1,8 +1,10 @@
 Changelog
 =========
 
-Unreleased
-----------
+v0.21.0
+-------
+
+This release crops PBF files several times faster and merges them in about half the time: on Finland (771 MB, one process), a crop of the Helsinki region takes about 15 s instead of 100-111 s, and 16-17 s instead of 104-122 s with `repack=True`. Crops and merges show progress, and pyrosm decompresses and compresses PBF blocks with libdeflate, compiled in from `vendor/libdeflate`, which speeds up reads too. The raw block decoder rejects corrupt blocks instead of reading past their data.
 
 - NEW: Cropping and merging show progress. `crop_pbf` and `merge_pbf` take `progress` as `OSM` does, and `OSM.to_pbf` uses the `progress` given to `OSM(...)`: by default a bar on stderr, "Cropping <file>" or "Merging <files>", once the work has run 2 seconds, cleared at the end, or without a terminal one line with the time it took. A function is called as `progress(done, total)` with the bytes of the inputs read, from `(0, total)` to `(total, total)` for each pass over them: a crop makes two passes or more, and a merge one, or more with a bounding box or polygon ([#496](https://github.com/pyrosm/pyrosm/pull/496))
 - FIXED: The raw block decoder, which every reader and the crop use, raises `InvalidOSMFileError` for a corrupt block instead of reading or writing past the block's data: a field or a number that does not fit in its data, a field number protobuf does not allow, ways or relations whose keys and values (or member ids, types and roles) differ in number, and dense node groups whose coordinates, metadata or tag stream do not match their ids. A packed field written in several runs is read whole, as protobuf reads it ([#483](https://github.com/pyrosm/pyrosm/pull/483))
