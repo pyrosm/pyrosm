@@ -1,9 +1,9 @@
 run,tool,seconds,peak_mb,out_mb,buildings,status
-pyrosm,pyrosm,93.6,769.7,61.7,225570,ok
-pyosmium,pyosmium,216.5,901.1,61.7,225570,ok
-osmium-tool,osmium-tool,15.8,3929.5,61.7,225570,ok
-osmosis,osmosis,181.8,398.9,61.3,225570,ok
-"pyrosm, 8 workers (fast-mode)",pyrosm,23.9,2386.2,86.8,225570,ok
-"pyrosm, 8 workers (compact)",pyrosm,54.8,2299.9,61.7,225570,ok
-"pyosmium, 8 threads",pyosmium,223.8,780.5,61.7,225570,ok
-"osmium-tool, 8 threads",osmium-tool,3.5,3962.3,61.7,225570,ok
+pyrosm,pyrosm,19.2,550.0,60.9,225570,ok
+pyosmium,pyosmium,234.8,882.5,61.7,225570,ok
+osmium-tool,osmium-tool,16.7,3936.7,61.7,225570,ok
+osmosis,osmosis,189.4,440.6,61.3,225570,ok
+"pyrosm, 8 workers (fast-mode)",pyrosm,11.7,2861.0,85.3,225570,ok
+"pyrosm, 8 workers (compact)",pyrosm,16.5,2421.0,60.9,225570,ok
+"pyosmium, 8 threads",pyosmium,228.0,922.8,61.7,225570,ok
+"osmium-tool, 8 threads",osmium-tool,3.7,3972.2,61.7,225570,ok
