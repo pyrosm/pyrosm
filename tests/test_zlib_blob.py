@@ -27,6 +27,21 @@ def test_zlib_decompress(case, stream, size, expected):
     assert zlib_decompress(stream, size) == expected
 
 
+@pytest.mark.parametrize("data", [DATA, b""])
+def test_zlib_compress(data):
+    """libdeflate compresses to a zlib stream that zlib and libdeflate both read."""
+    from pyrosm.zlib_blob import zlib_compress, zlib_decompress
+
+    stream = zlib_compress(data)
+    assert zlib.decompress(stream) == data
+    assert zlib_decompress(stream, len(data)) == data
+    for level in (-1, 13, 2**70):
+        with pytest.raises(ValueError, match="level must be 0 to 12"):
+            zlib_compress(data, level)
+    with pytest.raises(TypeError):
+        zlib_compress(bytearray(data))
+
+
 def test_read_block_falls_back_to_zlib(tmp_path):
     """A reader still decompresses a blob that declares no size, or a wrong one."""
     from pyrosm.engine.blobs import _read_block

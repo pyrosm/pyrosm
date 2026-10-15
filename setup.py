@@ -58,8 +58,8 @@ _VENDOR = Path("vendor")
 _LIBDEFLATE_SOURCES = [
     str(_VENDOR / "libdeflate" / "lib" / name)
     for name in (
-        "adler32.c", "deflate_decompress.c", "utils.c", "zlib_decompress.c",
-        "arm/cpu_features.c", "x86/cpu_features.c",
+        "adler32.c", "deflate_compress.c", "deflate_decompress.c", "utils.c",
+        "zlib_compress.c", "zlib_decompress.c", "arm/cpu_features.c", "x86/cpu_features.c",
     )
 ]
 for _ext in _ext_modules:
