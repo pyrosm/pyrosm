@@ -53,4 +53,4 @@ dependencies:
   - r-remotes
   - r-jsonlite
   - pip:
-      - pyrosm==0.20.0
+      - pyrosm==0.21.0
