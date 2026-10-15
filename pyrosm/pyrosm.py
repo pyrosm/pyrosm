@@ -1316,6 +1316,10 @@ class OSM:
             OSM data is identical to ``repack=False``. Default ``False`` keeps the
             current (faster, slightly larger) in-place crop.
 
+        The crop shows its progress as this object's ``progress`` says (see
+        :class:`OSM`), counting the bytes of the source file read in each pass over
+        it; a crop makes two or more.
+
         Returns
         -------
         str
@@ -1337,6 +1341,7 @@ class OSM:
             workers=workers,
             compact=compact,
             repack=repack,
+            progress=self.progress,
         )
 
     def write_pbf(

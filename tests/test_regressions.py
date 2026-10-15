@@ -1916,7 +1916,7 @@ def test_merge_pbf_ignores_metadata_only_changes(tmp_path, monkeypatch):
     touched = []
 
     class TouchedInput(pbf_export._SortedInput):
-        def __init__(self, filepath):
+        def __init__(self, filepath, progress=None):
             # Repeat until the ctime moves, for filesystems with coarse timestamps.
             before = os.stat(filepath).st_ctime_ns
             deadline = time.monotonic() + 3
@@ -1926,7 +1926,7 @@ def test_merge_pbf_ignores_metadata_only_changes(tmp_path, monkeypatch):
                 touch_metadata(filepath)
                 time.sleep(0.01)
             touched.append(os.stat(filepath).st_ctime_ns != before)
-            super().__init__(filepath)
+            super().__init__(filepath, progress)
 
     monkeypatch.setattr(pbf_export, "_SortedInput", TouchedInput)
     out = merge_pbf([str(source)], str(tmp_path / "out.osm.pbf"))
