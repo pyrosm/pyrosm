@@ -268,15 +268,15 @@ def _stitch_geometries(coords, offsets, rows, geom_reversed, chain_edge_ids, cha
         return shapely.linestrings(np.empty((0, 2)), indices=np.empty(0, np.int64))
 
     # Per consumed segment (in walk order): its coord run start, length, and direction.
+    index = _index_dtype(len(coords))
     segs = rows[chain_edge_ids]
-    lens = np.diff(offsets)[segs]
-    starts = offsets[segs]
+    lens = np.diff(offsets)[segs].astype(index)
+    starts = offsets[segs].astype(index)
+    del segs
     rev = geom_reversed[chain_edge_ids]
 
-    n_chains = len(chain_ptr) - 1
-    seg_chain = np.repeat(np.arange(n_chains), np.diff(chain_ptr))
     # Every segment but the first in its chain drops one vertex (shared with the prev).
-    skip = np.ones(s, dtype=np.int64)
+    skip = np.ones(s, dtype=index)
     skip[chain_ptr[:-1]] = 0
     out_len = lens - skip
 
@@ -288,12 +288,20 @@ def _stitch_geometries(coords, offsets, rows, geom_reversed, chain_edge_ids, cha
     # first output vertex on, forwards, or backwards where the segment is reversed.
     seg_of_pos = np.repeat(np.arange(s, dtype=_index_dtype(s)), out_len)
     first = np.where(rev, starts + lens - 1 - skip, starts + skip)
-    step = np.where(rev, -1, 1)
+    step = np.where(rev, np.int8(-1), np.int8(1))
+    del lens, starts, rev, skip, out_len
     src = np.arange(total, dtype=np.int64)
     src -= out_off[seg_of_pos]
     src *= step[seg_of_pos]
     src += first[seg_of_pos]
-    return shapely.linestrings(coords[src], indices=seg_chain[seg_of_pos])
+    del out_off, first, step
+    points = coords[src]
+    del src
+    n_chains = len(chain_ptr) - 1
+    seg_chain = np.repeat(np.arange(n_chains), np.diff(chain_ptr))
+    indices = seg_chain[seg_of_pos]
+    del seg_chain, seg_of_pos
+    return shapely.linestrings(points, indices=indices)
 
 
 def simplify_graph(
@@ -623,6 +631,7 @@ def _simplify_rows(
                 f = f[~np.isnan(f)].astype(np.int64)
                 nm[f] = True
         node_include_mask = nm
+    del nid, nid_to_factor, x, y, present, keep, fpos
 
     is_endpoint = detect_endpoints(
         u,
@@ -631,6 +640,7 @@ def _simplify_rows(
         edge_attr_values=edge_attr_values,
         node_include_mask=node_include_mask,
     )
+    del edge_attr_values, node_include_mask
 
     indptr, indices, edge_id, src = _build_csr(u, v, n_nodes)
 
@@ -658,8 +668,6 @@ def _simplify_rows(
         # return empty node/edge frames preserving the input schema and CRS.
         return nodes.empty(), edges.rows(rows[:0])
 
-    chain_id = np.repeat(np.arange(n_chains), np.diff(chain_ptr))
-
     # First/last node (factor) of each chain -> original node id.
     first_pos = chain_ptr[:-1]
     last_pos = chain_ptr[1:] - 1
@@ -669,10 +677,12 @@ def _simplify_rows(
     geom_col = edges.geometry_name
     coords, offsets = edges.coords()
     geom_reversed = _compute_geom_reversed(coords, offsets, rows, u, v, node_x, node_y)
+    del node_x, node_y
     new_geom = _stitch_geometries(
         coords, offsets, rows, geom_reversed, chain_edge_ids, chain_ptr
     )
     del coords, offsets, geom_reversed
+    chain_id = np.repeat(np.arange(n_chains), np.diff(chain_ptr))
     # The row of ``edges`` of each consumed segment, aligned to chain_edge_ids.
     seg_rows = rows[chain_edge_ids]
 
