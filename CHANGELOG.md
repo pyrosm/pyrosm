@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- CHANGED: `to_graph(graph_type="networkx")` and `pyrosm.graphs.to_networkx` build the graph in less time. The node and edge attributes are read from whole columns instead of row by row, and the edges whose end node is missing and the keys of parallel edges are found with column operations instead of a Python loop. On Finland's driving network (one process), building the graph takes 7.8 s instead of 14.6 s, and `to_graph` 47 s instead of 60 s; the graph is the same ([#501](https://github.com/pyrosm/pyrosm/pull/501))
+
 v0.21.0
 -------
 
