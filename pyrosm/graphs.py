@@ -134,21 +134,8 @@ def _direction_rules(
                 "Required column '{col}' does not exist in edges.".format(col=col)
             )
 
-    # A direction may be given as "<base>:<suffix>" (e.g. "oneway:bicycle"); the
-    # suffix column overrides the base direction per edge. Split it off here so
-    # the base column is what gets validated below.
-    direction_suffix = None
-    if ":" in direction:
-        direction, direction_suffix = direction.split(":", 1)
-
+    direction, direction_suffix = _direction_column(direction, edges.columns)
     if direction not in edges.columns:
-        warnings.warn(
-            f"Column '{direction}' missing in the edges GeoDataFrame. "
-            f"Assuming all edges to be bidirectional "
-            f"(travel allowed to both directions).",
-            UserWarning,
-            stacklevel=3,
-        )
         edges[direction] = None
 
     if node_id_col not in nodes.columns:
@@ -174,9 +161,32 @@ def _direction_rules(
                 "Possible network types are: " + txt
             )
 
-    # An OSMnx alias ('drive', 'walk', ...) refers to the same network as the
-    # pyrosm name, so the direction rules below need to see the pyrosm name.
-    net_type = normalize_network_type(net_type)
+    return (direction, *_travel_rules(direction_suffix, net_type, force_bidirectional))
+
+
+def _direction_column(direction, columns):
+    """The column of ``direction`` and its mode-specific suffix: ``"oneway:bicycle"`` is
+    the column ``oneway`` with the suffix ``bicycle``, whose column overrides it per edge.
+    Warns when ``columns`` lack the column, as every edge is then two-way."""
+    direction_suffix = None
+    if ":" in direction:
+        direction, direction_suffix = direction.split(":", 1)
+    if direction not in columns:
+        warnings.warn(
+            f"Column '{direction}' missing in the edges GeoDataFrame. "
+            f"Assuming all edges to be bidirectional "
+            f"(travel allowed to both directions).",
+            UserWarning,
+            stacklevel=4,
+        )
+    return direction, direction_suffix
+
+
+def _travel_rules(direction_suffix, network_type, force_bidirectional):
+    """The direction suffix that a network of ``network_type`` (a pyrosm name or an OSMnx
+    alias) honours, and whether all its edges are two-way: ``(direction_suffix,
+    both_ways)``."""
+    net_type = normalize_network_type(network_type)
 
     # Cycling honours bicycle-specific direction tags (oneway:bicycle) so that
     # contraflow cycling on one-way streets is modelled correctly.
@@ -187,7 +197,7 @@ def _direction_rules(
     # cycling are directed (they honour oneway, and cycling additionally honours
     # oneway:bicycle). force_bidirectional overrides this for any type.
     both_ways = force_bidirectional or net_type in ["walking", "all", "all_public"]
-    return direction, direction_suffix, both_ways
+    return direction_suffix, both_ways
 
 
 def graph_tables(

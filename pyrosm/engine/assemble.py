@@ -105,6 +105,40 @@ def _assemble_layer(
     )
 
 
+def _network_ways(
+    shard_paths,
+    tags_as_columns,
+    keep_metadata,
+    filter_spec,
+    segments,
+    bounding_box,
+    filepath,
+    progress,
+):
+    """The highway ways a network read keeps, as way arrays, and the coordinate store of
+    their nodes: ``(ways, node_coordinates)``, or ``None`` when no way is kept. With
+    ``segments`` the store holds the node records (tags + metadata), gathered with a
+    second pass over ``filepath`` that ``progress`` reports (see
+    :func:`~pyrosm.engine.collect._gather_node_records`); otherwise only the coordinates.
+    A ``None`` ``data_filter`` (network types ``all`` / ``driving_psv``) keeps every
+    highway way."""
+    from pyrosm.engine.collect import _keep_fn
+
+    keep = _keep_fn(filter_spec)
+    in_box = _in_box_nodes(shard_paths) if bounding_box is not None else None
+    kept = _collect_kept_ways(shard_paths, np.empty(0, np.int64), keep, in_box)
+    if kept is None:
+        return None
+    needed = _needed_node_ids(kept, None)
+    if segments:
+        node_coordinates = _gather_node_records(
+            filepath, needed, keep_metadata, progress
+        )
+    else:
+        node_coordinates = _node_lookup(shard_paths, needed)
+    return _ways_arrays(kept, tags_as_columns, keep_metadata), node_coordinates
+
+
 def _assemble_network(
     shard_paths,
     tags_as_columns,
@@ -119,30 +153,22 @@ def _assemble_network(
     """Assemble the matching highway ways as a network (LineString edges + a ``length``
     column) through pyrosm's ``parse_network`` path. Returns ``(edges, nodes)``; ``nodes``
     is the graph-export node frame, only built when ``segments`` is True
-    (``get_network(nodes=True)``), which needs the node tags + metadata, so the coordinate
-    store is gathered with a second pass over ``filepath`` rather than the lean shard lookup.
-    A ``None`` ``data_filter`` (network types ``all`` / ``driving_psv``) keeps every highway
-    way. ``progress`` is passed to the second pass (see
-    :func:`~pyrosm.engine.collect._gather_node_records`)."""
+    (``get_network(nodes=True)``), from the node records of :func:`_network_ways`."""
     from pyrosm.frames import prepare_geodataframe
-    from pyrosm.engine.collect import _keep_fn
 
-    keep = _keep_fn(filter_spec)
-
-    in_box = _in_box_nodes(shard_paths) if bounding_box is not None else None
-    kept = _collect_kept_ways(shard_paths, np.empty(0, np.int64), keep, in_box)
-    if kept is None:
+    read = _network_ways(
+        shard_paths,
+        tags_as_columns,
+        keep_metadata,
+        filter_spec,
+        segments,
+        bounding_box,
+        filepath,
+        progress,
+    )
+    if read is None:
         return None, None
-    needed = _needed_node_ids(kept, None)
-    if segments:
-        node_coordinates = _gather_node_records(
-            filepath, needed, keep_metadata, progress
-        )
-    else:
-        node_coordinates = _node_lookup(shard_paths, needed)
-    ways = _ways_arrays(kept, tags_as_columns, keep_metadata)
-    # The tag dicts are in the way columns now; free them before the frame is built.
-    kept["tags"] = None
+    ways, node_coordinates = read
     edges, node_gdf = prepare_geodataframe(
         None,
         node_coordinates,

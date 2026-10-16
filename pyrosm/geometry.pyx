@@ -469,14 +469,15 @@ cdef _create_network_lines(node_coordinates, way_elements):
 
 
 cpdef create_network_segments(node_coordinates, way_elements):
-    """Graph-export edges: each way's segments between consecutive nodes as 2-point
-    LineStrings, with their from/to node ids, and the nodes the segments use.
+    """Graph-export edges: each way's segments between consecutive nodes, with their
+    end coordinates and node ids, and the nodes the segments use.
 
-    Returns ``(way_elements, segment_counts, segments, from_ids, to_ids, node_ids,
+    Returns ``(way_elements, segment_counts, start, end, from_ids, to_ids, node_ids,
     node_rows)``: the ways that have nodes, each way's number of segments (0 when fewer
-    than two of its nodes have valid coordinates), all segments in way order with their
-    end node ids, and the ids and store rows of the nodes they use, in order of first
-    use. A way with dropped nodes is cut through the nodes that remain."""
+    than two of its nodes have valid coordinates), the lon/lat of the start and the end
+    of all segments in way order with their end node ids, and the ids and store rows of
+    the nodes they use, in order of first use. A way with dropped nodes is cut through
+    the nodes that remain."""
     cdef NodeLocations nc = node_coordinates
     cdef Py_ssize_t w, start
     nodes_col = way_elements['nodes']
@@ -517,14 +518,18 @@ cpdef create_network_segments(node_coordinates, way_elements):
     # One segment per pair of consecutive used nodes of a way
     segment_counts = np.maximum(used_counts - 1, 0)
     starts = _concatenated_ranges(used_offsets[:-1], segment_counts)
-    if len(starts) > 0:
-        segments = linestrings(np.stack([used_xy[starts], used_xy[starts + 1]], axis=1))
-    else:
-        segments = np.empty(0, dtype=object)
     first_use = np.unique(used_ids, return_index=True)[1]
     first_use.sort()
-    return (way_elements, segment_counts, segments, used_ids[starts],
-            used_ids[starts + 1], used_ids[first_use], used_rows[first_use])
+    return (way_elements, segment_counts, used_xy[starts], used_xy[starts + 1],
+            used_ids[starts], used_ids[starts + 1], used_ids[first_use],
+            used_rows[first_use])
+
+
+cpdef segment_lines(start, end):
+    """2-point LineStrings from the lon/lat coordinates ``start`` to ``end``."""
+    if len(start) == 0:
+        return np.empty(0, dtype=object)
+    return linestrings(np.stack([start, end], axis=1))
 
 
 cdef _has_linear_tag(highway_arr, barrier_arr, route_arr, int i):
