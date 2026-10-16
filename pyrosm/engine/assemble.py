@@ -237,7 +237,7 @@ def _assemble_graph_network(
     if len(way_of) == 0:
         return None, None
     ways = create_df(ways).assign(osm_type="way")
-    if not keep_node_info and "nodes" in ways.columns:
+    if not keep_node_info:
         ways = ways.drop(columns=["nodes"])
     ways = _node_lists(missing_as_nan(ways))
     return _StoreNodes(store, node_ids, node_rows), _WayEdges(
