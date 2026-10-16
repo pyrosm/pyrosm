@@ -1,5 +1,6 @@
 import sys
 import pytest
+from shapely.geometry import box
 from pyrosm import get_data
 from pyrosm.config import Conf
 
@@ -934,7 +935,11 @@ def _graph_contents(graph):
 
 @pytest.mark.parametrize(
     "osm_kwargs, network_type",
-    [({}, "driving"), ({"bounding_box": [26.94, 60.525, 26.96, 60.535], "keep_node_info": True}, "walking")],
+    [
+        ({}, "driving"),
+        ({"bounding_box": [26.94, 60.525, 26.96, 60.535], "keep_node_info": True}, "walking"),
+        ({"bounding_box": box(26.93, 60.52, 26.95, 60.53)}, "cycling"),
+    ],
 )
 def test_graph_network_reads_the_network_tables(test_pbf, osm_kwargs, network_type):
     """The readers of a graph read hold the tables of get_network(nodes=True)."""
@@ -1021,11 +1026,34 @@ def test_get_graph_is_the_exported_network(request, graph_type, osm_kwargs, kwar
     assert _comparable(_graph_contents(graph)) == _comparable(_graph_contents(expected))
 
 
-@pytest.mark.parametrize("engine", ["out_of_core", "in_memory"])
-def test_get_graph_of_an_empty_network_is_none(test_pbf, engine):
+@pytest.mark.parametrize(
+    "engine, no_segments",
+    [("out_of_core", False), ("in_memory", False), ("out_of_core", True)],
+)
+def test_get_graph_of_an_empty_network_is_none(test_pbf, tmp_path, engine, no_segments):
+    """A network without ways, or whose ways have no segment (here one way whose second
+    node is not in the file), gives no graph."""
+    import numpy as np
     from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
 
+    kwargs = {"custom_filter": {"highway": ["no-such-road"]}, "filter_type": "keep"}
+    if no_segments:
+        nodes = {
+            "id": [1],
+            "lon": [24.94],
+            "lat": [60.17],
+            "version": [1],
+            "timestamp": [0],
+            "changeset": [0],
+            "tags": np.array([None], dtype=object),
+        }
+        ways = [{"id": 10, "tags": {"highway": "residential"}, "refs": [1, 2]}]
+        test_pbf = write_pbf_from_records(
+            nodes, ways, [], str(tmp_path / "one-node.osm.pbf"), (24.9, 60.1, 25.0, 60.2)
+        )
+        kwargs = {}
     osm = OSM(test_pbf, engine=engine)
     with pytest.warns(UserWarning):
-        graph = osm.get_graph(custom_filter={"highway": ["no-such-road"]}, filter_type="keep")
+        graph = osm.get_graph("driving", **kwargs)
     assert graph is None
