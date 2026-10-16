@@ -126,6 +126,28 @@ def test_nxgraph_keys_nodes_by_id_not_dataframe_index():
     # Every node carries its attributes.
     assert all("geometry" in data for _, data in graph.nodes(data=True))
 
+    # Each node and edge holds the columns where it has a value, in column order, and
+    # equal strings are one object.
+    nodes["tags"] = [{"a": "1"}, None, None]
+    edges["name"] = ["Main", "Main"]
+    edges["ref"] = [None, "7"]
+    edges["width"] = [2.5, float("nan")]
+    graph = _create_nxgraph(nodes, edges, "u", "v", "id")
+    first, second = (graph.edges[u, v, 0] for u, v in [(1000, 2000), (2000, 3000)])
+    assert list(first) == ["u", "v", "geometry", "name", "width"]
+    assert list(second) == ["u", "v", "geometry", "name", "ref"]
+    assert (first["u"], first["width"], second["ref"]) == (1000, 2.5, "7")
+    assert type(first["width"]) is float and first["name"] is second["name"]
+    assert [list(graph.nodes[n]) for n in (1000, 2000)] == [
+        ["id", "geometry", "tags", "street_count"],
+        ["id", "geometry", "street_count"],
+    ]
+    # A repeated column takes the values of its last copy.
+    edges.insert(len(edges.columns), "name", ["Side", None], allow_duplicates=True)
+    graph = _create_nxgraph(nodes, edges, "u", "v", "id")
+    assert graph.edges[1000, 2000, 0]["name"] == "Side"
+    assert "name" not in graph.edges[2000, 3000, 0]
+
     # Nodes whose only column is the id, dropped as an attribute, are all added,
     # including one that no edge touches.
     only_ids = pd.DataFrame({"id": [1000, 2000, 3000, 4000]})
@@ -1453,7 +1475,7 @@ def test_networkx_export_survives_osmnx_round_trip(tmp_path):
 
         # Node tags are stored as a JSON string, like the edge tags, as OSMnx
         # cannot handle a dict as a node attribute.
-        node_tags = [attr["tags"] for _, attr in graph.nodes(data=True)]
+        node_tags = [attr["tags"] for _, attr in graph.nodes(data=True) if "tags" in attr]
         assert not any(isinstance(tags, dict) for tags in node_tags)
         assert any(isinstance(tags, str) for tags in node_tags)
 

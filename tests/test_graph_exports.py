@@ -244,23 +244,18 @@ def test_nxgraph_export_by_walking(walk_nodes_and_edges):
     #  (does not happen always so something to do with UlanBatar data.)
     # assert nx.number_of_nodes(g) == n_nodes
 
-    # Ensure that all attributes were transfered to graph
-    ecolumns = edges.columns
-    ncolumns = nodes.columns
-
-    for fr, to, attr in g.edges(data=True):
-        eattributes = list(attr.keys())
-        break
-
-    for id, attr in g.nodes(data=True):
-        nattributes = list(attr.keys())
-        break
-
-    for col in ecolumns:
-        assert col in eattributes
-
-    for col in ncolumns:
-        assert col in nattributes
+    # Every column with values is an attribute of the edges or nodes that have one, and
+    # no attribute holds a missing value
+    eattributes = [attr for *_, attr in g.edges(data=True)]
+    nattributes = [attr for _, attr in g.nodes(data=True)]
+    for frame, attributes in ((edges, eattributes), (nodes, nattributes)):
+        keys = set().union(*attributes)
+        assert set(frame.columns[frame.notna().any()]) <= keys
+        assert not any(
+            v is None or (isinstance(v, float) and v != v)
+            for attr in attributes
+            for v in attr.values()
+        )
 
 
 def test_nxgraph_immutable_counts(test_pbf):
