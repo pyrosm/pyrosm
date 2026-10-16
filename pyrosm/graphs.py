@@ -311,7 +311,7 @@ def _tables(
         )
     if simplify:
         step("simplifying")
-        nodes, edges = _simplify_rows(
+        simplified = _simplify_rows(
             nodes,
             edges,
             rows,
@@ -320,6 +320,10 @@ def _tables(
             to_id_col=to_id_col,
             **(simplify_kwargs or {}),
         )
+        if isinstance(edges, _WayEdges):
+            nodes.release()
+            edges.release()
+        nodes, edges = simplified
     # Keep only strongly connected component if not specifically requested otherwise
     if not retain_all:
         step("keeping the largest connected part")

@@ -35,9 +35,15 @@ except Exception:  # pragma: no cover - exercised only before the extension is b
     _cython_walk_chains = None
 
 
+def _index_dtype(n):
+    """The integer type of indices below ``n``: int32 when it holds them, else int64."""
+    return np.int32 if n <= np.iinfo(np.int32).max else np.int64
+
+
 def _factorize_nodes(src, dst):
     """Map the (sparse, large) OSM node ids of the directed edges' sources ``src`` and
-    targets ``dst`` onto contiguous int64 indices.
+    targets ``dst`` onto contiguous indices, int32 when they fit (see
+    :func:`_index_dtype`).
 
     Returns (u, v, uniques) where u/v are one index per directed edge and
     ``uniques[i]`` is the original node id for factor ``i``.
@@ -45,16 +51,22 @@ def _factorize_nodes(src, dst):
     m = len(src)
     both = pd.concat([pd.Series(src), pd.Series(dst)], ignore_index=True)
     codes, uniques = pd.factorize(both, sort=False)
-    u = np.ascontiguousarray(codes[:m], dtype=np.int64)
-    v = np.ascontiguousarray(codes[m:], dtype=np.int64)
+    index = _index_dtype(2 * m)
+    u = np.ascontiguousarray(codes[:m], dtype=index)
+    v = np.ascontiguousarray(codes[m:], dtype=index)
     return u, v, np.asarray(uniques)
 
 
 def _distinct_neighbour_count(u, v, n_nodes):
-    """Number of distinct undirected neighbours per node (vectorized): each pair of a node
-    and a neighbour is one int64 key, counted once."""
-    pairs = pd.unique(np.concatenate([u * n_nodes + v, v * n_nodes + u]))
-    return np.bincount(pairs // n_nodes, minlength=n_nodes)
+    """Number of distinct undirected neighbours per node (vectorized): each pair of
+    neighbouring nodes is one int64 key, counted once for each of its nodes."""
+    low = np.minimum(u, v).astype(np.int64)
+    high = np.maximum(u, v).astype(np.int64)
+    pairs = pd.unique(low * n_nodes + high)
+    low, high = np.divmod(pairs, n_nodes)
+    counts = np.bincount(low, minlength=n_nodes)
+    counts += np.bincount(high[high != low], minlength=n_nodes)
+    return counts
 
 
 def detect_endpoints(u, v, n_nodes, *, edge_attr_values=None, node_include_mask=None):
@@ -109,12 +121,12 @@ def _build_csr(u, v, n_nodes):
     the source node of position ``p`` (for ring handling).
     """
     order = np.argsort(u, kind="stable")
-    indices = np.ascontiguousarray(v[order], dtype=np.int64)
-    edge_id = np.ascontiguousarray(order, dtype=np.int64)
+    indices = np.ascontiguousarray(v[order])
+    edge_id = order.astype(u.dtype)
     counts = np.bincount(u, minlength=n_nodes)
-    indptr = np.zeros(n_nodes + 1, dtype=np.int64)
+    indptr = np.zeros(n_nodes + 1, dtype=u.dtype)
     np.cumsum(counts, out=indptr[1:])
-    src = np.repeat(np.arange(n_nodes, dtype=np.int64), counts)
+    src = np.repeat(np.arange(n_nodes, dtype=u.dtype), counts)
     return indptr, indices, edge_id, src
 
 
@@ -184,6 +196,34 @@ def _reference_walk(indptr, indices, edge_id, is_endpoint, src, remove_rings):
     )
 
 
+def _differs_from_next(edges, col, rows, pairs):
+    """Per edge row of ``rows`` but the last, where ``pairs`` marks it, whether the next one
+    has another value of ``col``: a different value, or a value where this one has none or
+    none where it has one. ``edges`` is an edge reader of :func:`_simplify_rows`."""
+    try:
+        codes = edges.codes(col)[rows]
+    except TypeError:  # unhashable values, such as lists
+        missing = edges.missing(col)[rows]
+        differ = pairs & (missing[1:] != missing[:-1])
+        both = np.flatnonzero(pairs & ~missing[1:] & ~missing[:-1])
+        left = edges.take(col, rows[both]).array
+        right = edges.take(col, rows[both + 1]).array
+        differ[both] = np.asarray(left != right, dtype=bool)
+        return differ
+    return pairs & (codes[1:] != codes[:-1])
+
+
+def _value_objects(series):
+    """The values of ``series`` as ``series.tolist()`` gives them, in an object array that
+    holds equal strings as one object."""
+    if isinstance(series.dtype, pd.StringDtype):
+        codes, uniques = pd.factorize(series, sort=False, use_na_sentinel=False)
+        objects = np.empty(len(uniques), dtype=object)
+        objects[:] = uniques.tolist()
+        return objects[codes]
+    return series.to_numpy(dtype=object, copy=True)
+
+
 def _geometry_coords(geoms):
     """All coordinates of ``geoms``, and where each geometry's run of them starts:
     ``(coords, offsets)``, geometry ``i`` holding ``coords[offsets[i]:offsets[i + 1]]``.
@@ -203,8 +243,8 @@ def _compute_geom_reversed(coords, offsets, rows, u, v, node_x, node_y):
     by comparing the geometry's endpoints to the u/v node coordinates.
     """
     # first and last coordinate of each directed edge's geometry
-    first = coords[offsets[:-1]][rows]
-    last = coords[offsets[1:] - 1][rows]
+    first = coords[offsets[:-1][rows]]
+    last = coords[offsets[1:][rows] - 1]
     # Squared endpoint mismatch for the two orientations, then pick the smaller.
     # Using both endpoints (not just the first) keeps the decision robust even if a
     # geometry endpoint does not exactly equal its node coordinate, where EPSG:4326
@@ -244,16 +284,15 @@ def _stitch_geometries(coords, offsets, rows, geom_reversed, chain_edge_ids, cha
     np.cumsum(out_len, out=out_off[1:])
     total = int(out_off[-1])
 
-    # Map each output coordinate back to a row of seg_coords. ``logical`` is the vertex
-    # index within the (already walk-oriented) segment; reversed segments read backwards.
-    seg_of_pos = np.repeat(np.arange(s), out_len)
-    logical = (np.arange(total) - out_off[seg_of_pos]) + skip[seg_of_pos]
-    rp = rev[seg_of_pos]
-    src = np.where(
-        rp,
-        starts[seg_of_pos] + lens[seg_of_pos] - 1 - logical,
-        starts[seg_of_pos] + logical,
-    )
+    # Map each output coordinate back to a coordinate: a segment's run is read from its
+    # first output vertex on, forwards, or backwards where the segment is reversed.
+    seg_of_pos = np.repeat(np.arange(s, dtype=_index_dtype(s)), out_len)
+    first = np.where(rev, starts + lens - 1 - skip, starts + skip)
+    step = np.where(rev, -1, 1)
+    src = np.arange(total, dtype=np.int64)
+    src -= out_off[seg_of_pos]
+    src *= step[seg_of_pos]
+    src += first[seg_of_pos]
     return shapely.linestrings(coords[src], indices=seg_chain[seg_of_pos])
 
 
@@ -434,6 +473,10 @@ class _WayEdges:
         self.ways[col] = None
         self.columns.append(col)
 
+    def release(self):
+        """Drop the ways and segments; the edges cannot be read after this."""
+        self.ways = self.way_of = self.start = self.end = self._segment_columns = None
+
     def _segment_column(self, col):
         """The values of ``col`` by segment, or ``None`` for a column of the ways."""
         if col == self.geometry_name:
@@ -514,6 +557,10 @@ class _StoreNodes:
     def table(self):
         return network_node_frame(self.store, self.node_rows, self.node_ids)
 
+    def release(self):
+        """Drop the store; the nodes cannot be read after this."""
+        self.store = self.node_ids = self.node_rows = None
+
 
 def _simplify_rows(
     nodes,
@@ -588,19 +635,20 @@ def _simplify_rows(
     indptr, indices, edge_id, src = _build_csr(u, v, n_nodes)
 
     if _cython_walk_chains is not None:
+        index = np.intc if u.dtype == np.int32 else np.longlong
         chain_edge_ids, chain_ptr = _cython_walk_chains(
-            indptr.astype(np.longlong),
-            indices.astype(np.longlong),
-            edge_id.astype(np.longlong),
+            indptr.astype(index, copy=False),
+            indices.astype(index, copy=False),
+            edge_id.astype(index, copy=False),
             np.ascontiguousarray(is_endpoint, dtype=np.uint8),
-            src.astype(np.longlong),
+            src.astype(index, copy=False),
             remove_rings,
         )
     else:
         chain_edge_ids, chain_ptr = _reference_walk(
             indptr, indices, edge_id, is_endpoint, src, remove_rings
         )
-    chain_edge_ids = np.asarray(chain_edge_ids, dtype=np.int64)
+    chain_edge_ids = np.asarray(chain_edge_ids, dtype=u.dtype)
     chain_ptr = np.asarray(chain_ptr, dtype=np.int64)
     del indptr, indices, edge_id, src
 
@@ -646,9 +694,8 @@ def _simplify_rows(
 
     # Other columns: scalar if uniform within a chain, else a list (object dtype).
     # A chain is "mixed" iff two adjacent consumed segments of it disagree on the column:
-    # one has a value and the other none, or both have values that differ. Only the values
-    # of segments that both have one are compared, and only the mixed chains' values are
-    # read out for their lists.
+    # one has a value and the other none, or both have values that differ. Only the mixed
+    # chains' values are read out for their lists.
     merge_cols = [
         c
         for c in edges.columns
@@ -656,13 +703,7 @@ def _simplify_rows(
     ]
     inner = seg_chain[1:] == seg_chain[:-1]
     for col in merge_cols:
-        missing = edges.missing(col)[seg_rows]
-        differ = inner & (missing[1:] != missing[:-1])
-        both = np.flatnonzero(inner & ~missing[1:] & ~missing[:-1])
-        if both.size:
-            left = edges.take(col, seg_rows[both]).array
-            right = edges.take(col, seg_rows[both + 1]).array
-            differ[both] = np.asarray(left != right, dtype=bool)
+        differ = _differs_from_next(edges, col, seg_rows, inner)
         if not differ.any():
             continue
         mixed_ids = np.unique(seg_chain[1:][differ])
@@ -671,11 +712,11 @@ def _simplify_rows(
         # The positions of the mixed chains' segments, chain after chain.
         positions = np.repeat(starts - np.cumsum(sizes) + sizes, sizes)
         positions += np.arange(positions.size)
-        values = edges.take(col, seg_rows[positions]).to_numpy().tolist()
-        colvals = out[col].tolist()
+        values = _value_objects(edges.take(col, seg_rows[positions]))
+        colvals = _value_objects(out[col])
         at = 0
         for k, size in zip(mixed_ids.tolist(), sizes.tolist()):
-            colvals[k] = values[at : at + size]
+            colvals[k] = values[at : at + size].tolist()
             at += size
         out[col] = pd.Series(colvals, index=out.index, dtype=object)
 

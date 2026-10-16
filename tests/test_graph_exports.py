@@ -966,7 +966,7 @@ def test_graph_network_reads_the_network_tables(test_pbf, osm_kwargs, network_ty
         ),
         (
             "networkx",
-            {"keep_metadata": False},
+            {"keep_metadata": False, "keep_node_info": True},
             {
                 "network_type": "drive",
                 "force_bidirectional": True,
