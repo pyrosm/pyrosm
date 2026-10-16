@@ -2571,3 +2571,30 @@ def test_block_decoder_joins_split_packed_runs():
     assert nodes["keys_vals"].tolist() == [0, 0, 0]
     assert nodes["version"].tolist() == [5, 7, 9]
     assert nodes["timestamp"].tolist() == [10, 11, 12]
+
+
+@pytest.mark.parametrize("alias", ["same path", "hard link"])
+def test_crop_refuses_to_overwrite_its_source(tmp_path, alias):
+    """crop_pbf and OSM.to_pbf refuse an output path that is their source, under the same
+    name or through a hard link, and leave the source as it was; they used to truncate it."""
+    import os
+    import shutil
+
+    from pyrosm import OSM, get_data
+    from pyrosm.pbf_export import crop_pbf
+
+    source = tmp_path / "source.osm.pbf"
+    shutil.copy(get_data("test_pbf"), source)
+    before = source.read_bytes()
+    output = source
+    if alias == "hard link":
+        output = tmp_path / "link.osm.pbf"
+        os.link(source, output)
+    box = [26.94, 60.52, 26.96, 60.53]
+    for crop in (
+        lambda: crop_pbf(str(source), str(output), bounding_box=box),
+        lambda: OSM(str(source), bounding_box=box).to_pbf(str(output)),
+    ):
+        with pytest.raises(ValueError, match="is the input"):
+            crop()
+        assert source.read_bytes() == before

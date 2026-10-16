@@ -953,6 +953,17 @@ cdef _count_data_blocks(filepath):
     return n
 
 
+cdef _refuse_input_as_output(output_path, sources):
+    """Raise ValueError when `output_path` is one of the input paths `sources`, under the
+    same name or another (a link to it)."""
+    if output_path is not None and Path(output_path).exists():
+        clash = [p for p in sources if os.path.samefile(output_path, p)]
+        if clash:
+            raise ValueError(
+                "The output path '%s' is the input '%s'." % (output_path, clash[0])
+            )
+
+
 cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
                workers=1, compact=False, repack=False, polygon=None, progress=None):
     """Crop `source_path` by `bounding_box`, or by the Shapely (Multi)Polygon
@@ -981,6 +992,7 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     validate_progress(progress)
     region = _region(bounding_box, polygon)
     bounds = region[0]
+    _refuse_input_as_output(output_path, [source_path])
 
     if output_path is None:
         fd, output_path = tempfile.mkstemp(suffix=".osm.pbf", prefix="pyrosm_crop_")
@@ -2499,12 +2511,7 @@ cdef _merge(sources, output_path, bounding_box, keep_relations, workers, polygon
     fingerprints = [_fingerprint(p) for p in sources]
     headers = [_read_header(p) for p in sources]
 
-    if output_path is not None and Path(output_path).exists():
-        clash = [p for p in sources if os.path.samefile(output_path, p)]
-        if clash:
-            raise ValueError(
-                "The output path '%s' is the input '%s'." % (output_path, clash[0])
-            )
+    _refuse_input_as_output(output_path, sources)
 
     if bounding_box is None and polygon is None:
         bounds = _header_bounds(headers)
