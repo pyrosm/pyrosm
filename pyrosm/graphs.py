@@ -3,10 +3,11 @@ from pyrosm.graph_export import (
     _create_nxgraph,
     _create_pdgraph,
     _create_pandarm_graph,
+    directed_rows,
     generate_directed_edges,
 )
 from pyrosm.graph_connectivity import get_connected_edges
-from pyrosm.graph_simplify import simplify_graph
+from pyrosm.graph_simplify import _simplify_rows
 from pyrosm.utils import validate_edge_gdf, validate_node_gdf
 from pyrosm.utils.progress import Bar, reporting
 from pyrosm.config import Conf
@@ -63,27 +64,6 @@ def record_network_type(result, network_type):
     return result
 
 
-def _maybe_simplify(
-    simplify, nodes, edges, from_id_col, to_id_col, node_id_col, simplify_kwargs=None
-):
-    """Collapse interstitial nodes on the directed edges, if requested.
-
-    ``simplify_kwargs`` forwards the optional ``simplify_graph`` parameters
-    (``edge_attrs_differ``, ``node_attrs_include``, ``remove_rings``,
-    ``track_merged``, ``length_cols``) so they are reachable through ``to_graph``.
-    """
-    if not simplify:
-        return nodes, edges
-    return simplify_graph(
-        nodes,
-        edges,
-        from_id_col=from_id_col,
-        to_id_col=to_id_col,
-        node_id_col=node_id_col,
-        **(simplify_kwargs or {}),
-    )
-
-
 def _summing_weights(simplify_kwargs, weight_cols):
     """``simplify_kwargs`` with ``weight_cols`` added to the columns a simplified edge sums
     (``length_cols``), so each merged edge carries the totals of its segments' weights.
@@ -105,6 +85,43 @@ def get_directed_edges(
     network_type=None,
 ):
     """Prepares the edges and nodes for exporting to different graphs."""
+    direction, direction_suffix, both_ways = _direction_rules(
+        nodes,
+        edges,
+        direction,
+        from_id_col,
+        to_id_col,
+        node_id_col,
+        force_bidirectional,
+        network_type,
+    )
+    edges = edges.copy()
+    nodes = nodes.copy()
+    edges = generate_directed_edges(
+        edges,
+        direction,
+        direction_suffix,
+        from_id_col,
+        to_id_col,
+        force_bidirectional=both_ways,
+    )
+    return nodes, edges
+
+
+def _direction_rules(
+    nodes,
+    edges,
+    direction,
+    from_id_col,
+    to_id_col,
+    node_id_col,
+    force_bidirectional,
+    network_type,
+):
+    """Validate the nodes and edges of :func:`get_directed_edges` and return how its edges
+    are directed: ``(direction, direction_suffix, both_ways)``, the direction column, its
+    mode-specific suffix (``"bicycle"`` for cycling) and whether every edge is two-way. A
+    missing direction column is added to ``edges`` as empty, with a warning."""
     allowed_network_types = Conf._possible_network_filters
 
     # Validate nodes and edges
@@ -130,7 +147,7 @@ def get_directed_edges(
             f"Assuming all edges to be bidirectional "
             f"(travel allowed to both directions).",
             UserWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
         edges[direction] = None
 
@@ -166,33 +183,11 @@ def get_directed_edges(
     if direction_suffix is None and net_type == "cycling":
         direction_suffix = "bicycle"
 
-    edges = edges.copy()
-    nodes = nodes.copy()
-
-    # Generate directed edges.
     # Walking and the unrestricted networks are bidirectional by default; driving and
     # cycling are directed (they honour oneway, and cycling additionally honours
     # oneway:bicycle). force_bidirectional overrides this for any type.
-    if force_bidirectional or net_type in ["walking", "all", "all_public"]:
-        edges = generate_directed_edges(
-            edges,
-            direction,
-            direction_suffix,
-            from_id_col,
-            to_id_col,
-            force_bidirectional=True,
-        )
-    else:
-        edges = generate_directed_edges(
-            edges,
-            direction,
-            direction_suffix,
-            from_id_col,
-            to_id_col,
-            force_bidirectional=False,
-        )
-
-    return nodes, edges
+    both_ways = force_bidirectional or net_type in ["walking", "all", "all_public"]
+    return direction, direction_suffix, both_ways
 
 
 def graph_tables(
@@ -246,23 +241,48 @@ def _tables(
     simplify_kwargs,
     step,
 ):
-    """:func:`graph_tables`, reporting the start of each step to ``step(name)``."""
+    """:func:`graph_tables`, reporting the start of each step to ``step(name)``.
+
+    With ``simplify``, the directed edges are row numbers of ``edges`` and a direction each
+    (:func:`directed_rows`), and only the simplified edges become rows of a new table.
+    ``simplify_kwargs`` are the optional parameters of :func:`simplify_graph`
+    (``edge_attrs_differ``, ``node_attrs_include``, ``remove_rings``, ``track_merged``,
+    ``length_cols``)."""
     step("directing the edges")
-    nodes, edges = get_directed_edges(
-        nodes,
-        edges,
-        direction,
-        from_id_col,
-        to_id_col,
-        node_id_col,
-        force_bidirectional,
-        network_type,
-    )
     if simplify:
+        direction, direction_suffix, both_ways = _direction_rules(
+            nodes,
+            edges,
+            direction,
+            from_id_col,
+            to_id_col,
+            node_id_col,
+            force_bidirectional,
+            network_type,
+        )
+        rows, swapped = directed_rows(edges, direction, direction_suffix, both_ways)
         step("simplifying")
-    nodes, edges = _maybe_simplify(
-        simplify, nodes, edges, from_id_col, to_id_col, node_id_col, simplify_kwargs
-    )
+        nodes, edges = _simplify_rows(
+            nodes,
+            edges,
+            rows,
+            swapped,
+            from_id_col=from_id_col,
+            to_id_col=to_id_col,
+            node_id_col=node_id_col,
+            **(simplify_kwargs or {}),
+        )
+    else:
+        nodes, edges = get_directed_edges(
+            nodes,
+            edges,
+            direction,
+            from_id_col,
+            to_id_col,
+            node_id_col,
+            force_bidirectional,
+            network_type,
+        )
     # Keep only strongly connected component if not specifically requested otherwise
     if not retain_all:
         step("keeping the largest connected part")

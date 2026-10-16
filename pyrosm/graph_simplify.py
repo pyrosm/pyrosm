@@ -31,14 +31,15 @@ except Exception:  # pragma: no cover - exercised only before the extension is b
     _cython_walk_chains = None
 
 
-def _factorize_nodes(directed, from_id_col, to_id_col):
-    """Map the (sparse, large) OSM node ids in u/v onto contiguous int64 indices.
+def _factorize_nodes(src, dst):
+    """Map the (sparse, large) OSM node ids of the directed edges' sources ``src`` and
+    targets ``dst`` onto contiguous int64 indices.
 
-    Returns (u, v, uniques) where u/v are one index per directed row and
+    Returns (u, v, uniques) where u/v are one index per directed edge and
     ``uniques[i]`` is the original node id for factor ``i``.
     """
-    m = len(directed)
-    both = pd.concat([directed[from_id_col], directed[to_id_col]], ignore_index=True)
+    m = len(src)
+    both = pd.concat([pd.Series(src), pd.Series(dst)], ignore_index=True)
     codes, uniques = pd.factorize(both, sort=False)
     u = np.ascontiguousarray(codes[:m], dtype=np.int64)
     v = np.ascontiguousarray(codes[m:], dtype=np.int64)
@@ -179,19 +180,27 @@ def _reference_walk(indptr, indices, edge_id, is_endpoint, src, remove_rings):
     )
 
 
-def _compute_geom_reversed(geoms, u, v, node_x, node_y):
-    """Per directed row, True when the stored geometry runs labelled-v -> labelled-u.
+def _geometry_coords(geoms):
+    """All coordinates of ``geoms``, and where each geometry's run of them starts:
+    ``(coords, offsets)``, geometry ``i`` holding ``coords[offsets[i]:offsets[i + 1]]``.
+    """
+    coords = shapely.get_coordinates(geoms)
+    offsets = np.zeros(len(geoms) + 1, dtype=np.int64)
+    np.cumsum(shapely.get_num_coordinates(geoms), out=offsets[1:])
+    return coords, offsets
+
+
+def _compute_geom_reversed(coords, offsets, rows, u, v, node_x, node_y):
+    """Per directed edge, True when the geometry of its row (``rows``, into the geometries
+    of ``coords``/``offsets``) runs labelled-v -> labelled-u.
 
     pyrosm's reciprocal rows reuse the forward geometry (verified), so a row's
     coordinates do not necessarily run from labelled ``u`` to labelled ``v``. Decide
     by comparing the geometry's endpoints to the u/v node coordinates.
     """
-    coords = shapely.get_coordinates(geoms)
-    # first and last coordinate of each geometry
-    offsets = np.zeros(len(geoms) + 1, dtype=np.int64)
-    np.cumsum(shapely.get_num_coordinates(geoms), out=offsets[1:])
-    first = coords[offsets[:-1]]
-    last = coords[offsets[1:] - 1]
+    # first and last coordinate of each directed edge's geometry
+    first = coords[offsets[:-1]][rows]
+    last = coords[offsets[1:] - 1][rows]
     # Squared endpoint mismatch for the two orientations, then pick the smaller.
     # Using both endpoints (not just the first) keeps the decision robust even if a
     # geometry endpoint does not exactly equal its node coordinate, where EPSG:4326
@@ -203,23 +212,21 @@ def _compute_geom_reversed(geoms, u, v, node_x, node_y):
     return reverse < forward
 
 
-def _stitch_geometries(geoms, geom_reversed, chain_edge_ids, chain_ptr):
+def _stitch_geometries(coords, offsets, rows, geom_reversed, chain_edge_ids, chain_ptr):
     """Build one merged LineString per chain, in walk order, dropping shared vertices.
 
-    Reverses any consumed segment whose stored geometry runs against the walk.
+    Each consumed directed edge takes the coordinates of its row (``rows``, into the
+    geometries of ``coords``/``offsets``); a segment whose stored geometry runs against the
+    walk is reversed.
     """
-    seg_coords = shapely.get_coordinates(geoms)
-    seg_n = shapely.get_num_coordinates(geoms)
-    seg_off = np.zeros(len(geoms) + 1, dtype=np.int64)
-    np.cumsum(seg_n, out=seg_off[1:])
-
     s = len(chain_edge_ids)
     if s == 0:
         return shapely.linestrings(np.empty((0, 2)), indices=np.empty(0, np.int64))
 
     # Per consumed segment (in walk order): its coord run start, length, and direction.
-    lens = seg_n[chain_edge_ids].astype(np.int64)
-    starts = seg_off[chain_edge_ids]
+    segs = rows[chain_edge_ids]
+    lens = np.diff(offsets)[segs]
+    starts = offsets[segs]
     rev = geom_reversed[chain_edge_ids]
 
     n_chains = len(chain_ptr) - 1
@@ -243,7 +250,7 @@ def _stitch_geometries(geoms, geom_reversed, chain_edge_ids, chain_ptr):
         starts[seg_of_pos] + lens[seg_of_pos] - 1 - logical,
         starts[seg_of_pos] + logical,
     )
-    return shapely.linestrings(seg_coords[src], indices=seg_chain[seg_of_pos])
+    return shapely.linestrings(coords[src], indices=seg_chain[seg_of_pos])
 
 
 def simplify_graph(
@@ -314,12 +321,54 @@ def simplify_graph(
         )
         simple_nodes, simple_edges = simplify_graph(directed_nodes, directed_edges)
     """
-    edges = directed_edges.reset_index(drop=True)
-    m = len(edges)
-    if m == 0:
-        return nodes, edges
+    m = len(directed_edges)
+    return _simplify_rows(
+        nodes,
+        directed_edges,
+        np.arange(m),
+        np.zeros(m, dtype=bool),
+        from_id_col=from_id_col,
+        to_id_col=to_id_col,
+        node_id_col=node_id_col,
+        length_cols=length_cols,
+        edge_attrs_differ=edge_attrs_differ,
+        node_attrs_include=node_attrs_include,
+        remove_rings=remove_rings,
+        track_merged=track_merged,
+    )
 
-    u, v, uniques = _factorize_nodes(edges, from_id_col, to_id_col)
+
+def _simplify_rows(
+    nodes,
+    edges,
+    rows,
+    swapped,
+    *,
+    from_id_col="u",
+    to_id_col="v",
+    node_id_col="id",
+    length_cols=("length",),
+    edge_attrs_differ=("maxspeed", "highway"),
+    node_attrs_include=None,
+    remove_rings=True,
+    track_merged=False,
+):
+    """:func:`simplify_graph` of the directed edges ``rows``/``swapped`` of ``edges``:
+    directed edge ``i`` is row ``rows[i]`` of ``edges`` (by position), travelled from its
+    ``to_id_col`` node to its ``from_id_col`` node where ``swapped[i]``, as
+    :func:`pyrosm.graph_export.directed_rows` gives them. Every column is read through the
+    row numbers, so the directed edges are never copied into a table; only the simplified
+    edges are."""
+    m = len(rows)
+    if m == 0:
+        return nodes, edges.iloc[rows].reset_index(drop=True)
+
+    from_ids = edges[from_id_col].to_numpy()
+    to_ids = edges[to_id_col].to_numpy()
+    u, v, uniques = _factorize_nodes(
+        np.where(swapped, to_ids[rows], from_ids[rows]),
+        np.where(swapped, from_ids[rows], to_ids[rows]),
+    )
     n_nodes = len(uniques)
 
     # node id -> factor index, and node coordinates indexed by factor
@@ -336,7 +385,11 @@ def simplify_graph(
 
     edge_attr_values = None
     if edge_attrs_differ is not None and len(edge_attrs_differ):
-        edge_attr_values = [edges[c] for c in edge_attrs_differ if c in edges.columns]
+        edge_attr_values = [
+            pd.factorize(edges[c], sort=False)[0][rows]
+            for c in edge_attrs_differ
+            if c in edges.columns
+        ]
     node_include_mask = None
     if node_attrs_include is not None and len(node_attrs_include):
         nm = np.zeros(n_nodes, dtype=bool)
@@ -373,12 +426,13 @@ def simplify_graph(
         )
     chain_edge_ids = np.asarray(chain_edge_ids, dtype=np.int64)
     chain_ptr = np.asarray(chain_ptr, dtype=np.int64)
+    del indptr, indices, edge_id, src
 
     n_chains = len(chain_ptr) - 1
     if n_chains == 0:
         # Nothing survived (e.g. a pure endpoint-free ring with remove_rings=True):
         # return empty node/edge frames preserving the input schema and CRS.
-        return nodes.iloc[:0].copy(), edges.iloc[:0].copy()
+        return nodes.iloc[:0].copy(), edges.iloc[:0].reset_index(drop=True)
 
     chain_id = np.repeat(np.arange(n_chains), np.diff(chain_ptr))
 
@@ -389,15 +443,20 @@ def simplify_graph(
     new_v_factor = v[chain_edge_ids[last_pos]]
 
     geom_col = edges.geometry.name
-    geoms = edges.geometry.values
-    geom_reversed = _compute_geom_reversed(geoms, u, v, node_x, node_y)
-    new_geom = _stitch_geometries(geoms, geom_reversed, chain_edge_ids, chain_ptr)
+    coords, offsets = _geometry_coords(edges.geometry.values)
+    geom_reversed = _compute_geom_reversed(coords, offsets, rows, u, v, node_x, node_y)
+    new_geom = _stitch_geometries(
+        coords, offsets, rows, geom_reversed, chain_edge_ids, chain_ptr
+    )
+    del coords, offsets, geom_reversed
+    # The row of ``edges`` of each consumed segment, aligned to chain_edge_ids.
+    seg_rows = rows[chain_edge_ids]
 
     # Assemble the simplified edge frame: keep the first segment's row per chain, then
     # overwrite u/v/length and the merged geometry. Assign the geometry to the actual
     # active geometry column (not assumed to be "geometry") so exporters that read
     # edges[geom_col] see the collapsed chain, not the first original segment.
-    out = edges.iloc[chain_edge_ids[first_pos]].reset_index(drop=True)
+    out = edges.iloc[seg_rows[first_pos]].reset_index(drop=True)
     out[from_id_col] = uniques[new_u_factor]
     out[to_id_col] = uniques[new_v_factor]
     out[geom_col] = gpd.GeoSeries(new_geom, index=out.index, crs=edges.crs)
@@ -406,7 +465,7 @@ def simplify_graph(
     seg_chain = chain_id  # chain id per consumed segment, aligned to chain_edge_ids
     for col in length_cols:
         if col in edges.columns:
-            vals = edges[col].to_numpy(dtype="float64")[chain_edge_ids]
+            vals = edges[col].to_numpy(dtype="float64")[seg_rows]
             out[col] = np.bincount(seg_chain, weights=vals, minlength=n_chains)
 
     # Other columns: scalar if uniform within a chain, else a list (object dtype).
@@ -422,12 +481,12 @@ def simplify_graph(
     inner = seg_chain[1:] == seg_chain[:-1]
     for col in merge_cols:
         series = edges[col]
-        missing = series.isna().to_numpy()[chain_edge_ids]
+        missing = series.isna().to_numpy()[seg_rows]
         differ = inner & (missing[1:] != missing[:-1])
         both = np.flatnonzero(inner & ~missing[1:] & ~missing[:-1])
         if both.size:
-            left = series.take(chain_edge_ids[both]).array
-            right = series.take(chain_edge_ids[both + 1]).array
+            left = series.take(seg_rows[both]).array
+            right = series.take(seg_rows[both + 1]).array
             differ[both] = np.asarray(left != right, dtype=bool)
         if not differ.any():
             continue
@@ -437,7 +496,7 @@ def simplify_graph(
         # The positions of the mixed chains' segments, chain after chain.
         positions = np.repeat(starts - np.cumsum(sizes) + sizes, sizes)
         positions += np.arange(positions.size)
-        values = series.take(chain_edge_ids[positions]).to_numpy().tolist()
+        values = series.take(seg_rows[positions]).to_numpy().tolist()
         colvals = out[col].tolist()
         at = 0
         for k, size in zip(mixed_ids.tolist(), sizes.tolist()):
