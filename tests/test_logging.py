@@ -120,7 +120,8 @@ def test_download_progress_covers_the_crop(pyrosm_logger, tmp_path, monkeypatch)
 
 def test_graph_export_reports_its_steps(pyrosm_logger):
     """A graph export reports its steps to the function set with enable_logging, done from 0
-    to the number of steps, which depends on simplify and retain_all."""
+    to the number of steps, which depends on simplify and retain_all; with progress off it
+    reports nothing and still builds the graph."""
     from pyrosm.graphs import graph_tables
 
     osm = OSM(get_data("test_pbf"), progress=False)
@@ -140,6 +141,10 @@ def test_graph_export_reports_its_steps(pyrosm_logger):
         calls.clear()
         export()
         assert calls == [(done, steps) for done in range(steps + 1)]
+    calls.clear()
+    enable_logging(progress=False)
+    assert OSM.to_graph(nodes, edges, graph_type="networkx").number_of_edges()
+    assert calls == []
 
 
 def test_log_event_and_timed(pyrosm_logger, caplog):
