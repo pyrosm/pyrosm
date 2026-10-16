@@ -10,6 +10,10 @@ from pyrosm._log import _printable
 
 _clock = time.monotonic
 
+# The progress of every operation whose own ``progress`` is None, set by
+# pyrosm.enable_logging(progress=...).
+_setting = True
+
 
 def _bar_class():
     """``(tqdm class, disable)`` for a bar on stderr.
@@ -32,19 +36,28 @@ def _bar_class():
     return notebook.tqdm, False
 
 
-def validate_progress(progress):
-    """Raise ``ValueError`` unless ``progress`` is ``True``, ``False`` or a callable."""
-    if not (isinstance(progress, bool) or callable(progress)):
+def validate_progress(progress, allow_none=True):
+    """Raise ``ValueError`` unless ``progress`` is ``True``, ``False``, a callable, or
+    ``None`` with ``allow_none``."""
+    if not (
+        (allow_none and progress is None)
+        or isinstance(progress, bool)
+        or callable(progress)
+    ):
         raise ValueError(
-            "progress must be True, False or a callable; got %r." % (progress,)
+            "progress must be %sTrue, False or a callable; got %r."
+            % ("None, " if allow_none else "", progress)
         )
 
 
 @contextlib.contextmanager
 def reporting(progress, desc, **options):
-    """The progress callback for a validated ``progress``: ``None`` for ``False``, the callable
-    itself, or for ``True`` a :class:`Bar` described ``desc`` with ``options``, closed on exit.
-    """
+    """The progress callback for a validated ``progress``, which is ``None`` to follow the
+    setting of :func:`pyrosm.enable_logging` (``True`` unless set): no callback for ``False``,
+    the callable itself, or for ``True`` a :class:`Bar` described ``desc`` with ``options``,
+    closed on exit."""
+    if progress is None:
+        progress = _setting
     if progress is True:
         bar = Bar(desc, **options)
         try:

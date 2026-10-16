@@ -1013,7 +1013,7 @@ def test_crop_and_merge_report_progress(helsinki_pbf, tmp_path, how, passes):
         done = [d for d, t in calls[start:end]]
         assert calls[end - 1] == (total, total) and done == sorted(done)
         assert all(t == total for _, t in calls[start:end])
-    with pytest.raises(ValueError, match="progress must be True, False or a callable"):
+    with pytest.raises(ValueError, match="progress must be None, True, False or a callable"):
         crop_pbf(helsinki_pbf, out, CROP_BBOX, progress="yes")
 
 

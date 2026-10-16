@@ -159,7 +159,7 @@ available = {
 
 
 def retrieve(
-    data, update, directory, headers=None, timeout=60, opener=None, progress=True
+    data, update, directory, headers=None, timeout=60, opener=None, progress=None
 ):
     return download(
         url=data["url"],
@@ -243,7 +243,7 @@ def get_data(
     headers=None,
     timeout=60,
     opener=None,
-    progress=True,
+    progress=None,
 ):
     """
     Get the path to a PBF data file, and download the data if needed.
@@ -273,8 +273,9 @@ def get_data(
         An object with ``open(request, timeout=...)``, e.g. from
         ``urllib.request.build_opener()``, that makes the requests instead of pyrosm.
 
-    progress : bool | callable
-        ``True`` (default) shows the download as a bar on stderr, a widget in Jupyter when
+    progress : bool | callable | None
+        ``None`` (default) follows :func:`pyrosm.enable_logging`, which is ``True`` unless
+        set. ``True`` shows the download as a bar on stderr, a widget in Jupyter when
         ipywidgets is installed (``pip install "pyrosm[notebook]"``); without a terminal,
         only a line naming the file is printed. ``False`` shows nothing. A callable is called
         as ``progress(written, total)`` after each chunk, with the bytes written so far and

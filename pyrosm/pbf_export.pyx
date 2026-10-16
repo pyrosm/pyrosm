@@ -954,7 +954,7 @@ cdef _count_data_blocks(filepath):
 
 
 cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
-               workers=1, compact=False, repack=False, polygon=None, progress=True):
+               workers=1, compact=False, repack=False, polygon=None, progress=None):
     """Crop `source_path` by `bounding_box`, or by the Shapely (Multi)Polygon
     `polygon`, writing a valid PBF to `output_path`.
 
@@ -971,7 +971,8 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     ``workers`` still parallelizes the selection. ``repack=True`` produces minimal
     string tables, so ``compact`` is irrelevant and ignored.
 
-    ``progress`` works as in :class:`pyrosm.OSM`: ``True`` (default) shows a bar on
+    ``progress`` works as in :class:`pyrosm.OSM`: ``None`` (default) follows
+    :func:`pyrosm.enable_logging`, ``True`` shows a bar on
     stderr once the crop has run 2 seconds, ``False`` shows nothing, and a callable is
     called as ``progress(done, total)`` with the bytes of `source_path` read so far and
     its size, from ``(0, total)`` to ``(total, total)`` in each pass over the file (a
@@ -2387,7 +2388,7 @@ cdef _fingerprint(path):
 
 
 cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True,
-                workers=1, polygon=None, progress=True):
+                workers=1, polygon=None, progress=None):
     """
     Merge overlapping ``*.osm.pbf`` extracts into one PBF, optionally cropped
     to a bounding box or a polygon.
@@ -2444,8 +2445,9 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
         kept when it lies inside the polygon or on its boundary. The output's
         header bounding box is the polygon's envelope.
 
-    progress : bool | callable (default: True)
-        As in :class:`pyrosm.OSM`: ``True`` shows a bar on stderr once the merge has
+    progress : bool | callable | None (default: None)
+        As in :class:`pyrosm.OSM`: ``None`` follows :func:`pyrosm.enable_logging`,
+        ``True`` shows a bar on stderr once the merge has
         run 2 seconds, ``False`` shows nothing, and a callable is called as
         ``progress(done, total)`` with the bytes of the inputs read so far and their
         total size, from ``(0, total)`` to ``(total, total)`` in each pass over them

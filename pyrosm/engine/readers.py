@@ -49,7 +49,7 @@ def _get_layer(
     bounding_box=None,
     complete_relations=False,
     keep_other_tags=True,
-    progress=True,
+    progress=None,
     keep_node_info=False,
 ):
     """Read a layer: decode the file in parallel selecting the elements that carry any of
@@ -68,8 +68,8 @@ def _get_layer(
     ``workers`` defaults to a single process; pass ``workers=N`` for N processes or
     ``workers="auto"`` to choose automatically by file size (on macOS/Windows a parallel read
     must run under an ``if __name__ == "__main__":`` guard, otherwise it falls back to one
-    process with a warning) -- see the package docstring. ``progress`` (``True``, ``False``
-    or a callable) shows the read as for ``OSM(..., progress=...)``; a cached read has nothing
+    process with a warning) -- see the package docstring. ``progress`` (``None``, ``True``,
+    ``False`` or a callable) shows the read as for ``OSM(..., progress=...)``; a cached read has nothing
     to show. ``keep_node_info`` keeps each way's ``nodes`` column (a list of node ids), as
     ``OSM(..., keep_node_info=True)`` does.
     """
@@ -237,7 +237,7 @@ def get_buildings(
     workers=None,
     output=None,
     keep_metadata=True,
-    progress=True,
+    progress=None,
     keep_node_info=False,
 ):
     """Read building geometries (ways + relations) from ``filepath`` with the out-of-core
@@ -274,7 +274,7 @@ def get_landuse(
     workers=None,
     output=None,
     keep_metadata=True,
-    progress=True,
+    progress=None,
     keep_node_info=False,
 ):
     """Read landuse geometries (ways + relations) from ``filepath`` with the out-of-core
@@ -308,7 +308,7 @@ def get_natural(
     workers=None,
     output=None,
     keep_metadata=True,
-    progress=True,
+    progress=None,
     keep_node_info=False,
 ):
     """Read natural features (nodes + ways + relations) from ``filepath`` with the
@@ -343,7 +343,7 @@ def get_pois(
     workers=None,
     output=None,
     keep_metadata=True,
-    progress=True,
+    progress=None,
     keep_node_info=False,
 ):
     """Read points of interest (nodes + ways + relations) from ``filepath`` with the
@@ -390,7 +390,7 @@ def get_boundaries(
     workers=None,
     output=None,
     keep_metadata=True,
-    progress=True,
+    progress=None,
     keep_node_info=False,
 ):
     """Read boundaries (ways + relations) from ``filepath`` with the out-of-core engine,
@@ -462,7 +462,7 @@ def get_data_by_custom_criteria(
     output=None,
     keep_metadata=True,
     keep_other_tags=True,
-    progress=True,
+    progress=None,
     keep_node_info=False,
 ):
     """Read OSM elements matching an arbitrary ``custom_filter`` from ``filepath`` with the
@@ -606,7 +606,7 @@ def get_network(
     workers=None,
     output=None,
     keep_metadata=True,
-    progress=True,
+    progress=None,
     keep_node_info=False,
 ):
     """Read a street network (``highway=*`` ways as LineString edges + a ``length`` column)

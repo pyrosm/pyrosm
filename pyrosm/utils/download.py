@@ -412,7 +412,7 @@ def download(
     headers=None,
     timeout=_TIMEOUT,
     opener=None,
-    progress=True,
+    progress=None,
 ):
     """Download ``url`` to ``<target_dir>/<filename>`` unless it is there (or ``update``).
 
@@ -421,7 +421,8 @@ def download(
     dropped connection is resumed or retried; a failure raises
     :class:`~pyrosm.exceptions.DownloadError`. Returns the file path as a string.
 
-    ``progress`` shows the download: ``True`` draws a bar on stderr (a widget in Jupyter when
+    ``progress`` shows the download: ``None`` (default) follows
+    :func:`pyrosm.enable_logging`, ``True`` draws a bar on stderr (a widget in Jupyter when
     ipywidgets is installed; without a terminal, only a line naming the file), ``False``
     shows nothing, and a callable is called as ``progress(written, total)`` after each chunk
     with the bytes of the file written so far and its size, ``None`` when the server does not

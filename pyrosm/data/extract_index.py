@@ -798,10 +798,13 @@ def _area_geometry(area):
     return geom
 
 
-def _write_area_file(area, sources, crop, output_path, directory, workers=1):
+def _write_area_file(
+    area, sources, crop, output_path, directory, workers=1, progress=None
+):
     """The file for :class:`AreaExtract`: the one extract, cropped to the area's bounding box
     when ``crop`` (to the area itself when ``crop="polygon"``); several extracts merged (and
-    cropped) with :func:`pyrosm.merge_pbf`.
+    cropped) with :func:`pyrosm.merge_pbf`. The crop or merge shows its progress as
+    ``progress`` says.
     """
     from pyrosm.pbf_export import crop_pbf, merge_pbf
 
@@ -821,11 +824,13 @@ def _write_area_file(area, sources, crop, output_path, directory, workers=1):
     target = output_path or str(_default_target_dir(directory) / name)
     Path(target).resolve().parent.mkdir(parents=True, exist_ok=True)
     if len(paths) == 1:
-        return crop_pbf(paths[0], target, workers=workers, **region)
-    return merge_pbf(paths, target, workers=workers, **region)
+        return crop_pbf(paths[0], target, workers=workers, progress=progress, **region)
+    return merge_pbf(paths, target, workers=workers, progress=progress, **region)
 
 
-def _write_with_provenance(area, sources, crop, output_path, directory, workers=1):
+def _write_with_provenance(
+    area, sources, crop, output_path, directory, workers=1, progress=None
+):
     """Write the area's file (:func:`_write_area_file`) and read the provenance of it and of
     its sources afterwards, so they describe the bytes that were used. When a source changed
     meanwhile, or the written file changed before its provenance was read, both are done
@@ -834,7 +839,9 @@ def _write_with_provenance(area, sources, crop, output_path, directory, workers=
     """
     for _ in range(3):
         before = [_identity(s.path) for s in sources]
-        path = _write_area_file(area, sources, crop, output_path, directory, workers)
+        path = _write_area_file(
+            area, sources, crop, output_path, directory, workers, progress
+        )
         written = _identity(path)
         provenance = {p: _provenance(p) for p in {path, *(s.path for s in sources)}}
         unchanged = [_identity(s.path) for s in sources] == before
@@ -859,7 +866,7 @@ def get_data_by_area(
     strategy="single",
     must_cover=None,
     workers=1,
-    progress=True,
+    progress=None,
 ):
     """Download the OSM data for ``area``: the smallest single extract that contains it, or a
     smaller set of extracts merged into one file.
@@ -942,12 +949,15 @@ def get_data_by_area(
         passes ``workers > 1`` needs the ``if __name__ == "__main__":`` guard; without it, or
         for a script read from stdin, the work runs in one process with a warning.
 
-    progress : bool | callable
-        ``True`` (default) shows the download as a bar on stderr, a widget in Jupyter when
+    progress : bool | callable | None
+        ``None`` (default) follows :func:`pyrosm.enable_logging`, which is ``True`` unless
+        set. ``True`` shows the download as a bar on stderr, a widget in Jupyter when
         ipywidgets is installed (``pip install "pyrosm[notebook]"``); without a terminal,
         only a line naming the file is printed. ``False`` shows nothing. A callable is called
         as ``progress(written, total)`` after each chunk of each download, with the bytes
         written so far and the file size, ``None`` when the server does not give it.
+        The crop or merge shows its progress the same way (see :func:`pyrosm.merge_pbf`); a
+        callable is then called with the bytes of the extracts read in each pass.
 
     Returns
     -------
@@ -1036,7 +1046,7 @@ def get_data_by_area(
             download_seconds = time.perf_counter() - start
             start = time.perf_counter()
             path, provenance = _write_with_provenance(
-                geom, sources, crop, output_path, directory, workers
+                geom, sources, crop, output_path, directory, workers, progress
             )
             merged = len(sources) > 1
             total = [s.bytes for s in sources]

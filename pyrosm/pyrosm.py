@@ -139,8 +139,9 @@ class OSM:
         `if __name__ == "__main__":` guard on macOS/Windows. Has no effect on the
         `'in_memory'` engine.
 
-    progress : bool | callable (default: True)
-        `True` shows a bar on stderr while the file is read, once the read has run
+    progress : bool | callable | None (default: None)
+        `None` follows `pyrosm.enable_logging(progress=...)`, which is `True`
+        unless set. `True` shows a bar on stderr while the file is read, once the read has run
         2 seconds, and clears it when the read finishes; in Jupyter it is a widget
         when ipywidgets is installed (`pip install "pyrosm[notebook]"`). Without a
         terminal, a read that took 2 seconds or more prints one line with the time it
@@ -168,7 +169,7 @@ class OSM:
         keep_node_info=False,
         engine="out_of_core",
         workers=None,
-        progress=True,
+        progress=None,
     ):
         # Check input file
         self.filepath = validate_input_file(filepath)

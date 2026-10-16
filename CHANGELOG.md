@@ -4,6 +4,8 @@ Changelog
 Unreleased
 ----------
 
+- NEW: `pyrosm.enable_logging(progress=...)` sets the progress of every read, crop, merge and download whose own `progress` is not given: `True` (as without the call) shows the bars, `False` shows none, and a function is called as `progress(done, total)`. It applies to `OSM` objects made before the call too. The `progress` of `OSM`, `crop_pbf`, `merge_pbf`, `get_data` and the other download functions defaults to `None`, which follows this setting, and still overrides it for one object or call ([#502](https://github.com/pyrosm/pyrosm/pull/502))
+- FIXED: The `progress` given to `get_data_by_area`, `get_data_by_bbox` or `get_data_by_geocoding` covers their crop or merge too; it covered only the download, so `progress=False` still showed the crop's bar ([#502](https://github.com/pyrosm/pyrosm/pull/502))
 - CHANGED: `to_graph(graph_type="networkx")` and `pyrosm.graphs.to_networkx` build the graph in less time. The node and edge attributes are read from whole columns instead of row by row, and the edges whose end node is missing and the keys of parallel edges are found with column operations instead of a Python loop. On Finland's driving network (one process), building the graph takes 7.8 s instead of 14.6 s, and `to_graph` 47 s instead of 60 s; the graph is the same ([#501](https://github.com/pyrosm/pyrosm/pull/501))
 
 v0.21.0
