@@ -323,19 +323,81 @@ def simplify_graph(
     """
     m = len(directed_edges)
     return _simplify_rows(
-        nodes,
-        directed_edges,
+        _TableNodes(nodes, node_id_col),
+        _TableEdges(directed_edges),
         np.arange(m),
         np.zeros(m, dtype=bool),
         from_id_col=from_id_col,
         to_id_col=to_id_col,
-        node_id_col=node_id_col,
         length_cols=length_cols,
         edge_attrs_differ=edge_attrs_differ,
         node_attrs_include=node_attrs_include,
         remove_rings=remove_rings,
         track_merged=track_merged,
     )
+
+
+class _TableEdges:
+    """The edges of a table (a GeoDataFrame), read by row position as
+    :func:`_simplify_rows` reads them."""
+
+    def __init__(self, frame):
+        self.frame = frame
+        self.columns = list(frame.columns)
+        self.geometry_name = frame.geometry.name
+        self.crs = frame.crs
+
+    def values(self, col):
+        return self.frame[col].to_numpy()
+
+    def codes(self, col):
+        return pd.factorize(self.frame[col], sort=False)[0]
+
+    def floats(self, col):
+        return self.frame[col].to_numpy(dtype="float64")
+
+    def missing(self, col):
+        return self.frame[col].isna().to_numpy()
+
+    def take(self, col, positions):
+        return self.frame[col].take(positions)
+
+    def coords(self):
+        return _geometry_coords(self.frame.geometry.values)
+
+    def rows(self, positions):
+        return self.frame.iloc[positions].reset_index(drop=True)
+
+
+class _TableNodes:
+    """The nodes of a table (a GeoDataFrame) keyed by ``node_id_col``, as
+    :func:`_simplify_rows` reads them."""
+
+    def __init__(self, frame, node_id_col):
+        self.frame = frame
+        self.node_id_col = node_id_col
+        self.columns = list(frame.columns)
+
+    def ids(self):
+        return self.frame[self.node_id_col].to_numpy()
+
+    def coordinates(self):
+        geom = self.frame.geometry.values
+        return shapely.get_x(geom), shapely.get_y(geom)
+
+    def present(self, col):
+        return self.frame[col].notna().to_numpy()
+
+    def rows(self, ids):
+        """The nodes whose id is one of ``ids``, in table order."""
+        keep = self.frame[self.node_id_col].isin(ids)
+        return self.frame[keep].reset_index(drop=True)
+
+    def empty(self):
+        return self.frame.iloc[:0].copy()
+
+    def table(self):
+        return self.frame
 
 
 def _simplify_rows(
@@ -346,25 +408,25 @@ def _simplify_rows(
     *,
     from_id_col="u",
     to_id_col="v",
-    node_id_col="id",
     length_cols=("length",),
     edge_attrs_differ=("maxspeed", "highway"),
     node_attrs_include=None,
     remove_rings=True,
     track_merged=False,
 ):
-    """:func:`simplify_graph` of the directed edges ``rows``/``swapped`` of ``edges``:
-    directed edge ``i`` is row ``rows[i]`` of ``edges`` (by position), travelled from its
+    """:func:`simplify_graph` of the directed edges ``rows``/``swapped`` of the edges that
+    ``edges`` reads (a :class:`_TableEdges`), with the nodes that ``nodes`` reads (a
+    :class:`_TableNodes`): directed edge ``i`` is edge row ``rows[i]``, travelled from its
     ``to_id_col`` node to its ``from_id_col`` node where ``swapped[i]``, as
     :func:`pyrosm.graph_export.directed_rows` gives them. Every column is read through the
     row numbers, so the directed edges are never copied into a table; only the simplified
     edges are."""
     m = len(rows)
     if m == 0:
-        return nodes, edges.iloc[rows].reset_index(drop=True)
+        return nodes.table(), edges.rows(rows)
 
-    from_ids = edges[from_id_col].to_numpy()
-    to_ids = edges[to_id_col].to_numpy()
+    from_ids = edges.values(from_id_col)
+    to_ids = edges.values(to_id_col)
     u, v, uniques = _factorize_nodes(
         np.where(swapped, to_ids[rows], from_ids[rows]),
         np.where(swapped, from_ids[rows], to_ids[rows]),
@@ -372,30 +434,28 @@ def _simplify_rows(
     n_nodes = len(uniques)
 
     # node id -> factor index, and node coordinates indexed by factor
-    nid = nodes[node_id_col].to_numpy()
+    nid = nodes.ids()
     nid_to_factor = pd.Series(np.arange(n_nodes), index=uniques)
-    geom = nodes.geometry.values
+    x, y = nodes.coordinates()
     node_x = np.full(n_nodes, np.nan)
     node_y = np.full(n_nodes, np.nan)
     present = nid_to_factor.reindex(nid).to_numpy()
     keep = ~np.isnan(present)
     fpos = present[keep].astype(np.int64)
-    node_x[fpos] = shapely.get_x(geom[keep])
-    node_y[fpos] = shapely.get_y(geom[keep])
+    node_x[fpos] = x[keep]
+    node_y[fpos] = y[keep]
 
     edge_attr_values = None
     if edge_attrs_differ is not None and len(edge_attrs_differ):
         edge_attr_values = [
-            pd.factorize(edges[c], sort=False)[0][rows]
-            for c in edge_attrs_differ
-            if c in edges.columns
+            edges.codes(c)[rows] for c in edge_attrs_differ if c in edges.columns
         ]
     node_include_mask = None
     if node_attrs_include is not None and len(node_attrs_include):
         nm = np.zeros(n_nodes, dtype=bool)
         for c in node_attrs_include:
             if c in nodes.columns:
-                has = nodes[c].notna().to_numpy()
+                has = nodes.present(c)
                 f = nid_to_factor.reindex(nid[has]).to_numpy()
                 f = f[~np.isnan(f)].astype(np.int64)
                 nm[f] = True
@@ -432,7 +492,7 @@ def _simplify_rows(
     if n_chains == 0:
         # Nothing survived (e.g. a pure endpoint-free ring with remove_rings=True):
         # return empty node/edge frames preserving the input schema and CRS.
-        return nodes.iloc[:0].copy(), edges.iloc[:0].reset_index(drop=True)
+        return nodes.empty(), edges.rows(rows[:0])
 
     chain_id = np.repeat(np.arange(n_chains), np.diff(chain_ptr))
 
@@ -442,8 +502,8 @@ def _simplify_rows(
     new_u_factor = u[chain_edge_ids[first_pos]]
     new_v_factor = v[chain_edge_ids[last_pos]]
 
-    geom_col = edges.geometry.name
-    coords, offsets = _geometry_coords(edges.geometry.values)
+    geom_col = edges.geometry_name
+    coords, offsets = edges.coords()
     geom_reversed = _compute_geom_reversed(coords, offsets, rows, u, v, node_x, node_y)
     new_geom = _stitch_geometries(
         coords, offsets, rows, geom_reversed, chain_edge_ids, chain_ptr
@@ -456,7 +516,7 @@ def _simplify_rows(
     # overwrite u/v/length and the merged geometry. Assign the geometry to the actual
     # active geometry column (not assumed to be "geometry") so exporters that read
     # edges[geom_col] see the collapsed chain, not the first original segment.
-    out = edges.iloc[seg_rows[first_pos]].reset_index(drop=True)
+    out = edges.rows(seg_rows[first_pos])
     out[from_id_col] = uniques[new_u_factor]
     out[to_id_col] = uniques[new_v_factor]
     out[geom_col] = gpd.GeoSeries(new_geom, index=out.index, crs=edges.crs)
@@ -465,7 +525,7 @@ def _simplify_rows(
     seg_chain = chain_id  # chain id per consumed segment, aligned to chain_edge_ids
     for col in length_cols:
         if col in edges.columns:
-            vals = edges[col].to_numpy(dtype="float64")[seg_rows]
+            vals = edges.floats(col)[seg_rows]
             out[col] = np.bincount(seg_chain, weights=vals, minlength=n_chains)
 
     # Other columns: scalar if uniform within a chain, else a list (object dtype).
@@ -480,13 +540,12 @@ def _simplify_rows(
     ]
     inner = seg_chain[1:] == seg_chain[:-1]
     for col in merge_cols:
-        series = edges[col]
-        missing = series.isna().to_numpy()[seg_rows]
+        missing = edges.missing(col)[seg_rows]
         differ = inner & (missing[1:] != missing[:-1])
         both = np.flatnonzero(inner & ~missing[1:] & ~missing[:-1])
         if both.size:
-            left = series.take(seg_rows[both]).array
-            right = series.take(seg_rows[both + 1]).array
+            left = edges.take(col, seg_rows[both]).array
+            right = edges.take(col, seg_rows[both + 1]).array
             differ[both] = np.asarray(left != right, dtype=bool)
         if not differ.any():
             continue
@@ -496,7 +555,7 @@ def _simplify_rows(
         # The positions of the mixed chains' segments, chain after chain.
         positions = np.repeat(starts - np.cumsum(sizes) + sizes, sizes)
         positions += np.arange(positions.size)
-        values = series.take(seg_rows[positions]).to_numpy().tolist()
+        values = edges.take(col, seg_rows[positions]).to_numpy().tolist()
         colvals = out[col].tolist()
         at = 0
         for k, size in zip(mixed_ids.tolist(), sizes.tolist()):
@@ -517,6 +576,6 @@ def _simplify_rows(
     # keying off is_endpoint alone would drop a node the ring edge still references).
     kept_factors = np.unique(np.concatenate([new_u_factor, new_v_factor]))
     kept_ids = uniques[kept_factors]
-    out_nodes = nodes[nodes[node_id_col].isin(kept_ids)].reset_index(drop=True)
+    out_nodes = nodes.rows(kept_ids)
 
     return out_nodes, out

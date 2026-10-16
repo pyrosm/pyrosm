@@ -7,7 +7,7 @@ from pyrosm.graph_export import (
     generate_directed_edges,
 )
 from pyrosm.graph_connectivity import get_connected_edges
-from pyrosm.graph_simplify import _simplify_rows
+from pyrosm.graph_simplify import _TableEdges, _TableNodes, _simplify_rows
 from pyrosm.utils import validate_edge_gdf, validate_node_gdf
 from pyrosm.utils.progress import Bar, reporting
 from pyrosm.config import Conf
@@ -263,13 +263,12 @@ def _tables(
         rows, swapped = directed_rows(edges, direction, direction_suffix, both_ways)
         step("simplifying")
         nodes, edges = _simplify_rows(
-            nodes,
-            edges,
+            _TableNodes(nodes, node_id_col),
+            _TableEdges(edges),
             rows,
             swapped,
             from_id_col=from_id_col,
             to_id_col=to_id_col,
-            node_id_col=node_id_col,
             **(simplify_kwargs or {}),
         )
     else:
