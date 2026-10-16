@@ -239,16 +239,20 @@ cdef _oneway_masks(edges, direction, direction_suffix):
     return oneway_mask.to_numpy(), effective_direction.isin(["-1", "T"]).to_numpy()
 
 
-cpdef directed_rows(edges, direction, direction_suffix, force_bidirectional):
+cpdef directed_rows(edges, direction, direction_suffix, force_bidirectional,
+                    way_of=None):
     """The directed edges of `edges` as ``(rows, swapped)``, in the order
     :func:`generate_directed_edges` gives them: directed edge ``i`` is row ``rows[i]`` of
     `edges` (by position), travelled from its to-node to its from-node where
-    ``swapped[i]``. No column of `edges` is copied."""
-    n = len(edges)
+    ``swapped[i]``. No column of `edges` is copied. With ``way_of``, `edges` are ways and
+    edge ``i`` is a segment of way row ``way_of[i]``, travelled as its way is."""
+    n = len(edges) if way_of is None else len(way_of)
     if force_bidirectional:
         rows = np.concatenate([np.arange(n), np.arange(n)])
         return rows, np.repeat(np.array([False, True]), n)
     oneway_mask, against_mask = _oneway_masks(edges, direction, direction_suffix)
+    if way_of is not None:
+        oneway_mask, against_mask = oneway_mask[way_of], against_mask[way_of]
     along = np.flatnonzero(oneway_mask & ~against_mask)
     against = np.flatnonzero(oneway_mask & against_mask)
     twoway = np.flatnonzero(~oneway_mask)

@@ -25,6 +25,10 @@ import numpy as np
 import pandas as pd
 import shapely
 
+from pyrosm.distance import segment_lengths
+from pyrosm.frames import network_node_frame
+from pyrosm.geometry import segment_lines
+
 try:
     from pyrosm._simplify_walk import walk_chains as _cython_walk_chains
 except Exception:  # pragma: no cover - exercised only before the extension is built
@@ -400,6 +404,117 @@ class _TableNodes:
         return self.frame
 
 
+class _WayEdges:
+    """The segments of the ways of the table ``ways`` (one row per way) as edges, read by
+    segment position as :func:`_simplify_rows` reads them: segment ``i`` is of way row
+    ``way_of[i]`` and runs from node ``u[i]`` at the lon/lat ``start[i]`` to node ``v[i]``
+    at ``end[i]``. The edges have the columns of the ways, then ``geometry``, ``u``, ``v``
+    and ``length`` in metres, as the per-segment table of ``get_network(nodes=True)``.
+    """
+
+    geometry_name = "geometry"
+    crs = "epsg:4326"
+
+    def __init__(self, ways, way_of, u, v, start, end):
+        self.ways = ways
+        self.way_of = way_of
+        self.start = start
+        self.end = end
+        self._segment_columns = {
+            "u": pd.Series(u),
+            "v": pd.Series(v),
+            "length": pd.Series(segment_lengths(start, end)),
+        }
+        self.columns = list(
+            dict.fromkeys([*ways.columns, self.geometry_name, *self._segment_columns])
+        )
+
+    def add_empty_column(self, col):
+        """Add ``col``, with no values, as the last column."""
+        self.ways[col] = None
+        self.columns.append(col)
+
+    def _segment_column(self, col):
+        """The values of ``col`` by segment, or ``None`` for a column of the ways."""
+        if col == self.geometry_name:
+            return gpd.GeoSeries(segment_lines(self.start, self.end), crs=self.crs)
+        return self._segment_columns.get(col)
+
+    def _read(self, col, read):
+        """``read`` of the values of ``col``, one per segment."""
+        values = self._segment_column(col)
+        if values is not None:
+            return read(values)
+        return read(self.ways[col])[self.way_of]
+
+    def values(self, col):
+        return self._read(col, lambda series: series.to_numpy())
+
+    def codes(self, col):
+        return self._read(col, lambda series: pd.factorize(series, sort=False)[0])
+
+    def floats(self, col):
+        return self._read(col, lambda series: series.to_numpy(dtype="float64"))
+
+    def missing(self, col):
+        return self._read(col, lambda series: series.isna().to_numpy())
+
+    def take(self, col, positions):
+        values = self._segment_column(col)
+        if values is not None:
+            return values.take(positions)
+        return self.ways[col].take(self.way_of[positions])
+
+    def coords(self):
+        coords = np.empty((2 * len(self.way_of), 2))
+        coords[0::2] = self.start
+        coords[1::2] = self.end
+        return coords, np.arange(0, len(coords) + 1, 2)
+
+    def rows(self, positions):
+        columns = {}
+        for col in self.columns:
+            if col == self.geometry_name:
+                columns[col] = segment_lines(self.start[positions], self.end[positions])
+            else:
+                columns[col] = self.take(col, positions).reset_index(drop=True)
+        return gpd.GeoDataFrame(columns, geometry=self.geometry_name, crs=self.crs)
+
+
+class _StoreNodes:
+    """The nodes ``ids`` at ``rows`` of the coordinate store ``store`` (a
+    :class:`~pyrosm.node_lookup.NodeLocations` of node records), read as
+    :func:`_simplify_rows` reads them; their table is the node table of
+    ``get_network(nodes=True)``."""
+
+    def __init__(self, store, ids, rows):
+        self.store = store
+        self.node_ids = ids
+        self.node_rows = rows
+        self.columns = [*store.columns_at(rows[:0]), "id", "geometry"]
+
+    def ids(self):
+        return self.node_ids
+
+    def coordinates(self):
+        _, lon, lat = self.store.gather(self.node_ids)
+        return lon, lat
+
+    def present(self, col):
+        return self.table()[col].notna().to_numpy()
+
+    def rows(self, ids):
+        """The nodes whose id is one of ``ids``, in table order."""
+        keep = np.isin(self.node_ids, ids)
+        return network_node_frame(self.store, self.node_rows[keep], self.node_ids[keep])
+
+    def empty(self):
+        return self.table().iloc[:0].copy()
+
+    def table(self):
+        return network_node_frame(self.store, self.node_rows, self.node_ids)
+
+
 def _simplify_rows(
     nodes,
     edges,
@@ -415,8 +530,9 @@ def _simplify_rows(
     track_merged=False,
 ):
     """:func:`simplify_graph` of the directed edges ``rows``/``swapped`` of the edges that
-    ``edges`` reads (a :class:`_TableEdges`), with the nodes that ``nodes`` reads (a
-    :class:`_TableNodes`): directed edge ``i`` is edge row ``rows[i]``, travelled from its
+    ``edges`` reads (a :class:`_TableEdges` or :class:`_WayEdges`), with the nodes that
+    ``nodes`` reads (a :class:`_TableNodes` or :class:`_StoreNodes`): directed edge ``i``
+    is edge row ``rows[i]``, travelled from its
     ``to_id_col`` node to its ``from_id_col`` node where ``swapped[i]``, as
     :func:`pyrosm.graph_export.directed_rows` gives them. Every column is read through the
     row numbers, so the directed edges are never copied into a table; only the simplified

@@ -7,7 +7,12 @@ from pyrosm.graph_export import (
     generate_directed_edges,
 )
 from pyrosm.graph_connectivity import get_connected_edges
-from pyrosm.graph_simplify import _TableEdges, _TableNodes, _simplify_rows
+from pyrosm.graph_simplify import (
+    _TableEdges,
+    _TableNodes,
+    _WayEdges,
+    _simplify_rows,
+)
 from pyrosm.utils import validate_edge_gdf, validate_node_gdf
 from pyrosm.utils.progress import Bar, reporting
 from pyrosm.config import Conf
@@ -200,6 +205,21 @@ def _travel_rules(direction_suffix, network_type, force_bidirectional):
     return direction_suffix, both_ways
 
 
+def _segment_rows(edges, direction, force_bidirectional, network_type):
+    """:func:`directed_rows` of the segments that ``edges`` (a
+    :class:`~pyrosm.graph_simplify._WayEdges`) reads, each travelled as its way is. A
+    missing direction column is added to them as empty, with a warning."""
+    direction, direction_suffix = _direction_column(direction, edges.columns)
+    if direction not in edges.columns:
+        edges.add_empty_column(direction)
+    direction_suffix, both_ways = _travel_rules(
+        direction_suffix, network_type, force_bidirectional
+    )
+    return directed_rows(
+        edges.ways, direction, direction_suffix, both_ways, edges.way_of
+    )
+
+
 def graph_tables(
     nodes,
     edges,
@@ -257,9 +277,15 @@ def _tables(
     (:func:`directed_rows`), and only the simplified edges become rows of a new table.
     ``simplify_kwargs`` are the optional parameters of :func:`simplify_graph`
     (``edge_attrs_differ``, ``node_attrs_include``, ``remove_rings``, ``track_merged``,
-    ``length_cols``)."""
+    ``length_cols``). ``nodes`` and ``edges`` may also be the readers of a network read
+    for graph export (see :func:`pyrosm.engine.readers.graph_network`), always
+    simplified, with the given ``network_type`` and the default id columns."""
     step("directing the edges")
-    if simplify:
+    if isinstance(edges, _WayEdges):
+        rows, swapped = _segment_rows(
+            edges, direction, force_bidirectional, network_type
+        )
+    elif simplify:
         direction, direction_suffix, both_ways = _direction_rules(
             nodes,
             edges,
@@ -271,16 +297,7 @@ def _tables(
             network_type,
         )
         rows, swapped = directed_rows(edges, direction, direction_suffix, both_ways)
-        step("simplifying")
-        nodes, edges = _simplify_rows(
-            _TableNodes(nodes, node_id_col),
-            _TableEdges(edges),
-            rows,
-            swapped,
-            from_id_col=from_id_col,
-            to_id_col=to_id_col,
-            **(simplify_kwargs or {}),
-        )
+        nodes, edges = _TableNodes(nodes, node_id_col), _TableEdges(edges)
     else:
         nodes, edges = get_directed_edges(
             nodes,
@@ -291,6 +308,17 @@ def _tables(
             node_id_col,
             force_bidirectional,
             network_type,
+        )
+    if simplify:
+        step("simplifying")
+        nodes, edges = _simplify_rows(
+            nodes,
+            edges,
+            rows,
+            swapped,
+            from_id_col=from_id_col,
+            to_id_col=to_id_col,
+            **(simplify_kwargs or {}),
         )
     # Keep only strongly connected component if not specifically requested otherwise
     if not retain_all:

@@ -186,3 +186,60 @@ def _assemble_network(
     if not keep_node_info and edges is not None and "nodes" in edges.columns:
         edges = edges.drop(columns=["nodes"])
     return edges, node_gdf
+
+
+def _assemble_graph_network(
+    shard_paths,
+    tags_as_columns,
+    keep_metadata,
+    filter_spec,
+    bounding_box,
+    filepath,
+    progress,
+    keep_node_info,
+):
+    """The network of :func:`_assemble_network` with ``segments`` as the readers of graph
+    simplification, ``(nodes, edges)``: a :class:`~pyrosm.graph_simplify._StoreNodes` and
+    a :class:`~pyrosm.graph_simplify._WayEdges` that read the node and edge tables of
+    ``get_network(nodes=True)`` without building them; ``(None, None)`` when there are no
+    edges."""
+    from shapely import box, intersects
+    from pyrosm.engine.cache import missing_as_nan
+    from pyrosm.engine.readers import _node_lists
+    from pyrosm.frames import create_df
+    from pyrosm.geometry import create_network_segments, segment_lines
+    from pyrosm.graph_simplify import _StoreNodes, _WayEdges
+
+    read = _network_ways(
+        shard_paths,
+        tags_as_columns,
+        keep_metadata,
+        filter_spec,
+        True,
+        bounding_box,
+        filepath,
+        progress,
+    )
+    if read is None:
+        return None, None
+    ways, store = read
+    ways, segment_counts, start, end, u, v, node_ids, node_rows = (
+        create_network_segments(store, ways)
+    )
+    way_of = np.repeat(np.arange(len(segment_counts)), segment_counts)
+    if bounding_box is not None:
+        if isinstance(bounding_box, list):
+            bounding_box = box(*bounding_box)
+        inside = intersects(segment_lines(start, end), bounding_box)
+        way_of, u, v, start, end = (a[inside] for a in (way_of, u, v, start, end))
+        referenced = np.isin(node_ids, np.concatenate([u, v]))
+        node_ids, node_rows = node_ids[referenced], node_rows[referenced]
+    if len(way_of) == 0:
+        return None, None
+    ways = create_df(ways).assign(osm_type="way")
+    if not keep_node_info and "nodes" in ways.columns:
+        ways = ways.drop(columns=["nodes"])
+    ways = _node_lists(missing_as_nan(ways))
+    return _StoreNodes(store, node_ids, node_rows), _WayEdges(
+        ways, way_of, u, v, start, end
+    )

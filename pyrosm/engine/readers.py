@@ -12,7 +12,11 @@ from pyrosm.data_manager import parse_custom_filter
 from pyrosm.utils import _compat
 from pyrosm.engine.pool import _decode_and_run
 from pyrosm.engine.bounding_box import _bbox_bounds, _normalize_bounding_box
-from pyrosm.engine.assemble import _assemble_layer, _assemble_network
+from pyrosm.engine.assemble import (
+    _assemble_graph_network,
+    _assemble_layer,
+    _assemble_network,
+)
 from pyrosm.engine import cache, geoparquet
 from pyrosm.utils.progress import validate_progress
 
@@ -727,12 +731,15 @@ def _network_spec(
         # Advanced filters default to 'keep' (Overpass union); plain-dict filters to 'exclude'.
         if filter_type is None:
             filter_type = "keep" if advanced_filter else "exclude"
-        else:
+        elif isinstance(filter_type, str) and filter_type.lower() in (
+            "keep",
+            "exclude",
+        ):
             filter_type = filter_type.lower()
-            if filter_type not in ("keep", "exclude"):
-                raise ValueError(
-                    "'filter_type' -parameter should be either 'keep' or 'exclude'."
-                )
+        else:
+            raise ValueError(
+                "'filter_type' -parameter should be either 'keep' or 'exclude'."
+            )
         network_filter = custom_filter
         # Expose the filter keys as columns too (e.g. 'bicycle', 'service').
         for key in custom_filter.keys():
@@ -768,4 +775,44 @@ def _decode_network(filepath, filter_spec, bounding_box, workers, progress, asse
         bbox_bounds=_bbox_bounds(bounding_box),
         progress=progress,
         spill_all_ways=False,
+    )
+
+
+def graph_network(
+    filepath,
+    network_type="walking",
+    extra_attributes=None,
+    custom_filter=None,
+    filter_type=None,
+    tags_to_keep=None,
+    bounding_box=None,
+    workers=None,
+    keep_metadata=True,
+    progress=None,
+    keep_node_info=False,
+):
+    """The network that :func:`get_network` with ``nodes=True`` reads, for graph export:
+    ``(nodes, edges)``, readers of its node and edge tables that do not build them (see
+    :func:`~pyrosm.engine.assemble._assemble_graph_network`), or ``(None, None)`` when no
+    edge is read. The parameters are those of :func:`get_network`; nothing is cached."""
+    validate_progress(progress)
+    tags_as_columns, filter_spec = _network_spec(
+        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep
+    )
+    bounding_box = _normalize_bounding_box(bounding_box)
+
+    def assemble(shard_paths, report):
+        return _assemble_graph_network(
+            shard_paths,
+            tags_as_columns,
+            keep_metadata,
+            filter_spec,
+            bounding_box,
+            filepath,
+            report,
+            keep_node_info,
+        )
+
+    return _decode_network(
+        filepath, filter_spec, bounding_box, workers, progress, assemble
     )
