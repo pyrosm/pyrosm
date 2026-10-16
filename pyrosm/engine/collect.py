@@ -198,19 +198,19 @@ def _gather_node_records(filepath, node_ids, keep_metadata, progress=None):
     peak memory stays bounded by the graph's node set rather than the whole file.
     ``progress(done, file_size)``, when given, gets the bytes of the file read: 0 first, then
     after each data blob, and the file size at the end."""
-    import pandas as pd
-
+    from pyrosm.int64_hash import Int64Set
     from pyrosm.node_lookup import NodeLocations
     from pyrosm.primitive_block_decoder import decode_primitive_block
+    from pyrosm.way_store import NodeTagsBuilder
     from pyrosm.engine.blobs import _index_blobs, _read_block
     from pyrosm.engine.decode import _node_records_by_id
 
-    wanted = set(node_ids.tolist())
+    wanted = Int64Set(node_ids)
     cols = ["id", "lon", "lat", "visible"]
     if keep_metadata:
         cols += ["version", "timestamp", "changeset"]
     arrays = {c: [] for c in cols}
-    tags = []
+    tags = NodeTagsBuilder()
     with open(filepath, "rb") as f:
         file_size = os.fstat(f.fileno()).st_size
         if progress is not None:
@@ -221,11 +221,10 @@ def _gather_node_records(filepath, node_ids, keep_metadata, progress=None):
             st, header, nodes, _, _ = decode_primitive_block(
                 _read_block(f, offset, size)
             )
-            rec = _node_records_by_id(st, header, nodes, wanted, keep_metadata)
+            rec = _node_records_by_id(st, header, nodes, wanted, keep_metadata, tags)
             if rec is not None:
                 for c in cols:
                     arrays[c].append(rec[c])
-                tags.extend(rec["tags"])
             if progress is not None:
                 progress(offset + size, file_size)
         if progress is not None:
@@ -238,9 +237,9 @@ def _gather_node_records(filepath, node_ids, keep_metadata, progress=None):
         )
         for c in cols
     }
-    frame["tags"] = tags
+    frame["tags"] = tags.build()
     # The in-memory node store's column order: the tags follow the coordinates.
-    return NodeLocations(pd.DataFrame(frame, columns=cols[:3] + ["tags"] + cols[3:]))
+    return NodeLocations({c: frame[c] for c in cols[:3] + ["tags"] + cols[3:]})
 
 
 def _filter_way_columns(cols, exclude_ids, keep, in_box):

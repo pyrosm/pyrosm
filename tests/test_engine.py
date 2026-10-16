@@ -1395,11 +1395,14 @@ def test_engine_network_nodes_empty_result_is_marked(
 
 def test_engine_node_records_by_id_edge_cases():
     from pyrosm.engine.decode import _node_records_by_id
+    from pyrosm.int64_hash import Int64Set
+    from pyrosm.way_store import NodeTagsBuilder
 
     header = {"granularity": 100, "lat_offset": 0, "lon_offset": 0}
     st = [b"", b"amenity", b"cafe"]
+    tags = NodeTagsBuilder()
     # A block with no dense nodes (a way/relation block) yields nothing.
-    assert _node_records_by_id(st, header, None, {1}, True) is None
+    assert _node_records_by_id(st, header, None, Int64Set([1]), True, tags) is None
     nodes = {
         "id": np.array([1, 2], np.int64),
         "lat": np.array([600000000, 600000010], np.int64),
@@ -1412,12 +1415,13 @@ def test_engine_node_records_by_id_edge_cases():
         "visible": np.array([1, 1], np.int64),
     }
     # No requested id present in the block -> nothing gathered.
-    assert _node_records_by_id(st, header, nodes, {999}, True) is None
-    rec = _node_records_by_id(st, header, nodes, {1, 2}, True)
-    assert rec["tags"] == [None, {"amenity": "cafe"}]
+    assert _node_records_by_id(st, header, nodes, Int64Set([999]), True, tags) is None
+    rec = _node_records_by_id(st, header, nodes, Int64Set([1, 2]), True, tags)
+    assert list(tags.build()[np.arange(2)]) == [None, {"amenity": "cafe"}]
+    assert rec["lat"].tolist() == [600000000 * 100 / 1e9, 600000010 * 100 / 1e9]
     assert rec["version"].tolist() == [3, 3] and rec["visible"].dtype == bool
     # keep_metadata=False drops version/timestamp/changeset but keeps visible.
-    lean = _node_records_by_id(st, header, nodes, {1}, False)
+    lean = _node_records_by_id(st, header, nodes, Int64Set([1]), False, NodeTagsBuilder())
     assert "version" not in lean and "visible" in lean
 
 
