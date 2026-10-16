@@ -108,6 +108,15 @@ cpdef _create_igraph(nodes,
                          edge_attrs=edges)
     return graph
 
+cdef list _records(frame):
+    """The rows of ``frame`` as dicts of column name to value, the values those of
+    ``frame.to_dict(orient="records")``, built from whole columns."""
+    names = frame.columns.to_list()
+    if not names:
+        return [{} for _ in range(len(frame))]
+    columns = [frame.iloc[:, i].to_list() for i in range(len(names))]
+    return [dict(zip(names, row)) for row in zip(*columns)]
+
 cpdef _create_nxgraph(nodes,
                       edges,
                       from_id_col,
@@ -126,73 +135,29 @@ cpdef _create_nxgraph(nodes,
                           "in order to export the network for networkx / osmnx.")
     import networkx as nx
 
-    cdef long long i
-
-    nodes = nodes.copy()
-    edges = edges.copy()
-
     crs = f"EPSG:{edges.crs.to_epsg(min_confidence=25)}"
-    n_edges = len(edges)
-    edge_list = []
-
-    # Convert edges to dict. Read positionally ('records'), as the index of the
-    # input frame may have gaps or duplicates (e.g. after filtering the edges).
-    edge_attributes = edges.to_dict(orient="records")
-
-    # Prepare node dictionary for fast lookups
-    node_ids = nodes[node_id_col].to_list()
-    node_dict = {k: None for k in node_ids}
-
-    if drop_node_id_attribute:
-        node_records = nodes.drop(columns=[node_id_col]).to_dict(orient="records")
-    else:
-        node_records = nodes.to_dict(orient="records")
 
     # Node attributes keyed by the node id (node_id_col), not the DataFrame
     # index, so the nodes match the edge endpoints regardless of the index of
     # the input frame (avoids duplicate "phantom" index-keyed nodes).
-    node_attributes = list(zip(node_ids, node_records))
+    node_ids = nodes[node_id_col]
+    if drop_node_id_attribute:
+        node_records = _records(nodes.drop(columns=[node_id_col]))
+    else:
+        node_records = _records(nodes)
+    node_attributes = zip(node_ids.to_list(), node_records)
 
-    # Running key per node-pair. Parallel edges between the same pair of nodes
-    # need distinct keys, otherwise they replace each other in the MultiDiGraph.
-    edge_keys = {}
+    # Leave out edges whose end node is not among the nodes (e.g. if data has been
+    # cropped manually). Rows are selected by position, as the index of the input
+    # frame may have gaps or duplicates (e.g. after filtering the edges).
+    known = edges[from_id_col].isin(node_ids) & edges[to_id_col].isin(node_ids)
+    edges = edges[known.to_numpy()]
 
-    # Generate edge dictionary
-    for i in range(0, n_edges):
-
-        # Get nodeids for the edge
-        # ------------------------
-        # Note: In some cases the node for from/to_id might not exist
-        # on the "edge" of the network (e.g. if data has been cropped manually).
-        try:
-            from_node_id = edge_attributes[i][from_id_col]
-
-            # Check if the data for node exists
-            node_dict[from_node_id]
-
-        except KeyError:
-            continue
-        except Exception as e:
-            raise e
-
-        try:
-            to_node_id = edge_attributes[i][to_id_col]
-
-            # Check if the data for node exists
-            node_dict[to_node_id]
-        except KeyError:
-            continue
-        except Exception as e:
-            raise e
-
-        # Create edges
-        # ------------
-        edge_key = edge_keys.get((from_node_id, to_node_id), 0)
-        edge_keys[(from_node_id, to_node_id)] = edge_key + 1
-        edge_list.append([from_node_id, to_node_id, edge_key, edge_attributes[i]])
-
-    del node_dict
-    del edge_keys
+    # Parallel edges between the same pair of nodes get the keys 0, 1, ... in their
+    # order, otherwise they would replace each other in the MultiDiGraph.
+    keys = edges.groupby([from_id_col, to_id_col], sort=False, dropna=False).cumcount()
+    edge_list = zip(edges[from_id_col].to_list(), edges[to_id_col].to_list(),
+                    keys.to_list(), _records(edges))
 
     # Create directed graph
     graph = nx.MultiDiGraph()

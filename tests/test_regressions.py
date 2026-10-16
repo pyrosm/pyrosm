@@ -94,6 +94,7 @@ def test_nxgraph_keys_nodes_by_id_not_dataframe_index():
 
     pytest.importorskip("networkx")
     import geopandas as gpd
+    import pandas as pd
     from shapely.geometry import Point, LineString
     from pyrosm.graph_export import _create_nxgraph
 
@@ -124,6 +125,12 @@ def test_nxgraph_keys_nodes_by_id_not_dataframe_index():
     assert sorted(graph.nodes()) == [1000, 2000, 3000]
     # Every node carries its attributes.
     assert all("geometry" in data for _, data in graph.nodes(data=True))
+
+    # Nodes whose only column is the id, dropped as an attribute, are all added,
+    # including one that no edge touches.
+    only_ids = pd.DataFrame({"id": [1000, 2000, 3000, 4000]})
+    graph = _create_nxgraph(only_ids, edges, "u", "v", "id", drop_node_id_attribute=True)
+    assert sorted(graph.nodes()) == [1000, 2000, 3000, 4000]
 
 
 _EXCLUDED_SERVICE = {"parking", "parking_aisle", "private", "emergency_access"}
