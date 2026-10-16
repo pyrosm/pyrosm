@@ -46,15 +46,10 @@ def _factorize_nodes(directed, from_id_col, to_id_col):
 
 
 def _distinct_neighbour_count(u, v, n_nodes):
-    """Number of distinct undirected neighbours per node (vectorized)."""
-    node = np.concatenate([u, v])
-    nbr = np.concatenate([v, u])
-    order = np.lexsort((nbr, node))
-    node_s, nbr_s = node[order], nbr[order]
-    first = np.empty(node_s.shape[0], dtype=bool)
-    first[0] = True
-    first[1:] = (node_s[1:] != node_s[:-1]) | (nbr_s[1:] != nbr_s[:-1])
-    return np.bincount(node_s[first], minlength=n_nodes)
+    """Number of distinct undirected neighbours per node (vectorized): each pair of a node
+    and a neighbour is one int64 key, counted once."""
+    pairs = pd.unique(np.concatenate([u * n_nodes + v, v * n_nodes + u]))
+    return np.bincount(pairs // n_nodes, minlength=n_nodes)
 
 
 def detect_endpoints(u, v, n_nodes, *, edge_attr_values=None, node_include_mask=None):
@@ -80,15 +75,18 @@ def detect_endpoints(u, v, n_nodes, *, edge_attr_values=None, node_include_mask=
     endpoint = self_loop | dead_end | ~is_pass_through
 
     # Rule 5: a node is an endpoint if its incident (in+out) edges disagree on any
-    # named column. ``edge_attr_values`` is a list of per-row value arrays.
+    # named column, i.e. their codes for it (-1 when missing) have a different lowest and
+    # highest value. ``edge_attr_values`` is a list of per-row value arrays or Series.
     if edge_attr_values:
         node_of = np.concatenate([u, v])
         for values in edge_attr_values:
-            codes = pd.factorize(np.concatenate([values, values]), sort=False)[0]
-            df = pd.DataFrame({"n": node_of, "c": codes})
-            nuniq = df.groupby("n")["c"].nunique()
-            differ = nuniq.index.to_numpy()[nuniq.to_numpy() > 1]
-            endpoint[differ] = True
+            codes = pd.factorize(values, sort=False)[0]
+            codes = np.concatenate([codes, codes])
+            low = np.full(n_nodes, np.iinfo(np.int64).max)
+            high = np.full(n_nodes, np.iinfo(np.int64).min)
+            np.minimum.at(low, node_of, codes)
+            np.maximum.at(high, node_of, codes)
+            endpoint |= high > low
 
     # Rule 4: a node is an endpoint if it carries any named node attribute.
     if node_include_mask is not None:
@@ -338,9 +336,7 @@ def simplify_graph(
 
     edge_attr_values = None
     if edge_attrs_differ is not None and len(edge_attrs_differ):
-        edge_attr_values = [
-            edges[c].to_numpy() for c in edge_attrs_differ if c in edges.columns
-        ]
+        edge_attr_values = [edges[c] for c in edge_attrs_differ if c in edges.columns]
     node_include_mask = None
     if node_attrs_include is not None and len(node_attrs_include):
         nm = np.zeros(n_nodes, dtype=bool)
@@ -401,7 +397,7 @@ def simplify_graph(
     # overwrite u/v/length and the merged geometry. Assign the geometry to the actual
     # active geometry column (not assumed to be "geometry") so exporters that read
     # edges[geom_col] see the collapsed chain, not the first original segment.
-    out = edges.iloc[chain_edge_ids[first_pos]].reset_index(drop=True).copy()
+    out = edges.iloc[chain_edge_ids[first_pos]].reset_index(drop=True)
     out[from_id_col] = uniques[new_u_factor]
     out[to_id_col] = uniques[new_v_factor]
     out[geom_col] = gpd.GeoSeries(new_geom, index=out.index, crs=edges.crs)
@@ -414,25 +410,39 @@ def simplify_graph(
             out[col] = np.bincount(seg_chain, weights=vals, minlength=n_chains)
 
     # Other columns: scalar if uniform within a chain, else a list (object dtype).
-    # A chain is "mixed" iff two of its consumed segments disagree on the column.
-    # Detect that vectorized: factorize the column to int codes (missing -> -1, so two
-    # NaNs compare equal) and flag a code change between adjacent same-chain segments;
-    # only the few mixed chains then need a per-chain list built.
+    # A chain is "mixed" iff two adjacent consumed segments of it disagree on the column:
+    # one has a value and the other none, or both have values that differ. Only the values
+    # of segments that both have one are compared, and only the mixed chains' values are
+    # read out for their lists.
     merge_cols = [
         c
         for c in edges.columns
         if c not in (from_id_col, to_id_col, geom_col) + tuple(length_cols)
     ]
+    inner = seg_chain[1:] == seg_chain[:-1]
     for col in merge_cols:
-        codes = pd.factorize(edges[col])[0][chain_edge_ids]
-        boundary = (seg_chain[1:] == seg_chain[:-1]) & (codes[1:] != codes[:-1])
-        if not boundary.any():
+        series = edges[col]
+        missing = series.isna().to_numpy()[chain_edge_ids]
+        differ = inner & (missing[1:] != missing[:-1])
+        both = np.flatnonzero(inner & ~missing[1:] & ~missing[:-1])
+        if both.size:
+            left = series.take(chain_edge_ids[both]).array
+            right = series.take(chain_edge_ids[both + 1]).array
+            differ[both] = np.asarray(left != right, dtype=bool)
+        if not differ.any():
             continue
-        mixed_ids = np.unique(seg_chain[1:][boundary])
-        seg_vals = edges[col].to_numpy()[chain_edge_ids]
+        mixed_ids = np.unique(seg_chain[1:][differ])
+        starts = chain_ptr[mixed_ids]
+        sizes = chain_ptr[mixed_ids + 1] - starts
+        # The positions of the mixed chains' segments, chain after chain.
+        positions = np.repeat(starts - np.cumsum(sizes) + sizes, sizes)
+        positions += np.arange(positions.size)
+        values = series.take(chain_edge_ids[positions]).to_numpy().tolist()
         colvals = out[col].tolist()
-        for k in mixed_ids:
-            colvals[k] = seg_vals[chain_ptr[k] : chain_ptr[k + 1]].tolist()
+        at = 0
+        for k, size in zip(mixed_ids.tolist(), sizes.tolist()):
+            colvals[k] = values[at : at + size]
+            at += size
         out[col] = pd.Series(colvals, index=out.index, dtype=object)
 
     if track_merged:
