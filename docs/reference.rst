@@ -40,6 +40,7 @@ Exporting to a graph
 .. autosummary::
    :toctree: api/
 
+   OSM.get_graph
    OSM.to_graph
 
 Saving, cropping and merging PBF files

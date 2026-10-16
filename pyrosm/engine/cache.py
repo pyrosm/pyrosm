@@ -104,16 +104,22 @@ def read_result(cache_path):
     """Read a cached layer GeoParquet back into the GeoDataFrame the reader would have returned.
     Object columns that GeoParquet round-trips as ``None`` are normalised to ``NaN`` so the cached
     frame matches the in-memory reader's missing-value representation."""
-    import numpy as np
     import geopandas as gpd
 
-    gdf = gpd.read_parquet(cache_path)
-    for col in gdf.columns:
+    return missing_as_nan(gpd.read_parquet(cache_path))
+
+
+def missing_as_nan(frame):
+    """``frame`` with the missing values of its object columns other than ``geometry`` as
+    ``NaN``, as :func:`read_result` reads a cached layer back."""
+    import numpy as np
+
+    for col in frame.columns:
         if col == "geometry":
             continue
-        if gdf[col].dtype == object:
-            gdf[col] = gdf[col].where(gdf[col].notna(), np.nan)
-    return gdf
+        if frame[col].dtype == object:
+            frame[col] = frame[col].where(frame[col].notna(), np.nan)
+    return frame
 
 
 def _temp_in(cache_path):

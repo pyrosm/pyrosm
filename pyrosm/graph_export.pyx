@@ -1,7 +1,8 @@
 from pyrosm.utils._compat import HAS_IGRAPH, HAS_NETWORKX, HAS_PANDANA, HAS_PANDARM
 from pyrosm.config import Conf
 from collections import Counter
-from itertools import chain
+from itertools import chain, compress
+from pyrosm.graph_simplify import _value_objects
 import geopandas as gpd
 import pandas as pd
 import numpy as np
@@ -109,13 +110,21 @@ cpdef _create_igraph(nodes,
     return graph
 
 cdef list _records(frame):
-    """The rows of ``frame`` as dicts of column name to value, the values those of
-    ``frame.to_dict(orient="records")``, built from whole columns."""
-    names = frame.columns.to_list()
-    if not names:
-        return [{} for _ in range(len(frame))]
-    columns = [frame.iloc[:, i].to_list() for i in range(len(names))]
-    return [dict(zip(names, row)) for row in zip(*columns)]
+    """The rows of ``frame`` as dicts of column name to value, with the columns where the
+    row has a value (not None or NaN), in column order. The values are those of
+    ``frame.to_dict(orient="records")``, with equal strings as one object."""
+    records = [{} for _ in range(len(frame))]
+    # A repeated column name takes the place of its first column and the values of its last.
+    last = {}
+    for i, name in enumerate(frame.columns.to_list()):
+        last[name] = i
+    for name, i in last.items():
+        column = frame.iloc[:, i]
+        present = column.notna().to_numpy()
+        values = _value_objects(column)[present].tolist()
+        for record, value in zip(compress(records, present), values):
+            record[name] = value
+    return records
 
 cpdef _create_nxgraph(nodes,
                       edges,
@@ -239,16 +248,20 @@ cdef _oneway_masks(edges, direction, direction_suffix):
     return oneway_mask.to_numpy(), effective_direction.isin(["-1", "T"]).to_numpy()
 
 
-cpdef directed_rows(edges, direction, direction_suffix, force_bidirectional):
+cpdef directed_rows(edges, direction, direction_suffix, force_bidirectional,
+                    way_of=None):
     """The directed edges of `edges` as ``(rows, swapped)``, in the order
     :func:`generate_directed_edges` gives them: directed edge ``i`` is row ``rows[i]`` of
     `edges` (by position), travelled from its to-node to its from-node where
-    ``swapped[i]``. No column of `edges` is copied."""
-    n = len(edges)
+    ``swapped[i]``. No column of `edges` is copied. With ``way_of``, `edges` are ways and
+    edge ``i`` is a segment of way row ``way_of[i]``, travelled as its way is."""
+    n = len(edges) if way_of is None else len(way_of)
     if force_bidirectional:
         rows = np.concatenate([np.arange(n), np.arange(n)])
         return rows, np.repeat(np.array([False, True]), n)
     oneway_mask, against_mask = _oneway_masks(edges, direction, direction_suffix)
+    if way_of is not None:
+        oneway_mask, against_mask = oneway_mask[way_of], against_mask[way_of]
     along = np.flatnonzero(oneway_mask & ~against_mask)
     against = np.flatnonzero(oneway_mask & against_mask)
     twoway = np.flatnonzero(~oneway_mask)

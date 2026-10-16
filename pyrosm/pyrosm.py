@@ -52,6 +52,7 @@ from pyrosm.graphs import (
 # Aliased so the module does not collide with the ``engine`` constructor
 # parameter / ``self.engine`` attribute of the same name.
 from pyrosm import engine as engine_backend
+from pyrosm.engine.readers import graph_network
 
 logger = logging.getLogger(__name__)
 
@@ -1495,6 +1496,88 @@ class OSM:
             delete=delete,
             on_orphan_node=on_orphan_node,
             on_deleted_member=on_deleted_member,
+        )
+
+    @logged("network_type", "graph_type", "simplify", count=False)
+    def get_graph(
+        self,
+        network_type="walking",
+        graph_type="igraph",
+        direction="oneway",
+        force_bidirectional=False,
+        retain_all=False,
+        osmnx_compatible=True,
+        pandana_weights=["length"],
+        simplify=True,
+        simplify_kwargs=None,
+        extra_attributes=None,
+        custom_filter=None,
+        filter_type=None,
+        tags_to_keep=None,
+        timestamp=None,
+    ):
+        """
+        Read the street network of ``network_type`` as a routable graph: the graph of
+        ``OSM.to_graph(*osm.get_network(network_type, nodes=True), graph_type)``.
+
+        With the out-of-core engine the simplified graph is built straight from the
+        ways and nodes read from the file: the tables of every street segment and of
+        every node that ``get_network(nodes=True)`` returns are not built, so the read
+        takes less memory. With ``simplify=False``, the in-memory engine or a history
+        read, the tables are read with ``get_network`` and exported with ``to_graph``.
+
+        Parameters
+        ----------
+
+        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep, timestamp
+            As in :meth:`get_network`.
+
+        graph_type, direction, force_bidirectional, retain_all, osmnx_compatible, pandana_weights, simplify, simplify_kwargs
+            As in :meth:`to_graph`.
+
+        Returns
+        -------
+
+        igraph.Graph, networkx.MultiDiGraph, pandarm.Network or pandana.Network, or
+        None when the network is empty.
+        """
+        validate_graph_type(graph_type)
+        if simplify and self._use_engine(timestamp):
+            nodes, edges = self._read_engine(
+                graph_network,
+                with_relations=False,
+                network_type=network_type,
+                extra_attributes=extra_attributes,
+                custom_filter=custom_filter,
+                filter_type=filter_type,
+                tags_to_keep=tags_to_keep,
+            )
+            if edges is None:
+                warn_empty_result("network")
+        else:
+            nodes, edges = self.get_network(
+                network_type,
+                extra_attributes,
+                nodes=True,
+                timestamp=timestamp,
+                custom_filter=custom_filter,
+                filter_type=filter_type,
+                tags_to_keep=tags_to_keep,
+            )
+        if edges is None:
+            return None
+        return self.to_graph(
+            nodes,
+            edges,
+            graph_type,
+            direction,
+            force_bidirectional=force_bidirectional,
+            network_type=network_type,
+            retain_all=retain_all,
+            osmnx_compatible=osmnx_compatible,
+            pandana_weights=pandana_weights,
+            simplify=simplify,
+            simplify_kwargs=simplify_kwargs,
         )
 
     @staticmethod

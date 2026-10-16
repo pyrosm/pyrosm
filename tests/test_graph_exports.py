@@ -1,5 +1,6 @@
 import sys
 import pytest
+from shapely.geometry import box
 from pyrosm import get_data
 from pyrosm.config import Conf
 
@@ -244,23 +245,18 @@ def test_nxgraph_export_by_walking(walk_nodes_and_edges):
     #  (does not happen always so something to do with UlanBatar data.)
     # assert nx.number_of_nodes(g) == n_nodes
 
-    # Ensure that all attributes were transfered to graph
-    ecolumns = edges.columns
-    ncolumns = nodes.columns
-
-    for fr, to, attr in g.edges(data=True):
-        eattributes = list(attr.keys())
-        break
-
-    for id, attr in g.nodes(data=True):
-        nattributes = list(attr.keys())
-        break
-
-    for col in ecolumns:
-        assert col in eattributes
-
-    for col in ncolumns:
-        assert col in nattributes
+    # Every column with values is an attribute of the edges or nodes that have one, and
+    # no attribute holds a missing value
+    eattributes = [attr for *_, attr in g.edges(data=True)]
+    nattributes = [attr for _, attr in g.nodes(data=True)]
+    for frame, attributes in ((edges, eattributes), (nodes, nattributes)):
+        keys = set().union(*attributes)
+        assert set(frame.columns[frame.notna().any()]) <= keys
+        assert not any(
+            v is None or (isinstance(v, float) and v != v)
+            for attr in attributes
+            for v in attr.values()
+        )
 
 
 def test_nxgraph_immutable_counts(test_pbf):
@@ -902,3 +898,157 @@ def test_compat_flag_false_without_dependency(monkeypatch, modname, flag):
     finally:
         monkeypatch.undo()
         importlib.reload(compat)
+
+
+def _comparable(value):
+    """``value`` with NaN as a string and geometries as WKB, so that ``==`` compares two
+    graphs' attributes, in order."""
+    import math
+    import numpy as np
+    import shapely
+
+    if isinstance(value, dict):
+        return [(k, _comparable(v)) for k, v in value.items()]
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return [_comparable(v) for v in value]
+    if isinstance(value, shapely.Geometry):
+        return shapely.to_wkb(value)
+    if isinstance(value, float) and math.isnan(value):
+        return "NaN"
+    return value
+
+
+def _graph_contents(graph):
+    """The nodes and edges of a graph of any exported type, with their attributes."""
+    if hasattr(graph, "get_edgelist"):
+        vertices = [v.attributes() for v in graph.vs]
+        return graph.get_edgelist(), vertices, [e.attributes() for e in graph.es]
+    if hasattr(graph, "nodes_df"):
+        return graph.nodes_df.to_dict("list"), graph.edges_df.to_dict("list")
+    return graph.graph, list(graph.nodes(data=True)), list(graph.edges(keys=True, data=True))
+
+
+@pytest.mark.parametrize(
+    "osm_kwargs, network_type",
+    [
+        ({}, "driving"),
+        ({"bounding_box": [26.94, 60.525, 26.96, 60.535], "keep_node_info": True}, "walking"),
+        ({"bounding_box": box(26.93, 60.52, 26.95, 60.53)}, "cycling"),
+    ],
+)
+def test_graph_network_reads_the_network_tables(test_pbf, osm_kwargs, network_type):
+    """The readers of a graph read hold the tables of get_network(nodes=True)."""
+    import numpy as np
+    from geopandas.testing import assert_geodataframe_equal
+    from pyrosm import OSM
+    from pyrosm.engine.readers import graph_network
+
+    nodes, edges = OSM(test_pbf, **osm_kwargs).get_network(network_type, nodes=True)
+    node_reader, edge_reader = graph_network(test_pbf, network_type, **osm_kwargs)
+    segments = np.arange(len(edge_reader.way_of))
+    assert_geodataframe_equal(edge_reader.rows(segments), edges, check_crs=False)
+    assert_geodataframe_equal(node_reader.table(), nodes)
+    assert_geodataframe_equal(node_reader.empty(), nodes.iloc[:0])
+
+
+@pytest.mark.parametrize(
+    "graph_type, osm_kwargs, kwargs",
+    [
+        (
+            "networkx",
+            {},
+            {
+                "network_type": "driving",
+                "extra_attributes": ["lit"],
+                "custom_filter": {"highway": ["residential", "service", "tertiary"]},
+                "filter_type": "keep",
+            },
+        ),
+        (
+            "networkx",
+            {"keep_metadata": False, "keep_node_info": True},
+            {
+                "network_type": "drive",
+                "force_bidirectional": True,
+                "simplify_kwargs": {"length_cols": (), "track_merged": True},
+            },
+        ),
+        (
+            "networkx",
+            {},
+            {
+                "network_type": "walking",
+                "osmnx_compatible": False,
+                "tags_to_keep": ["highway", "name"],
+                "simplify_kwargs": {
+                    "node_attrs_include": ["tags"],
+                    "edge_attrs_differ": ("highway", "geometry"),
+                },
+            },
+        ),
+        ("igraph", {}, {"network_type": "cycling", "retain_all": True}),
+        ("pandarm", {}, {"network_type": "driving"}),
+        pytest.param("pandana", {}, {"network_type": "walking"}, marks=_pandana_unsupported_on_win),
+        ("networkx", {}, {"network_type": "driving", "simplify": False}),
+        ("networkx", {"engine": "in_memory"}, {"network_type": "driving"}),
+        ("networkx", {}, {"network_type": "driving", "timestamp": "2010-01-01"}),
+    ],
+)
+def test_get_graph_is_the_exported_network(request, graph_type, osm_kwargs, kwargs):
+    """get_graph builds the graph that to_graph builds from get_network(nodes=True)."""
+    import warnings
+    from pyrosm import OSM
+
+    if graph_type in ("pandarm", "pandana"):
+        pytest.importorskip(graph_type)
+    history = "timestamp" in kwargs
+    pbf = request.getfixturevalue("helsinki_history_pbf" if history else "test_pbf")
+    read_keys = (
+        "network_type",
+        "tags_to_keep",
+        "extra_attributes",
+        "custom_filter",
+        "filter_type",
+        "timestamp",
+    )
+    read = {k: v for k, v in kwargs.items() if k in read_keys}
+    export = {k: v for k, v in kwargs.items() if k not in read_keys}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        nodes, edges = OSM(pbf, **osm_kwargs).get_network(nodes=True, **read)
+        expected = OSM.to_graph(nodes, edges, graph_type, **export)
+        graph = OSM(pbf, **osm_kwargs).get_graph(graph_type=graph_type, **kwargs)
+    assert _comparable(_graph_contents(graph)) == _comparable(_graph_contents(expected))
+
+
+@pytest.mark.parametrize(
+    "engine, no_segments",
+    [("out_of_core", False), ("in_memory", False), ("out_of_core", True)],
+)
+def test_get_graph_of_an_empty_network_is_none(test_pbf, tmp_path, engine, no_segments):
+    """A network without ways, or whose ways have no segment (here one way whose second
+    node is not in the file), gives no graph."""
+    import numpy as np
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    kwargs = {"custom_filter": {"highway": ["no-such-road"]}, "filter_type": "keep"}
+    if no_segments:
+        nodes = {
+            "id": [1],
+            "lon": [24.94],
+            "lat": [60.17],
+            "version": [1],
+            "timestamp": [0],
+            "changeset": [0],
+            "tags": np.array([None], dtype=object),
+        }
+        ways = [{"id": 10, "tags": {"highway": "residential"}, "refs": [1, 2]}]
+        test_pbf = write_pbf_from_records(
+            nodes, ways, [], str(tmp_path / "one-node.osm.pbf"), (24.9, 60.1, 25.0, 60.2)
+        )
+        kwargs = {}
+    osm = OSM(test_pbf, engine=engine)
+    with pytest.warns(UserWarning):
+        graph = osm.get_graph("driving", **kwargs)
+    assert graph is None

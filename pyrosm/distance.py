@@ -99,13 +99,9 @@ def calculate_line_lengths(lines):
     return lengths.round(0)
 
 
-def calculate_geom_array_length(geom_array):
-    coords = get_coordinates(geom_array).T
-
-    # Only every second element should be taken from the coordinates
-    lon1, lat1 = coords[0][:-1:2], coords[1][:-1:2]
-    lon2, lat2 = coords[0][1::2], coords[1][1::2]
-
-    # Length of the segments
-    geom_lengths = haversine(lat1, lon1, lat2, lon2, unit=Unit.METERS).round(3)
-    return geom_lengths
+def segment_lengths(start, end):
+    """The length in metres, to the millimetre, of each segment from the lon/lat
+    coordinates ``start`` to ``end``."""
+    return haversine(
+        start[:, 1], start[:, 0], end[:, 1], end[:, 0], unit=Unit.METERS
+    ).round(3)

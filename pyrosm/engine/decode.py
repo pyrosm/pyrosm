@@ -229,42 +229,25 @@ def _matching_nodes(string_table, nodes, osm_keys, node_lon, node_lat):
     }
 
 
-def _node_records_by_id(string_table, header, nodes, wanted, keep_metadata):
-    """Full records (id / lon / lat / tags + metadata) for the dense nodes whose id is in
-    ``wanted`` -- the second-pass gather that builds the graph-export node frame's coordinate
-    store. Tags are resolved through the string table; an untagged node gets ``tags=None`` and
-    metadata is included only when ``keep_metadata`` (matching the in-memory reader). Returns a
-    dict of parallel arrays/lists, or ``None`` when no wanted node is in this block."""
+def _node_records_by_id(string_table, header, nodes, wanted, keep_metadata, tags):
+    """Full records (id / lon / lat + metadata) for the dense nodes whose id is in
+    ``wanted`` (an :class:`~pyrosm.int64_hash.Int64Set`) -- the second-pass gather that
+    builds the graph-export node frame's coordinate store. Their tags, resolved through the
+    string table, are added to ``tags`` (a :class:`~pyrosm.way_store.NodeTagsBuilder`);
+    metadata is included only when ``keep_metadata`` (matching the in-memory reader).
+    Returns a dict of parallel arrays, or ``None`` when no wanted node is in this block.
+    """
     if nodes is None:
         return None
     ids = nodes["id"]
-    gran = header["granularity"]
-    lat = (nodes["lat"] * gran + header["lat_offset"]) / 1e9
-    lon = (nodes["lon"] * gran + header["lon_offset"]) / 1e9
-    keys_vals = nodes["keys_vals"]
-    idx, tags = [], []
-    p, end = 0, len(keys_vals)
-    for node_i in range(len(ids)):
-        pairs = []
-        while p < end and keys_vals[p] != 0:
-            pairs.append((keys_vals[p], keys_vals[p + 1]))
-            p += 2
-        p += 1  # skip the per-node 0 terminator
-        if ids[node_i] in wanted:
-            idx.append(node_i)
-            tags.append(
-                {
-                    string_table[k]
-                    .decode("utf-8", "replace"): string_table[v]
-                    .decode("utf-8", "replace")
-                    for k, v in pairs
-                }
-                if pairs
-                else None
-            )
-    if not idx:
+    keep = wanted.isin(ids)
+    idx = np.flatnonzero(keep)
+    if len(idx) == 0:
         return None
-    idx = np.array(idx, dtype=np.int64)
+    gran = header["granularity"]
+    lat = (nodes["lat"][idx] * gran + header["lat_offset"]) / 1e9
+    lon = (nodes["lon"][idx] * gran + header["lon_offset"]) / 1e9
+    tags.add(nodes["keys_vals"], len(ids), _decoded(string_table)(), keep)
 
     def meta(name):
         arr = nodes[name]
@@ -274,9 +257,8 @@ def _node_records_by_id(string_table, header, nodes, wanted, keep_metadata):
     # version/timestamp/changeset are the metadata dropped when keep_metadata is False.
     record = {
         "id": ids[idx],
-        "lon": lon[idx],
-        "lat": lat[idx],
-        "tags": tags,
+        "lon": lon,
+        "lat": lat,
         "visible": meta("visible").astype(bool),
     }
     if keep_metadata:

@@ -8,30 +8,36 @@ several rows run between the same two consecutive nodes of a chain (duplicate wa
 drawn over one street), the chain keeps the first and drops the others, as OSMnx does.
 This is the only non-vectorized stage; everything else is numpy/pandas/shapely.
 
-Arrays are typed as ``long long`` (format 'q'); the Python caller casts to
-``np.longlong`` so binding is portable (np.int64 is 'l' on LP64 platforms).
+Arrays are typed as ``int`` (``np.intc``) or ``long long`` (format 'q'); the Python
+caller casts to ``np.intc`` or ``np.longlong`` so binding is portable (np.int64 is 'l' on
+LP64 platforms).
 """
 import numpy as np
 cimport cython
 
+ctypedef fused index_t:
+    int
+    long long
+
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-def walk_chains(long long[::1] indptr,
-                long long[::1] indices,
-                long long[::1] edge_id,
+def walk_chains(index_t[::1] indptr,
+                index_t[::1] indices,
+                index_t[::1] edge_id,
                 unsigned char[::1] is_endpoint,
-                long long[::1] src,
+                index_t[::1] src,
                 bint remove_rings):
     cdef Py_ssize_t m = indices.shape[0]
     cdef Py_ssize_t n_nodes = indptr.shape[0] - 1
     cdef Py_ssize_t e, p, q, cur, prev, nxt, guard
 
-    out_ids_arr = np.empty(m, dtype=np.longlong)
-    out_ptr_arr = np.empty(m + 1, dtype=np.longlong)
+    index = np.intc if index_t is int else np.longlong
+    out_ids_arr = np.empty(m, dtype=index)
+    out_ptr_arr = np.empty(m + 1, dtype=index)
     visited_arr = np.zeros(m, dtype=np.uint8)
-    cdef long long[::1] out_ids = out_ids_arr
-    cdef long long[::1] out_ptr = out_ptr_arr
+    cdef index_t[::1] out_ids = out_ids_arr
+    cdef index_t[::1] out_ptr = out_ptr_arr
     cdef unsigned char[::1] visited = visited_arr
     cdef Py_ssize_t n_out = 0
     cdef Py_ssize_t n_chain = 0

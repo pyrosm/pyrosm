@@ -12,7 +12,11 @@ from pyrosm.data_manager import parse_custom_filter
 from pyrosm.utils import _compat
 from pyrosm.engine.pool import _decode_and_run
 from pyrosm.engine.bounding_box import _bbox_bounds, _normalize_bounding_box
-from pyrosm.engine.assemble import _assemble_layer, _assemble_network
+from pyrosm.engine.assemble import (
+    _assemble_graph_network,
+    _assemble_layer,
+    _assemble_network,
+)
 from pyrosm.engine import cache, geoparquet
 from pyrosm.utils.progress import validate_progress
 
@@ -629,56 +633,13 @@ def get_network(
     ``pyarrow``). With ``pyarrow`` absent the default read returns the in-memory result with no
     cache. ``progress`` shows the read as for ``OSM(..., progress=...)``, including the second
     pass of ``nodes=True``; a cached read has nothing to show."""
-    from pyrosm.config import Conf
-    from pyrosm.utils import validate_custom_filter, validate_tags_as_columns
-    from pyrosm.filter_compiler import CompiledFilter
     from pyrosm.graphs import record_network_type
 
     validate_progress(progress)
-    # The network type drives the graph semantics even with a custom_filter, so it is
-    # validated for every read, as the in-memory reader does.
-    _network_filter(network_type)
-
-    tags_as_columns = list(Conf.tags.highway)
-    if tags_to_keep is not None:
-        validate_tags_as_columns(tags_to_keep)
-        tags_as_columns = list(tags_to_keep)
-    # Predefined networks select 'highway' ways; an advanced custom filter selects ways by its
-    # own positive keys (so railway/cycleway networks work).
-    network_keys = ["highway"]
-    if custom_filter is not None:
-        custom_filter = validate_custom_filter(custom_filter)
-        advanced_filter = isinstance(custom_filter, CompiledFilter)
-        # Advanced filters default to 'keep' (Overpass union); plain-dict filters to 'exclude'.
-        if filter_type is None:
-            filter_type = "keep" if advanced_filter else "exclude"
-        else:
-            filter_type = filter_type.lower()
-            if filter_type not in ("keep", "exclude"):
-                raise ValueError(
-                    "'filter_type' -parameter should be either 'keep' or 'exclude'."
-                )
-        network_filter = custom_filter
-        # Expose the filter keys as columns too (e.g. 'bicycle', 'service').
-        for key in custom_filter.keys():
-            if key not in tags_as_columns:
-                tags_as_columns.append(key)
-        if advanced_filter:
-            network_keys = list(custom_filter.positive_keys)
-    else:
-        network_filter = _network_filter(network_type)
-        # Predefined networks are always exclude filters keyed on 'highway'.
-        filter_type = "exclude"
-    if extra_attributes is not None:
-        validate_tags_as_columns(extra_attributes)
-        tags_as_columns = tags_as_columns + list(extra_attributes)
-
-    data_filter = (
-        None if network_filter is None else parse_custom_filter(network_filter)[0]
+    tags_as_columns, filter_spec = _network_spec(
+        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep
     )
-    filter_spec = (network_keys, data_filter, filter_type)
     bounding_box = _normalize_bounding_box(bounding_box)
-    bounds = _bbox_bounds(bounding_box)
 
     if output is not None:
         _compat.require_pyarrow()
@@ -697,18 +658,9 @@ def get_network(
         )
         return (node_gdf, edges) if nodes else edges
 
-    decode_keys = [k.encode("utf-8") for k in network_keys]
-
     def decode():
-        return _decode_and_run(
-            filepath,
-            decode_keys,
-            False,
-            workers,
-            assemble,
-            bbox_bounds=bounds,
-            progress=progress,
-            spill_all_ways=False,
+        return _decode_network(
+            filepath, filter_spec, bounding_box, workers, progress, assemble
         )
 
     # A user-supplied output writes the result there and returns it: a GeoParquet file for the
@@ -750,3 +702,117 @@ def get_network(
         cache_path, lambda tmp_path: _write_parquet(decode(), tmp_path)
     )
     return record_network_type(_node_lists(result), network_type)
+
+
+def _network_spec(
+    network_type, extra_attributes, custom_filter, filter_type, tags_to_keep
+):
+    """The tag columns and the filter of a network read: ``(tags_as_columns,
+    filter_spec)``, the filter ``(network_keys, data_filter, filter_type)`` with the keys
+    whose ways are read."""
+    from pyrosm.config import Conf
+    from pyrosm.utils import validate_custom_filter, validate_tags_as_columns
+    from pyrosm.filter_compiler import CompiledFilter
+
+    # The network type drives the graph semantics even with a custom_filter, so it is
+    # validated for every read, as the in-memory reader does.
+    _network_filter(network_type)
+
+    tags_as_columns = list(Conf.tags.highway)
+    if tags_to_keep is not None:
+        validate_tags_as_columns(tags_to_keep)
+        tags_as_columns = list(tags_to_keep)
+    # Predefined networks select 'highway' ways; an advanced custom filter selects ways by its
+    # own positive keys (so railway/cycleway networks work).
+    network_keys = ["highway"]
+    if custom_filter is not None:
+        custom_filter = validate_custom_filter(custom_filter)
+        advanced_filter = isinstance(custom_filter, CompiledFilter)
+        # Advanced filters default to 'keep' (Overpass union); plain-dict filters to 'exclude'.
+        if filter_type is None:
+            filter_type = "keep" if advanced_filter else "exclude"
+        elif isinstance(filter_type, str) and filter_type.lower() in (
+            "keep",
+            "exclude",
+        ):
+            filter_type = filter_type.lower()
+        else:
+            raise ValueError(
+                "'filter_type' -parameter should be either 'keep' or 'exclude'."
+            )
+        network_filter = custom_filter
+        # Expose the filter keys as columns too (e.g. 'bicycle', 'service').
+        for key in custom_filter.keys():
+            if key not in tags_as_columns:
+                tags_as_columns.append(key)
+        if advanced_filter:
+            network_keys = list(custom_filter.positive_keys)
+    else:
+        network_filter = _network_filter(network_type)
+        # Predefined networks are always exclude filters keyed on 'highway'.
+        filter_type = "exclude"
+    if extra_attributes is not None:
+        validate_tags_as_columns(extra_attributes)
+        tags_as_columns = tags_as_columns + list(extra_attributes)
+
+    data_filter = (
+        None if network_filter is None else parse_custom_filter(network_filter)[0]
+    )
+    return tags_as_columns, (network_keys, data_filter, filter_type)
+
+
+def _decode_network(filepath, filter_spec, bounding_box, workers, progress, assemble):
+    """``assemble(shard_paths, report)`` over the ways of ``filepath`` with the keys of
+    ``filter_spec`` (see :func:`_network_spec`), decoded as
+    :func:`~pyrosm.engine.pool._decode_and_run` does with ``workers`` and ``progress``.
+    """
+    return _decode_and_run(
+        filepath,
+        [k.encode("utf-8") for k in filter_spec[0]],
+        False,
+        workers,
+        assemble,
+        bbox_bounds=_bbox_bounds(bounding_box),
+        progress=progress,
+        spill_all_ways=False,
+    )
+
+
+def graph_network(
+    filepath,
+    network_type="walking",
+    extra_attributes=None,
+    custom_filter=None,
+    filter_type=None,
+    tags_to_keep=None,
+    bounding_box=None,
+    workers=None,
+    keep_metadata=True,
+    progress=None,
+    keep_node_info=False,
+):
+    """The network that :func:`get_network` with ``nodes=True`` reads, for graph export:
+    ``(nodes, edges)``, readers of its node and edge tables that do not build them (see
+    :func:`~pyrosm.engine.assemble._assemble_graph_network`), or ``(None, None)`` when no
+    edge is read. The parameters are those of :func:`get_network`; nothing is cached."""
+    validate_progress(progress)
+    tags_as_columns, filter_spec = _network_spec(
+        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep
+    )
+    bounding_box = _normalize_bounding_box(bounding_box)
+
+    def assemble(shard_paths, report):
+        return _assemble_graph_network(
+            shard_paths,
+            tags_as_columns,
+            keep_metadata,
+            filter_spec,
+            bounding_box,
+            filepath,
+            report,
+            keep_node_info,
+        )
+
+    return _decode_network(
+        filepath, filter_spec, bounding_box, workers, progress, assemble
+    )

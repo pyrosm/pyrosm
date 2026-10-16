@@ -4,12 +4,14 @@ import geopandas as gpd
 import numpy as np
 from pyrosm._arrays cimport concatenate_dicts_of_arrays
 from pyrosm.geometry cimport _create_point_geometries
-from pyrosm.geometry cimport create_way_geometries, create_network_segments
+from pyrosm.geometry cimport (
+    create_way_geometries, create_network_segments, segment_lines
+)
 from pyrosm.geometry import orient_polygons
 from pyrosm.relations import prepare_relations
 from shapely.geometry import box
 from pyrosm.data_filter import get_mask_by_osmid, _filter_array_dict_by_indices_or_mask
-from pyrosm.distance import calculate_line_lengths, calculate_geom_array_length
+from pyrosm.distance import calculate_line_lengths, segment_lengths
 
 cpdef create_nodes_gdf(nodes, osmids_to_keep=None):
     cdef str k
@@ -47,15 +49,16 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
     if ways is not None and parse_network and calculate_seg_lengths:
         # Graph export: one row per segment, repeating its way's columns, and the
         # attribute columns of the nodes the segments use
-        (ways, segment_counts, segments, from_ids, to_ids, node_ids,
+        (ways, segment_counts, start, end, from_ids, to_ids, node_ids,
          node_rows) = create_network_segments(node_coordinates, ways)
         way_rows = np.repeat(np.arange(len(segment_counts)), segment_counts)
         way_gdf = create_df(ways).iloc[way_rows].reset_index(drop=True)
-        way_gdf = way_gdf.assign(osm_type="way", geometry=segments, u=from_ids, v=to_ids)
+        way_gdf = way_gdf.assign(
+            osm_type="way", geometry=segment_lines(start, end), u=from_ids, v=to_ids
+        )
         way_gdf = gpd.GeoDataFrame(way_gdf, geometry="geometry", crs="epsg:4326")
-        way_gdf = way_gdf.assign(length=calculate_geom_array_length(segments))
-        node_attributes = dict(node_coordinates.columns_at(node_rows), id=node_ids)
-        return way_gdf, node_attributes
+        way_gdf = way_gdf.assign(length=segment_lengths(start, end))
+        return way_gdf, (node_rows, node_ids)
 
     if ways is not None:
         ways, geometries, _, _, _ = create_way_geometries(
@@ -82,6 +85,16 @@ cpdef prepare_way_gdf(node_coordinates, ways, parse_network, calculate_seg_lengt
         way_gdf = gpd.GeoDataFrame()
 
     return way_gdf, None
+
+cpdef network_node_frame(node_coordinates, rows, ids):
+    """The graph-export node frame of the nodes ``ids`` at ``rows`` of the coordinate
+    store ``node_coordinates``: their columns, ``id`` and Point geometries."""
+    node_attr = pd.DataFrame(dict(node_coordinates.columns_at(rows), id=ids))
+    return gpd.GeoDataFrame(
+        node_attr,
+        crs="epsg:4326",
+        geometry=gpd.points_from_xy(node_attr["lon"], node_attr["lat"]),
+    )
 
 cpdef prepare_node_gdf(nodes):
     if nodes is not None:
@@ -200,12 +213,8 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
 
     # When parsing the network with nodes, prepare the nodes frame
     if node_attr is not None:
-        node_attr = pd.DataFrame(node_attr)
-        node_attr = gpd.GeoDataFrame(node_attr,
-                                     crs="epsg:4326",
-                                     geometry=gpd.points_from_xy(node_attr["lon"],
-                                                                 node_attr["lat"])
-                                     ).drop_duplicates("id").reset_index(drop=True)
+        node_attr = network_node_frame(node_coordinates, *node_attr)
+        node_attr = node_attr.drop_duplicates("id").reset_index(drop=True)
 
     # Filter by bounding box if it was used
     if bounding_box is not None:
