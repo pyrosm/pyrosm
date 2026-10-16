@@ -218,6 +218,46 @@ cpdef _create_pandarm_graph(nodes,
     return _build_routing_network(Network, nodes, edges, from_id_col, to_id_col, weight_cols)
 
 
+cdef _oneway_masks(edges, direction, direction_suffix):
+    """Per edge, by position: whether it can be travelled in one direction only, and
+    whether that direction runs against its from -> to order ("-1" or "T").
+
+    A "<direction>:<direction_suffix>" column (e.g. "oneway:bicycle") overrides the base
+    direction where it is set, and a roundabout is one-way.
+    """
+    effective_direction = edges[direction]
+    if direction_suffix:
+        override_col = direction + ":" + direction_suffix
+        if override_col in edges.columns:
+            override = edges[override_col]
+            effective_direction = override.where(override.notna(), effective_direction)
+
+    if "junction" in edges.columns:
+        oneway_mask = (effective_direction.isin(oneway_values)) | (edges["junction"] == "roundabout")
+    else:
+        oneway_mask = effective_direction.isin(oneway_values)
+    return oneway_mask.to_numpy(), effective_direction.isin(["-1", "T"]).to_numpy()
+
+
+cpdef directed_rows(edges, direction, direction_suffix, force_bidirectional):
+    """The directed edges of `edges` as ``(rows, swapped)``, in the order
+    :func:`generate_directed_edges` gives them: directed edge ``i`` is row ``rows[i]`` of
+    `edges` (by position), travelled from its to-node to its from-node where
+    ``swapped[i]``. No column of `edges` is copied."""
+    n = len(edges)
+    if force_bidirectional:
+        rows = np.concatenate([np.arange(n), np.arange(n)])
+        return rows, np.repeat(np.array([False, True]), n)
+    oneway_mask, against_mask = _oneway_masks(edges, direction, direction_suffix)
+    along = np.flatnonzero(oneway_mask & ~against_mask)
+    against = np.flatnonzero(oneway_mask & against_mask)
+    twoway = np.flatnonzero(~oneway_mask)
+    rows = np.concatenate([along, against, twoway, twoway])
+    swapped = np.repeat(np.array([False, True, False, True]),
+                        [len(along), len(against), len(twoway), len(twoway)])
+    return rows, swapped
+
+
 cpdef generate_directed_edges(edges,
                               direction,
                               direction_suffix,
@@ -247,27 +287,9 @@ cpdef generate_directed_edges(edges,
     # Directed edges according 'oneway' rules
     # ========================================
 
-    # Effective per-edge direction: a "<direction>:<direction_suffix>" override
-    # column (e.g. "oneway:bicycle") takes precedence where it is set, otherwise
-    # the base direction is used.
-    effective_direction = edges[direction]
-    if direction_suffix:
-        override_col = direction + ":" + direction_suffix
-        if override_col in edges.columns:
-            override = edges[override_col]
-            effective_direction = override.where(override.notna(), effective_direction)
-
-    if "junction" in edges.columns:
-        # Edge is oneway if it is tagged as such OR if it tagged as roundabout
-        oneway_mask = (effective_direction.isin(oneway_values)) | (edges["junction"] == "roundabout")
-    else:
-        oneway_mask = effective_direction.isin(oneway_values)
-
-    # Edges that are allowed only to the opposite direction (per effective direction).
     # The masks are applied positionally, as the index of the input frame may hold
     # duplicate labels (e.g. after concatenating edge frames).
-    oneway_mask = oneway_mask.to_numpy()
-    against_mask = effective_direction.isin(["-1", "T"]).to_numpy()
+    oneway_mask, against_mask = _oneway_masks(edges, direction, direction_suffix)
 
     edge_cnt = len(edges)
     twoway_edges = edges.loc[~oneway_mask].copy()

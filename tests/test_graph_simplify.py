@@ -59,7 +59,7 @@ def test_endpoint_rules_table():
             (3, 2, [(1, 0), (2, 0)]),
         ],
     )
-    u, v, uniq = _factorize_nodes(edges, "u", "v")
+    u, v, uniq = _factorize_nodes(edges["u"], edges["v"])
     ep = detect_endpoints(u, v, len(uniq))
     ep_by_id = dict(zip(uniq, ep))
     assert ep_by_id[1] and ep_by_id[3] and not ep_by_id[2]
@@ -69,7 +69,7 @@ def test_endpoint_rules_table():
         {1: (0, 0), 2: (1, 0), 3: (2, 0)},
         [(1, 2, [(0, 0), (1, 0)]), (2, 3, [(1, 0), (2, 0)])],
     )
-    u, v, uniq = _factorize_nodes(edges, "u", "v")
+    u, v, uniq = _factorize_nodes(edges["u"], edges["v"])
     ep_by_id = dict(zip(uniq, detect_endpoints(u, v, len(uniq))))
     assert not ep_by_id[2] and ep_by_id[1] and ep_by_id[3]
 
@@ -78,13 +78,13 @@ def test_endpoint_rules_table():
         {1: (0, 0), 4: (1, 0)},
         [(1, 4, [(0, 0), (1, 0)]), (4, 1, [(0, 0), (1, 0)])],
     )
-    u, v, uniq = _factorize_nodes(edges, "u", "v")
+    u, v, uniq = _factorize_nodes(edges["u"], edges["v"])
     ep_by_id = dict(zip(uniq, detect_endpoints(u, v, len(uniq))))
     assert ep_by_id[4] and ep_by_id[1]
 
     # one-way dead-end tip D (A->D): D kept (out_degree == 0)
     nodes, edges = _graph({1: (0, 0), 4: (1, 0)}, [(1, 4, [(0, 0), (1, 0)])])
-    u, v, uniq = _factorize_nodes(edges, "u", "v")
+    u, v, uniq = _factorize_nodes(edges["u"], edges["v"])
     ep_by_id = dict(zip(uniq, detect_endpoints(u, v, len(uniq))))
     assert ep_by_id[4] and ep_by_id[1]
 
@@ -100,7 +100,7 @@ def test_endpoint_rules_table():
             (3, 10, [(0, 0), (0, 1)]),
         ],
     )
-    u, v, uniq = _factorize_nodes(edges, "u", "v")
+    u, v, uniq = _factorize_nodes(edges["u"], edges["v"])
     ep_by_id = dict(zip(uniq, detect_endpoints(u, v, len(uniq))))
     assert ep_by_id[10]
 
@@ -148,7 +148,7 @@ def test_cython_matches_reference():
             (4, 3, [(2, 0), (3, 0)]),
         ],
     )
-    u, v, uniq = _factorize_nodes(edges, "u", "v")
+    u, v, uniq = _factorize_nodes(edges["u"], edges["v"])
     ep = detect_endpoints(u, v, len(uniq))
     indptr, indices, edge_id, src = _build_csr(u, v, len(uniq))
     ref = _reference_walk(indptr, indices, edge_id, ep, src, True)
@@ -230,7 +230,7 @@ def test_self_loop_node_is_endpoint():
             (2, 1, [(0, 0), (1, 0)]),
         ],
     )
-    u, v, uniq = _factorize_nodes(edges, "u", "v")
+    u, v, uniq = _factorize_nodes(edges["u"], edges["v"])
     ep = dict(zip(uniq, detect_endpoints(u, v, len(uniq))))
     assert ep[1]  # self-loop -> endpoint
 
@@ -535,7 +535,9 @@ def test_stitch_geometries_empty():
     from pyrosm.graph_simplify import _stitch_geometries
 
     res = _stitch_geometries(
-        np.array([], dtype=object),
+        np.empty((0, 2)),
+        np.array([0], dtype=np.int64),
+        np.array([], dtype=np.int64),
         np.array([], dtype=bool),
         np.array([], dtype=np.int64),
         np.array([0], dtype=np.int64),
@@ -685,3 +687,71 @@ def test_pandana_weights_are_summed_along_merged_chains(export, module):
     assert merged[["from", "to"]].values.tolist() == [[1, 3], [3, 1]]
     assert merged["length"].tolist() == [111.0, 111.0]
     assert merged["travel_time"].tolist() == [9.0, 9.0]
+
+
+@pytest.mark.parametrize(
+    "network_type, change, options",
+    [
+        ("driving", None, {}),
+        ("walking", None, {}),
+        ("cycling", None, {}),
+        ("driving", None, {"force_bidirectional": True}),
+        ("driving", "no oneway column", {}),
+        ("driving", "odd index, reversed geometries", {}),
+        (
+            "driving",
+            None,
+            {
+                "simplify_kwargs": {
+                    "edge_attrs_differ": None,
+                    "node_attrs_include": ["highway"],
+                    "remove_rings": False,
+                    "track_merged": True,
+                }
+            },
+        ),
+    ],
+)
+def test_graph_tables_match_the_directed_table(network_type, change, options):
+    """graph_tables reads the directed edges as row numbers of the edge table; its tables are
+    those of get_directed_edges + simplify_graph + get_connected_edges, which copy the
+    directed edges into a table of their own first."""
+    import warnings
+
+    import shapely
+
+    from pyrosm import OSM, get_data
+    from pyrosm.graph_connectivity import get_connected_edges
+    from pyrosm.graph_simplify import simplify_graph
+    from pyrosm.graphs import get_directed_edges, graph_tables
+
+    osm = OSM(get_data("test_pbf"), progress=False)
+    nodes, edges = osm.get_network(nodes=True, network_type=network_type)
+    if change == "no oneway column":
+        edges = edges.drop(columns="oneway")
+    elif change is not None:
+        edges.index = (np.arange(len(edges)) * 3) // 2
+        flip = np.arange(len(edges)) % 4 == 0
+        edges.loc[flip, "geometry"] = shapely.reverse(edges.geometry.values[flip])
+    options = dict(options)
+    simplify_kwargs = options.pop("simplify_kwargs", {})
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        got = graph_tables(
+            nodes.copy(), edges.copy(), simplify_kwargs=simplify_kwargs, **options
+        )
+        directed_nodes, directed = get_directed_edges(
+            nodes.copy(), edges.copy(), **options
+        )
+        want = get_connected_edges(
+            *simplify_graph(directed_nodes, directed, **simplify_kwargs)
+        )
+    for got_frame, want_frame in zip(got, want):
+        geometry = got_frame.geometry.name
+        assert shapely.equals_exact(
+            got_frame.geometry.values, want_frame.geometry.values, tolerance=0
+        ).all()
+        pd.testing.assert_frame_equal(
+            got_frame.drop(columns=geometry), want_frame.drop(columns=geometry)
+        )
+        assert got_frame.attrs == want_frame.attrs
