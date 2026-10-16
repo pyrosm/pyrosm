@@ -1539,6 +1539,12 @@ class OSM:
         with ``edge_attrs_differ=["maxspeed", "highway"]``. Pass ``simplify=False`` to
         keep every segment of every way as its own edge.
 
+        The export shows its progress as ``pyrosm.enable_logging(progress=...)`` sets it:
+        by default a bar on stderr once it has run 2 seconds, naming the step it is in
+        (directing the edges, simplifying, keeping the largest connected part, building
+        the graph), cleared at the end, or without a terminal one line with the time it
+        took.
+
         Parameters
         ----------
 

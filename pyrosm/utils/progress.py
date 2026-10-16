@@ -69,25 +69,34 @@ def reporting(progress, desc, **options):
 
 
 class Bar:
-    """A progress callback, called as ``bar(done, total)``, that draws a bar of bytes on stderr
-    described ``desc`` (see :func:`_bar_class`).
+    """A progress callback, called as ``bar(done, total)``, that draws a bar on stderr
+    described ``desc`` (see :func:`_bar_class`), of bytes, or of another ``unit`` counted
+    as given.
 
     The bar opens at the first call and starts over when ``done`` goes back or ``total``
     changes. It shows only once it has run ``delay`` seconds, and ``leave=False`` clears it
-    when it closes. When the bar is hidden, ``desc`` is printed once as a line when it opens,
-    or with ``timed`` a line ``"<desc> took <time>"`` when it closes, if it ran at least
-    ``delay`` seconds.
+    when it closes. :meth:`describe` changes the label it shows. When the bar is hidden,
+    ``desc`` is printed once as a line when it opens, or with ``timed`` a line
+    ``"<desc> took <time>"`` when it closes, if it ran at least ``delay`` seconds.
     """
 
-    def __init__(self, desc, delay=0.0, leave=True, timed=False):
+    def __init__(self, desc, delay=0.0, leave=True, timed=False, unit="B"):
         self.desc = _printable(desc)
+        self.label = self.desc
         self.delay = delay
         self.leave = leave
         self.timed = timed
+        self.unit = unit
         self.bar = None
         self.hidden = False
         self.done = 0
         self.start = _clock()
+
+    def describe(self, label):
+        """Show ``label`` in place of the description from the next redraw on."""
+        self.label = _printable(label)
+        if self.bar is not None:
+            self.bar.set_description(self.label, refresh=False)
 
     def __call__(self, done, total):
         if self.bar is None:
@@ -95,8 +104,8 @@ class Bar:
             self.bar = tqdm(
                 total=total,
                 file=sys.stderr,
-                unit="B",
-                unit_scale=True,
+                unit=self.unit,
+                unit_scale=self.unit == "B",
                 unit_divisor=1000,
                 mininterval=0.2,
                 dynamic_ncols=True,
@@ -106,7 +115,7 @@ class Bar:
             )
             # Set after: the widget shows a description given to it as HTML until it redraws.
             # A delayed bar is not redrawn here, which would show it before its delay.
-            self.bar.set_description(self.desc, refresh=self.delay <= 0)
+            self.bar.set_description(self.label, refresh=self.delay <= 0)
             # Kept, as tqdm marks every bar disabled once it closes.
             self.hidden = self.bar.disable
             if self.hidden and not self.timed:

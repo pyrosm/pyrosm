@@ -8,11 +8,47 @@ from pyrosm.graph_export import (
 from pyrosm.graph_connectivity import get_connected_edges
 from pyrosm.graph_simplify import simplify_graph
 from pyrosm.utils import validate_edge_gdf, validate_node_gdf
+from pyrosm.utils.progress import Bar, reporting
 from pyrosm.config import Conf
 from pyrosm.config.osm_filters import _UNKNOWN_NETWORK_TYPE, normalize_network_type
 from rapidjson import dumps
+import contextlib
 import pandas as pd
 import warnings
+
+
+def _step_names(simplify, retain_all, last=None):
+    """The steps of making a graph's tables, and ``last`` when given."""
+    names = ["directing the edges"]
+    if simplify:
+        names.append("simplifying")
+    if not retain_all:
+        names.append("keeping the largest connected part")
+    if last is not None:
+        names.append(last)
+    return names
+
+
+@contextlib.contextmanager
+def _steps(desc, names):
+    """A function ``step(name)`` that reports the start of each of the steps ``names`` of the
+    work described ``desc``, as :func:`pyrosm.enable_logging` sets the progress: a bar of
+    steps on stderr that names the current one, shown after 2 seconds, or calls of the
+    function set as ``progress(done, total)`` with the steps done and the steps."""
+    with reporting(
+        None, desc, delay=2.0, leave=False, timed=True, unit="step"
+    ) as report:
+
+        def step(name):
+            if report is None:
+                return
+            if isinstance(report, Bar):
+                report.describe("%s: %s" % (desc, name))
+            report(names.index(name), len(names))
+
+        yield step
+        if report is not None:
+            report(len(names), len(names))
 
 
 def record_network_type(result, network_type):
@@ -175,7 +211,43 @@ def graph_tables(
     """The nodes and edges of a graph as GeoDataFrames, as the graph exporters build it: the
     edges directed (see :func:`get_directed_edges`), simplified when ``simplify`` and, unless
     ``retain_all``, only the connected part kept. The parameters are those of
-    :func:`to_networkx`."""
+    :func:`to_networkx`. The progress is shown as :func:`pyrosm.enable_logging` sets it, by
+    step."""
+    with _steps(
+        "Preparing the graph tables", _step_names(simplify, retain_all)
+    ) as step:
+        return _tables(
+            nodes,
+            edges,
+            direction,
+            from_id_col,
+            to_id_col,
+            node_id_col,
+            force_bidirectional,
+            network_type,
+            retain_all,
+            simplify,
+            simplify_kwargs,
+            step,
+        )
+
+
+def _tables(
+    nodes,
+    edges,
+    direction,
+    from_id_col,
+    to_id_col,
+    node_id_col,
+    force_bidirectional,
+    network_type,
+    retain_all,
+    simplify,
+    simplify_kwargs,
+    step,
+):
+    """:func:`graph_tables`, reporting the start of each step to ``step(name)``."""
+    step("directing the edges")
     nodes, edges = get_directed_edges(
         nodes,
         edges,
@@ -186,11 +258,14 @@ def graph_tables(
         force_bidirectional,
         network_type,
     )
+    if simplify:
+        step("simplifying")
     nodes, edges = _maybe_simplify(
         simplify, nodes, edges, from_id_col, to_id_col, node_id_col, simplify_kwargs
     )
     # Keep only strongly connected component if not specifically requested otherwise
     if not retain_all:
+        step("keeping the largest connected part")
         nodes, edges = get_connected_edges(
             nodes, edges, from_id_col, to_id_col, node_id_col
         )
@@ -276,51 +351,57 @@ def to_networkx(
 
     """
 
-    # Prepare the data
-    nodes, edges = graph_tables(
-        nodes,
-        edges,
-        direction,
-        from_id_col,
-        to_id_col,
-        node_id_col,
-        force_bidirectional,
-        network_type,
-        retain_all,
-        simplify,
-        simplify_kwargs,
-    )
+    with _steps(
+        "Building the NetworkX graph",
+        _step_names(simplify, retain_all, "building the graph"),
+    ) as step:
+        # Prepare the data
+        nodes, edges = _tables(
+            nodes,
+            edges,
+            direction,
+            from_id_col,
+            to_id_col,
+            node_id_col,
+            force_bidirectional,
+            network_type,
+            retain_all,
+            simplify,
+            simplify_kwargs,
+            step,
+        )
 
-    if osmnx_compatible:
-        # OSMnx carries the parallel-edge key in the graph structure, not as an
-        # edge attribute, and an attribute named 'key' collides with it. Surface
-        # a tag with that name as 'key_tag' instead (as is done for 'id').
-        if "key" in edges.columns:
-            edges = edges.rename(columns={"key": "key_tag"})
+        if osmnx_compatible:
+            # OSMnx carries the parallel-edge key in the graph structure, not as an
+            # edge attribute, and an attribute named 'key' collides with it. Surface
+            # a tag with that name as 'key_tag' instead (as is done for 'id').
+            if "key" in edges.columns:
+                edges = edges.rename(columns={"key": "key_tag"})
 
-        # Follow the naming convention of OSMnx
-        nodes = nodes.rename(columns={node_id_col: "osmid", "lat": "y", "lon": "x"})
-        edges = edges.rename(columns={edge_id_col: "osmid"})
-        node_id_col = "osmid"
+            # Follow the naming convention of OSMnx
+            nodes = nodes.rename(columns={node_id_col: "osmid", "lat": "y", "lon": "x"})
+            edges = edges.rename(columns={edge_id_col: "osmid"})
+            node_id_col = "osmid"
 
-        # OSMnx handles node attributes as scalars, so store the free-form tags
-        # as a JSON string like the edge tags already are.
-        if "tags" in nodes.columns:
-            nodes["tags"] = [
-                dumps(tags) if isinstance(tags, dict) else tags
-                for tags in nodes["tags"]
-            ]
+            # OSMnx handles node attributes as scalars, so store the free-form tags
+            # as a JSON string like the edge tags already are.
+            if "tags" in nodes.columns:
+                nodes["tags"] = [
+                    dumps(tags) if isinstance(tags, dict) else tags
+                    for tags in nodes["tags"]
+                ]
 
-    # Create NetworkX graph (nodes are keyed by node_id_col internally, so the
-    # input frame's index does not need to be set to the node id).
-    graph = _create_nxgraph(
-        nodes,
-        edges,
-        from_id_col,
-        to_id_col,
-        node_id_col,
-        drop_node_id_attribute=osmnx_compatible,
-    )
+        # Create NetworkX graph (nodes are keyed by node_id_col internally, so the
+        # input frame's index does not need to be set to the node id).
+        step("building the graph")
+        graph = _create_nxgraph(
+            nodes,
+            edges,
+            from_id_col,
+            to_id_col,
+            node_id_col,
+            drop_node_id_attribute=osmnx_compatible,
+        )
     graph.graph["simplified"] = bool(simplify)
     return graph
 
@@ -393,22 +474,27 @@ def to_igraph(
     igraph.Graph
 
     """
-    # Prepare the data
-    nodes, edges = graph_tables(
-        nodes,
-        edges,
-        direction,
-        from_id_col,
-        to_id_col,
-        node_id_col,
-        force_bidirectional,
-        network_type,
-        retain_all,
-        simplify,
-        simplify_kwargs,
-    )
-
-    return _create_igraph(nodes, edges, from_id_col, to_id_col, node_id_col)
+    with _steps(
+        "Building the igraph graph",
+        _step_names(simplify, retain_all, "building the graph"),
+    ) as step:
+        # Prepare the data
+        nodes, edges = _tables(
+            nodes,
+            edges,
+            direction,
+            from_id_col,
+            to_id_col,
+            node_id_col,
+            force_bidirectional,
+            network_type,
+            retain_all,
+            simplify,
+            simplify_kwargs,
+            step,
+        )
+        step("building the graph")
+        return _create_igraph(nodes, edges, from_id_col, to_id_col, node_id_col)
 
 
 def to_pandana(
@@ -425,26 +511,32 @@ def to_pandana(
     simplify=True,
     simplify_kwargs=None,
 ):
-    # Prepare the data
-    nodes, edges = graph_tables(
-        nodes,
-        edges,
-        direction,
-        from_id_col,
-        to_id_col,
-        node_id_col,
-        force_bidirectional,
-        network_type,
-        retain_all,
-        simplify,
-        _summing_weights(simplify_kwargs, weight_cols),
-    )
+    with _steps(
+        "Building the pandana network",
+        _step_names(simplify, retain_all, "building the network"),
+    ) as step:
+        # Prepare the data
+        nodes, edges = _tables(
+            nodes,
+            edges,
+            direction,
+            from_id_col,
+            to_id_col,
+            node_id_col,
+            force_bidirectional,
+            network_type,
+            retain_all,
+            simplify,
+            _summing_weights(simplify_kwargs, weight_cols),
+            step,
+        )
 
-    nodes = nodes.rename(columns={"lat": "y", "lon": "x"})
-    nodes = nodes.set_index("id", drop=False)
-    nodes = nodes.rename_axis([None])
+        nodes = nodes.rename(columns={"lat": "y", "lon": "x"})
+        nodes = nodes.set_index("id", drop=False)
+        nodes = nodes.rename_axis([None])
 
-    return _create_pdgraph(nodes, edges, from_id_col, to_id_col, weight_cols)
+        step("building the network")
+        return _create_pdgraph(nodes, edges, from_id_col, to_id_col, weight_cols)
 
 
 def to_pandarm(
@@ -461,23 +553,29 @@ def to_pandarm(
     simplify=True,
     simplify_kwargs=None,
 ):
-    # Prepare the data
-    nodes, edges = graph_tables(
-        nodes,
-        edges,
-        direction,
-        from_id_col,
-        to_id_col,
-        node_id_col,
-        force_bidirectional,
-        network_type,
-        retain_all,
-        simplify,
-        _summing_weights(simplify_kwargs, weight_cols),
-    )
+    with _steps(
+        "Building the pandarm network",
+        _step_names(simplify, retain_all, "building the network"),
+    ) as step:
+        # Prepare the data
+        nodes, edges = _tables(
+            nodes,
+            edges,
+            direction,
+            from_id_col,
+            to_id_col,
+            node_id_col,
+            force_bidirectional,
+            network_type,
+            retain_all,
+            simplify,
+            _summing_weights(simplify_kwargs, weight_cols),
+            step,
+        )
 
-    nodes = nodes.rename(columns={"lat": "y", "lon": "x"})
-    nodes = nodes.set_index("id", drop=False)
-    nodes = nodes.rename_axis([None])
+        nodes = nodes.rename(columns={"lat": "y", "lon": "x"})
+        nodes = nodes.set_index("id", drop=False)
+        nodes = nodes.rename_axis([None])
 
-    return _create_pandarm_graph(nodes, edges, from_id_col, to_id_col, weight_cols)
+        step("building the network")
+        return _create_pandarm_graph(nodes, edges, from_id_col, to_id_col, weight_cols)
