@@ -6,13 +6,16 @@ import pytest
 
 from pyrosm import OSM, enable_logging, get_data
 from pyrosm import _log
+from pyrosm.utils import progress
 
 
 @pytest.fixture
 def pyrosm_logger():
-    """The ``pyrosm`` logger, with its handlers, level and propagation restored afterwards."""
+    """The ``pyrosm`` logger, with its handlers, level and propagation, and the progress setting
+    of enable_logging restored afterwards."""
     logger = logging.getLogger("pyrosm")
     state = (list(logger.handlers), logger.level, logger.propagate, _log._handler)
+    setting = progress._setting
     yield logger
     for handler in logger.handlers:
         if handler not in state[0]:
@@ -21,6 +24,7 @@ def pyrosm_logger():
     logger.setLevel(state[1])
     logger.propagate = state[2]
     _log._handler = state[3]
+    progress._setting = setting
 
 
 class _Records(logging.Handler):
@@ -57,6 +61,61 @@ def test_enable_logging(pyrosm_logger, tmp_path, monkeypatch):
     for level in ("LOUD", True, None):
         with pytest.raises(ValueError, match="level must be"):
             enable_logging(level)
+
+
+def test_enable_logging_sets_progress(pyrosm_logger, tmp_path, monkeypatch):
+    """enable_logging(progress=...) sets the progress of every operation not given its own,
+    also of an OSM object made before the call: reads with both engines and a crop report to
+    the function given; an operation's own progress overrides it; None is refused."""
+    from pyrosm.engine import cache
+
+    monkeypatch.setattr(cache, "cache_dir", lambda: tmp_path)
+    fp = get_data("test_pbf")
+    made_before = OSM(fp, engine="in_memory")
+    calls = []
+    enable_logging(progress=lambda done, total: calls.append((done, total)))
+    box = [26.94, 60.52, 26.96, 60.53]
+    for run in (
+        made_before.get_buildings,
+        OSM(fp, engine="out_of_core", workers=1).get_buildings,
+        lambda: OSM(fp, bounding_box=box).to_pbf(tmp_path / "crop.osm.pbf"),
+    ):
+        calls.clear()
+        run()
+        assert calls and calls[-1][0] == calls[-1][1]
+    calls.clear()
+    OSM(fp, engine="in_memory", progress=False).get_buildings()
+    assert calls == []
+    with pytest.raises(ValueError, match="progress must be True, False or a callable"):
+        enable_logging(progress=None)
+
+
+def test_download_progress_covers_the_crop(pyrosm_logger, tmp_path, monkeypatch):
+    """The progress given to get_data_by_bbox (whose crop get_data_by_geocoding shares) and to
+    get_data_by_area reports their crop too, in place of the setting of enable_logging."""
+    from shapely.geometry import box
+    import pyrosm.data.extract_index as ei
+    from pyrosm import get_data_by_bbox
+
+    fp = get_data("test_pbf")
+    monkeypatch.setattr("pyrosm.utils.download.download", lambda *a, **k: fp)
+    bounds = [26.94, 60.52, 26.96, 60.53]
+    setting, own = [], []
+    enable_logging(progress=lambda done, total: setting.append(done))
+
+    def report(done, total):
+        own.append(done)
+
+    source = ei.ExtractSource("geofabrik", "test", "url", 0, fp)
+    for crop in (
+        lambda: get_data_by_bbox(bounds, directory=tmp_path, progress=report),
+        lambda: ei._write_with_provenance(
+            box(*bounds), [source], True, None, tmp_path, 1, report
+        ),
+    ):
+        own.clear()
+        crop()
+        assert own and setting == []
 
 
 def test_log_event_and_timed(pyrosm_logger, caplog):

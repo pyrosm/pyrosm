@@ -26,8 +26,8 @@ def _printable(text):
     return _CONTROL.sub(" ", text)
 
 
-def enable_logging(level="INFO", to_file=None):
-    """Show pyrosm's log messages.
+def enable_logging(level="INFO", to_file=None, progress=True):
+    """Show pyrosm's log messages, and set how every operation shows its progress.
 
     Attaches one handler to the ``pyrosm`` logger, writing to stderr, or to the file
     ``to_file`` when given, and sets the logger's level: ``"INFO"`` (default) logs the
@@ -44,18 +44,28 @@ def enable_logging(level="INFO", to_file=None):
     to_file : str | pathlib.Path, optional
         A file to append the messages to instead of writing them to stderr.
 
+    progress : bool | callable (default: True)
+        The progress of reads, crops, merges and downloads whose own ``progress`` is not given:
+        ``True`` shows a bar on stderr (see :class:`pyrosm.OSM`), ``False`` shows nothing, and a
+        callable is called as ``progress(done, total)``. Without a call to this function,
+        progress is shown as with ``True``. ``enable_logging("WARNING", progress=False)``
+        silences both.
+
     Returns
     -------
     logging.Handler
         The handler attached.
     """
     global _handler
+    from pyrosm.utils import progress as _progress
+
     if isinstance(level, str) and isinstance(logging.getLevelName(level.upper()), int):
         level = logging.getLevelName(level.upper())
     if isinstance(level, bool) or not isinstance(level, int):
         raise ValueError(
             "level must be a logging level name or number; got %r." % (level,)
         )
+    _progress.validate_progress(progress, allow_none=False)
     handler = (
         logging.StreamHandler()
         if to_file is None
@@ -72,6 +82,7 @@ def enable_logging(level="INFO", to_file=None):
         logger.setLevel(level)
         logger.propagate = False
         _handler = handler
+        _progress._setting = progress
     return handler
 
 

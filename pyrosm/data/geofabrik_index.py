@@ -165,16 +165,19 @@ def _download_optionally_crop(
     )
     if not crop:
         return full_path
-    return _crop(full_path, geom, cropped_name, output_path, directory)
+    return _crop(full_path, geom, cropped_name, output_path, directory, progress)
 
 
-def _crop(full_path, geom, cropped_name, output_path, directory):
-    """Crop ``full_path`` to ``geom`` into ``output_path`` or ``<directory>/<cropped_name>``."""
+def _crop(full_path, geom, cropped_name, output_path, directory, progress=None):
+    """Crop ``full_path`` to ``geom`` into ``output_path`` or ``<directory>/<cropped_name>``,
+    showing the crop's progress as ``progress`` says (see :class:`pyrosm.OSM`)."""
     from pyrosm import OSM
 
     target = output_path or str(_default_target_dir(directory) / cropped_name)
     Path(target).resolve().parent.mkdir(parents=True, exist_ok=True)
-    return OSM(full_path, bounding_box=geom).to_pbf(output_path=target)
+    return OSM(full_path, bounding_box=geom, progress=progress).to_pbf(
+        output_path=target
+    )
 
 
 def get_data_by_bbox(
@@ -184,7 +187,7 @@ def get_data_by_bbox(
     update=False,
     directory=None,
     output_path=None,
-    progress=True,
+    progress=None,
 ):
     """Download (and by default crop) the OSM data covering a bounding box.
 
@@ -219,12 +222,15 @@ def get_data_by_bbox(
         Path for the cropped file when ``crop=True`` (overrides the automatic
         name). Ignored when ``crop=False`` or ``download=False``.
 
-    progress : bool | callable
-        ``True`` (default) shows the download as a bar on stderr, a widget in Jupyter when
+    progress : bool | callable | None
+        ``None`` (default) follows :func:`pyrosm.enable_logging`, which is ``True`` unless
+        set. ``True`` shows the download as a bar on stderr, a widget in Jupyter when
         ipywidgets is installed (``pip install "pyrosm[notebook]"``); without a terminal,
         only a line naming the file is printed. ``False`` shows nothing. A callable is called
         as ``progress(written, total)`` after each chunk, with the bytes written so far and
         the file size, ``None`` when the server does not give it.
+        The crop shows its progress the same way (see :class:`pyrosm.OSM`); a
+        callable is then called with the bytes of the extract read in each pass.
 
     Returns
     -------
