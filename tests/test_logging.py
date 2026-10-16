@@ -118,6 +118,30 @@ def test_download_progress_covers_the_crop(pyrosm_logger, tmp_path, monkeypatch)
         assert own and setting == []
 
 
+def test_graph_export_reports_its_steps(pyrosm_logger):
+    """A graph export reports its steps to the function set with enable_logging, done from 0
+    to the number of steps, which depends on simplify and retain_all."""
+    from pyrosm.graphs import graph_tables
+
+    osm = OSM(get_data("test_pbf"), progress=False)
+    nodes, edges = osm.get_network(nodes=True, network_type="driving")
+    calls = []
+    enable_logging(progress=lambda done, total: calls.append((done, total)))
+    for export, steps in (
+        (lambda: OSM.to_graph(nodes, edges, graph_type="networkx"), 4),
+        (
+            lambda: OSM.to_graph(
+                nodes, edges, graph_type="networkx", simplify=False, retain_all=True
+            ),
+            2,
+        ),
+        (lambda: graph_tables(nodes, edges), 3),
+    ):
+        calls.clear()
+        export()
+        assert calls == [(done, steps) for done in range(steps + 1)]
+
+
 def test_log_event_and_timed(pyrosm_logger, caplog):
     """Messages are ``op key=value ...`` lines that shlex.split reads back, with control
     characters as spaces; nothing is formatted or timed when the level is off, and a block that

@@ -554,6 +554,25 @@ def test_bar_follows_a_restart(monkeypatch, capsys):
     assert "x.osm.pbf: " in capsys.readouterr().err
 
 
+def test_bar_counts_steps_and_names_the_current_one(monkeypatch, capsys):
+    """A bar of steps counts them as they are, not as bytes, and describe() changes the
+    label it shows."""
+    from tqdm import std
+
+    from pyrosm.utils import progress
+
+    monkeypatch.setattr(progress, "_bar_class", lambda: (std.tqdm, False))
+    bar = progress.Bar("Building", unit="step")
+    bar.describe("Building: simplifying")
+    bar(1, 4)
+    bar.describe("Building: building the graph")
+    bar(3, 4)
+    assert (bar.bar.n, bar.bar.unit, bar.bar.unit_scale) == (3, "step", False)
+    assert bar.bar.desc.startswith("Building: building the graph")
+    bar.close()
+    assert "Building: simplifying" in capsys.readouterr().err
+
+
 def test_timed_bar_waits_and_clears(monkeypatch, capsys):
     """A bar with a delay draws nothing before the delay, also when a second pass starts it
     over, is cleared when it closes, and a shown bar prints no time line."""
