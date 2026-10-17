@@ -24,7 +24,7 @@ PyPI, and creates the GitHub release.
 
 The workflow then runs: `tests` → `check-version` (the tag must equal the
 `setup.py` version, otherwise it fails before building) → build wheels
-(Linux/macOS/Windows × CPython 3.10–3.14) + sdist → publish to PyPI → create the
+(Linux/macOS/Windows × CPython 3.11–3.15) + sdist → publish to PyPI → create the
 GitHub release. Pre-release tags (e.g. `v0.9.0rc1`) publish and are marked as a
 GitHub pre-release automatically.
 

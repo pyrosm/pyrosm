@@ -26,7 +26,7 @@ The main difference between pyrosm and OSMnx is that OSMnx reads the data over i
 that can be downloaded e.g. from [GeoFabrik's website](http://download.geofabrik.de/). The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) which makes it fast to parse OpenStreetMap data from PBF files. With its out-of-core ("streaming") engine, the default reader, it is possible to read whole-country (or even continent) extracts quickly without running out of
 memory. Pyrosm decodes the PBF data with [Google's Protocol Buffers](https://protobuf.dev/) library (using its fast `upb` C backend). Protocol Buffers is a commonly used and efficient method to serialize and compress structured data which is also used by OpenStreetMap contributors to distribute the OSM data in PBF format (Protocolbuffer Binary Format). 
 
-> **Backend change.** Since **v0.8.0**, the backend used to parse the protocol-buffer messages is [Google's Protobuf](https://protobuf.dev/) (its fast C `upb` backend) instead of the previously used [Pyrobuf](https://github.com/appnexus/pyrobuf). The switch was made for maintainability and installation reliability: Pyrobuf is no longer maintained and its source build fails with modern `setuptools`, which broke `pip install pyrosm`, whereas Google's Protobuf is actively maintained and ships prebuilt wheels and conda-forge packages for Python 3.10–3.14. The change does **not** slow down parsing — see the [backend benchmark](https://github.com/pyrosm/pyrosm/blob/master/docs/benchmarks/README.md). **v0.7.0 was the last release that used Pyrobuf.**
+> **Backend change.** Since **v0.8.0**, the backend used to parse the protocol-buffer messages is [Google's Protobuf](https://protobuf.dev/) (its fast C `upb` backend) instead of the previously used [Pyrobuf](https://github.com/appnexus/pyrobuf). The switch was made for maintainability and installation reliability: Pyrobuf is no longer maintained and its source build fails with modern `setuptools`, which broke `pip install pyrosm`, whereas Google's Protobuf is actively maintained and ships prebuilt wheels and conda-forge packages for every Python version pyrosm supports. The change does **not** slow down parsing — see the [backend benchmark](https://github.com/pyrosm/pyrosm/blob/master/docs/benchmarks/README.md). **v0.7.0 was the last release that used Pyrobuf.**
 
 > **Out-of-core ("streaming") engine.** Pyrosm reads with its out-of-core engine by default: `OSM(filepath)` decodes PBF files in a **single streaming pass with bounded memory**, can decode **in parallel** across a worker pool (`workers="auto"`), and caches each layer's result automatically. It reads whole-country and even **whole-continent** extracts (e.g. all of South America) quickly on modest machines without running out of memory. `OSM(filepath, engine="in_memory")` selects the in-memory reader, which parses the whole file once and serves every read of the reader from it; history reads always use it. 
 
@@ -60,7 +60,7 @@ Install pyrosm with pip:
 
 `$ pip install pyrosm`
 
-pip installs prebuilt wheels of pyrosm and its dependencies, so nothing is compiled. Wheels are published for CPython 3.10–3.14 on glibc-based Linux (x86_64 and aarch64), macOS (Intel and Apple silicon) and Windows on x86_64.
+pip installs prebuilt wheels of pyrosm and its dependencies, so nothing is compiled. Wheels are published for CPython 3.11–3.15 on glibc-based Linux (x86_64 and aarch64), macOS (Intel and Apple silicon) and Windows on x86_64.
 
 You can also install pyrosm from conda-forge with [mamba](https://mamba.readthedocs.io/) (or its standalone variant [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html)), a fast drop-in replacement for `conda`. If you don't have it yet, download and install mamba via Miniforge from the [conda-forge download page](https://conda-forge.org/download/) — it ships mamba preconfigured with the conda-forge channel. Then install pyrosm with:
 
@@ -102,7 +102,7 @@ please check the [contribution guidelines](https://pyrosm.readthedocs.io/en/stab
 
 You can install a local development version of the tool by 1) creating an environment with the necessary packages using mamba/micromamba and 2) building pyrosm from source:
 
- 1. create an environment for one of the supported Python versions (3.10–3.14) by:
+ 1. create an environment for one of the supported Python versions (3.11–3.15) by:
  
     - e.g. Python 3.14 (you might want to modify the env-name which is `test` by default): `$ mamba env create -f ci/314-conda.yaml` (or `$ micromamba create -f ci/314-conda.yaml`)
     - environment files for other versions are available under `ci/` (e.g. `ci/312-conda.yaml`)

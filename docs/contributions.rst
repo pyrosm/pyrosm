@@ -68,7 +68,7 @@ conda-forge channel.
 
 Make sure you have cloned the repository and ``cd`` into the *pyrosm* source
 directory. The ``ci/`` folder ships ready-made environment files, one per
-supported Python version (3.10--3.14), that pin every dependency. Create an
+supported Python version (3.11--3.15), that pin every dependency. Create an
 environment from one of them (it is named ``test`` by default), e.g. for Python
 3.14::
 
@@ -90,8 +90,8 @@ point you can do a *development* install, as detailed in the next sections.
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The ``ci/<version>-conda.yaml`` environment file you used in the previous step
-already installs all of *pyrosm*'s dependencies from conda-forge -- the required
-runtime packages (``geopandas``, ``protobuf``, ``python-rapidjson``), the build
+already installs all of *pyrosm*'s dependencies, from conda-forge (on Python 3.15
+igraph comes from PyPI) -- the required runtime packages (``geopandas``, ``protobuf``, ``python-rapidjson``), the build
 tool (``cython``), the optional graph backends (``networkx``,
 ``python-igraph``, ``pandarm``) and the tools for running the tests and the
 formatter (``pytest``, ``pytest-cov``, ``black``) -- so there is nothing extra to
