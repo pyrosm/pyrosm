@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- DOCS: The guide to reading OSM data and the FAQ explain the warning that a read, crop or merge without `workers` gives since 0.22.0, and how to silence it with `workers=1`. The list in the 0.2.0 notes of the changelog page shows as one list again ([#524](https://github.com/pyrosm/pyrosm/pull/524))
+
 v0.22.0
 -------
 

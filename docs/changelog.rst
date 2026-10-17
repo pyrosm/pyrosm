@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- DOCS: The guide to reading OSM data and the FAQ explain the warning that a read, crop or merge without ``workers`` gives since 0.22.0, and how to silence it with ``workers=1``. The list in the 0.2.0 notes of the changelog page shows as one list again (`#524 <https://github.com/pyrosm/pyrosm/pull/524>`__)
+
 v0.22.0 (Oct 18, 2026)
 ----------------------
 
@@ -452,7 +457,7 @@ v0.2.0 (April 13, 2020)
 
 - read buildings from PBF into GeoDataFrame
 - enable applying custom filter to filter data: e.g. with buildings you can filter specific
-types of buildings with `{'building': ['residential', 'retail']}`
+  types of buildings with `{'building': ['residential', 'retail']}`
 - handle Relations as well
 - handle cases where data is not available (warn user and return empty GeoDataFrame)
 
