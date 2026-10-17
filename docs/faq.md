@@ -25,6 +25,10 @@ if __name__ == "__main__":
     buildings = osm.get_buildings()
 ```
 
+Since pyrosm 0.22.0, a read, crop or merge that leaves `workers` unset warns once per Python
+session that pyrosm 1.0 will run it in parallel by default; pass `workers=1` to stay on a single
+core and silence the warning.
+
 Other ways to lower memory use: read only the area you need with a `bounding_box` (or crop the
 file first with `to_pbf()`), keep fewer tag columns with `tags_to_keep=[...]` on the feature
 call, and drop the element metadata columns with `keep_metadata=False`.
