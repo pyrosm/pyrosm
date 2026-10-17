@@ -718,6 +718,16 @@ def test_engine_cut_off_file_raises_the_same_error(test_pbf, tmp_path, monkeypat
     assert errors[0] == errors[1]
 
 
+def test_engine_threaded_decode_of_no_blobs(tmp_path):
+    # Without data blobs the threaded decode reads no batch and writes no shard.
+    from pyrosm.engine import blobs
+    from pyrosm.engine.decode import _DecodeSettings
+
+    assert list(blobs._read_batches([], 4)) == []
+    settings = _DecodeSettings(str(tmp_path / "none.osm.pbf"), str(tmp_path))
+    assert pool._decode_threads([], 2, settings, None) == []
+
+
 def test_engine_decode_backend_must_be_known(test_pbf, monkeypatch, fresh_cache):
     monkeypatch.setenv("PYROSM_DECODE_BACKEND", "fork")
     with pytest.raises(ValueError, match="PYROSM_DECODE_BACKEND"):
