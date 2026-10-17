@@ -25,10 +25,6 @@ cdef khint_t _buckets_for(Py_ssize_t n) except 0:
     return buckets
 
 
-cdef inline bint _set_has(kh_i64set_t *table, int64_t key) noexcept nogil:
-    return kh_get_i64set(table, key) != table.n_buckets
-
-
 cdef inline void _prefetch_bucket(kh_i64set_t *table, int64_t key) noexcept nogil:
     """Start loading the bucket of ``key`` and its flags into the cache."""
     cdef khint_t slot = pyrosm_hash_int64(key) & (table.n_buckets - 1)

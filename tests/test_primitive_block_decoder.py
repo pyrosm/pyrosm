@@ -430,48 +430,97 @@ def test_plain_node_tags_in_any_protobuf_encoding():
         decode_primitive_block(_block_with_plain_node(*node, *keys, vals[0]))
 
 
+
 def _batch(blocks):
     """The blocks as one buffer with their start offsets, as decode_batch_nogil takes them."""
     buffer = np.frombuffer(b"".join(blocks), dtype=np.uint8)
     return buffer, _offsets([len(b) for b in blocks])
 
 
-def _expected_dense(block, bbox):
+_DENSE_META = ("version", "timestamp", "changeset", "visible")
+
+
+def _expected_dense(block, keys, bbox):
     """What decode_batch_nogil gives for a block of dense nodes, from
-    decode_primitive_block: the nodes and their in-box flags."""
-    _, header, nodes, _, _ = decode_primitive_block(block)
+    decode_primitive_block: the nodes, the in-box flags and the node features."""
+    table, header, nodes, _, _ = decode_primitive_block(block)
+    if nodes is None:
+        nodes = {k: np.empty(0, np.int64) for k in ("id", "lon", "lat", "keys_vals")}
+        nodes.update({k: np.empty(0, np.int64) for k in _DENSE_META})
     lon = (nodes["lon"] * header["granularity"] + header["lon_offset"]) / 1e9
     lat = (nodes["lat"] * header["granularity"] + header["lat_offset"]) / 1e9
     xmin, ymin, xmax, ymax = bbox
+    wanted = None if keys is None else {table.index(k) for k in keys if k in table}
+    meta = [
+        nodes[name] if len(nodes[name]) else np.zeros(len(nodes["id"]), dtype=np.int64)
+        for name in _DENSE_META
+    ]
+    rows, pairs, feature_meta = [], [], []
+    kv = nodes["keys_vals"].tolist()
+    pos = 0
+    for row in range(len(nodes["id"]) if kv else 0):
+        tags = []
+        while kv[pos]:
+            tags.append((kv[pos], kv[pos + 1]))
+            pos += 2
+        pos += 1
+        if tags and (wanted is None or any(k in wanted for k, _ in tags)):
+            rows.append(row)
+            pairs.append(tags)
+            feature_meta.append([column[row] for column in meta])
     return {
         "node_id": nodes["id"],
         "node_lon": lon,
         "node_lat": lat,
         "in_box": (lon >= xmin) & (lon <= xmax) & (lat >= ymin) & (lat <= ymax),
+        "rows": rows,
+        "pairs": pairs,
+        "feature_meta": feature_meta,
     }
 
 
-def test_decode_batch_nogil_dense_nodes(test_pbf, helsinki_pbf):
-    """The GIL-free batch decoder gives the dense nodes of the bundled extracts as
-    decode_primitive_block decodes them, with their in-box flags; it hands back the blocks
-    with ways or relations (status 1)."""
-    from pyrosm.primitive_block_decoder import BLOCK_COUNTS, decode_batch_nogil
+@pytest.mark.parametrize("keys", [None, [b"amenity", b"shop"]])
+def test_decode_batch_nogil_dense_nodes(test_pbf, helsinki_pbf, keys):
+    """The GIL-free batch decoder gives the dense nodes and node features of the bundled
+    extracts as decode_primitive_block decodes them; it hands back the blocks with
+    relations (status 1). block_string_table gives a block's string table."""
+    from pyrosm.primitive_block_decoder import (
+        BLOCK_COUNTS,
+        block_string_table,
+        decode_batch_nogil,
+    )
 
     blocks = list(_iter_block_bytes(test_pbf)) + list(_iter_block_bytes(helsinki_pbf))
     bbox = (24.94, 60.16, 24.96, 60.17)
-    out = decode_batch_nogil(*_batch(blocks), bbox=bbox)
+    out = decode_batch_nogil(*_batch(blocks), keys=keys, features=True, bbox=bbox)
     counts = dict(zip(BLOCK_COUNTS, out["counts"].T.tolist()))
-    dense = []
-    for block in blocks:
-        _, _, nodes, ways, relations = decode_primitive_block(block)
-        dense.append(ways is None and relations is None)
+    dense = [decode_primitive_block(block)[4] is None for block in blocks]
     assert counts["status"] == [0 if d else 1 for d in dense]
     assert 0 < sum(dense) < len(blocks)
 
-    expected = [_expected_dense(b, bbox) for b, d in zip(blocks, dense) if d]
+    expected = [_expected_dense(b, keys, bbox) for b, d in zip(blocks, dense) if d]
     for name in ("node_id", "node_lon", "node_lat", "in_box"):
         assert out[name].tolist() == np.concatenate([e[name] for e in expected]).tolist()
-    assert 0 < out["in_box"].sum() < len(out["in_box"])
+    assert out["in_box"].any()
+    row0 = np.cumsum([0] + [len(e["node_id"]) for e in expected])
+    rows = [r + row0[i] for i, e in enumerate(expected) for r in e["rows"]]
+    assert out["feature_row"].tolist() == rows
+    assert 0 < len(rows) < len(out["node_id"])
+    pairs = [p for e in expected for p in e["pairs"]]
+    off = out["feature_pairs_off"]
+    got = [
+        list(zip(out["feature_keys"][a:b].tolist(), out["feature_vals"][a:b].tolist()))
+        for a, b in zip(off[:-1], off[1:])
+    ]
+    assert got == pairs
+    meta = [m for e in expected for m in e["feature_meta"]]
+    assert out["feature_meta"].tolist() == np.array(meta).tolist()
+    # The tags' string ids are resolved with the block's string table.
+    for block in blocks + [_two_string_tables()]:
+        assert block_string_table(block) == decode_primitive_block(block)[0]
+    for corrupt in (_two_string_tables() + b"\x12\x02x", _corrupt_string_table()):
+        with pytest.raises(InvalidOSMFileError):
+            block_string_table(corrupt)
 
 
 def _dense_block(id_runs, keys_vals=None, untagged_group=False):
@@ -568,6 +617,13 @@ def _corrupt_string_table():
             _dense_block([2], [1, 2, 0, 0], untagged_group=True),
             1,
         ),
+        ("tag id outside the string table", _dense_block([2], [1, 3, 0, 0]), 1),
+        (
+            "way tag id outside the string table",
+            _raw_block(_field(3, 2, _field(1, 0, 7) + _field(2, 2, b"\x01") + _field(3, 2, b"\x03"))),
+            1,
+        ),
+        ("a way", _raw_block(_field(3, 2, _field(1, 0, 7) + _field(8, 2, b"\x02"))), 0),
         (
             "metadata in only some groups",
             _dense_groups(_field(5, 2, _field(1, 2, _varint(1))), b""),
@@ -606,19 +662,26 @@ def test_decode_batch_nogil_decodes_or_hands_back(case, block, status):
     dense = _dense_block([2], [1, 2, 0, 0])
     buffer = np.frombuffer(dense + block, dtype=np.uint8)
     starts = np.array([0, len(dense), len(dense) + len(block)], dtype=np.int64)
-    out = decode_batch_nogil(buffer, starts)
+    out = decode_batch_nogil(
+        buffer, starts, keys=[b"amenity"], features=True, all_ways=True
+    )
     counts = dict(zip(BLOCK_COUNTS, out["counts"].T.tolist()))
     assert counts["status"] == [0, 0 if status == 0 else 1]
+    unfiltered = decode_batch_nogil(buffer, starts, features=True, all_ways=True)
+    assert unfiltered["counts"][:, 0].tolist() == counts["status"]
     if status:
-        assert counts["nodes"][1] == 0
+        assert counts["nodes"][1] == counts["features"][1] == counts["all_ways"][1] == 0
     else:
         _, _, nodes, _, _ = decode_primitive_block(block)
-        assert counts["nodes"][1] == len(nodes["id"])
+        node_ids = [] if nodes is None else nodes["id"].tolist()
+        assert counts["nodes"][1] == len(node_ids)
     if status == "corrupt":
         with pytest.raises(InvalidOSMFileError):
             decode_primitive_block(block)
     assert out["node_id"].tolist()[:2] == [1, 2]
-    assert out["node_id"].tolist()[2:] == ([] if status else nodes["id"].tolist())
+    assert out["node_id"].tolist()[2:] == ([] if status else node_ids)
+    # Each block's first node carries amenity=cafe.
+    assert out["feature_row"].tolist() == [0] + ([2] if not status and node_ids else [])
 
 
 @pytest.mark.parametrize(
@@ -641,15 +704,108 @@ def test_decode_batch_nogil_empty_buffer():
     assert len(out["node_id"]) == 0
 
 
-def test_decode_batch_nogil_corrupt_blocks(test_pbf, corrupted_copies):
-    """A corrupted block of dense nodes is decoded as decode_primitive_block decodes it,
-    or handed back (status 1); the decoder never reads outside the block."""
+@pytest.mark.parametrize(
+    "case, block, tags",
+    [
+        ("tagged, ids in two runs", _dense_block([2, 2], [0, 1, 2, 0, 0, 0]), [1, 0]),
+        ("untagged", _dense_block([4]), [0, 0]),
+    ],
+)
+def test_decode_batch_nogil_selects_nodes_by_id(case, block, tags):
+    """With node_ids a dense node whose id is in the set is a node feature, tagged or
+    not, with its tags (here node 2's amenity=cafe, string ids 1 and 2) and its metadata
+    (0 without DenseInfo)."""
+    from pyrosm.int64_hash import Int64Set
     from pyrosm.primitive_block_decoder import decode_batch_nogil
 
-    block = next(_iter_block_bytes(test_pbf))
+    buffer = np.frombuffer(block, dtype=np.uint8)
+    starts = np.array([0, len(block)], dtype=np.int64)
+    out = decode_batch_nogil(
+        buffer,
+        starts,
+        keys=[],
+        features=True,
+        node_ids=Int64Set(np.array([2, 3, 9])),
+    )
+    assert out["counts"][0, 0] == 0
+    assert out["node_id"][out["feature_row"]].tolist() == [2, 3]
+    assert np.diff(out["feature_pairs_off"]).tolist() == tags
+    pairs = list(zip(out["feature_keys"].tolist(), out["feature_vals"].tolist()))
+    assert pairs == ([(1, 2)] if sum(tags) else [])
+    assert out["feature_meta"].tolist() == [[0, 0, 0, 0]] * 2
+
+
+def test_decode_batch_nogil_corrupt_blocks(test_pbf, corrupted_copies):
+    """A corrupted block of dense nodes and ways is decoded as decode_primitive_block
+    decodes it, or handed back (status 1); the decoder never reads outside the block."""
+    from pyrosm.primitive_block_decoder import decode_batch_nogil
+
+    block = list(_iter_block_bytes(test_pbf))[1]
     for data in corrupted_copies(block, 300, seed=2):
-        out = decode_batch_nogil(*_batch([data]))
+        out = decode_batch_nogil(*_batch([data]), features=True, all_ways=True)
         if out["counts"][0, 0] == 1:
             continue
-        _, _, nodes, _, _ = decode_primitive_block(data)
-        assert out["node_id"].tolist() == nodes["id"].tolist()
+        _, _, nodes, ways, _ = decode_primitive_block(data)
+        assert out["node_id"].tolist() == ([] if nodes is None else nodes["id"].tolist())
+        assert out["all_id"].tolist() == ([] if ways is None else ways["id"].tolist())
+
+
+# A way's tag amenity=cafe: string ids 1 and 2 of the table of ``_raw_block``.
+_WAY_TAG = _field(2, 2, b"\x01") + _field(3, 2, b"\x02")
+
+
+def _expected_ways(block, keys):
+    """What decode_batch_nogil gives for the ways of a block (with ``all_ways``), from
+    decode_primitive_block: every way's id and refs, and the ways with a wanted key with
+    all their tags and their version, timestamp and visible."""
+    table, _, _, ways, _ = decode_primitive_block(block)
+    if ways is None:
+        return {"all": [], "matched": []}
+    wanted = None if keys is None else {table.index(k) for k in keys if k in table}
+    refs_off, tags_off = ways["refs_off"].tolist(), ways["tags_off"].tolist()
+    every, matched = [], []
+    for i, way_id in enumerate(ways["id"].tolist()):
+        refs = ways["refs"][refs_off[i] : refs_off[i + 1]].tolist()
+        keys_i = ways["keys"][tags_off[i] : tags_off[i + 1]].tolist()
+        vals_i = ways["vals"][tags_off[i] : tags_off[i + 1]].tolist()
+        every.append((way_id, refs))
+        if keys_i and (wanted is None or wanted.intersection(keys_i)):
+            meta = [int(ways[c][i]) for c in ("version", "timestamp", "visible")]
+            matched.append((way_id, refs, list(zip(keys_i, vals_i)), meta))
+    return {"all": every, "matched": matched}
+
+
+def _rows(off, *columns):
+    """The rows of CSR ``columns`` that share the offsets ``off``."""
+    off = off.tolist()
+    return [
+        [column[a:b].tolist() for column in columns] for a, b in zip(off[:-1], off[1:])
+    ]
+
+
+@pytest.mark.parametrize("keys", [None, [b"highway", b"building"]])
+def test_decode_batch_nogil_ways(test_pbf, helsinki_pbf, keys):
+    """The GIL-free batch decoder gives every way's id and refs, and the ways with a wanted
+    key with their tags and metadata, as decode_primitive_block decodes them."""
+    from pyrosm.primitive_block_decoder import decode_batch_nogil
+
+    blocks = list(_iter_block_bytes(test_pbf)) + list(_iter_block_bytes(helsinki_pbf))
+    # A way without Info, whose metadata defaults as decode_primitive_block's does.
+    blocks.append(_raw_block(_field(3, 2, _field(1, 0, 7) + _WAY_TAG + _field(8, 2, b"\x02"))))
+    out = decode_batch_nogil(*_batch(blocks), keys=keys, all_ways=True)
+    decoded = [b for b, s in zip(blocks, out["counts"][:, 0].tolist()) if s == 0]
+    expected = [_expected_ways(b, keys) for b in decoded]
+    assert any(e["matched"] for e in expected)
+    every = [w for e in expected for w in e["all"]]
+    got = _rows(out["all_refs_off"], out["all_refs"])
+    assert list(zip(out["all_id"].tolist(), [r[0] for r in got])) == every
+    matched = [w for e in expected for w in e["matched"]]
+    refs = _rows(out["way_refs_off"], out["way_refs"])
+    tags = _rows(out["way_tags_off"], out["way_keys"], out["way_vals"])
+    got = [
+        (way_id, r[0], list(zip(*t)), meta)
+        for way_id, r, t, meta in zip(
+            out["way_id"].tolist(), refs, tags, out["way_meta"].tolist()
+        )
+    ]
+    assert got == matched
