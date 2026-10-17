@@ -1562,6 +1562,100 @@ def test_crop_blocks_corrupt_blocks(corrupted_copies):
             assert offsets.tolist() == [0, len(out)]
 
 
+def _expected_way_copies(block, candidates, nodes_in_box):
+    """The copies of the ``candidates`` ways in ``block``, as the crop and merge read them
+    with protobuf: (ids, versions, timestamps, touches, ref_counts, refs)."""
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    pb = PrimitiveBlock()
+    pb.ParseFromString(block)
+    out = [[] for _ in range(6)]
+    for group in pb.primitivegroup:
+        for way in group.ways:
+            if way.id not in candidates:
+                continue
+            refs = np.cumsum(np.array(way.refs, dtype=np.int64)).tolist()
+            touching = any(r in nodes_in_box for r in refs)
+            out[0].append(way.id)
+            out[1].append(way.info.version if way.info.HasField("version") else -1)
+            out[2].append(way.info.timestamp if way.info.HasField("timestamp") else -1)
+            out[3].append(touching)
+            out[4].append(len(refs) if touching else 0)
+            out[5].extend(refs if touching else [])
+    return out
+
+
+@pytest.mark.parametrize("source", ["crafted", "helsinki"])
+def test_scans_read_blocks_as_protobuf(tmp_path, helsinki_pbf, source):
+    """The selection stages' GIL-free scans read each block as protobuf does:
+    _relation_blocks marks the blocks holding relations, and _way_copies_blocks gives the
+    copies of the candidate ways (version and timestamp -1 where not recorded, the refs of
+    the copies touching the box) or leaves a block to the protobuf path (status 1)."""
+    from pyrosm.int64_hash import Int64Set
+    from pyrosm.pbf_export import (
+        _iter_block_data,
+        _relation_blocks,
+        _way_copies_blocks,
+        crop_pbf,
+    )
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    if source == "crafted":
+        path = _pbf_file(tmp_path / "crafted.osm.pbf", *_crafted_blocks())
+        candidates, nodes_in_box = {40, 41, 42, 43, 99}, {2, 22, 30}
+    else:
+        path = helsinki_pbf
+        node_ids, way_ids, _, _, _ = _read_elements(
+            crop_pbf(path, str(tmp_path / "out.osm.pbf"), CROP_BBOX, workers=1)
+        )
+        candidates, nodes_in_box = set(way_ids), set(sorted(node_ids)[::3])
+    blocks = list(_iter_block_data(path))
+    buffer = np.frombuffer(b"".join(blocks), dtype=np.uint8)
+    starts = np.concatenate([[0], np.cumsum([len(b) for b in blocks])]).astype(np.int64)
+
+    marked = _relation_blocks(buffer, starts)
+    pbs = [PrimitiveBlock.FromString(b) for b in blocks]
+    assert marked.tolist() == [any(g.relations for g in pb.primitivegroup) for pb in pbs]
+    assert marked.any()
+
+    status, copies, refs, found = _way_copies_blocks(
+        buffer,
+        starts,
+        Int64Set(np.array(sorted(candidates), dtype=np.int64)),
+        Int64Set(np.array(sorted(nodes_in_box), dtype=np.int64)),
+    )
+    assert not status.any()
+    expected = [_expected_way_copies(b, candidates, nodes_in_box) for b in blocks]
+    assert copies.tolist() == [len(e[0]) for e in expected]
+    assert refs.tolist() == [len(e[5]) for e in expected]
+    for k in range(6):
+        assert found[k].tolist() == [v for e in expected for v in e[k]], k
+    assert found[3].any() and not found[3].all()
+
+
+def test_scans_corrupt_blocks(corrupted_copies):
+    """A corrupted block is marked or not, its way copies read or left to the protobuf
+    path; the scans never read outside it."""
+    from pyrosm.int64_hash import Int64Set
+    from pyrosm.pbf_export import _relation_blocks, _way_copies_blocks
+
+    block = _crafted_blocks()[4].SerializeToString()
+    candidates = Int64Set(np.array([40, 41, 42, 43], dtype=np.int64))
+    nodes_in_box = Int64Set(np.array([2, 22, 30], dtype=np.int64))
+    empty = np.zeros(0, dtype=np.uint8), np.array([0, 0], dtype=np.int64)
+    assert _relation_blocks(*empty).tolist() == [False]
+    assert _way_copies_blocks(*empty, candidates, nodes_in_box)[0].tolist() == [0]
+    for data in corrupted_copies(block, 300, seed=4):
+        buffer = np.frombuffer(data, dtype=np.uint8)
+        starts = np.array([0, len(data)], dtype=np.int64)
+        assert len(_relation_blocks(buffer, starts)) == 1
+        status, copies, refs, found = _way_copies_blocks(
+            buffer, starts, candidates, nodes_in_box
+        )
+        assert status[0] in (0, 1)
+        assert len(found[0]) == copies[0] and len(found[5]) == refs[0]
+
+
 @pytest.mark.parametrize(
     "executor, fallback",
     [
