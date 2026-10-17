@@ -322,8 +322,9 @@ def test_engine_run_pool_progress(monkeypatch, case):
     from concurrent.futures import ThreadPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
 
-    seen, state = [], {}
+    seen, in_this_thread = [], []
     release = threading.Event()
+    main = threading.current_thread()
 
     def report(done, total):
         seen.append(done)
@@ -332,16 +333,11 @@ def test_engine_run_pool_progress(monkeypatch, case):
             if case == "callback fails":
                 raise OSError("stderr closed")
 
-    def init(target):
-        state["target"] = target
-
-    def task(n):
-        target = state["target"]
-        if callable(target):
-            target(n)
+    def task(n, advance):
+        advance(n)
+        if threading.current_thread() is main:
+            in_this_thread.append(n)
             return n * 2
-        with target.get_lock():
-            target.value += n
         release.wait(5)
         if case == "breaks":
             raise BrokenProcessPool("simulated")
@@ -355,15 +351,14 @@ def test_engine_run_pool_progress(monkeypatch, case):
 
     monkeypatch.setattr(pool, "ProcessPoolExecutor", Threads)
     monkeypatch.setattr(pool.multiprocessing, "Value", _ThreadValue)
+    monkeypatch.setattr(pool, "_COUNTER", None)
     monkeypatch.setattr(pool, "_PROGRESS_INTERVAL", 0.01)
     if case == "callback fails":
         with pytest.raises(OSError, match="stderr closed"):
-            pool._run_pool(task, [1, 2, 3], 3, init, (), progress=(report, 4, 20))
-        assert not callable(state["target"])  # no fallback to one process
+            pool._run_pool(task, [1, 2, 3], 3, progress=(report, 4, 20))
+        assert in_this_thread == []  # no fallback to one process
         return
-    results, pool_ok = pool._run_pool(
-        task, [1, 2, 3], 3, init, (), progress=(report, 4, 20)
-    )
+    results, pool_ok = pool._run_pool(task, [1, 2, 3], 3, progress=(report, 4, 20))
     assert results == [2, 4, 6]
     assert pool_ok is (case == "runs")
     assert seen[0] == 0 and seen[-1] == 20
@@ -451,15 +446,11 @@ def test_engine_run_pool_silent_fallback_without_warning(monkeypatch):
     import warnings as _warnings
 
     monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor(raise_init=OSError))
-    inits = []
     with _warnings.catch_warnings(record=True) as caught:
         _warnings.simplefilter("always")
-        results, pool_ok = pool._run_pool(
-            lambda t: t * 2, [1, 2, 3], 3, lambda: inits.append(1), ()
-        )
+        results, pool_ok = pool._run_pool(lambda t, advance: t * 2, [1, 2, 3], 3)
     assert results == [2, 4, 6]
     assert pool_ok is False
-    assert inits == [1]  # initializer ran once for the serial fallback
     assert [w for w in caught if issubclass(w.category, RuntimeWarning)] == []
 
 
@@ -2034,12 +2025,11 @@ def test_gather_node_shards_matches_searching_every_id(tmp_path, needed):
 
 
 @pytest.mark.parametrize("requested", [None, [b"highway"]], ids=["all_tags", "minimal"])
-def test_way_tags_replace_invalid_utf8(monkeypatch, requested):
+def test_way_tags_replace_invalid_utf8(requested):
     """Way tags resolve through the block's string table with invalid UTF-8 bytes
     replaced, resolving every tag or (minimal-tags mode) only the requested keys."""
     from pyrosm.engine import decode
 
-    monkeypatch.setattr(decode, "_REQUESTED_TAG_KEYS", requested)
     string_table = [b"", b"highway", b"bad\xffvalue", b"name"]
     ways = {
         "id": np.array([1, 2]),
@@ -2052,25 +2042,22 @@ def test_way_tags_replace_invalid_utf8(monkeypatch, requested):
         "timestamp": np.array([0, 0]),
         "visible": np.array([1, 1]),
     }
-    found = decode._matching_ways(string_table, ways, [b"highway"])
+    found = decode._matching_ways(
+        string_table, ways, [b"highway"], requested_tag_keys=requested
+    )
     value = "bad\ufffdvalue"
     first = {"highway": value} if requested else {"highway": value, "name": value}
     assert found["tags"] == [first, {"highway": value}]
 
 
-def test_block_tags_share_one_decoded_string_table(monkeypatch):
+def test_block_tags_share_one_decoded_string_table():
     """A block's way and relation tags resolve through one decode of its string table:
     their strings are the same objects, with invalid UTF-8 bytes replaced."""
     from pyrosm.engine import decode
 
-    for name, value in [
-        ("_OSM_KEYS", [b"building"]),
-        ("_INCLUDE_NODES", False),
-        ("_BBOX_BOUNDS", None),
-        ("_REQUESTED_TAG_KEYS", None),
-        ("_SPILL_ALL_WAYS", False),
-    ]:
-        monkeypatch.setattr(decode, name, value)
+    settings = decode._DecodeSettings(
+        None, None, [b"building"], include_nodes=False, spill_all_ways=False
+    )
     string_table = [b"", b"building", b"ye\xffs", b"type", b"multipolygon", b"outer"]
     meta = {"version": np.array([1]), "timestamp": np.array([0])}
     ways = {
@@ -2096,7 +2083,9 @@ def test_block_tags_share_one_decoded_string_table(monkeypatch):
         **meta,
     }
     header = {"granularity": 100, "lat_offset": 0, "lon_offset": 0}
-    shard = decode._decode_one_block(string_table, header, None, ways, relations)
+    shard = decode._decode_one_block(
+        settings, string_table, header, None, ways, relations
+    )
     way_tags, relation_tags = shard["way_tags"][0], shard["rel_tags"][0]
     assert way_tags == {"building": "ye\ufffds"}
     assert relation_tags == {"building": "ye\ufffds", "type": "multipolygon"}

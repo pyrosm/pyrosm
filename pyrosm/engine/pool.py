@@ -8,11 +8,12 @@ import tempfile
 import warnings
 from concurrent.futures import ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
+from functools import partial
 from pathlib import Path
 
 from pyrosm._log import timed
 from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
-from pyrosm.engine.decode import _init_worker, _decode_batch
+from pyrosm.engine.decode import _DecodeSettings, _decode_batch
 from pyrosm.utils.progress import reporting
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,9 @@ _AUTO_MAX_WORKERS = 8
 _TASKS_PER_WORKER = 8
 # Seconds between the progress reports of a decode running in a process pool.
 _PROGRESS_INTERVAL = 0.2
+# In a worker process of a pool: the counter its tasks add their decoded bytes to, shared
+# with the process that runs the pool (None without progress). Set by `_init_counter`.
+_COUNTER = None
 
 
 def _auto_workers(filepath, n_blobs):
@@ -72,11 +76,10 @@ def _tracked(progress):
     return call, start, total
 
 
-def _run_serial(func, tasks, initializer, initargs, progress):
-    """Run every task in this process (see :func:`_run_pool` for ``progress``)."""
+def _run_serial(func, tasks, progress):
+    """Run every task in this process (see :func:`_run_pool`)."""
     if progress is None:
-        initializer(*initargs)
-        return [func(task) for task in tasks]
+        return [func(task, None) for task in tasks]
     report, start, total = progress
     added = 0
 
@@ -86,10 +89,27 @@ def _run_serial(func, tasks, initializer, initargs, progress):
         report(start + added, total)
 
     report(0, total)
-    initializer(*initargs, add)
-    results = [func(task) for task in tasks]
+    results = [func(task, add) for task in tasks]
     report(total, total)
     return results
+
+
+def _init_counter(counter):
+    """Initialise a worker process of a pool with its shared counter (see `_COUNTER`)."""
+    global _COUNTER
+    _COUNTER = counter
+
+
+def _add_to_counter(span):
+    """Add ``span`` decoded bytes to the worker process's shared counter."""
+    with _COUNTER.get_lock():
+        _COUNTER.value += span
+
+
+def _in_pool(func, task):
+    """``func(task, advance)`` in a worker process of a pool, ``advance`` adding to its
+    shared counter (None without progress)."""
+    return func(task, None if _COUNTER is None else _add_to_counter)
 
 
 def _map_tracked(pool, func, tasks, counter, progress):
@@ -109,12 +129,12 @@ def _map_tracked(pool, func, tasks, counter, progress):
     return results
 
 
-def _run_pool(
-    func, tasks, workers, initializer, initargs, fallback_warning=None, progress=None
-):
-    """Map ``func`` over ``tasks`` across a process pool of ``workers`` (each worker process
-    initialised with ``initializer(*initargs)``); return ``(results, pool_ok)`` -- the
-    per-task results in task order, and whether the pool actually ran.
+def _run_pool(func, tasks, workers, fallback_warning=None, progress=None):
+    """Map ``func(task, advance)`` over ``tasks`` across a process pool of ``workers``;
+    return ``(results, pool_ok)`` -- the per-task results in task order, and whether the pool
+    actually ran. ``func`` must pickle (a module-level function, or a ``functools.partial``
+    of one), and everything a task needs comes with it, so reads running at the same time
+    in this process do not share any state.
 
     ``workers == 1`` runs every task in this process (no pool, ``pool_ok`` False). A pool that
     cannot start (``OSError`` in an environment that forbids pools) or whose workers die on
@@ -123,33 +143,33 @@ def _run_pool(
     process and reports ``pool_ok`` False. ``fallback_warning`` (when given) is emitted on
     that fallback.
 
-    ``progress``, when given, is ``(report, start, total)``: ``initializer`` then gets one more
-    argument, the target each task adds the bytes it has decoded to (a callable in this
-    process, a shared counter in a pool), and this process calls ``report(start + added,
-    total)``: ``(0, total)`` first, then after each addition in one process or every
-    ``_PROGRESS_INTERVAL`` seconds while a pool runs, and ``(total, total)`` at the end. A
-    fallback to one process reports from ``(0, total)`` again."""
+    ``progress``, when given, is ``(report, start, total)``: each task then calls its
+    ``advance(span)`` with the bytes it has decoded (``advance`` is None without
+    progress), which adds them up in this process or, in a pool, in a shared counter. This
+    process calls ``report(start + added, total)``: ``(0, total)`` first, then after each
+    addition in one process or every ``_PROGRESS_INTERVAL`` seconds while a pool runs, and
+    ``(total, total)`` at the end. A fallback to one process reports from ``(0, total)``
+    again."""
     progress = _tracked(progress)
     try:
         if workers == 1:
-            return _run_serial(func, tasks, initializer, initargs, progress), False
+            return _run_serial(func, tasks, progress), False
         try:
             counter = None
-            pool_initargs = initargs
             if progress is not None:
                 # Its lock needs a semaphore, which an environment forbidding pools may refuse.
                 counter = multiprocessing.Value("q", 0)
-                pool_initargs = initargs + (counter,)
             with ProcessPoolExecutor(
-                max_workers=workers, initializer=initializer, initargs=pool_initargs
+                max_workers=workers, initializer=_init_counter, initargs=(counter,)
             ) as pool:
+                in_pool = partial(_in_pool, func)
                 if counter is None:
-                    return list(pool.map(func, tasks)), True
-                return _map_tracked(pool, func, tasks, counter, progress), True
+                    return list(pool.map(in_pool, tasks)), True
+                return _map_tracked(pool, in_pool, tasks, counter, progress), True
         except (BrokenProcessPool, OSError):
             if fallback_warning is not None:
                 warnings.warn(fallback_warning, RuntimeWarning, stacklevel=2)
-            return _run_serial(func, tasks, initializer, initargs, progress), False
+            return _run_serial(func, tasks, progress), False
     except _ReportError as e:
         raise e.__cause__
 
@@ -197,7 +217,7 @@ def _decode_all(
     refs, which only the lookup of relation members reads.
     """
     tasks = _decode_tasks(blobs, workers)
-    init_args = (
+    settings = _DecodeSettings(
         filepath,
         shard_dir,
         osm_keys,
@@ -207,11 +227,9 @@ def _decode_all(
         spill_all_ways,
     )
     results, pool_ok = _run_pool(
-        _decode_batch,
+        partial(_decode_batch, settings),
         tasks,
         workers,
-        _init_worker,
-        init_args,
         _DECODE_FALLBACK_WARNING,
         progress,
     )

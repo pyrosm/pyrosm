@@ -2338,7 +2338,7 @@ def test_graph_edges_join_consecutive_nodes_of_each_way():
     assert nodes["visible"].dtype == bool
 
 
-def test_decode_spills_every_ways_refs_only_for_relation_lookups(monkeypatch):
+def test_decode_spills_every_ways_refs_only_for_relation_lookups():
     """The out-of-core decode spills every way's id and node refs, which only the lookup of
     relation members reads, unless told not to (as for a network read)."""
     from pyrosm import get_data
@@ -2353,14 +2353,12 @@ def test_decode_spills_every_ways_refs_only_for_relation_lookups(monkeypatch):
             for kind, offset, size in _index_blobs(fp)
             if kind == "OSMData"
         ]
-    monkeypatch.setattr(decode, "_OSM_KEYS", [b"highway"])
-    monkeypatch.setattr(decode, "_INCLUDE_NODES", False)
-    monkeypatch.setattr(decode, "_BBOX_BOUNDS", None)
-    monkeypatch.setattr(decode, "_REQUESTED_TAG_KEYS", None)
     spilled = {}
     for spill in (True, False):
-        monkeypatch.setattr(decode, "_SPILL_ALL_WAYS", spill)
-        shards = [decode._decode_one_block(*block) for block in blocks]
+        settings = decode._DecodeSettings(
+            fp, None, [b"highway"], include_nodes=False, spill_all_ways=spill
+        )
+        shards = [decode._decode_one_block(settings, *block) for block in blocks]
         spilled[spill] = sum(len(shard["all_refs"]) for shard in shards)
         assert sum(len(shard["way_id"]) for shard in shards) > 0
     assert spilled[True] > 0
@@ -2722,3 +2720,66 @@ def test_reading_refuses_a_blob_larger_than_32_mib(tmp_path, codec, raw_size, en
             f.write(pack("!L", len(head)) + head + data)
     with pytest.raises(InvalidOSMFileError, match="larger than 32 MiB"):
         OSM(str(path), engine=engine, workers=1).get_buildings()
+
+
+def test_reads_decoding_at_the_same_time_keep_their_own_settings(fresh_cache, monkeypatch):
+    """Two out-of-core reads decoding in one process at the same time, each in its own
+    thread, give what each gives alone. Read A (buildings) is held after its first block
+    until read B (POIs of the same file) has begun decoding, and B is held until A is done;
+    A used to decode its other blocks with B's filter keys and return fewer rows."""
+    import shutil
+    import threading
+
+    import pandas as pd
+
+    from pyrosm import OSM, get_data
+    from pyrosm.engine import decode
+
+    fp = get_data("test_pbf")
+    layers = {"A": "get_buildings", "B": "get_pois"}
+    alone = {name: getattr(OSM(fp), layer)() for name, layer in layers.items()}
+    shutil.rmtree(fresh_cache)
+    fresh_cache.mkdir()
+    real = decode._decode_one_block
+    a_blocks = []
+    a_held, b_decoding, a_done = threading.Event(), threading.Event(), threading.Event()
+
+    def held(*args):
+        name = threading.current_thread().name
+        if name == "A":
+            a_blocks.append(1)
+            if len(a_blocks) == 2:
+                a_held.set()
+                b_decoding.wait(30)
+        elif name == "B" and not b_decoding.is_set():
+            b_decoding.set()
+            a_done.wait(30)
+        return real(*args)
+
+    monkeypatch.setattr(decode, "_decode_one_block", held)
+    together = {}
+
+    def read(name):
+        try:
+            together[name] = getattr(OSM(fp), layers[name])()
+        except Exception as e:
+            together[name] = e
+        finally:
+            if name == "A":
+                a_done.set()
+
+    a = threading.Thread(target=read, args=("A",), name="A")
+    a.start()
+    assert a_held.wait(30)
+    b = threading.Thread(target=read, args=("B",), name="B")
+    b.start()
+    a.join(60)
+    b.join(60)
+    assert b_decoding.is_set()
+    for name in layers:
+        frame, expected = together[name], alone[name]
+        assert not isinstance(frame, Exception), frame
+        pd.testing.assert_frame_equal(
+            frame.drop(columns="geometry"), expected.drop(columns="geometry")
+        )
+        assert (frame.geometry.to_wkb() == expected.geometry.to_wkb()).all()
