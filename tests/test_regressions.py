@@ -684,15 +684,15 @@ def test_bbox_network_to_graph(graph_type):
     reason="pandana is incompatible with NumPy 2 on Windows (C long is 32-bit)",
 )
 def test_to_graph_pandana_emits_deprecation_warning():
-    """#270 — graph_type='pandana' still works but warns that it is deprecated in
-    favour of 'pandarm'."""
+    """#270 — graph_type='pandana' still works but warns, as a FutureWarning, that it is
+    deprecated in favour of 'pandarm' and removed in pyrosm 1.0."""
     pytest.importorskip("pandana")
     from pyrosm import OSM, get_data
 
     osm = OSM(get_data("test_pbf"))
     nodes, edges = osm.get_network(nodes=True)
 
-    with pytest.warns(DeprecationWarning, match="pandarm"):
+    with pytest.warns(FutureWarning, match="removed in pyrosm 1.0"):
         g = osm.to_graph(nodes, edges, graph_type="pandana")
     assert g is not None
 
@@ -1429,8 +1429,8 @@ def test_get_data_dispatch_and_lazy_attrs(monkeypatch):
     data.get_data("new-zealand")
     assert seen  # everything above went through the stubbed download
 
-    # get_path is the deprecated alias for get_data.
-    with pytest.warns(DeprecationWarning, match="get_path"):
+    # get_path is the deprecated alias for get_data, removed in pyrosm 1.0.
+    with pytest.warns(FutureWarning, match="get_path.*pyrosm 1.0"):
         assert Path(data.get_path("test_pbf")).exists()
 
     # The optional geo helpers are exposed lazily via module __getattr__.

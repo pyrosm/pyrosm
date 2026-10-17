@@ -1046,7 +1046,8 @@ def test_get_data_by_area_crops_to_the_polygon(
         area, crop="polygon", directory=tmp_path / "one", strategy=strategy
     )
     used = "crop_pbf" if strategy == "single" else "merge_pbf"
-    assert workers == [(used, 2), (used, 1)]
+    # The default (None) is resolved to one process by the crop or merge.
+    assert workers == [(used, 2), (used, None)]
     # The file is the same whatever the number of workers.
     assert Path(got).read_bytes() == Path(one).read_bytes()
     assert len(got.sources) == (1 if strategy == "single" else 2)

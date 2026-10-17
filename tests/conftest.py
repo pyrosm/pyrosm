@@ -77,6 +77,15 @@ def fresh_cache(_result_cache):
 
 
 @pytest.fixture(autouse=True)
+def _default_workers_warned(monkeypatch):
+    """The warning that the default of ``workers`` changes in pyrosm 1.0, shown once per
+    process, counts as shown, so no test sees it unless it resets this."""
+    import pyrosm.utils
+
+    monkeypatch.setattr(pyrosm.utils, "_default_workers_warned", True)
+
+
+@pytest.fixture(autouse=True)
 def _no_retry_wait(monkeypatch):
     """Retried downloads do not wait between attempts during the tests."""
     from pyrosm.utils import download

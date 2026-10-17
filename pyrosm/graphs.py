@@ -13,7 +13,7 @@ from pyrosm.graph_simplify import (
     _WayEdges,
     _simplify_rows,
 )
-from pyrosm.utils import validate_edge_gdf, validate_node_gdf
+from pyrosm.utils import validate_edge_gdf, validate_node_gdf, warn_future
 from pyrosm.utils.progress import Bar, reporting
 from pyrosm.config import Conf
 from pyrosm.config.osm_filters import _UNKNOWN_NETWORK_TYPE, normalize_network_type
@@ -572,6 +572,12 @@ def to_pandana(
     simplify=True,
     simplify_kwargs=None,
 ):
+    warn_future(
+        "The pandana graph backend (graph_type='pandana', pyrosm.graphs.to_pandana) "
+        "is deprecated because pandana is unmaintained and incompatible with NumPy 2 "
+        "on Windows; it will be removed in pyrosm 1.0. Use graph_type='pandarm' "
+        "(pyrosm.graphs.to_pandarm) instead."
+    )
     with _steps(
         "Building the pandana network",
         _step_names(simplify, retain_all, "building the network"),

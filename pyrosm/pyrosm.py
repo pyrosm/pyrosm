@@ -1,5 +1,4 @@
 import logging
-import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -132,7 +131,8 @@ class OSM:
 
     workers : int | str (default: None)
         Number of worker processes the `'out_of_core'` engine uses to decode the
-        file. By default (`None`) the engine reads on a single core. Pass
+        file. By default (`None`) the engine reads on a single core; in pyrosm 1.0
+        reads run in parallel by default, so pass `workers=1` to keep one. Pass
         `workers="auto"` to let pyrosm choose the count automatically -- a single
         core for small files; for larger files the CPU cores less two, up to eight --
         or `workers=N` for an explicit count (a count above the available CPU cores is
@@ -277,10 +277,9 @@ class OSM:
         constructor-level ``bounding_box`` / ``keep_metadata`` / ``keep_node_info`` /
         ``workers`` (and ``complete_relations`` for the layer readers). Only non-history reads reach here;
         history reads use the in-memory path (see :meth:`_use_engine`)."""
-        workers = 1 if self.workers is None else self.workers
         kwargs["bounding_box"] = self.bounding_box
         kwargs["keep_metadata"] = self.keep_metadata
-        kwargs["workers"] = workers
+        kwargs["workers"] = self.workers
         kwargs["progress"] = self.progress
         kwargs["keep_node_info"] = self.keep_node_info
         if with_relations:
@@ -1265,7 +1264,7 @@ class OSM:
         self,
         output_path=None,
         keep_relations=True,
-        workers=1,
+        workers=None,
         compact=False,
         repack=False,
     ):
@@ -1296,7 +1295,8 @@ class OSM:
 
         workers : int
             Number of worker processes for the CPU-heavy per-block work. ``1``
-            (default) runs sequentially; ``>1`` uses a multiprocessing pool and
+            (by default, ``None``) runs sequentially; in pyrosm 1.0 the crop runs in
+            parallel by default. ``>1`` uses a multiprocessing pool and
             produces a byte-identical output. When the worker processes cannot run
             (on macOS and Windows: a script without an ``if __name__ == "__main__":``
             guard, or one read from stdin), the crop runs in one process and warns.
@@ -1605,7 +1605,7 @@ class OSM:
           - "igraph" (default),
           - "networkx",
           - "pandarm",
-          - "pandana" (deprecated; use "pandarm")
+          - "pandana" (deprecated, removed in pyrosm 1.0; use "pandarm")
 
         For walking, the output graph will be bidirectional by default
         (i.e. travel along the street is allowed to both directions). For driving
@@ -1645,8 +1645,8 @@ class OSM:
               - "pandarm" --> returns a pandarm.Network -object.
               - "pandana" --> returns a pandana.Network -object.
                 (deprecated: pandana is unmaintained and incompatible with
-                NumPy 2 on Windows; use "pandarm" instead. Will be removed in
-                a future release.)
+                NumPy 2 on Windows; use "pandarm" instead. Removed in pyrosm
+                1.0.)
 
         direction : str
             Name for the column containing information about the allowed driving directions
@@ -1762,14 +1762,6 @@ class OSM:
                 simplify_kwargs=simplify_kwargs,
             )
         elif graph_type == "pandana":
-            warnings.warn(
-                "graph_type='pandana' is deprecated because pandana is "
-                "unmaintained and incompatible with NumPy 2 on Windows; use "
-                "graph_type='pandarm' instead. The 'pandana' backend will be "
-                "removed in a future pyrosm release.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
             return to_pandana(
                 nodes,
                 edges,

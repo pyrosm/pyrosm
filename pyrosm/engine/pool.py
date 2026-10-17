@@ -14,6 +14,7 @@ from pathlib import Path
 from pyrosm._log import timed
 from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
 from pyrosm.engine.decode import _DecodeSettings, _decode_batch
+from pyrosm.utils import default_workers
 from pyrosm.utils.progress import reporting
 
 logger = logging.getLogger(__name__)
@@ -264,9 +265,8 @@ def _decode_and_run(
             data_blobs, header_bytes = _data_blob_spans(_index_blobs(filepath))
             fields["blobs"] = len(data_blobs)
         total = header_bytes + sum(span for _, _, span in data_blobs)
-        if workers is None:
-            workers = 1
-        elif isinstance(workers, str) and workers.lower() == "auto":
+        workers = default_workers(workers)
+        if isinstance(workers, str) and workers.lower() == "auto":
             workers = _auto_workers(filepath, len(data_blobs))
         else:
             workers = _cap_workers(workers)

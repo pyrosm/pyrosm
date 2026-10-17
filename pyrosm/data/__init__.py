@@ -25,7 +25,7 @@ from pyrosm.data.geofabrik import (
     SubRegions,
 )
 from pyrosm.data.bbbike import Cities
-import warnings
+from pyrosm.utils import warn_future
 
 __all__ = [
     "available",
@@ -318,12 +318,11 @@ def _resolve_dataset(dataset):
     raise ValueError(msg)
 
 
-# Keep temporarily for backward compatibility
 def get_path(dataset, update=False, directory=None):
-    warnings.warn(
-        "'get_path()' is deprecated, use 'get_data()' instead.",
-        DeprecationWarning,
-        stacklevel=2,
+    """Deprecated alias of :func:`get_data`, removed in pyrosm 1.0."""
+    warn_future(
+        "'get_path()' is deprecated and will be removed in pyrosm 1.0; use "
+        "'get_data()' instead."
     )
     return get_data(dataset, update, directory)
 

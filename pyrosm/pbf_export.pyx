@@ -51,6 +51,7 @@ from pyrosm.primitive_block_decoder cimport (
 )
 
 from pyrosm.int64_hash import Int64Set, SortedInt64Set
+from pyrosm.utils import default_workers
 from pyrosm.utils.progress import reporting, validate_progress
 from pyrosm.engine.blobs import _MAX_BLOB_SIZE, _decompress_blob, _invalid_pbf
 from pyrosm.zlib_blob import zlib_compress
@@ -940,13 +941,15 @@ cdef _refuse_input_as_output(output_path, sources):
 
 
 cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
-               workers=1, compact=False, repack=False, polygon=None, progress=None):
+               workers=None, compact=False, repack=False, polygon=None, progress=None):
     """Crop `source_path` by `bounding_box`, or by the Shapely (Multi)Polygon
     `polygon`, writing a valid PBF to `output_path`.
 
     Returns the output path. When ``workers > 1`` and the file has enough blocks
     to amortize pool startup (>= ``2 * workers`` OSMData blocks), the parallel
     path is used; otherwise the (faster, for small files) sequential path runs.
+    ``workers`` is 1 by default (``None``); in pyrosm 1.0 crops run in parallel by
+    default.
 
     When ``compact`` is True each output block's string table is pruned to only the
     strings its kept elements reference (smaller output, slightly slower); when
@@ -965,6 +968,7 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     crop makes two or more).
     """
     validate_progress(progress)
+    workers = default_workers(workers)
     region = _region(bounding_box, polygon)
     bounds = region[0]
     _refuse_input_as_output(output_path, [source_path])
@@ -2375,7 +2379,7 @@ cdef _fingerprint(path):
 
 
 cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True,
-                workers=1, polygon=None, progress=None):
+                workers=None, polygon=None, progress=None):
     """
     Merge overlapping ``*.osm.pbf`` extracts into one PBF, optionally cropped
     to a bounding box or a polygon.
@@ -2421,8 +2425,9 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
 
     workers : int
         Number of worker processes for selecting the elements inside
-        ``bounding_box`` or ``polygon``. ``1`` (default) runs sequentially. The
-        merged file is written sequentially either way. When the worker processes
+        ``bounding_box`` or ``polygon``. ``1`` (by default, ``None``) runs
+        sequentially; in pyrosm 1.0 merges run in parallel by default. The merged file
+        is written sequentially either way. When the worker processes
         cannot run (on macOS and Windows: a script without an
         ``if __name__ == "__main__":`` guard, or one read from stdin), the merge runs
         in one process and warns.
@@ -2469,6 +2474,7 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     if not sources:
         raise ValueError("merge_pbf() needs at least one input file.")
     validate_progress(progress)
+    workers = default_workers(workers)
     name = Path(sources[0]).name if len(sources) == 1 else "%d files" % len(sources)
     with reporting(
         progress, "Merging %s" % name, delay=2.0, leave=False, timed=True
