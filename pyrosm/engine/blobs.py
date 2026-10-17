@@ -6,10 +6,10 @@ import zlib
 
 from pyrosm.exceptions import InvalidOSMFileError
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
-from pyrosm.zlib_blob import zlib_decompress
+from pyrosm.zlib_blob import MAX_BLOB_SIZE, zlib_decompress
 
 # The OSM PBF format's limit for a blob, compressed and decompressed.
-_MAX_BLOB_SIZE = 32 * 1024 * 1024
+_MAX_BLOB_SIZE = MAX_BLOB_SIZE
 
 
 def _invalid_pbf(filepath, reason):
