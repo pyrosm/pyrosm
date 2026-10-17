@@ -265,6 +265,7 @@ def test_engine_parallel_decode_falls_back_to_serial(
     # process with a warning, not hang or error, and still produce the correct result.
     from concurrent.futures.process import BrokenProcessPool
 
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", "processes")
     if where == "construction":
         fake = _fake_executor(raise_init=OSError)
     else:
@@ -409,20 +410,23 @@ def test_engine_read_progress(test_pbf, fresh_cache):
             refused()
 
 
-def test_engine_read_progress_in_a_process_pool(test_pbf, monkeypatch, fresh_cache):
-    """A read in worker processes reports from (0, size) to (size, size)."""
+@pytest.mark.parametrize("backend", ["processes", "threads"])
+def test_engine_read_progress_in_parallel(test_pbf, monkeypatch, fresh_cache, backend):
+    """A read in worker processes or on threads reports from (0, size) to (size, size)."""
     import os
     from concurrent.futures import ProcessPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
     from pathlib import Path
 
     if (os.cpu_count() or 1) < 2:
-        pytest.skip("workers=2 runs in one process on a single-core host")
-    try:
-        with ProcessPoolExecutor(1) as executor:
-            executor.submit(int).result()
-    except (OSError, BrokenProcessPool) as e:
-        pytest.skip("process pools cannot start here: %s" % e)
+        pytest.skip("workers=2 runs on one core on a single-core host")
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    if backend == "processes":
+        try:
+            with ProcessPoolExecutor(1) as executor:
+                executor.submit(int).result()
+        except (OSError, BrokenProcessPool) as e:
+            pytest.skip("process pools cannot start here: %s" % e)
     ran = []
     real = pool._decode_all
 
@@ -454,22 +458,30 @@ def test_engine_run_pool_silent_fallback_without_warning(monkeypatch):
     assert [w for w in caught if issubclass(w.category, RuntimeWarning)] == []
 
 
-@pytest.mark.parametrize("target", [1, 8_000_000])
-def test_engine_decode_shard_target_parity(helsinki_pbf, monkeypatch, fresh_cache, target):
+@pytest.mark.parametrize(
+    "backend, target",
+    [("processes", 1), ("threads", 1), ("threads", 8_000_000)],
+)
+def test_engine_decode_shard_target_parity(
+    helsinki_pbf, monkeypatch, fresh_cache, backend, target
+):
     # The decode spill accumulates blocks into a shard until it reaches the byte target. A tiny
     # target spills one shard per block (and exercises the empty final-flush guard); the normal
     # target batches many blocks per shard. Either way the read matches the in-memory reader.
     # fresh_cache forces a real decode rather than a cached result.
     from pyrosm.engine import decode
 
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
     monkeypatch.setattr(decode, "_SHARD_TARGET_BYTES", target)
     _assert_full_parity(get_buildings(helsinki_pbf), OSM(helsinki_pbf, engine="in_memory").get_buildings())
 
 
-def test_engine_unguarded_module_read_does_not_hang(test_pbf, tmp_path):
-    # A read at module level (no `if __name__ == "__main__":` guard) must not hang: the
-    # spawned workers cannot re-import the entry point, so the decode falls back to a single
-    # process. Run it as a subprocess with a timeout so a regression surfaces as a failure.
+@pytest.mark.parametrize("backend", ["processes", "threads"])
+def test_engine_unguarded_module_read_does_not_hang(test_pbf, tmp_path, backend):
+    # A read at module level (no `if __name__ == "__main__":` guard) must not hang. With
+    # processes the spawned workers cannot re-import the entry point, so the decode may fall
+    # back to a single process; threads decode in parallel without that fallback. Run it as a
+    # subprocess with a timeout so a regression surfaces as a failure.
     import os
     import subprocess
     import sys
@@ -479,14 +491,21 @@ def test_engine_unguarded_module_read_does_not_hang(test_pbf, tmp_path):
     script.write_text(textwrap.dedent("""
             import warnings
             from pyrosm import engine
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
                 gdf = engine.get_buildings(%r, workers=3)
-            print("ROWS", 0 if gdf is None else len(gdf))
+            fell_back = any("single process" in str(w.message) for w in caught)
+            print("ROWS", 0 if gdf is None else len(gdf), "FELL_BACK", fell_back)
             """ % test_pbf))
     # The child process has its own temporary folder, so it neither reads nor writes a
     # result cached outside this test.
-    env = dict(os.environ, TMPDIR=str(tmp_path), TEMP=str(tmp_path), TMP=str(tmp_path))
+    env = dict(
+        os.environ,
+        TMPDIR=str(tmp_path),
+        TEMP=str(tmp_path),
+        TMP=str(tmp_path),
+        PYROSM_DECODE_BACKEND=backend,
+    )
     r = subprocess.run(
         [sys.executable, str(script)],
         capture_output=True,
@@ -495,6 +514,214 @@ def test_engine_unguarded_module_read_does_not_hang(test_pbf, tmp_path):
         env=env,
     )
     assert "ROWS" in r.stdout, r.stderr[-800:]
+    if backend == "threads":
+        assert "FELL_BACK False" in r.stdout
+
+
+_SHARD_KEYS = (
+    "node_id node_lon node_lat in_box_id nfeat_id nfeat_lon nfeat_lat nfeat_tags "
+    "nfeat_meta way_id refs refs_off way_tags way_version way_timestamp way_visible "
+    "all_id all_refs all_refs_off rel_id rel_memid rel_memoff rel_memtype rel_memrole "
+    "rel_tags rel_meta"
+).split()
+_OBJECT_SHARD_KEYS = ("nfeat_tags", "way_tags", "rel_memrole", "rel_tags")
+
+
+@pytest.fixture(scope="module")
+def repacked_pbf(tmp_path_factory):
+    """The bundled Helsinki extract with its ways in blocks of their own (the bundled file
+    keeps them in one block with the relations)."""
+    from pyrosm.pbf_export import crop_pbf
+
+    path = tmp_path_factory.mktemp("repacked") / "helsinki.osm.pbf"
+    crop_pbf(
+        get_data("helsinki_pbf"), str(path), [24.0, 60.0, 26.0, 61.0], repack=True, workers=1
+    )
+    return str(path)
+
+
+def _decoded_shards(filepath, backend, workers, shard_dir, monkeypatch, **kwargs):
+    """The shards ``backend`` decodes ``filepath`` into, merged into one shard dict, with
+    the object arrays (tag dicts, member roles) as lists."""
+    from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
+    from pyrosm.engine.decode import _merge_shards, _open_shard
+
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    blobs, _ = _data_blob_spans(_index_blobs(filepath))
+    shard_dir.mkdir()
+    shards, _ = pool._decode_all(filepath, blobs, workers, str(shard_dir), **kwargs)
+    keys = [key for key in _SHARD_KEYS if key not in _OBJECT_SHARD_KEYS]
+    merged = _merge_shards([{key: _open_shard(s)[key] for key in keys} for s in shards])
+    for key in _OBJECT_SHARD_KEYS:
+        merged[key] = [item for s in shards for item in _open_shard(s)[key]]
+    return merged
+
+
+@pytest.mark.parametrize(
+    "workers, kwargs",
+    [
+        (1, dict(osm_keys=[b"building"], include_nodes=True)),
+        (3, dict(osm_keys=None, include_nodes=True)),
+        (
+            3,
+            dict(
+                osm_keys=[b"highway"],
+                include_nodes=False,
+                requested_tag_keys=[b"highway", b"name"],
+                spill_all_ways=False,
+            ),
+        ),
+        (
+            1,
+            dict(
+                osm_keys=[b"natural", b"water"],
+                include_nodes=True,
+                bbox_bounds=(24.940, 60.168, 24.948, 60.174),
+            ),
+        ),
+        (
+            1,
+            dict(
+                osm_keys=[b"k%d" % i for i in range(70)] + [b"amenity"],
+                include_nodes=True,
+            ),
+        ),
+        (2, dict(osm_keys=[b"building"], include_nodes=True, limits=("raw", 1))),
+        (2, dict(osm_keys=[b"building"], include_nodes=True, limits=("span", 1))),
+    ],
+    ids=[
+        "key",
+        "every tag",
+        "minimal tags",
+        "bounding box",
+        "many keys",
+        "blob per part",
+        "blob read alone",
+    ],
+)
+def test_engine_threaded_decode_matches_processes(
+    repacked_pbf, tmp_path, monkeypatch, workers, kwargs
+):
+    # The GIL-free threaded decode writes the same shard arrays, in the same order and
+    # with the same dtypes, as the decode of the worker processes, and elements with the
+    # same tags, also when each blob of a batch is decompressed in a part of its own, or
+    # read alone as a batch spanning more than _BATCH_BYTES is.
+    from pyrosm.engine import blobs
+
+    kwargs = dict(kwargs)
+    limit, value = kwargs.pop("limits", (None, None))
+    if limit is not None:
+        name = {"raw": "_BATCH_RAW_BYTES", "span": "_BATCH_BYTES"}[limit]
+        monkeypatch.setattr(blobs, name, value)
+    ref = _decoded_shards(
+        repacked_pbf, "processes", 1, tmp_path / "processes", monkeypatch, **kwargs
+    )
+    mine = _decoded_shards(
+        repacked_pbf, "threads", workers, tmp_path / "threads", monkeypatch, **kwargs
+    )
+    assert len(ref["way_id"]) and len(ref["node_id"])
+    for key in _SHARD_KEYS:
+        if key in _OBJECT_SHARD_KEYS:
+            assert [np.asarray(v).tolist() for v in mine[key]] == [
+                np.asarray(v).tolist() for v in ref[key]
+            ], key
+        else:
+            assert mine[key].dtype == ref[key].dtype, key
+            assert mine[key].tolist() == ref[key].tolist(), key
+
+
+def test_engine_batch_parts_are_released_before_the_next(tmp_path, monkeypatch):
+    # A thread's batch is decompressed in parts of at most _BATCH_RAW_BYTES, each
+    # released before the next one is decompressed, so the traced memory peaks at about
+    # one part.
+    import tracemalloc
+
+    from pyrosm.engine import blobs, decode
+
+    part = 2 * 2**20
+    monkeypatch.setattr(blobs, "_BATCH_RAW_BYTES", part)
+    zeros = b"\0" * 2**20
+    fp = tmp_path / "zeros.osm.pbf"
+    with open(fp, "wb") as f:
+        for _ in range(8):
+            blob = Blob(zlib_data=zlib.compress(zeros), raw_size=len(zeros))
+            data = blob.SerializeToString()
+            header = BlobHeader(type="OSMData", datasize=len(data)).SerializeToString()
+            f.write(pack("!L", len(header)) + header + data)
+    sizes = []
+    tracemalloc.start()
+    try:
+        spans, _ = blobs._data_blob_spans(blobs._index_blobs(str(fp)))
+        with open(fp, "rb") as f:
+            for _, buffer, _ in decode._decoded_parts(f, spans):
+                sizes.append(len(buffer))
+                del buffer
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert sizes == [part] * 4
+    assert peak < 1.5 * part
+
+
+def test_engine_threaded_decode_releases_each_part(tmp_path, monkeypatch):
+    # The shards pending at the end of a part are copied out of its decoded arrays, so
+    # a part is released before the next one is decoded: with parts of 4 blocks and a
+    # shard flushed after 3 of them, the traced memory stays below one part's arrays (4
+    # blocks) and the decoder's scratch, one flushed shard (3 blocks) and the pending
+    # tail block (it reached about 12 blocks when the tail kept the whole part).
+    import tracemalloc
+
+    from pyrosm.engine import blobs, decode
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    n = 50_000
+    block = PrimitiveBlock(granularity=100)
+    block.stringtable.s.append(b"")
+    dense = block.primitivegroup.add().dense
+    dense.id.extend([1] * n)
+    dense.lat.extend([600_000_000] + [0] * (n - 1))
+    dense.lon.extend([250_000_000] + [0] * (n - 1))
+    data = block.SerializeToString()
+    fp = tmp_path / "nodes.osm.pbf"
+    with open(fp, "wb") as f:
+        for _ in range(8):
+            blob = Blob(zlib_data=zlib.compress(data), raw_size=len(data))
+            blob = blob.SerializeToString()
+            header = BlobHeader(type="OSMData", datasize=len(blob)).SerializeToString()
+            f.write(pack("!L", len(header)) + header + blob)
+    per_block = 24 * n  # a block's node ids, longitudes and latitudes
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", "threads")
+    monkeypatch.setattr(blobs, "_BATCH_RAW_BYTES", 4 * len(data))
+    monkeypatch.setattr(decode, "_SHARD_TARGET_BYTES", int(2.5 * per_block))
+    spans, _ = blobs._data_blob_spans(blobs._index_blobs(str(fp)))
+    tracemalloc.start()
+    try:
+        pool._decode_all(str(fp), spans, 1, str(tmp_path), [b"building"], False)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 10 * per_block
+
+
+def test_engine_cut_off_file_raises_the_same_error(test_pbf, tmp_path, monkeypatch):
+    # A file cut off in its last blob raises the same error with either backend.
+    from pathlib import Path
+
+    cut = tmp_path / "cut.osm.pbf"
+    cut.write_bytes(Path(test_pbf).read_bytes()[:-100])
+    errors = []
+    for backend in ("processes", "threads"):
+        monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+        with pytest.raises(Exception) as err:
+            get_buildings(str(cut))
+        errors.append((type(err.value), str(err.value)))
+    assert errors[0] == errors[1]
+
+
+def test_engine_decode_backend_must_be_known(test_pbf, monkeypatch, fresh_cache):
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", "fork")
+    with pytest.raises(ValueError, match="PYROSM_DECODE_BACKEND"):
+        get_buildings(test_pbf)
 
 
 def test_read_block_decodes_lzma_and_rejects_unsupported(tmp_path):
@@ -1809,22 +2036,24 @@ def test_osm_workers_reach_the_reader_without_a_warning(
 
 
 @pytest.mark.parametrize(
-    "size, cores, blobs, expected",
+    "size, cores, blobs, backend, expected",
     [
-        ("small", 10, 10_000, 1),
-        ("big", 10, 10_000, 8),
-        ("big", 16, 10_000, 8),
-        ("big", 4, 10_000, 2),
-        ("big", 2, 10_000, 1),
-        ("big", 10, 3, 3),
+        ("small", 10, 10_000, "threads", 1),
+        ("big", 10, 10_000, "threads", 8),
+        ("big", 16, 10_000, "processes", 8),
+        ("big", 16, 10_000, "threads", 14),
+        ("big", 4, 10_000, "threads", 2),
+        ("big", 2, 10_000, "threads", 1),
+        ("big", 10, 3, "threads", 3),
     ],
 )
-def test_auto_workers(tmp_path, monkeypatch, size, cores, blobs, expected):
+def test_auto_workers(tmp_path, monkeypatch, size, cores, blobs, backend, expected):
     # "auto" reads small files on a single core; above the size threshold it uses the CPU
-    # cores less two, between 1 and 8 and at most the data-blob count.
+    # cores less two, at least 1, at most 8 worker processes and at most the data-blob count.
     import os
 
     monkeypatch.setattr(pool.os, "cpu_count", lambda: cores)
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
     fp = tmp_path / "file.osm.pbf"
     fp.touch()
     offset = -1 if size == "small" else 1

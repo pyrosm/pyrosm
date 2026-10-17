@@ -5,15 +5,20 @@ import multiprocessing
 import os
 import shutil
 import tempfile
+import threading
 import warnings
-from concurrent.futures import ProcessPoolExecutor, wait
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from functools import partial
 from pathlib import Path
 
 from pyrosm._log import timed
 from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
-from pyrosm.engine.decode import _DecodeSettings, _decode_batch
+from pyrosm.engine.decode import (
+    _DecodeSettings,
+    _decode_batch,
+    _decode_batch_threads,
+)
 from pyrosm.utils import default_workers
 from pyrosm.utils.progress import reporting
 
@@ -21,7 +26,8 @@ logger = logging.getLogger(__name__)
 
 # ``workers="auto"`` decodes in parallel only for files at or above this size.
 _PARALLEL_MIN_FILE_BYTES = 70_000_000  # ~70 MB
-# ``workers="auto"`` leaves this many CPU cores free and uses at most ``_AUTO_MAX_WORKERS``.
+# ``workers="auto"`` leaves this many CPU cores free, and uses at most ``_AUTO_MAX_WORKERS``
+# worker processes.
 _AUTO_SPARE_CORES = 2
 _AUTO_MAX_WORKERS = 8
 # A parallel decode splits the file into about this many tasks per worker.
@@ -35,11 +41,14 @@ _COUNTER = None
 
 def _auto_workers(filepath, n_blobs):
     """Worker count for ``workers="auto"``: a single core for files below ~70 MB, otherwise
-    the CPU cores less two, between 1 and 8 and at most the number of data blobs."""
+    the CPU cores less two, at least 1, at most 8 worker processes (threads are not capped)
+    and at most the number of data blobs."""
     if Path(filepath).stat().st_size < _PARALLEL_MIN_FILE_BYTES:
         return 1
     n_cores = (os.cpu_count() or 1) - _AUTO_SPARE_CORES
-    return max(1, min(n_cores, _AUTO_MAX_WORKERS, n_blobs))
+    if _decode_backend() == "processes":
+        n_cores = min(n_cores, _AUTO_MAX_WORKERS)
+    return max(1, min(n_cores, n_blobs))
 
 
 def _cap_workers(workers):
@@ -211,11 +220,13 @@ def _decode_all(
     spill_all_ways=True,
 ):
     """Decode every data blob (``(offset, size, span)``, see
-    :func:`~pyrosm.engine.blobs._data_blob_spans`) into shards. A pool hands the tasks of
-    :func:`_decode_tasks` to its workers as they become free. Returns ``(shard_paths,
-    pool_ok)``: the shard paths in file order and whether the decode pool ran. ``progress``
-    is as for :func:`_run_pool`. ``spill_all_ways=False`` leaves out every way's id and node
-    refs, which only the lookup of relation members reads.
+    :func:`~pyrosm.engine.blobs._data_blob_spans`) into shards, on threads or in worker
+    processes (see :func:`_decode_backend`). A pool hands the tasks of
+    :func:`_decode_tasks` to its workers as they become free. Returns ``(shards,
+    pool_ok)``: the shards in file order (paths, or :class:`~pyrosm.engine.decode._Shard`
+    objects on threads) and whether the decode ran in parallel. ``progress`` is as for
+    :func:`_run_pool`. ``spill_all_ways=False`` leaves out every way's id and node refs,
+    which only the lookup of relation members reads.
     """
     tasks = _decode_tasks(blobs, workers)
     settings = _DecodeSettings(
@@ -227,6 +238,8 @@ def _decode_all(
         requested_tag_keys,
         spill_all_ways,
     )
+    if _decode_backend() == "threads":
+        return _decode_threads(tasks, workers, settings, progress), workers > 1
     results, pool_ok = _run_pool(
         partial(_decode_batch, settings),
         tasks,
@@ -235,6 +248,62 @@ def _decode_all(
         progress,
     )
     return [path for paths in results for path in paths], pool_ok
+
+
+def _decode_backend():
+    """How a decode runs: ``"threads"`` (GIL-free, no ``__main__`` guard needed; the
+    default) or ``"processes"``, from the ``PYROSM_DECODE_BACKEND`` environment variable.
+    """
+    backend = os.environ.get("PYROSM_DECODE_BACKEND", "threads").lower()
+    if backend not in ("threads", "processes"):
+        raise ValueError(
+            "PYROSM_DECODE_BACKEND should be 'threads' or 'processes', got %r" % backend
+        )
+    return backend
+
+
+class _ThreadCounter:
+    """The decoded bytes the decode threads of one read add up (``add``), read as the
+    pool's ``multiprocessing.Value`` is (see :func:`_map_tracked`)."""
+
+    def __init__(self):
+        self.value = 0
+        self._lock = threading.Lock()
+
+    def get_lock(self):
+        return self._lock
+
+    def add(self, span):
+        with self._lock:
+            self.value += span
+
+
+def _decode_threads(tasks, workers, settings, progress):
+    """Run the decode ``tasks`` of the read with the
+    :class:`~pyrosm.engine.decode._DecodeSettings` ``settings`` with
+    :func:`~pyrosm.engine.decode._decode_batch_threads` on ``workers`` threads (the calling
+    thread for one). Returns the shards in file order. ``progress`` is as for
+    :func:`_run_pool`; it is called from the calling thread only.
+    """
+    if not tasks:
+        return []
+    decode_batch = partial(_decode_batch_threads, settings)
+    if workers == 1:
+        results = _run_serial(decode_batch, tasks, progress)
+    else:
+        with ThreadPoolExecutor(workers) as pool:
+            if progress is None:
+                results = list(pool.map(partial(decode_batch, advance=None), tasks))
+            else:
+                counter = _ThreadCounter()
+                results = _map_tracked(
+                    pool,
+                    partial(decode_batch, advance=counter.add),
+                    tasks,
+                    counter,
+                    progress,
+                )
+    return [shard for shards in results for shard in shards]
 
 
 def _decode_and_run(

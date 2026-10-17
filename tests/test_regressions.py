@@ -2726,7 +2726,8 @@ def test_reads_decoding_at_the_same_time_keep_their_own_settings(fresh_cache, mo
     """Two out-of-core reads decoding in one process at the same time, each in its own
     thread, give what each gives alone. Read A (buildings) is held after its first block
     until read B (POIs of the same file) has begun decoding, and B is held until A is done;
-    A used to decode its other blocks with B's filter keys and return fewer rows."""
+    A used to decode its other blocks with B's filter keys and return fewer rows. The
+    threaded decode decodes one block per batch here, so it is held the same way."""
     import shutil
     import threading
 
@@ -2740,23 +2741,27 @@ def test_reads_decoding_at_the_same_time_keep_their_own_settings(fresh_cache, mo
     alone = {name: getattr(OSM(fp), layer)() for name, layer in layers.items()}
     shutil.rmtree(fresh_cache)
     fresh_cache.mkdir()
-    real = decode._decode_one_block
+    monkeypatch.setattr(decode, "_THREAD_BATCH", 1)
     a_blocks = []
     a_held, b_decoding, a_done = threading.Event(), threading.Event(), threading.Event()
 
-    def held(*args):
-        name = threading.current_thread().name
-        if name == "A":
-            a_blocks.append(1)
-            if len(a_blocks) == 2:
-                a_held.set()
-                b_decoding.wait(30)
-        elif name == "B" and not b_decoding.is_set():
-            b_decoding.set()
-            a_done.wait(30)
-        return real(*args)
+    def held(real):
+        def call(*args, **kwargs):
+            name = threading.current_thread().name
+            if name == "A":
+                a_blocks.append(1)
+                if len(a_blocks) == 2:
+                    a_held.set()
+                    b_decoding.wait(30)
+            elif name == "B" and not b_decoding.is_set():
+                b_decoding.set()
+                a_done.wait(30)
+            return real(*args, **kwargs)
 
-    monkeypatch.setattr(decode, "_decode_one_block", held)
+        return call
+
+    for step in ("_decode_one_block", "decode_batch_nogil"):
+        monkeypatch.setattr(decode, step, held(getattr(decode, step)))
     together = {}
 
     def read(name):

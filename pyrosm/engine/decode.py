@@ -10,12 +10,18 @@ relations -- selected by filter-key presence) and, for reads that look up relati
 """
 
 from dataclasses import dataclass
+from operator import itemgetter
 from pathlib import Path
 
 import numpy as np
 
-from pyrosm.primitive_block_decoder import decode_primitive_block
-from pyrosm.engine.blobs import _read_block
+from pyrosm.primitive_block_decoder import (
+    BLOCK_COUNTS,
+    block_string_table,
+    decode_batch_nogil,
+    decode_primitive_block,
+)
+from pyrosm.engine.blobs import _inflated_batch, _read_batches, _read_block, _read_span
 from pyrosm.engine.bounding_box import _in_box_mask, _filter_features_to_box
 
 # Accumulate decoded blocks into a shard until it reaches roughly this many bytes, then spill.
@@ -296,7 +302,7 @@ def _layer_relations(
 def _offsets_from_lengths(lengths):
     """CSR offsets array for variable-length rows: ``[0, l0, l0+l1, ...]``."""
     off = np.zeros(len(lengths) + 1, dtype=np.int64)
-    if lengths:
+    if len(lengths):
         np.cumsum(lengths, out=off[1:])
     return off
 
@@ -482,3 +488,292 @@ def _decode_batch(settings, task, advance=None):
                 advance(span)
     flush()
     return paths
+
+
+# --- the threaded decode ----------------------------------------------------------------
+
+# A threaded decode reads, decompresses and decodes this many blobs at a time.
+_THREAD_BATCH = 64
+# The status column of ``decode_batch_nogil``'s counts.
+_STATUS = BLOCK_COUNTS.index("status")
+# The shard keys that hold Python objects; a threaded decode keeps them in memory.
+_OBJECT_KEYS = ("nfeat_tags", "way_tags", "rel_memrole", "rel_tags")
+
+
+class _Shard:
+    """A shard of the threaded decode: its numeric arrays one after another in the file at
+    ``path`` (``layout`` gives each one's offset, dtype and shape), its object arrays (the
+    tag dicts and member roles of the matched elements) in memory."""
+
+    def __init__(self, path, layout, objects):
+        self.path = path
+        self.layout = layout
+        self.objects = objects
+
+    @classmethod
+    def write(cls, path, arrays, objects):
+        """Write ``arrays`` to ``path`` and return the shard."""
+        layout = {}
+        with open(path, "wb") as f:
+            for key, array in arrays.items():
+                array = np.ascontiguousarray(array)
+                layout[key] = (f.tell(), array.dtype, array.shape)
+                array.tofile(f)
+        return cls(path, layout, objects)
+
+    def __getitem__(self, key):
+        """The array ``key``, as ``np.load`` gives a spilled shard's: an object array from
+        memory, a numeric one read from the file again at each access."""
+        if key in self.objects:
+            return self.objects[key]
+        offset, dtype, shape = self.layout[key]
+        count = int(np.prod(shape))
+        return np.fromfile(self.path, dtype=dtype, count=count, offset=offset).reshape(
+            shape
+        )
+
+
+def _open_shard(shard):
+    """The arrays of a shard by key: a spilled ``.npz`` path, or a :class:`_Shard`."""
+    if isinstance(shard, _Shard):
+        return shard
+    return np.load(shard, allow_pickle=True)
+
+
+def _block_shard(settings, decoded, at, b, data):
+    """The shard dict of block ``b`` of a batch decoded by ``decode_batch_nogil``, as
+    :func:`_decode_one_block` gives it for the read with the :class:`_DecodeSettings`
+    ``settings``. ``at[name][b]`` is where block ``b``'s entries of the count column
+    ``name`` (``BLOCK_COUNTS``) start in the batch's arrays; ``data`` is the block's bytes,
+    whose string table resolves the tags."""
+
+    def span(name):
+        return at[name][b], at[name][b + 1]
+
+    table = []
+
+    def string_table():
+        if not table:
+            table.append(block_string_table(data))
+        return table[0]
+
+    n0, n1 = span("nodes")
+    node_id = decoded["node_id"][n0:n1]
+    node_lon = decoded["node_lon"][n0:n1]
+    node_lat = decoded["node_lat"][n0:n1]
+    shard = {
+        "node_id": node_id,
+        "node_lon": node_lon,
+        "node_lat": node_lat,
+        "in_box_id": (
+            node_id[decoded["in_box"][n0:n1]]
+            if settings.bbox_bounds is not None
+            else np.empty(0, np.int64)
+        ),
+    }
+    shard.update(_block_features(settings, decoded, span, string_table))
+    shard.update(_block_ways(settings, decoded, span, string_table))
+    shard.update(_NO_RELATIONS)
+    return shard
+
+
+def _block_features(settings, decoded, span, string_table):
+    """The node features of a block (see :func:`_block_shard`), only those inside the
+    bounding box when the read has one."""
+    f0, f1 = span("features")
+    found = None
+    if f1 > f0:
+        strings = string_table()
+        rows = decoded["feature_row"][f0:f1]
+        pairs_off = (decoded["feature_pairs_off"][f0 : f1 + 1]).tolist()
+        p0 = pairs_off[0]
+        keys = decoded["feature_keys"][p0 : pairs_off[-1]].tolist()
+        vals = decoded["feature_vals"][p0 : pairs_off[-1]].tolist()
+        keep_indices = _requested_keep_indices(strings, settings.requested_tag_keys)
+        decoded_strings = _decoded(strings)()
+        meta = decoded["feature_meta"][f0:f1]
+        found = {
+            "id": decoded["node_id"][rows],
+            "lon": decoded["node_lon"][rows],
+            "lat": decoded["node_lat"][rows],
+            "tags": [
+                _resolve_tags(
+                    decoded_strings,
+                    keys,
+                    vals,
+                    pairs_off[i] - p0,
+                    pairs_off[i + 1] - p0,
+                    keep_indices,
+                )
+                for i in range(f1 - f0)
+            ],
+            "version": meta[:, 0],
+            "timestamp": meta[:, 1],
+            "changeset": meta[:, 2],
+            "visible": meta[:, 3],
+        }
+        if settings.bbox_bounds is not None:
+            found = _filter_features_to_box(found, settings.bbox_bounds)
+    if found is None:
+        return {
+            "nfeat_id": np.empty(0, np.int64),
+            "nfeat_lon": np.empty(0),
+            "nfeat_lat": np.empty(0),
+            "nfeat_tags": _object_array([]),
+            "nfeat_meta": np.empty((0, 4), np.int64),
+        }
+    return {
+        "nfeat_id": found["id"],
+        "nfeat_lon": found["lon"],
+        "nfeat_lat": found["lat"],
+        "nfeat_tags": _object_array(found["tags"]),
+        "nfeat_meta": np.stack(
+            [
+                found["version"],
+                found["timestamp"],
+                found["changeset"],
+                found["visible"],
+            ],
+            axis=1,
+        ),
+    }
+
+
+def _block_ways(settings, decoded, span, string_table):
+    """The ways with a wanted key and every way's refs of a block (see
+    :func:`_block_shard`)."""
+    w0, w1 = span("ways")
+    r0, r1 = span("way_refs")
+    t0, t1 = span("way_tags")
+    a0, a1 = span("all_ways")
+    ar0, ar1 = span("all_refs")
+    tags = []
+    if w1 > w0:
+        strings = string_table()
+        keep_indices = _requested_keep_indices(strings, settings.requested_tag_keys)
+        decoded_strings = _decoded(strings)()
+        keys = decoded["way_keys"][t0:t1].tolist()
+        vals = decoded["way_vals"][t0:t1].tolist()
+        tags_off = (decoded["way_tags_off"][w0 : w1 + 1] - t0).tolist()
+        tags = [
+            _resolve_tags(
+                decoded_strings, keys, vals, tags_off[i], tags_off[i + 1], keep_indices
+            )
+            for i in range(w1 - w0)
+        ]
+    way_meta = decoded["way_meta"][w0:w1]  # version, timestamp, visible
+    return {
+        "way_id": decoded["way_id"][w0:w1],
+        "refs": decoded["way_refs"][r0:r1],
+        "refs_off": decoded["way_refs_off"][w0 : w1 + 1] - r0,
+        "way_tags": _object_array(tags),
+        "way_version": way_meta[:, 0],
+        "way_timestamp": way_meta[:, 1],
+        "way_visible": way_meta[:, 2],
+        "all_id": decoded["all_id"][a0:a1],
+        "all_refs": decoded["all_refs"][ar0:ar1],
+        "all_refs_off": decoded["all_refs_off"][a0 : a1 + 1] - ar0,
+    }
+
+
+# The relation arrays of a block the GIL-free decoder decodes: it hands a block with
+# relations back (status 1) to :func:`_decode_one_block`, so they are empty.
+_NO_RELATIONS = {
+    "rel_id": np.empty(0, np.int64),
+    "rel_memid": np.empty(0, np.int64),
+    "rel_memoff": _offsets_from_lengths([]),
+    "rel_memtype": np.empty(0, np.int64),
+    "rel_memrole": np.empty(0, dtype=object),
+    "rel_tags": _object_array([]),
+    "rel_meta": np.empty((0, 3), np.int64),
+}
+
+
+def _decoded_parts(f, blobs):
+    """The decompressed blocks of ``blobs`` (``(offset, size, span)``, in file order) of the
+    file ``f``, read in one go and decompressed without the GIL in parts (see
+    :func:`~pyrosm.engine.blobs._inflated_batch`): yields ``(part, buffer, starts)``,
+    ``part`` the blobs of the part. A blob that is not zlib data with its size, or each
+    blob when the read comes short, is read by :func:`_read_block`."""
+    raw = _read_span(f, blobs[0][0], blobs[-1][0] + blobs[-1][1])
+    return _inflated_batch(
+        raw,
+        blobs,
+        itemgetter(0),
+        itemgetter(1),
+        lambda blob: _read_block(f, blob[0], blob[1]),
+    )
+
+
+def _owned(arrays):
+    """A block's shard dict ``arrays`` with every view of another array copied."""
+    return {
+        key: (
+            value.copy()
+            if isinstance(value, np.ndarray) and value.base is not None
+            else value
+        )
+        for key, value in arrays.items()
+    }
+
+
+def _decode_batch_threads(settings, task, advance=None):
+    """Thread worker: :func:`_decode_batch` with the blocks read, decompressed and decoded
+    without the GIL, ``_THREAD_BATCH`` at a time (a block the GIL-free decoder does not
+    handle is decoded by :func:`_decode_one_block`). Each shard keeps its object arrays in
+    memory and spills only its numeric arrays (see :class:`_Shard`). Returns the shards.
+    """
+    task_id, blobs = task
+    shards = []
+    pending = []
+    pending_bytes = 0
+
+    def flush():
+        nonlocal pending, pending_bytes
+        if not pending:
+            return
+        merged = _merge_shards(pending)
+        path = Path(settings.shard_dir) / ("shard_%d_%d.bin" % (task_id, len(shards)))
+        objects = {key: merged.pop(key) for key in _OBJECT_KEYS}
+        shards.append(_Shard.write(path, merged, objects))
+        pending, pending_bytes = [], 0
+
+    with open(settings.filepath, "rb") as f:
+        for whole in _read_batches(blobs, _THREAD_BATCH):
+            for batch, buffer, starts in _decoded_parts(f, whole):
+                decoded = decode_batch_nogil(
+                    buffer,
+                    starts,
+                    keys=settings.osm_keys,
+                    features=settings.include_nodes,
+                    all_ways=settings.spill_all_ways,
+                    bbox=settings.bbox_bounds,
+                )
+                counts = decoded["counts"]
+                at = {
+                    name: _offsets_from_lengths(counts[:, i]).tolist()
+                    for i, name in enumerate(BLOCK_COUNTS)
+                }
+                for b in range(len(batch)):
+                    data = buffer[starts[b] : starts[b + 1]]
+                    if counts[b, _STATUS]:
+                        # A block the GIL-free decoder hands back.
+                        arrays = _decode_one_block(
+                            settings, *decode_primitive_block(data)
+                        )
+                    else:
+                        arrays = _block_shard(settings, decoded, at, b, data)
+                    pending.append(arrays)
+                    pending_bytes += sum(
+                        v.nbytes for k, v in arrays.items() if k not in _OBJECT_KEYS
+                    )
+                    if pending_bytes >= _SHARD_TARGET_BYTES:
+                        flush()
+                if advance is not None:
+                    advance(sum(span for _, _, span in batch))
+                # The part is released before the next one is decompressed: the pending
+                # shards' slices of its arrays are copied out of them.
+                pending = [_owned(arrays) for arrays in pending]
+                del buffer, starts, decoded, data, arrays
+    flush()
+    return shards

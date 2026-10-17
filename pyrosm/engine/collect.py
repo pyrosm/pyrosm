@@ -14,7 +14,7 @@ from rapidjson import dumps
 from pyrosm._arrays import columns_to_arrays
 from pyrosm.tagparser import explode_node_tag_array
 from pyrosm.data_filter import element_should_be_kept
-from pyrosm.engine.decode import _object_array
+from pyrosm.engine.decode import _object_array, _open_shard
 from pyrosm.engine.bounding_box import _in_box_nodes
 
 # Relation.MemberType -> the byte labels pyrosm's relation assembly expects.
@@ -36,7 +36,7 @@ def _read_way_columns(shard_paths):
     """
     ids, nodes_list, tags, vers, tss, viss = [], [], [], [], [], []
     for path in shard_paths:
-        z = np.load(path, allow_pickle=True)
+        z = _open_shard(path)
         wid = z["way_id"]
         if len(wid) == 0:
             continue
@@ -84,7 +84,7 @@ def _collect_node_features(shard_paths, tags_as_columns, keep_metadata, keep):
     columns and a JSON ``tags`` column). ``None`` if no node passes."""
     ids, lon, lat, tags, meta = [], [], [], [], []
     for path in shard_paths:
-        z = np.load(path, allow_pickle=True)
+        z = _open_shard(path)
         nid = z["nfeat_id"]
         if len(nid) == 0:
             continue
@@ -129,7 +129,7 @@ def _gather_node_shards(shard_paths, needed):
     n = len(needed)
     pos_parts, lon_parts, lat_parts = [], [], []
     for path in shard_paths:
-        z = np.load(path, allow_pickle=True)
+        z = _open_shard(path)
         nid = z["node_id"]
         if len(nid) == 0:
             continue
@@ -296,7 +296,7 @@ def _collect_relations(shard_paths, keep):
     when no relation passes."""
     ids, members, tags, meta, way_member_ids = [], [], [], [], []
     for path in shard_paths:
-        z = np.load(path, allow_pickle=True)
+        z = _open_shard(path)
         rid = z["rel_id"]
         if len(rid) == 0:
             continue
@@ -358,7 +358,7 @@ def _collect_relation_ways(shard_paths, member_ids, in_box=None):
     found = {}
     inside = None if in_box is None else set(in_box.tolist())
     for path in shard_paths:
-        z = np.load(path, allow_pickle=True)
+        z = _open_shard(path)
         wid, off, refs = z["all_id"], z["all_refs_off"], z["all_refs"]
         if len(wid) == 0:
             continue
