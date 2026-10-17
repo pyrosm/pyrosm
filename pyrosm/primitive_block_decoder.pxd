@@ -147,3 +147,31 @@ cdef inline void _skip_field(const unsigned char* buf, Py_ssize_t* pos,
         pos[0] = _field_end(pos[0], 4, end)
     else:
         pos[0] = _CORRUPT
+
+
+# A packed repeated field (a way's refs, a dense group's ids) may come as several fields
+# with the same number, which together form one list. ``_Runs`` keeps each one's byte span
+# (``start[i]:end[i]``), up to ``_MAX_RUNS``; writers put a field in one run.
+cdef enum:
+    _MAX_RUNS = 8
+
+
+cdef struct _Runs:
+    Py_ssize_t n
+    Py_ssize_t start[_MAX_RUNS]
+    Py_ssize_t end[_MAX_RUNS]
+
+
+cdef inline int _add_span(_Runs* runs, Py_ssize_t start, Py_ssize_t end) noexcept nogil:
+    """Add a packed run; -1 when the field comes in more runs than are kept."""
+    if runs.n == _MAX_RUNS:
+        return -1
+    runs.start[runs.n] = start
+    runs.end[runs.n] = end
+    runs.n += 1
+    return 0
+
+
+cdef Py_ssize_t _runs_count(const unsigned char* buf, _Runs* runs) noexcept nogil
+cdef Py_ssize_t _runs_fill(const unsigned char* buf, _Runs* runs, bint delta, bint signed,
+                           int64_t* out) noexcept nogil
