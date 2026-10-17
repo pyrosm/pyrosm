@@ -2665,3 +2665,25 @@ def test_multipolygon_with_thousands_of_rings_assembles_quickly(tmp_path):
     expected = (side * cell) ** 2 - n_holes * (cell / 2) ** 2
     assert lake.area == pytest.approx(expected, rel=1e-6)
     assert seconds < 10
+
+
+@pytest.mark.parametrize("keep_ways", [True, False], ids=["with ways", "nodes only"])
+def test_nodes_without_leftover_tags_have_no_tags_value(keep_ways):
+    """Nodes whose tags all became columns have no ``tags`` value, as other elements; both
+    readers used to keep each node's tag dict there, and the out-of-core reader could not
+    write it next to the ways' JSON (ArrowTypeError)."""
+    import pandas as pd
+
+    from pyrosm import OSM, get_data
+
+    frames = [
+        OSM(get_data("test_pbf"), engine=engine, workers=1).get_data_by_custom_criteria(
+            {"shop": True}, keep_ways=keep_ways, keep_relations=keep_ways
+        )
+        for engine in ("in_memory", "out_of_core")
+    ]
+    for gdf in frames:
+        assert list(gdf.columns)[:4] == ["id", "lon", "lat", "tags"]
+        tags = [None if pd.isna(value) else value for value in gdf["tags"]]
+        leftovers = ['{"landuse":"greenhouse_horticulture","building":"yes"}']
+        assert tags == [None, None] + (leftovers if keep_ways else [])
