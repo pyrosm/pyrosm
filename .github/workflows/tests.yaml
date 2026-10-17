@@ -49,6 +49,7 @@ jobs:
           - ci/312-conda.yaml
           - ci/313-conda.yaml
           - ci/314-conda.yaml
+          - ci/315-conda.yaml
 
     steps:
       - name: Checkout repository
@@ -81,7 +82,7 @@ jobs:
         # and newest supported Python, so we don't load those services from
         # every OS/Python combination in the matrix.
         env:
-          RUN_DOWNLOAD_TESTS: "${{ matrix.os == 'ubuntu-latest' && (matrix.env == 'ci/311-conda.yaml' || matrix.env == 'ci/314-conda.yaml') }}"
+          RUN_DOWNLOAD_TESTS: "${{ matrix.os == 'ubuntu-latest' && (matrix.env == 'ci/311-conda.yaml' || matrix.env == 'ci/315-conda.yaml') }}"
         run: pytest -v -r s --color=yes --cov=pyrosm --cov-append --cov-report term-missing --cov-report xml tests/
 
       - name: Update codecov.io

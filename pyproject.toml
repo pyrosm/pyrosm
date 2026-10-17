@@ -5,9 +5,9 @@ requires = ["setuptools", "wheel", "Cython"]
 force-exclude = '.*_pb2\.py$'
 
 [tool.cibuildwheel]
-# CPython 3.11–3.14, matching python_requires and the test matrix. PyPy is
+# CPython 3.11–3.15, matching python_requires and the test matrix. PyPy is
 # excluded (the build targets CPython); musllinux, 32-bit and win32 are skipped.
-build = "cp311-* cp312-* cp313-* cp314-*"
+build = "cp311-* cp312-* cp313-* cp314-* cp315-*"
 skip = "*-musllinux_* *_i686 *-win32"
 build-frontend = "build"
 # Import the freshly built wheel and parse the bundled extract end to end.

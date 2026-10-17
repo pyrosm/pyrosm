@@ -1,0 +1,35 @@
+name: test
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.15
+  # required
+  - cython
+  - pip
+  - setuptools
+  - geopandas
+  - protobuf>=6.33.5
+  - python-rapidjson
+  - tqdm>=4.66
+  - pyyaml
+  # optional
+  - networkx
+  # NOTE: pandana has no Python 3.13+ build on conda-forge yet; the pandana
+  # graph-export tests are skipped on 3.13-3.15 (see tests/test_graph_exports.py).
+  # pandarm (the maintained fork) does build on 3.13-3.15 and is exercised instead.
+  - pandarm
+  - pyarrow
+  # testing
+  - osmnx
+  - pyosmium
+  - black
+  - codecov
+  - pytest
+  - pytest-cov
+  - requests
+  # NOTE: python-igraph has no Python 3.15 build on conda-forge yet; igraph's wheel
+  # from PyPI (built for the stable ABI, cp39-abi3) is installed instead.
+  - pip:
+      - igraph
