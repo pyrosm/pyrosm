@@ -176,7 +176,7 @@ def _crop(full_path, geom, cropped_name, output_path, directory, progress=None):
     target = output_path or str(_default_target_dir(directory) / cropped_name)
     Path(target).resolve().parent.mkdir(parents=True, exist_ok=True)
     return OSM(full_path, bounding_box=geom, progress=progress).to_pbf(
-        output_path=target
+        output_path=target, workers=1
     )
 
 

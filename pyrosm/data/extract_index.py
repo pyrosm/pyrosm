@@ -865,7 +865,7 @@ def get_data_by_area(
     opener=None,
     strategy="single",
     must_cover=None,
-    workers=1,
+    workers=None,
     progress=None,
 ):
     """Download the OSM data for ``area``: the smallest single extract that contains it, or a
@@ -941,8 +941,9 @@ def get_data_by_area(
         ``must_cover`` outside it are cropped away.
 
     workers : int
-        Number of worker processes that crop (and merge) the downloaded file. ``1`` (default)
-        runs in one process. More workers are used only for a file with at least
+        Number of worker processes that crop (and merge) the downloaded file. ``1`` (by
+        default, ``None``) runs in one process; in pyrosm 1.0 they run in parallel by
+        default. More workers are used only for a file with at least
         ``2 * workers`` data blocks, and the written file is the same for every value. With
         ``crop=False`` and a single extract nothing is cropped, so it has no effect. On macOS
         and Windows each worker process starts by importing the script, so a script that
@@ -985,7 +986,7 @@ def get_data_by_area(
         )
     if isinstance(crop, str) and crop != "polygon":
         raise ValueError('crop must be True, False or "polygon"; got %r.' % (crop,))
-    if (
+    if workers is not None and (
         isinstance(workers, bool)
         or not isinstance(workers, numbers.Integral)
         or workers < 1

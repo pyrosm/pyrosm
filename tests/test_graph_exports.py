@@ -837,7 +837,7 @@ def test_to_graph_raises_when_backend_missing(
     monkeypatch.setattr(ge, flag, False)
     with pytest.raises(ImportError, match=message):
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore")  # pandana emits a DeprecationWarning
+            warnings.simplefilter("ignore")  # pandana emits a FutureWarning
             osm.to_graph(nodes, edges, graph_type=graph_type)
 
 
