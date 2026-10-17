@@ -1,8 +1,10 @@
 Changelog
 =========
 
-Unreleased
-----------
+v0.22.0
+-------
+
+This release adds `OSM.get_graph`, which reads a street network as a routable graph in less memory: on Finland's driving network (one process), exporting to NetworkX peaks at about 4 GB and takes 41 s, against 13.6 GB and 83 s for `get_network(nodes=True)` followed by `to_graph`. Graph exports run faster, take less memory and show their progress, and `pyrosm.enable_logging(progress=...)` sets the progress of every read, crop, merge and download. `get_natural()` on Finland takes 77 s instead of 72 min. pyrosm supports Python 3.11–3.15; Python 3.10 is no longer supported. Two changes alter results: NetworkX graphs leave out attributes that have no value instead of storing NaN or None, and nodes whose tags all became columns have no `tags` value. `get_path()` and the pandana graph backend warn that they will be removed in pyrosm 1.0, and reads, crops and merges that leave `workers` unset warn that pyrosm 1.0 runs them in parallel by default.
 
 - NEW: `pyrosm.enable_logging(progress=...)` sets the progress of every read, crop, merge and download whose own `progress` is not given: `True` (as without the call) shows the bars, `False` shows none, and a function is called as `progress(done, total)`. It applies to `OSM` objects made before the call too. The `progress` of `OSM`, `crop_pbf`, `merge_pbf`, `get_data` and the other download functions defaults to `None`, which follows this setting, and still overrides it for one object or call ([#502](https://github.com/pyrosm/pyrosm/pull/502))
 - NEW: Graph exports show their progress as `pyrosm.enable_logging(progress=...)` sets it. `OSM.to_graph` and `pyrosm.graphs.to_networkx`, `to_igraph`, `to_pandana`, `to_pandarm` and `graph_tables` draw a bar of steps that names the current one (directing the edges, simplifying, keeping the largest connected part, building the graph), shown after 2 seconds and cleared at the end, or without a terminal one line with the time it took; a function set with `enable_logging` is called with the steps done and the steps ([#504](https://github.com/pyrosm/pyrosm/pull/504))
