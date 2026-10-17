@@ -91,3 +91,33 @@ def _no_retry_wait(monkeypatch):
     from pyrosm.utils import download
 
     monkeypatch.setattr(download, "_sleep", lambda seconds: None)
+
+
+def _corrupted_copies(data, count, seed):
+    """``count`` corrupted copies of ``data``, the same ones for the same ``seed``: one
+    byte changed, the data cut short, bytes inserted, or a run of 0xff bytes (a varint
+    that never ends) written over it."""
+    import random
+
+    rng = random.Random(seed)
+    for _ in range(count):
+        copy = bytearray(data)
+        kind = rng.randrange(4)
+        at = rng.randrange(len(copy))
+        if kind == 0:
+            copy[at] ^= rng.randrange(1, 256)
+        elif kind == 1:
+            del copy[at:]
+        elif kind == 2:
+            copy[at:at] = rng.randbytes(rng.randrange(1, 9))
+        else:
+            copy[at : at + 11] = b"\xff" * 11
+        yield bytes(copy)
+
+
+@pytest.fixture
+def corrupted_copies():
+    """A function that gives seeded corrupted copies of some bytes (see
+    :func:`_corrupted_copies`), for checking that a parser raises on them instead of
+    crashing."""
+    return _corrupted_copies

@@ -29,7 +29,6 @@ easy to compare against the protobuf path in tests.
 """
 import numpy as np
 
-from cpython.pyport cimport PY_SSIZE_T_MAX
 from libc.stdint cimport int64_t, uint64_t
 
 from pyrosm.exceptions import InvalidOSMFileError
@@ -39,22 +38,7 @@ from pyrosm.exceptions import InvalidOSMFileError
 _META_COLS = ("version", "timestamp", "changeset", "uid", "user_sid", "visible")
 
 
-# The protobuf wire types we encounter.
-cdef enum WireType:
-    WIRE_VARINT = 0
-    WIRE_FIXED64 = 1
-    WIRE_LENGTH = 2
-    WIRE_FIXED32 = 5
-
-
-# --- low-level wire-format primitives -------------------------------------------------
-
-# The position a read moves to when the data does not follow the wire format: a varint
-# cut off at the end of its data or longer than 10 bytes, a field that does not fit in
-# the data that holds it, or an unknown wire type. It lies past the end of any data, so
-# the loop over that data stops; the function that owns the loop then raises.
-cdef Py_ssize_t _CORRUPT = PY_SSIZE_T_MAX
-
+# --- low-level wire-format primitives (the readers are in the .pxd) -------------------
 
 cdef int _corrupt(str reason) except -1:
     """Raise the error for a data block that does not follow the PBF schema."""
@@ -66,69 +50,6 @@ cdef int _check_end(Py_ssize_t pos, Py_ssize_t end) except -1:
     if pos != end:
         _corrupt("a field or a number does not fit in the data that holds it")
     return 0
-
-
-cdef inline uint64_t _read_varint(const unsigned char* buf, Py_ssize_t* pos,
-                                  Py_ssize_t end) nogil:
-    """Read one base-128 varint at ``pos`` and advance ``pos`` past it. A varint cut off
-    at ``end`` or larger than 64 bits moves ``pos`` to ``_CORRUPT``."""
-    cdef uint64_t result = 0
-    cdef int shift = 0
-    cdef unsigned char byte
-    while pos[0] < end and shift < 64:
-        byte = buf[pos[0]]
-        pos[0] += 1
-        result |= (<uint64_t>(byte & 0x7F)) << shift
-        if (byte & 0x80) == 0:
-            if shift == 63 and byte > 1:
-                break
-            return result
-        shift += 7
-    pos[0] = _CORRUPT
-    return 0
-
-
-cdef inline Py_ssize_t _field_end(Py_ssize_t pos, uint64_t length,
-                                  Py_ssize_t end) nogil:
-    """The end of a field of ``length`` bytes that starts at ``pos``, or ``_CORRUPT``
-    when the field does not fit in data that ends at ``end``."""
-    if pos > end or length > <uint64_t>(end - pos):
-        return _CORRUPT
-    return pos + <Py_ssize_t>length
-
-
-cdef inline int64_t _zig_zag_decode(uint64_t value) nogil:
-    """Undo protobuf's zig-zag encoding of a signed integer."""
-    return (<int64_t>(value >> 1)) ^ (-(<int64_t>(value & 1)))
-
-
-cdef inline void _read_tag(const unsigned char* buf, Py_ssize_t* pos, Py_ssize_t end,
-                           int* field_number, int* wire_type) nogil:
-    """Read a field tag and split it into its field number and wire type. A field
-    number outside 1 to 2**29 - 1 moves ``pos`` to ``_CORRUPT``."""
-    cdef uint64_t tag = _read_varint(buf, pos, end)
-    if tag < 8 or (tag >> 32) != 0:
-        pos[0] = _CORRUPT
-        tag = 0
-    field_number[0] = <int>(tag >> 3)
-    wire_type[0] = <int>(tag & 0x7)
-
-
-cdef inline void _skip_field(const unsigned char* buf, Py_ssize_t* pos,
-                             Py_ssize_t end, int wire_type) nogil:
-    """Advance ``pos`` past a field whose value we don't need."""
-    cdef uint64_t length
-    if wire_type == WIRE_VARINT:
-        _read_varint(buf, pos, end)
-    elif wire_type == WIRE_LENGTH:
-        length = _read_varint(buf, pos, end)
-        pos[0] = _field_end(pos[0], length, end)
-    elif wire_type == WIRE_FIXED64:
-        pos[0] = _field_end(pos[0], 8, end)
-    elif wire_type == WIRE_FIXED32:
-        pos[0] = _field_end(pos[0], 4, end)
-    else:
-        pos[0] = _CORRUPT
 
 
 cdef inline Py_ssize_t _count_packed(const unsigned char* buf, Py_ssize_t start,
