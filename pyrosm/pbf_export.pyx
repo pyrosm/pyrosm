@@ -33,6 +33,9 @@ import numpy as np
 
 cimport cython
 from libc.stdint cimport int64_t, uint8_t, uint64_t
+from cpython.pyport cimport PY_SSIZE_T_MAX
+from libc.stdlib cimport free, realloc
+from libc.string cimport memcpy, memset
 
 from google.protobuf.message import DecodeError
 from pyrosm.exceptions import InvalidOSMFileError
@@ -48,15 +51,17 @@ from pyrosm.primitive_block_decoder cimport (
     INFO_VERSION, INFO_VISIBLE, PB_DATE_GRANULARITY, PB_GRANULARITY, PB_LAT_OFFSET,
     PB_LON_OFFSET, PB_PRIMITIVEGROUP, PB_STRINGTABLE, REL_MEMIDS, REL_ROLES_SID,
     REL_TYPES, ST_S, WAY_ID, WAY_INFO, WAY_KEYS, WAY_REFS, WAY_VALS,
+    WIRE_LENGTH, WIRE_VARINT, _Runs, _add_span, _field_end, _read_tag, _read_varint,
+    _runs_count, _runs_fill, _skip_field,
 )
 
-from pyrosm.int64_hash import Int64Set, SortedInt64Set
+from pyrosm.int64_hash cimport Int64Set, SortedInt64Set, _set_has, kh_i64set_t
 from pyrosm.utils import default_workers
 from pyrosm.utils.progress import reporting, validate_progress
 from pyrosm.engine.blobs import _MAX_BLOB_SIZE, _decompress_blob, _invalid_pbf
 from pyrosm.zlib_blob import zlib_compress
 from pyrosm.primitive_block_decoder import (
-    decode_elements, decode_primitive_block, element_layout,
+    check_batch_starts, decode_elements, decode_primitive_block, element_layout,
 )
 
 DIV = 1000000000
@@ -910,6 +915,562 @@ cdef _write_pbf(filepath, output_path, kept_nodes_set, kept_ways_set, kept_rel_s
             )
             if block is not None:
                 out.write(_frame_blob("OSMData", block))
+
+
+# ---------------------------------------------------------------------------
+# Write pass without the GIL (thread pools)
+# ---------------------------------------------------------------------------
+# `_crop_blocks` builds the cropped copy of each block of a batch as `_crop_block` does,
+# byte for byte, without the GIL. A block it does not handle is left to `_crop_block`:
+# plain nodes, ways or relations, data `element_layout` refuses, a packed field in more
+# than `_MAX_RUNS` runs, or dense nodes whose coordinates, metadata or tags do not match
+# their ids in number.
+#
+# The functions, from the outside in, and the Python code each one matches:
+#   `_crop_one`    one block: its string table copied, its kept groups, its header values
+#                  (`_crop_block`, `_block_bytes`);
+#   `_crop_group`  one PrimitiveGroup: the kept dense nodes encoded again (`_group_kind`,
+#                  `_kept_elements`);
+#   `_dense_runs`, `_dense_values`, `_dense_payload`  one DenseNodes group: find its
+#                  packed fields, decode them, write the kept nodes' fields
+#                  (`_decode_dense_group`, `_dense_bytes`).
+# Each level writes its output into its own `_Buffer` of the `_CropState`, which the level
+# above wraps in a field of its own.
+
+# What an empty batch buffer points to, so that offsets are never added to NULL.
+cdef unsigned char _NO_BYTES[1]
+
+
+# What `_crop_one` did with a block.
+cdef enum:
+    _CROPPED = 0                   # its cropped copy is in the output
+    _BY_PYTHON = 1                 # left to `_crop_block`
+    _NOTHING_KEPT = 2              # nothing in it is kept
+
+cdef inline bint _info_delta(int k) noexcept nogil:
+    """Whether DenseInfo field ``k + 1`` (``_DENSE_INFO``'s order) is delta coded."""
+    return 1 <= k <= 4
+
+
+# A growable byte buffer; its owner frees ``data``.
+cdef struct _Buffer:
+    unsigned char* data
+    Py_ssize_t n                   # bytes written
+    Py_ssize_t cap                 # bytes allocated
+
+
+cdef int _grow(_Buffer* b, Py_ssize_t extra) noexcept nogil:
+    """Room for ``extra`` more bytes in ``b``; -1 when memory runs out."""
+    cdef Py_ssize_t cap = b.cap if b.cap else 4096
+    cdef void* p
+    if extra > PY_SSIZE_T_MAX - b.n:
+        return -1
+    if b.n + extra <= b.cap:
+        return 0
+    while cap < b.n + extra:
+        if cap > PY_SSIZE_T_MAX // 2:
+            cap = b.n + extra
+            break
+        cap *= 2
+    p = realloc(b.data, cap)
+    if p == NULL:
+        return -1
+    b.data = <unsigned char*>p
+    b.cap = cap
+    return 0
+
+
+cdef int _append(_Buffer* b, const unsigned char* src, Py_ssize_t n) noexcept nogil:
+    if _grow(b, n) < 0:
+        return -1
+    if n > 0:
+        memcpy(b.data + b.n, src, n)
+        b.n += n
+    return 0
+
+
+cdef int _append_varint(_Buffer* b, uint64_t x) noexcept nogil:
+    if _grow(b, 10) < 0:
+        return -1
+    b.n += _write_varint(b.data + b.n, x)
+    return 0
+
+
+cdef int _append_field(_Buffer* b, int number, const unsigned char* payload,
+                       Py_ssize_t n) noexcept nogil:
+    """A length-delimited field, as `_field` writes it."""
+    if _append_varint(b, (number << 3) | 2) < 0 or _append_varint(b, n) < 0:
+        return -1
+    return _append(b, payload, n)
+
+
+cdef int _append_packed(_Buffer* b, const int64_t* values, const uint8_t* keep,
+                        Py_ssize_t n, bint delta) noexcept nogil:
+    """The kept ``values`` as varints, as `_packed` writes them: with ``delta`` each the
+    difference from the previous kept one (as `delta_encode`), zig-zag encoded."""
+    cdef Py_ssize_t i
+    cdef int64_t v, previous = 0
+    cdef uint64_t x
+    if n > PY_SSIZE_T_MAX // 10 or _grow(b, 10 * n) < 0:
+        return -1
+    # The difference is taken in uint64, so it wraps around as numpy's int64 does. Zig-zag
+    # maps 0, -1, 1, -2, ... to 0, 1, 2, 3, ..., so small negative values stay short.
+    for i in range(n):
+        if not keep[i]:
+            continue
+        v = values[i]
+        if delta:
+            v = <int64_t>(<uint64_t>values[i] - <uint64_t>previous)
+            previous = values[i]
+            x = (<uint64_t>v << 1) ^ <uint64_t>(v >> 63)
+        else:
+            x = <uint64_t>v
+        b.n += _write_varint(b.data + b.n, x)
+    return 0
+
+
+cdef int _append_kept_tags(_Buffer* b, const int64_t* keys_vals, Py_ssize_t n,
+                           const uint8_t* keep) noexcept nogil:
+    """The tag stream of the kept nodes, as `_kept_keys_vals` gives it."""
+    # The stream is ``k v k v ... 0`` per node; ``node`` counts the 0s passed.
+    cdef Py_ssize_t i = 0, node = 0
+    if n > PY_SSIZE_T_MAX // 10 or _grow(b, 10 * n) < 0:
+        return -1
+    while i < n:
+        if keys_vals[i] == 0:
+            if keep[node]:
+                b.n += _write_varint(b.data + b.n, 0)
+            node += 1
+            i += 1
+        else:
+            if keep[node]:
+                b.n += _write_varint(b.data + b.n, <uint64_t>keys_vals[i])
+                b.n += _write_varint(b.data + b.n, <uint64_t>keys_vals[i + 1])
+            i += 2
+    return 0
+
+
+cdef bint _tags_end_per_node(const int64_t* keys_vals, Py_ssize_t n_kv,
+                             Py_ssize_t n) noexcept nogil:
+    """Whether the tag stream of ``n`` dense nodes is empty or ends once per node, as
+    `_check_keys_vals` requires."""
+    cdef Py_ssize_t i, ends = 0
+    cdef bint at_key = True, ended = False
+    if n_kv == 0:
+        return True
+    for i in range(n_kv):
+        ended = at_key and keys_vals[i] == 0
+        if ended:
+            ends += 1
+        else:
+            at_key = not at_key
+    return ends == n and ended
+
+
+cdef Py_ssize_t _gallop(const int64_t* members, Py_ssize_t lo, Py_ssize_t m,
+                        int64_t key) noexcept nogil:
+    """The first position at or after ``lo`` of the ascending ``members`` whose value is
+    not below ``key``."""
+    # A galloping search: steps of 1, 2, 4, ... from ``lo`` until a step passes ``key``,
+    # then a binary search inside the last step. In a sorted file a block's node ids
+    # ascend, so the next one is usually close to the last and few steps are needed.
+    cdef Py_ssize_t step = 1, hi, mid
+    if lo >= m or members[lo] >= key:
+        return lo
+    while lo + step < m and members[lo + step] < key:
+        lo += step
+        step *= 2
+    hi = lo + step if lo + step < m else m
+    lo += 1
+    while lo < hi:
+        mid = lo + (hi - lo) // 2
+        if members[mid] < key:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+cdef struct _Sorted:
+    const int64_t* members         # the ascending kept node ids
+    Py_ssize_t m
+    Py_ssize_t at                  # where the last search ended
+    int64_t last                   # the last id searched
+
+
+cdef inline bint _sorted_has(_Sorted* s, int64_t key) noexcept nogil:
+    """Whether ``key`` is a kept node id (`SortedInt64Set.isin`); ascending keys are found
+    from where the last search ended."""
+    if key < s.last:
+        s.at = 0
+    s.at = _gallop(s.members, s.at, s.m, key)
+    s.last = key
+    return s.at < s.m and s.members[s.at] == key
+
+
+# Where a DenseNodes group's packed fields are, and how many values each holds.
+cdef struct _Dense:
+    _Runs id, lat, lon, keys_vals
+    _Runs info[6]                  # DenseInfo field k + 1 (DI_VERSION ... DI_VISIBLE)
+    Py_ssize_t n, n_keys_vals      # nodes, and values in the tag stream
+    Py_ssize_t n_info[6]           # n, or 0 when the group has no such field
+
+
+# The cropper's buffers and the kept ids, reused from block to block of a batch.
+cdef struct _CropState:
+    _Buffer out                    # the cropped blocks of the batch, one after another
+    _Buffer parts                  # the current block's kept groups, as fields
+    _Buffer group                  # the current group's kept elements
+    _Buffer dense                  # the current dense group's fields, re-encoded
+    _Buffer info                   # its DenseInfo fields
+    _Buffer packed                 # the packed field being written
+    int64_t* values                # the decoded values of the current dense group
+    Py_ssize_t values_cap
+    uint8_t* keep                  # whether each node of the current dense group is kept
+    Py_ssize_t keep_cap
+    _Sorted nodes                  # the kept node ids
+    const kh_i64set_t* ways        # the kept way ids
+    const kh_i64set_t* relations   # the kept relation ids
+
+
+cdef int _dense_runs(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                     _Dense* d) noexcept nogil:
+    """The packed runs of a DenseNodes group and their counts, as `_decode_dense_group`
+    reads them (with metadata); 1 for data it refuses or more runs than kept."""
+    cdef Py_ssize_t pos = start, f_start, info_start = -1, info_end = -1
+    cdef int field, wire, k
+    cdef uint64_t length
+    d.id.n = d.lat.n = d.lon.n = d.keys_vals.n = 0
+    for k in range(6):
+        d.info[k].n = 0
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        f_start = pos
+        pos = _field_end(pos, length, end)
+        if pos > end:
+            return 1
+        if field == DENSE_ID:
+            if _add_span(&d.id, f_start, pos) < 0:
+                return 1
+        elif field == DENSE_LAT:
+            if _add_span(&d.lat, f_start, pos) < 0:
+                return 1
+        elif field == DENSE_LON:
+            if _add_span(&d.lon, f_start, pos) < 0:
+                return 1
+        elif field == DENSE_KEYS_VALS:
+            if _add_span(&d.keys_vals, f_start, pos) < 0:
+                return 1
+        elif field == DENSE_DENSEINFO:
+            if info_start >= 0:
+                return 1  # several DenseInfo messages are merged by the Python path
+            info_start = f_start
+            info_end = pos
+    if pos != end:
+        return 1
+    if info_start >= 0:
+        pos = info_start
+        while pos < info_end:
+            _read_tag(buf, &pos, info_end, &field, &wire)
+            if wire != WIRE_LENGTH:
+                _skip_field(buf, &pos, info_end, wire)
+                continue
+            length = _read_varint(buf, &pos, info_end)
+            f_start = pos
+            pos = _field_end(pos, length, info_end)
+            if pos > info_end:
+                return 1
+            if DI_VERSION <= field <= DI_VISIBLE:
+                if _add_span(&d.info[field - 1], f_start, pos) < 0:
+                    return 1
+        if pos != info_end:
+            return 1
+    d.n = _runs_count(buf, &d.id)
+    if d.n < 0 or _runs_count(buf, &d.lat) != d.n or _runs_count(buf, &d.lon) != d.n:
+        return 1
+    d.n_keys_vals = _runs_count(buf, &d.keys_vals)
+    if d.n_keys_vals < 0:
+        return 1
+    for k in range(6):
+        d.n_info[k] = _runs_count(buf, &d.info[k])
+        if d.n_info[k] < 0 or (d.n_info[k] != 0 and d.n_info[k] != d.n):
+            return 1
+    return 0
+
+
+cdef int _dense_values(const unsigned char* buf, _Dense* d, _CropState* st) noexcept nogil:
+    """Decode the group's values into ``st.values``: ids, lats, lons, then each DenseInfo
+    field's ``n`` values (whether present or not), then the tag stream. 1 when the tags do
+    not end once per node, -1 when memory runs out."""
+    # The layout of ``st.values``: ids at v[0:n], lats at v[n:2n], lons at v[2n:3n],
+    # DenseInfo field k + 1 at v[(3 + k)n:(4 + k)n] for k = 0 ... 5, the tag stream at
+    # v[9n:]. A field the group lacks leaves its slot unused.
+    cdef Py_ssize_t n = d.n, need, k
+    cdef int64_t* v
+    cdef void* p
+    # The values, and their bytes, fit in a Py_ssize_t.
+    if d.n > PY_SSIZE_T_MAX // 80 or d.n_keys_vals > PY_SSIZE_T_MAX // 80:
+        return -1
+    need = 9 * d.n + d.n_keys_vals
+    if need == 0:
+        return 0  # an empty group: no values, and no pointer into ``st.values``
+    if need > st.values_cap:
+        p = realloc(st.values, need * sizeof(int64_t))
+        if p == NULL:
+            return -1
+        st.values = <int64_t*>p
+        st.values_cap = need
+    v = st.values
+    if (_runs_fill(buf, &d.id, True, True, v) != n
+            or _runs_fill(buf, &d.lat, True, True, v + n) != n
+            or _runs_fill(buf, &d.lon, True, True, v + 2 * n) != n):
+        return 1
+    for k in range(6):
+        if d.n_info[k] and _runs_fill(buf, &d.info[k], _info_delta(k), _info_delta(k),
+                                      v + (3 + k) * n) != n:
+            return 1
+    if _runs_fill(buf, &d.keys_vals, False, False, v + 9 * n) != d.n_keys_vals:
+        return 1
+    if not _tags_end_per_node(v + 9 * n, d.n_keys_vals, n):
+        return 1
+    return 0
+
+
+cdef int _dense_payload(_Dense* d, _CropState* st) noexcept nogil:
+    """The DenseNodes bytes of the kept nodes into ``st.dense``, as `_dense_bytes` writes
+    them; 1 when no node is kept, -1 when memory runs out."""
+    cdef Py_ssize_t n = d.n, i, k
+    cdef const int64_t* v = st.values
+    cdef bint kept = False, has_info = False
+    cdef void* p
+    if n > st.keep_cap:
+        p = realloc(st.keep, n)
+        if p == NULL:
+            return -1
+        st.keep = <uint8_t*>p
+        st.keep_cap = n
+    for i in range(n):
+        st.keep[i] = _sorted_has(&st.nodes, v[i])
+        kept = kept or st.keep[i]
+    if not kept:
+        return 1
+    # The fields in `_dense_bytes`'s order: ids, DenseInfo, lats, lons, tags. Each packed
+    # field is written to ``st.packed`` first, so its length is known for the field header.
+    st.dense.n = 0
+    st.packed.n = 0
+    if (_append_packed(&st.packed, v, st.keep, n, True) < 0
+            or _append_field(&st.dense, DENSE_ID, st.packed.data, st.packed.n) < 0):
+        return -1
+    st.info.n = 0
+    for k in range(6):
+        if d.n_info[k]:
+            has_info = True
+            st.packed.n = 0
+            if (_append_packed(&st.packed, v + (3 + k) * n, st.keep, n, _info_delta(k)) < 0
+                    or _append_field(&st.info, DI_VERSION + k, st.packed.data,
+                                     st.packed.n) < 0):
+                return -1
+    if has_info and _append_field(&st.dense, DENSE_DENSEINFO, st.info.data, st.info.n) < 0:
+        return -1
+    st.packed.n = 0
+    if (_append_packed(&st.packed, v + n, st.keep, n, True) < 0
+            or _append_field(&st.dense, DENSE_LAT, st.packed.data, st.packed.n) < 0):
+        return -1
+    st.packed.n = 0
+    if (_append_packed(&st.packed, v + 2 * n, st.keep, n, True) < 0
+            or _append_field(&st.dense, DENSE_LON, st.packed.data, st.packed.n) < 0):
+        return -1
+    if d.n_keys_vals:
+        st.packed.n = 0
+        if (_append_kept_tags(&st.packed, v + 9 * n, d.n_keys_vals, st.keep) < 0
+                or _append_field(&st.dense, DENSE_KEYS_VALS, st.packed.data,
+                                 st.packed.n) < 0):
+            return -1
+    return 0
+
+
+cdef bint _fields_ok(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end) noexcept nogil:
+    """Whether ``buf[start:end]`` is a run of well-formed fields (`_check_fields`)."""
+    cdef Py_ssize_t pos = start
+    cdef int field, wire
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        _skip_field(buf, &pos, end, wire)
+    return pos == end
+
+
+cdef int _crop_group(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                     _CropState* st) noexcept nogil:
+    """The kept dense nodes of one PrimitiveGroup into ``st.group`` (empty when none is
+    kept), as `_group_layout` and `_crop_block` read and write them; 1 for a group with
+    plain nodes, ways or relations (left to `_crop_block`) or data they refuse, -1 when
+    memory runs out."""
+    cdef Py_ssize_t pos = start, f_start
+    cdef int field, wire, status
+    cdef uint64_t length
+    cdef bint dense_seen = False
+    cdef _Dense d
+    st.group.n = 0
+    # Two scans of the group's fields. 1: they are well formed.
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        _skip_field(buf, &pos, end, wire)
+    if pos != end:
+        return 1
+    # 2: every dense group is checked, as `_group_layout` decodes them all; the last one
+    # is the one kept.
+    pos = start
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        f_start = pos
+        pos = _field_end(pos, length, end)
+        if pos > end:
+            return 1
+        if field == GROUP_DENSE:
+            if _dense_runs(buf, f_start, pos, &d) != 0:
+                return 1
+            status = _dense_values(buf, &d, st)
+            if status != 0:
+                return status
+            dense_seen = True
+        elif field == GROUP_NODES or field == GROUP_WAYS or field == GROUP_RELATIONS:
+            return 1
+    if dense_seen and d.n > 0:
+        status = _dense_payload(&d, st)
+        if status < 0:
+            return -1
+        if status == 0 and _append_field(&st.group, GROUP_DENSE, st.dense.data,
+                                         st.dense.n) < 0:
+            return -1
+    return 0
+
+
+cdef int _crop_one(const unsigned char* buf, Py_ssize_t end, _CropState* st) noexcept nogil:
+    """The cropped copy of one block appended to ``st.out``, as `_crop_block` builds it:
+    `_CROPPED`, `_NOTHING_KEPT` (nothing appended), `_BY_PYTHON` for data it leaves to
+    `_crop_block`, or -1 when memory runs out."""
+    cdef Py_ssize_t pos = 0, f_start, table_start = -1, table_end = -1
+    cdef int field, wire, status
+    cdef uint64_t length, value
+    cdef int64_t granularity = 100, date_granularity = 1000, lat_offset = 0, lon_offset = 0
+    st.parts.n = 0
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire == WIRE_VARINT:
+            value = _read_varint(buf, &pos, end)
+            if field == PB_GRANULARITY:
+                granularity = <int64_t>value
+            elif field == PB_DATE_GRANULARITY:
+                date_granularity = <int64_t>value
+            elif field == PB_LAT_OFFSET:
+                lat_offset = <int64_t>value
+            elif field == PB_LON_OFFSET:
+                lon_offset = <int64_t>value
+        elif wire == WIRE_LENGTH:
+            length = _read_varint(buf, &pos, end)
+            f_start = pos
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                return _BY_PYTHON
+            if field == PB_STRINGTABLE:
+                table_start = f_start
+                table_end = pos
+            elif field == PB_PRIMITIVEGROUP:
+                status = _crop_group(buf, f_start, pos, st)
+                if status != 0:
+                    return _BY_PYTHON if status > 0 else -1
+                if st.group.n and _append_field(&st.parts, PB_PRIMITIVEGROUP,
+                                                st.group.data, st.group.n) < 0:
+                    return -1
+        else:
+            _skip_field(buf, &pos, end, wire)
+    if pos != end:
+        return _BY_PYTHON
+    if table_start >= 0 and not _fields_ok(buf, table_start, table_end):
+        return _BY_PYTHON  # `_crop_block` raises for the table
+    if st.parts.n == 0:
+        return _NOTHING_KEPT
+    # The block in `_block_bytes`'s field order: the string table as it is, the kept
+    # groups, then the four header values.
+    if table_start < 0:
+        table_start = table_end = 0
+    if (_append_field(&st.out, PB_STRINGTABLE, buf + table_start,
+                      table_end - table_start) < 0
+            or _append(&st.out, st.parts.data, st.parts.n) < 0
+            or _append_varint(&st.out, PB_GRANULARITY << 3) < 0
+            or _append_varint(&st.out, <uint64_t>granularity) < 0
+            or _append_varint(&st.out, PB_DATE_GRANULARITY << 3) < 0
+            or _append_varint(&st.out, <uint64_t>date_granularity) < 0
+            or _append_varint(&st.out, PB_LAT_OFFSET << 3) < 0
+            or _append_varint(&st.out, <uint64_t>lat_offset) < 0
+            or _append_varint(&st.out, PB_LON_OFFSET << 3) < 0
+            or _append_varint(&st.out, <uint64_t>lon_offset) < 0):
+        return -1
+    return _CROPPED
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def _crop_blocks(const unsigned char[::1] buffer, const int64_t[::1] starts,
+                 SortedInt64Set kept_nodes, Int64Set kept_ways, Int64Set kept_rel):
+    """The cropped copies of the blocks ``buffer[starts[i]:starts[i + 1]]``, built without
+    the GIL as `_crop_block` builds them (``compact=False``). Returns ``(status, offsets,
+    data)``: block ``i`` is ``data[offsets[i]:offsets[i + 1]]`` when its status is
+    `_CROPPED`; `_NOTHING_KEPT` when nothing in it is kept, `_BY_PYTHON` when it is left to
+    `_crop_block` (a block with plain nodes, ways or relations is, for now)."""
+    cdef Py_ssize_t n_blocks = starts.shape[0] - 1, b, mark
+    cdef int status
+    check_batch_starts(starts, buffer.shape[0])
+    members = np.ascontiguousarray(kept_nodes._sorted, dtype=np.int64)
+    cdef const int64_t[::1] m = members
+    result = np.zeros(n_blocks, dtype=np.uint8)
+    offsets = np.zeros(n_blocks + 1, dtype=np.int64)
+    cdef uint8_t[::1] status_out = result
+    cdef int64_t[::1] at = offsets
+    cdef const unsigned char* buf = &buffer[0] if buffer.shape[0] else _NO_BYTES
+    cdef bint out_of_memory = False
+    cdef _CropState st
+    memset(&st, 0, sizeof(_CropState))
+    st.nodes.members = &m[0] if m.shape[0] else NULL
+    st.nodes.m = m.shape[0]
+    st.ways = kept_ways.table
+    st.relations = kept_rel.table
+    try:
+        # Each block's copy is appended to ``st.out``; one not cropped here is taken back.
+        with nogil:
+            for b in range(n_blocks):
+                mark = st.out.n
+                st.nodes.at = 0
+                st.nodes.last = 0
+                status = _crop_one(buf + starts[b], starts[b + 1] - starts[b], &st)
+                if status < 0:
+                    out_of_memory = True
+                    break
+                if status != _CROPPED:
+                    st.out.n = mark
+                status_out[b] = status
+                at[b + 1] = st.out.n
+        if out_of_memory:
+            raise MemoryError()
+        data = (<char*>st.out.data)[:st.out.n] if st.out.n else b""
+    finally:
+        free(st.out.data)
+        free(st.parts.data)
+        free(st.group.data)
+        free(st.dense.data)
+        free(st.info.data)
+        free(st.packed.data)
+        free(st.values)
+        free(st.keep)
+    return result, offsets, data
 
 
 # ---------------------------------------------------------------------------

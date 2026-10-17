@@ -1380,6 +1380,188 @@ def test_merge_pbf_rejects_bad_polygon(helsinki_pbf, case, match):
         merge_pbf([helsinki_pbf], **region)
 
 
+def _varint_bytes(value):
+    """``value`` (an int64) as a protobuf varint."""
+    value &= (1 << 64) - 1
+    out = bytearray()
+    while value >= 0x80:
+        out.append((value & 0x7F) | 0x80)
+        value >>= 7
+    out.append(value)
+    return bytes(out)
+
+
+def _len_field(number, payload):
+    """A length-delimited protobuf field."""
+    return _varint_bytes((number << 3) | 2) + _varint_bytes(len(payload)) + payload
+
+
+def _packed_sint(values, runs=1):
+    """Delta-coded zig-zag varints of ``values``, as ``runs`` packed fields' payloads."""
+    deltas = [b - a for a, b in zip([0] + list(values), values)]
+    encoded = [_varint_bytes((d << 1) ^ (d >> 63)) for d in deltas]
+    step = -(-len(encoded) // runs)
+    return [b"".join(encoded[i : i + step]) for i in range(0, len(encoded), step)]
+
+
+def _crafted_blocks():
+    """Blocks for the GIL-free crop: dense nodes with metadata and tags on a shifted grid,
+    unsorted dense nodes, ids in 9 packed runs, plain nodes, ways, a group of ways and
+    relations, relations, a block with two string tables and an empty group, and a block
+    with nothing in the crop box."""
+    import zlib
+
+    from pyrosm.proto.fileformat_pb2 import Blob
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    lon0, lat0 = sum(CROP_BBOX[0::2]) / 2, sum(CROP_BBOX[1::2]) / 2
+
+    def dense(ids, inside, granularity=100, offset=0, tags=None, info=False):
+        blk = PrimitiveBlock(granularity=granularity, lat_offset=offset, lon_offset=offset)
+        blk.date_granularity = 500
+        blk.stringtable.s.extend([b"", b"amenity", b"cafe", b"alice"])
+        d = blk.primitivegroup.add().dense
+        lons = [lon0 if i else lon0 + 1 for i in inside]
+        lats = [lat0 if i else lat0 + 1 for i in inside]
+        d.id.extend(np.diff([0] + ids).tolist())
+        for field, values in ((d.lat, lats), (d.lon, lons)):
+            raw = [round((v * 1e9 - offset) / granularity) for v in values]
+            field.extend(np.diff([0] + raw).tolist())
+        for k, has in enumerate(tags or []):
+            d.keys_vals.extend([1, 2, 0] if has else [0])
+        if info:
+            d.denseinfo.version.extend([1, 2, -1][: len(ids)] * (len(ids) // 3 + 1))
+            del d.denseinfo.version[len(ids) :]
+            d.denseinfo.timestamp.extend([7] * len(ids))
+            d.denseinfo.user_sid.extend([3] + [0] * (len(ids) - 1))
+        return blk
+
+    blocks = [
+        dense([1, 2, 3, 4], [1, 0, 1, 1], 1000, -5000, tags=[1, 0, 0, 1], info=True),
+        dense([9, 5, 7, 6], [1, 1, 0, 1]),
+    ]
+    # Ids 20-28 in nine runs, all in the box.
+    runs = b"".join(_len_field(1, run) for run in _packed_sint(list(range(20, 29)), 9))
+    lat = round(lat0 * 1e7)
+    lon = round(lon0 * 1e7)
+    coords = _len_field(8, _packed_sint([lat] * 9)[0]) + _len_field(
+        9, _packed_sint([lon] * 9)[0]
+    )
+    table = _len_field(1, _len_field(1, b""))
+    data = table + _len_field(2, _len_field(2, runs + coords))
+    blocks.append(Blob(zlib_data=zlib.compress(data), raw_size=len(data)))
+    plain = PrimitiveBlock(granularity=100)
+    plain.stringtable.s.append(b"")
+    group = plain.primitivegroup.add()
+    for node_id, inside in ((30, True), (31, False), (32, True)):
+        node = group.nodes.add(id=node_id, lat=lat if inside else lat + 10**7, lon=lon)
+        node.info.version = 3
+    blocks.append(plain)
+    ways = PrimitiveBlock(granularity=100)
+    ways.stringtable.s.extend([b"", b"highway", b"path"])
+    group = ways.primitivegroup.add()
+    for way_id, refs in ((40, [1, 2]), (41, [2]), (42, [30, 22, 6])):
+        way = group.ways.add(id=way_id, keys=[1], vals=[2])
+        way.refs.extend(np.diff([0] + refs).tolist())
+        way.info.version = 1
+    mixed = ways.primitivegroup.add()
+    mixed.ways.add(id=43).refs.extend([3])
+    mixed.relations.add(id=50, memids=[40], types=[1], roles_sid=[0])
+    blocks.append(ways)
+    rels = PrimitiveBlock(granularity=100)
+    rels.stringtable.s.extend([b"", b"type", b"route", b"outer"])
+    group = rels.primitivegroup.add()
+    for rel_id, members in ((60, [(1, 40)]), (61, [(0, 31)]), (62, [(0, 1), (1, 41)])):
+        rel = group.relations.add(id=rel_id, keys=[1], vals=[2])
+        rel.memids.extend(np.diff([0] + [m for _, m in members]).tolist())
+        rel.types.extend([t for t, _ in members])
+        rel.roles_sid.extend([3] * len(members))
+    blocks.append(rels)
+    twice = rels.SerializeToString() + _len_field(1, _len_field(1, b"x")) + _len_field(2, b"")
+    blocks.append(Blob(zlib_data=zlib.compress(twice), raw_size=len(twice)))
+    blocks.append(dense([70, 71], [0, 0], tags=[1, 1]))
+    return blocks
+
+
+@pytest.mark.parametrize("source", ["crafted", "helsinki"])
+def test_crop_blocks_write_the_bytes_of_crop_block(tmp_path, helsinki_pbf, source):
+    """Given the elements a crop in one process kept, _crop_blocks builds each block's
+    cropped copy byte for byte as that crop wrote it, gives no copy of a block that keeps
+    nothing, and leaves to _crop_block a block it does not handle (ids in more packed
+    runs than it keeps, plain nodes, ways, relations)."""
+    from pyrosm.int64_hash import Int64Set, SortedInt64Set
+    from pyrosm.pbf_export import _crop_blocks, _iter_block_data, crop_pbf
+
+    if source == "crafted":
+        path = _pbf_file(tmp_path / "crafted.osm.pbf", *_crafted_blocks())
+    else:
+        path = helsinki_pbf
+    out = crop_pbf(path, str(tmp_path / "out.osm.pbf"), CROP_BBOX, workers=1)
+    node_ids, way_ids, rel_ids, _, _ = _read_elements(out)
+    blocks = list(_iter_block_data(path))
+    buffer = np.frombuffer(b"".join(blocks), dtype=np.uint8)
+    starts = np.concatenate([[0], np.cumsum([len(b) for b in blocks])]).astype(np.int64)
+    status, offsets, data = _crop_blocks(
+        buffer,
+        starts,
+        SortedInt64Set(np.array(sorted(node_ids), dtype=np.int64)),
+        Int64Set(np.array(sorted(way_ids), dtype=np.int64)),
+        Int64Set(np.array(sorted(rel_ids), dtype=np.int64)),
+    )
+    if source == "crafted":
+        # 0 cropped, 1 left to _crop_block, 2 nothing kept.
+        assert status.tolist() == [0, 0, 1, 1, 1, 1, 1, 2]
+    # Each block left to _crop_block keeps something here, so the output holds a block
+    # for every block not marked "nothing kept", in order.
+    written = list(_iter_block_data(out))
+    kept = [b for b in range(len(blocks)) if status[b] != 2]
+    assert len(written) == len(kept)
+    for block, copy in zip(kept, written):
+        if status[block] == 0:
+            assert data[offsets[block] : offsets[block + 1]] == copy
+
+
+def test_crop_blocks_corrupt_blocks(corrupted_copies):
+    """A corrupted block is cropped, left to _crop_block or found to keep nothing;
+    _crop_blocks never reads outside it."""
+    from pyrosm.int64_hash import Int64Set, SortedInt64Set
+    from pyrosm.pbf_export import _crop_blocks
+
+    blocks = _crafted_blocks()
+    kept = (
+        SortedInt64Set(np.array([1, 2, 3, 4, 30, 32], dtype=np.int64)),
+        Int64Set(np.array([40, 42, 43], dtype=np.int64)),
+        Int64Set(np.array([50], dtype=np.int64)),
+    )
+    # An empty block in an empty buffer keeps nothing.
+    empty = np.zeros(0, dtype=np.uint8), np.array([0, 0], dtype=np.int64)
+    status, offsets, out = _crop_blocks(*empty, *kept)
+    assert status.tolist() == [2] and offsets.tolist() == [0, 0] and out == b""
+    # Node 1 in a group with two DenseInfo messages, which the Python path merges.
+    dense = b"".join(_len_field(f, _packed_sint([v])[0]) for f, v in ((1, 1), (8, 0), (9, 0)))
+    dense += _len_field(5, _len_field(1, b"\x01")) + _len_field(5, b"")
+    data = _len_field(1, _len_field(1, b"")) + _len_field(2, _len_field(2, dense))
+    starts = np.array([0, len(data)], dtype=np.int64)
+    status, _, _ = _crop_blocks(np.frombuffer(data, dtype=np.uint8), starts, *kept)
+    assert status.tolist() == [1]
+    # A string table cut off inside a field goes to _crop_block, which raises for it; an
+    # empty DenseNodes group keeps nothing.
+    for data, expected in (
+        (_len_field(1, b"\x0a") + _len_field(2, _len_field(2, dense)), 1),
+        (b"\x0a\x00\x12\x02\x12\x00", 2),
+    ):
+        starts = np.array([0, len(data)], dtype=np.int64)
+        status, _, _ = _crop_blocks(np.frombuffer(data, dtype=np.uint8), starts, *kept)
+        assert status.tolist() == [expected]
+    for seed, block in enumerate((blocks[0], blocks[3], blocks[4])):
+        for data in corrupted_copies(block.SerializeToString(), 100, seed=seed):
+            buffer = np.frombuffer(data, dtype=np.uint8)
+            starts = np.array([0, len(data)], dtype=np.int64)
+            status, offsets, out = _crop_blocks(buffer, starts, *kept)
+            assert status[0] in (0, 1, 2)
+            assert offsets.tolist() == [0, len(out)]
+
+
 @pytest.mark.parametrize(
     "executor, fallback",
     [
