@@ -25,7 +25,8 @@ the flat (CSR) arrays exactly, then a single fill pass writes into them -- no pe
 allocation. Plain nodes are returned in the same form as dense ones.
 Coordinates and ids are returned as raw cumulative integers (not scaled by
 ``granularity``/offset); scaling is the caller's job, which keeps the values exact and
-easy to compare against the protobuf path in tests.
+easy to compare against the protobuf path in tests. ``decode_batch_nogil`` (the GIL-free
+batch decoder at the end of this module) gives coordinates in degrees.
 """
 import numpy as np
 
@@ -1013,3 +1014,436 @@ def decode_elements(const unsigned char[::1] data, starts, ends, bint is_relatio
         else:
             _fill_way(buf, pos, end, b)
     return b.result()
+
+
+# --- GIL-free batch decoding (the threaded reader) -------------------------------------
+#
+# ``decode_batch_nogil`` decodes a batch of blocks without the GIL into flat arrays: every
+# dense node's id and coordinates, and whether it lies in a bounding box. A block it does
+# not handle (ways, plain nodes, relations, a packed field in more runs than it keeps, dense
+# groups whose tags or metadata only some groups have, several string tables, data that
+# does not follow the format) gets status 1 and none of its elements; the caller decodes it
+# with ``decode_primitive_block``.
+#
+# C code cannot grow numpy arrays without the GIL, so every block is decoded twice by the
+# same functions (``_block`` and the ones it calls). In the count pass ``_Out.fill`` is
+# False: the functions only add to the ``n_*`` counters, and a block that fails is undone.
+# The caller then allocates arrays of exactly those sizes, and in the fill pass
+# (``_Out.fill`` True) the same functions write the values, using the counters as write
+# positions. Both passes see the same bytes, so they take the same steps; a block that
+# decodes in the first pass but not the second (status 2) is a bug and raises.
+
+from libc.string cimport memset
+from libc.stdint cimport uint8_t, uintptr_t
+
+# The columns of the per-block count table ``decode_batch_nogil`` returns.
+BLOCK_COUNTS = ("status", "nodes")
+
+cdef enum:
+    BC_STATUS = 0
+    BC_NODES = 1
+    BC_COUNT = 2
+
+
+# What the caller asks for, as plain C values so the decoder can read it without the GIL.
+cdef struct _Request:
+    bint bbox                      # flag each node inside xmin..xmax, ymin..ymax
+    double xmin
+    double ymin
+    double xmax
+    double ymax
+
+
+# The decoder's output. The counters are the sizes in the count pass and the next write
+# positions in the fill pass; the pointers are NULL in the count pass.
+cdef struct _Out:
+    bint fill                      # False: count pass, True: fill pass
+    Py_ssize_t n_nodes
+    Py_ssize_t max_group           # nodes in the largest dense group, to size ``scratch``
+    int64_t* node_id               # every dense node, in block order
+    double* node_lon
+    double* node_lat
+    uint8_t* in_box
+    int64_t* scratch               # 2 values per node of the current dense group
+
+
+# Which fields the block's dense groups have, so ``_dense_group`` can check that they all
+# have the same ones.
+cdef struct _DenseState:
+    bint seen                      # a dense group of the block was decoded
+    bint has_tags
+    int info_mask                  # bit f - 1 for each DenseInfo field f the groups have
+
+
+cdef Py_ssize_t _runs_count(const unsigned char* buf, _Runs* runs) noexcept nogil:
+    """The number of varints in the runs; -1 when one is cut off or larger than 64 bits
+    (as ``_read_varint`` reads them)."""
+    # A varint stores 7 bits per byte, low bits first; a byte with its high bit (0x80) set
+    # is followed by another. So each byte without the high bit ends one value. 64 bits
+    # need at most 10 bytes, and the 10th holds only the top bit, so it must be 0 or 1.
+    # ``continued`` counts the bytes of the current value read so far.
+    cdef Py_ssize_t r, pos, n = 0, continued
+    for r in range(runs.n):
+        continued = 0
+        for pos in range(runs.start[r], runs.end[r]):
+            if buf[pos] & 0x80:
+                continued += 1
+                if continued > 9:
+                    return -1
+            else:
+                if continued == 9 and buf[pos] > 1:
+                    return -1
+                n += 1
+                continued = 0
+        if continued:
+            return -1
+    return n
+
+
+cdef inline int64_t _wrapping_add(int64_t a, int64_t b) noexcept nogil:
+    """``a + b`` wrapping around as numpy's int64 arithmetic does (a signed overflow is
+    undefined in C)."""
+    return <int64_t>(<uint64_t>a + <uint64_t>b)
+
+
+cdef inline double _degrees(int64_t value, int64_t granularity, int64_t offset) noexcept nogil:
+    """A coordinate in degrees: ``(value * granularity + offset) / 1e9`` with the int64
+    arithmetic of numpy, which wraps around."""
+    return (<double><int64_t>(<uint64_t>value * <uint64_t>granularity
+                              + <uint64_t>offset)) / 1e9
+
+
+cdef Py_ssize_t _runs_fill(const unsigned char* buf, _Runs* runs, bint delta, bint signed,
+                           int64_t* out) noexcept nogil:
+    """Decode the runs into ``out``: values, or a running sum of zig-zag deltas that goes on
+    across the runs. Returns how many were written, or -1 for a cut-off varint."""
+    cdef Py_ssize_t r, pos, end, i = 0
+    cdef int64_t running = 0
+    cdef uint64_t raw
+    for r in range(runs.n):
+        pos = runs.start[r]
+        end = runs.end[r]
+        while pos < end:
+            raw = _read_varint(buf, &pos, end)
+            if delta:
+                running = _wrapping_add(running, _zig_zag_decode(raw))
+                out[i] = running
+            elif signed:
+                out[i] = _zig_zag_decode(raw)
+            else:
+                out[i] = <int64_t>raw
+            i += 1
+        if pos != end:
+            return -1
+    return i
+
+
+cdef bint _string_table_ok(const unsigned char* buf, Py_ssize_t start,
+                           Py_ssize_t end) noexcept nogil:
+    """Whether the string table ``buf[start:end]`` follows the wire format, as
+    ``decode_primitive_block`` requires of every block."""
+    cdef Py_ssize_t pos = start
+    cdef int field, wire
+    cdef uint64_t length
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        pos = _field_end(pos, length, end)
+    return pos == end
+
+
+cdef int _tag_stream_ok(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                        Py_ssize_t n) noexcept nogil:
+    """Whether the dense tag stream holds, for each of ``n`` nodes in turn, its key and value
+    ids followed by a 0 (as ``_check_keys_vals`` requires)."""
+    # The stream is ``k v k v ... 0`` per node. A 0 where a key is due ends a node; any
+    # other value flips between expecting a key and expecting a value.
+    cdef Py_ssize_t pos = start, ends = 0
+    cdef bint at_key = True, ended = False
+    cdef int64_t value
+    while pos < end:
+        value = <int64_t>_read_varint(buf, &pos, end)
+        ended = at_key and value == 0
+        if ended:
+            ends += 1
+        else:
+            at_key = not at_key
+    return pos == end and ends == n and ended
+
+
+cdef int _dense_group(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                      const _Request* req, _Out* out, int64_t granularity,
+                      int64_t lat_offset, int64_t lon_offset,
+                      _DenseState* state) noexcept nogil:
+    """Count or decode one ``DenseNodes`` group. 1 when the block needs the Python path."""
+    # A DenseNodes group stores its nodes column by column: packed fields of ids, lats and
+    # lons (each delta coded), one tag stream for all nodes, and a DenseInfo message with
+    # one packed field per metadata column. The steps: find each field's runs, check that
+    # every column has one value per node, then (fill pass) decode the columns.
+    cdef _Runs ids, lats, lons, kv
+    cdef _Runs info[6]
+    cdef Py_ssize_t pos = start, f_start, i_pos, i_start, n, i, row0
+    cdef Py_ssize_t info_start = -1, info_end = -1
+    cdef int field, wire, f, info_mask = 0
+    cdef uint64_t length
+    cdef double lon, lat
+    ids.n = 0
+    lats.n = 0
+    lons.n = 0
+    kv.n = 0
+    for f in range(6):
+        info[f].n = 0
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        f_start = pos
+        pos = _field_end(pos, length, end)
+        if pos > end:
+            return 1
+        if field == DENSE_ID:
+            if _add_span(&ids, f_start, pos) < 0:
+                return 1
+        elif field == DENSE_LAT:
+            if _add_span(&lats, f_start, pos) < 0:
+                return 1
+        elif field == DENSE_LON:
+            if _add_span(&lons, f_start, pos) < 0:
+                return 1
+        elif field == DENSE_KEYS_VALS:
+            if pos > f_start and _add_span(&kv, f_start, pos) < 0:
+                return 1
+        elif field == DENSE_DENSEINFO:
+            if info_start >= 0:
+                return 1
+            info_start = f_start
+            info_end = pos
+    if pos != end or kv.n > 1:
+        return 1
+    # DenseInfo's fields 1 to 6 (DI_VERSION ... DI_VISIBLE) go to info[0] ... info[5].
+    if info_start >= 0:
+        i_pos = info_start
+        while i_pos < info_end:
+            _read_tag(buf, &i_pos, info_end, &field, &wire)
+            if wire != WIRE_LENGTH:
+                _skip_field(buf, &i_pos, info_end, wire)
+                continue
+            length = _read_varint(buf, &i_pos, info_end)
+            i_start = i_pos
+            i_pos = _field_end(i_pos, length, info_end)
+            if i_pos > info_end:
+                return 1
+            if 1 <= field <= 6 and i_pos > i_start:
+                if _add_span(&info[field - 1], i_start, i_pos) < 0:
+                    return 1
+        if i_pos != info_end:
+            return 1
+    # Every column holds one value per node: ``n`` nodes.
+    n = _runs_count(buf, &ids)
+    if n < 0 or _runs_count(buf, &lats) != n or _runs_count(buf, &lons) != n:
+        return 1
+    for f in range(6):
+        if info[f].n:
+            if _runs_count(buf, &info[f]) != n:
+                return 1
+            info_mask |= 1 << f
+    # The Python path fills a column only some of a block's groups have with zeros for the
+    # others (``_join_aligned``). Such blocks are rare and go there, so all groups of a
+    # block decoded here must have the same columns -- of the ones pyrosm reads.
+    info_mask &= ((1 << (DI_VERSION - 1)) | (1 << (DI_TIMESTAMP - 1))
+                  | (1 << (DI_CHANGESET - 1)) | (1 << (DI_VISIBLE - 1)))
+    if state.seen and (state.has_tags != (kv.n > 0) or state.info_mask != info_mask):
+        return 1
+    state.seen = True
+    state.has_tags = kv.n > 0
+    state.info_mask = info_mask
+
+    row0 = out.n_nodes
+    if not out.fill:
+        if kv.n and not _tag_stream_ok(buf, kv.start[0], kv.end[0], n):
+            return 1
+        if n > out.max_group:
+            out.max_group = n
+    else:
+        if _runs_fill(buf, &ids, True, True, out.node_id + row0) != n:
+            return 1
+        # lat/lon go through the scratch space: running sums, then scaled to degrees
+        # (nanodegrees = offset + granularity * value).
+        if _runs_fill(buf, &lats, True, True, out.scratch) != n:
+            return 1
+        if _runs_fill(buf, &lons, True, True, out.scratch + n) != n:
+            return 1
+        for i in range(n):
+            lat = _degrees(out.scratch[i], granularity, lat_offset)
+            lon = _degrees(out.scratch[n + i], granularity, lon_offset)
+            out.node_lat[row0 + i] = lat
+            out.node_lon[row0 + i] = lon
+            if req.bbox:
+                out.in_box[row0 + i] = (lon >= req.xmin and lon <= req.xmax
+                                        and lat >= req.ymin and lat <= req.ymax)
+    out.n_nodes += n
+    return 0
+
+
+cdef int _block(const unsigned char* buf, Py_ssize_t end, const _Request* req,
+                _Out* out) noexcept nogil:
+    """Count or decode one block. 1 when it needs the Python path."""
+    cdef Py_ssize_t pos = 0, f_start, g_pos, g_end, e_start, st_start = -1, st_end = -1
+    cdef int field, wire
+    cdef uint64_t length
+    cdef int64_t granularity = 100, lat_offset = 0, lon_offset = 0
+    cdef _DenseState state
+    state.seen = False
+    state.has_tags = False
+    state.info_mask = 0
+    # Two scans of the block's fields. Protobuf fields may come in any order, and the
+    # groups need the coordinate scale and the string table, so the first scan reads the
+    # header values and finds the table, and the second decodes the groups.
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire == WIRE_VARINT:
+            length = _read_varint(buf, &pos, end)
+            if field == PB_GRANULARITY:
+                granularity = <int64_t>length
+            elif field == PB_LAT_OFFSET:
+                lat_offset = <int64_t>length
+            elif field == PB_LON_OFFSET:
+                lon_offset = <int64_t>length
+            continue
+        if wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        f_start = pos
+        pos = _field_end(pos, length, end)
+        if pos > end:
+            return 1
+        if field == PB_STRINGTABLE:
+            if st_start >= 0:
+                return 1  # each of several string tables is checked by the Python path
+            st_start = f_start
+            st_end = pos
+    if pos != end:
+        return 1
+    if st_start >= 0 and not _string_table_ok(buf, st_start, st_end):
+        return 1
+    pos = 0
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        f_start = pos
+        pos = _field_end(pos, length, end)
+        if pos > end:
+            return 1
+        if field != PB_PRIMITIVEGROUP:
+            continue
+        # A group's fields are its elements: dense groups, ways, plain nodes, relations.
+        g_pos = f_start
+        g_end = pos
+        while g_pos < g_end:
+            _read_tag(buf, &g_pos, g_end, &field, &wire)
+            if wire != WIRE_LENGTH:
+                return 1
+            length = _read_varint(buf, &g_pos, g_end)
+            e_start = g_pos
+            g_pos = _field_end(g_pos, length, g_end)
+            if g_pos > g_end:
+                return 1
+            if field != GROUP_DENSE:
+                return 1
+            if _dense_group(buf, e_start, g_pos, req, out, granularity, lat_offset,
+                            lon_offset, &state) != 0:
+                return 1
+        if g_pos != g_end:
+            return 1
+    return 0
+
+
+# What an empty batch buffer points to, so that offsets are never added to NULL.
+cdef unsigned char _NO_BYTES[1]
+
+
+def check_batch_starts(starts, Py_ssize_t size):
+    """Raise ``ValueError`` unless the block offsets ``starts`` of a batch rise from 0 or
+    more to at most ``size``, the length of the batch's buffer."""
+    starts = np.asarray(starts)
+    # Compared, not subtracted: a difference of int64 offsets can overflow.
+    if (len(starts) == 0 or (starts < 0).any() or (starts > size).any()
+            or (starts[1:] < starts[:-1]).any()):
+        raise ValueError("starts must rise from 0 to at most the buffer's length")
+
+
+cdef inline int64_t* _int64_data(array):
+    return <int64_t*><uintptr_t>array.ctypes.data
+
+
+def decode_batch_nogil(const unsigned char[::1] buffer, const int64_t[::1] starts,
+                       bbox=None):
+    """Decode the blocks ``buffer[starts[i]:starts[i + 1]]`` without the GIL (it is held only
+    to allocate the arrays); ``bbox`` (``xmin, ymin, xmax, ymax``) asks for the in-box flag
+    of each node.
+
+    Returns a dict: ``counts``, a table with a row per block and the columns
+    ``BLOCK_COUNTS`` (status 1: the block was not decoded and has no elements), and the flat
+    arrays of all blocks in order: ``node_id``, ``node_lon``, ``node_lat`` and ``in_box``."""
+    cdef Py_ssize_t n_blocks = starts.shape[0] - 1, b
+    cdef _Request req
+    cdef _Out out, before, fill
+    check_batch_starts(starts, buffer.shape[0])
+    req.bbox = bbox is not None
+    req.xmin = req.ymin = req.xmax = req.ymax = 0
+    if bbox is not None:
+        req.xmin, req.ymin, req.xmax, req.ymax = bbox
+    counts = np.zeros((n_blocks, BC_COUNT), dtype=np.int64)
+    cdef int64_t[:, ::1] c = counts
+    cdef const unsigned char* buf = _NO_BYTES
+    if buffer.shape[0]:
+        buf = &buffer[0]
+    cdef const int64_t* at = &starts[0]
+
+    memset(&out, 0, sizeof(_Out))
+    memset(&fill, 0, sizeof(_Out))
+    # Count pass: each block's sizes, in its row of ``counts``. A block that fails gets
+    # status 1, and the counters go back to what they were before it.
+    with nogil:
+        for b in range(n_blocks):
+            before = out
+            if _block(buf + at[b], at[b + 1] - at[b], &req, &out) != 0:
+                c[b, BC_STATUS] = 1
+                out = before
+                continue
+            c[b, BC_NODES] = out.n_nodes - before.n_nodes
+
+    # The arrays, sized by the count pass's totals.
+    arrays = {
+        "node_id": np.empty(out.n_nodes, dtype=np.int64),
+        "node_lon": np.empty(out.n_nodes, dtype=np.float64),
+        "node_lat": np.empty(out.n_nodes, dtype=np.float64),
+        "in_box": np.zeros(out.n_nodes if bbox is not None else 0, dtype=np.uint8),
+    }
+    scratch = np.empty(2 * out.max_group + 1, dtype=np.int64)
+    fill.fill = True
+    fill.node_id = _int64_data(arrays["node_id"])
+    fill.node_lon = <double*><uintptr_t>arrays["node_lon"].ctypes.data
+    fill.node_lat = <double*><uintptr_t>arrays["node_lat"].ctypes.data
+    fill.in_box = <uint8_t*><uintptr_t>arrays["in_box"].ctypes.data
+    fill.scratch = _int64_data(scratch)
+    # Fill pass: the blocks of status 0 again, now writing into the arrays.
+    with nogil:
+        for b in range(n_blocks):
+            if c[b, BC_STATUS] == 0 and _block(buf + at[b], at[b + 1] - at[b], &req,
+                                               &fill) != 0:
+                c[b, BC_STATUS] = 2
+    if (counts[:, BC_STATUS] == 2).any():
+        raise RuntimeError("a block decoded differently in its two passes")
+    arrays["in_box"] = arrays["in_box"].view(bool)
+    arrays["counts"] = counts
+    return arrays

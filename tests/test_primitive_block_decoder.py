@@ -428,3 +428,228 @@ def test_plain_node_tags_in_any_protobuf_encoding():
     assert nodes["keys_vals"].tolist() == [1, 2, 3, 4, 0]
     with pytest.raises(InvalidOSMFileError, match="2 tag keys but 1 values"):
         decode_primitive_block(_block_with_plain_node(*node, *keys, vals[0]))
+
+
+def _batch(blocks):
+    """The blocks as one buffer with their start offsets, as decode_batch_nogil takes them."""
+    buffer = np.frombuffer(b"".join(blocks), dtype=np.uint8)
+    return buffer, _offsets([len(b) for b in blocks])
+
+
+def _expected_dense(block, bbox):
+    """What decode_batch_nogil gives for a block of dense nodes, from
+    decode_primitive_block: the nodes and their in-box flags."""
+    _, header, nodes, _, _ = decode_primitive_block(block)
+    lon = (nodes["lon"] * header["granularity"] + header["lon_offset"]) / 1e9
+    lat = (nodes["lat"] * header["granularity"] + header["lat_offset"]) / 1e9
+    xmin, ymin, xmax, ymax = bbox
+    return {
+        "node_id": nodes["id"],
+        "node_lon": lon,
+        "node_lat": lat,
+        "in_box": (lon >= xmin) & (lon <= xmax) & (lat >= ymin) & (lat <= ymax),
+    }
+
+
+def test_decode_batch_nogil_dense_nodes(test_pbf, helsinki_pbf):
+    """The GIL-free batch decoder gives the dense nodes of the bundled extracts as
+    decode_primitive_block decodes them, with their in-box flags; it hands back the blocks
+    with ways or relations (status 1)."""
+    from pyrosm.primitive_block_decoder import BLOCK_COUNTS, decode_batch_nogil
+
+    blocks = list(_iter_block_bytes(test_pbf)) + list(_iter_block_bytes(helsinki_pbf))
+    bbox = (24.94, 60.16, 24.96, 60.17)
+    out = decode_batch_nogil(*_batch(blocks), bbox=bbox)
+    counts = dict(zip(BLOCK_COUNTS, out["counts"].T.tolist()))
+    dense = []
+    for block in blocks:
+        _, _, nodes, ways, relations = decode_primitive_block(block)
+        dense.append(ways is None and relations is None)
+    assert counts["status"] == [0 if d else 1 for d in dense]
+    assert 0 < sum(dense) < len(blocks)
+
+    expected = [_expected_dense(b, bbox) for b, d in zip(blocks, dense) if d]
+    for name in ("node_id", "node_lon", "node_lat", "in_box"):
+        assert out[name].tolist() == np.concatenate([e[name] for e in expected]).tolist()
+    assert 0 < out["in_box"].sum() < len(out["in_box"])
+
+
+def _dense_block(id_runs, keys_vals=None, untagged_group=False):
+    """A PrimitiveBlock with a dense group of the nodes 1, 2, ... (their id deltas packed in
+    ``id_runs`` runs), optionally tagged, and optionally a second, untagged dense group.
+    """
+    n = sum(id_runs)
+    dense = b"".join(_field(1, 2, _varint(2) * run) for run in id_runs)
+    dense += _field(8, 2, _varint(2) * n) + _field(9, 2, _varint(4) * n)
+    if keys_vals is not None:
+        dense += _field(10, 2, b"".join(_varint(v) for v in keys_vals))
+    groups = _field(2, 2, _field(2, 2, dense))
+    if untagged_group:
+        other = (
+            _field(1, 2, _varint(2))
+            + _field(8, 2, _varint(2))
+            + _field(9, 2, _varint(4))
+        )
+        groups += _field(2, 2, _field(2, 2, other))
+    pb = PrimitiveBlock()
+    pb.stringtable.s.extend([b"", b"amenity", b"cafe"])
+    return pb.SerializeToString() + groups
+
+
+def _dense_groups(*extras):
+    """A PrimitiveBlock with one dense group of node 1 per item of ``extras``: the encoded
+    DenseNodes fields that group has besides its ids and coordinates."""
+    pb = PrimitiveBlock()
+    pb.stringtable.s.extend([b"", b"amenity", b"cafe"])
+    nodes = _field(1, 2, _varint(2)) + _field(8, 2, _varint(2)) + _field(9, 2, _varint(4))
+    return pb.SerializeToString() + b"".join(
+        _field(2, 2, _field(2, 2, nodes + extra)) for extra in extras
+    )
+
+
+def _plain_node_block():
+    return _block_with_plain_node(
+        _field(1, 0, 14), _field(8, 0, 140), _field(9, 0, 159)
+    )
+
+
+def _relation_block():
+    pb = PrimitiveBlock()
+    pb.stringtable.s.append(b"")
+    pb.primitivegroup.add().relations.add(id=1)
+    return pb.SerializeToString()
+
+
+def _raw_block(group):
+    """A PrimitiveBlock with one group made of the encoded ``group`` fields."""
+    pb = PrimitiveBlock()
+    pb.stringtable.s.extend([b"", b"amenity", b"cafe"])
+    return pb.SerializeToString() + _field(2, 2, group)
+
+
+_CUT_OFF_ID = _raw_block(
+    _field(
+        2,
+        2,
+        _field(1, 2, b"\x02\x82")
+        + _field(8, 2, b"\x02\x02")
+        + _field(9, 2, b"\x04\x04"),
+    )
+)
+_CUT_OFF_WAY_INFO = _raw_block(_field(3, 2, _field(1, 0, 7) + _field(4, 2, b"\x08")))
+
+
+def _two_string_tables():
+    """A block whose first string table maps 1 to another key than its last one does."""
+    first = PrimitiveBlock()
+    first.stringtable.s.extend([b"", b"x", b"amenity"])
+    return first.SerializeToString() + _dense_block([2], [1, 2, 0, 0])
+
+
+def _corrupt_string_table():
+    """A block whose string table holds a string cut off."""
+    table = PrimitiveBlock()
+    table.stringtable.s.extend([b"", b"amenity", b"cafe"])
+    groups = _dense_block([2])[len(table.SerializeToString()) :]
+    return _field(1, 2, _field(1, 2, b"ab")[:-1]) + groups
+
+
+@pytest.mark.parametrize(
+    "case, block, status",
+    [
+        (
+            "dense nodes in runs",
+            _dense_block([1, 2, 3, 1, 1, 1, 1, 1], [1, 2, 0] + [0] * 10),
+            0,
+        ),
+        ("more packed runs than kept", _dense_block([1] * 9), 1),
+        (
+            "tags in only some groups",
+            _dense_block([2], [1, 2, 0, 0], untagged_group=True),
+            1,
+        ),
+        (
+            "metadata in only some groups",
+            _dense_groups(_field(5, 2, _field(1, 2, _varint(1))), b""),
+            1,
+        ),
+        (
+            "tags in two runs",
+            _dense_groups(_field(10, 2, _varint(1) + _varint(2)) + _field(10, 2, b"\0")),
+            1,
+        ),
+        (
+            "tags that do not end once per node",
+            _dense_groups(_field(10, 2, _varint(1) + _varint(2))),
+            "corrupt",
+        ),
+        ("plain nodes", _plain_node_block(), 1),
+        ("relations", _relation_block(), 1),
+        ("cut off", _dense_block([2])[:-3], "corrupt"),
+        ("cut-off varint in a packed field", _CUT_OFF_ID, "corrupt"),
+        ("cut-off way info", _CUT_OFF_WAY_INFO, "corrupt"),
+        ("two string tables", _two_string_tables(), 1),
+        ("cut-off string table", _corrupt_string_table(), "corrupt"),
+        (
+            "cut-off first string table",
+            b"\x0a\x04\x0a\x05ab" + _two_string_tables(),
+            "corrupt",
+        ),
+    ],
+)
+def test_decode_batch_nogil_decodes_or_hands_back(case, block, status):
+    """The GIL-free batch decoder decodes a block as decode_primitive_block does, or gives it
+    status 1 (no elements) for the caller to decode with decode_primitive_block, which
+    raises for a corrupt block."""
+    from pyrosm.primitive_block_decoder import BLOCK_COUNTS, decode_batch_nogil
+
+    dense = _dense_block([2], [1, 2, 0, 0])
+    buffer = np.frombuffer(dense + block, dtype=np.uint8)
+    starts = np.array([0, len(dense), len(dense) + len(block)], dtype=np.int64)
+    out = decode_batch_nogil(buffer, starts)
+    counts = dict(zip(BLOCK_COUNTS, out["counts"].T.tolist()))
+    assert counts["status"] == [0, 0 if status == 0 else 1]
+    if status:
+        assert counts["nodes"][1] == 0
+    else:
+        _, _, nodes, _, _ = decode_primitive_block(block)
+        assert counts["nodes"][1] == len(nodes["id"])
+    if status == "corrupt":
+        with pytest.raises(InvalidOSMFileError):
+            decode_primitive_block(block)
+    assert out["node_id"].tolist()[:2] == [1, 2]
+    assert out["node_id"].tolist()[2:] == ([] if status else nodes["id"].tolist())
+
+
+@pytest.mark.parametrize(
+    "starts", [[], [-1, 4], [0, 9], [4, 0, 8], [0, 2**63 - 1, -(2**63)]]
+)
+def test_decode_batch_nogil_checks_starts(starts):
+    from pyrosm.primitive_block_decoder import decode_batch_nogil
+
+    buffer = np.zeros(8, dtype=np.uint8)
+    with pytest.raises(ValueError, match="starts"):
+        decode_batch_nogil(buffer, np.array(starts, dtype=np.int64))
+
+
+def test_decode_batch_nogil_empty_buffer():
+    """A batch of empty blocks in an empty buffer decodes to nothing."""
+    from pyrosm.primitive_block_decoder import decode_batch_nogil
+
+    out = decode_batch_nogil(np.zeros(0, dtype=np.uint8), np.array([0, 0], dtype=np.int64))
+    assert out["counts"].shape[0] == 1 and not out["counts"].any()
+    assert len(out["node_id"]) == 0
+
+
+def test_decode_batch_nogil_corrupt_blocks(test_pbf, corrupted_copies):
+    """A corrupted block of dense nodes is decoded as decode_primitive_block decodes it,
+    or handed back (status 1); the decoder never reads outside the block."""
+    from pyrosm.primitive_block_decoder import decode_batch_nogil
+
+    block = next(_iter_block_bytes(test_pbf))
+    for data in corrupted_copies(block, 300, seed=2):
+        out = decode_batch_nogil(*_batch([data]))
+        if out["counts"][0, 0] == 1:
+            continue
+        _, _, nodes, _, _ = decode_primitive_block(data)
+        assert out["node_id"].tolist() == nodes["id"].tolist()
