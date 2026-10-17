@@ -1135,7 +1135,8 @@ def _iter_payloads(filepath, progress=None):
     `_ReadProgress`).
 
     A worker reads the blob itself, so only these small tuples go through the pool's task
-    queue: a large write to it can hang Python 3.10 when a worker dies (CPython gh-94777).
+    queue: a large write to it can hang a Python without the fix of CPython gh-94777 when a
+    worker dies.
     """
     with open(filepath, "rb") as f:
         identity = _identity(f)

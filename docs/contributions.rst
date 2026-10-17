@@ -68,7 +68,7 @@ conda-forge channel.
 
 Make sure you have cloned the repository and ``cd`` into the *pyrosm* source
 directory. The ``ci/`` folder ships ready-made environment files, one per
-supported Python version (3.10--3.14), that pin every dependency. Create an
+supported Python version (3.11--3.14), that pin every dependency. Create an
 environment from one of them (it is named ``test`` by default), e.g. for Python
 3.14::
 

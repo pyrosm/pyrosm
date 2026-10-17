@@ -60,7 +60,7 @@ Install pyrosm with pip:
 
 `$ pip install pyrosm`
 
-pip installs prebuilt wheels of pyrosm and its dependencies, so nothing is compiled. Wheels are published for CPython 3.10–3.14 on glibc-based Linux (x86_64 and aarch64), macOS (Intel and Apple silicon) and Windows on x86_64.
+pip installs prebuilt wheels of pyrosm and its dependencies, so nothing is compiled. Wheels are published for CPython 3.11–3.14 on glibc-based Linux (x86_64 and aarch64), macOS (Intel and Apple silicon) and Windows on x86_64.
 
 You can also install pyrosm from conda-forge with [mamba](https://mamba.readthedocs.io/) (or its standalone variant [micromamba](https://mamba.readthedocs.io/en/latest/user_guide/micromamba.html)), a fast drop-in replacement for `conda`. If you don't have it yet, download and install mamba via Miniforge from the [conda-forge download page](https://conda-forge.org/download/) — it ships mamba preconfigured with the conda-forge channel. Then install pyrosm with:
 
@@ -102,7 +102,7 @@ please check the [contribution guidelines](https://pyrosm.readthedocs.io/en/stab
 
 You can install a local development version of the tool by 1) creating an environment with the necessary packages using mamba/micromamba and 2) building pyrosm from source:
 
- 1. create an environment for one of the supported Python versions (3.10–3.14) by:
+ 1. create an environment for one of the supported Python versions (3.11–3.14) by:
  
     - e.g. Python 3.14 (you might want to modify the env-name which is `test` by default): `$ mamba env create -f ci/314-conda.yaml` (or `$ micromamba create -f ci/314-conda.yaml`)
     - environment files for other versions are available under `ci/` (e.g. `ci/312-conda.yaml`)
