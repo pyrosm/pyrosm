@@ -74,5 +74,7 @@ def _in_box_nodes(shard_paths):
     """The unique ids of all nodes that fell inside the bounding box (spilled per shard).
     A way is kept when at least one of its nodes is in this set (complete-ways semantics).
     """
-    ids = [z for z in (np.load(p)["in_box_id"] for p in shard_paths) if len(z)]
+    from pyrosm.engine.decode import _open_shard
+
+    ids = [z for z in (_open_shard(p)["in_box_id"] for p in shard_paths) if len(z)]
     return np.unique(np.concatenate(ids)) if ids else np.empty(0, np.int64)

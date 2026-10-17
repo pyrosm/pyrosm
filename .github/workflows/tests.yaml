@@ -31,7 +31,7 @@ jobs:
         run: python -m flake8 pyrosm
 
   test:
-    name: Run tests (${{ matrix.os }}, ${{ matrix.env }})
+    name: Run tests (${{ matrix.os }}, ${{ matrix.env }}${{ matrix.backend == 'processes' && ', processes' || '' }})
     needs: lint
     runs-on: ${{ matrix.os }}
     defaults:
@@ -50,6 +50,14 @@ jobs:
           - ci/313-conda.yaml
           - ci/314-conda.yaml
           - ci/315-conda.yaml
+        # The out-of-core decode runs on threads; one job runs the suite with the
+        # worker-process fallback (PYROSM_DECODE_BACKEND=processes).
+        backend:
+          - threads
+        include:
+          - os: ubuntu-latest
+            env: ci/312-conda.yaml
+            backend: processes
 
     steps:
       - name: Checkout repository
@@ -83,6 +91,7 @@ jobs:
         # every OS/Python combination in the matrix.
         env:
           RUN_DOWNLOAD_TESTS: "${{ matrix.os == 'ubuntu-latest' && (matrix.env == 'ci/311-conda.yaml' || matrix.env == 'ci/315-conda.yaml') }}"
+          PYROSM_DECODE_BACKEND: ${{ matrix.backend }}
         run: pytest -v -r s --color=yes --cov=pyrosm --cov-append --cov-report term-missing --cov-report xml tests/
 
       - name: Update codecov.io

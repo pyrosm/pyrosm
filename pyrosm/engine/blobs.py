@@ -3,10 +3,93 @@
 import os
 import struct
 import zlib
+from operator import itemgetter
+
+import numpy as np
 
 from pyrosm.exceptions import InvalidOSMFileError
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
-from pyrosm.zlib_blob import MAX_BLOB_SIZE, zlib_decompress
+from pyrosm.zlib_blob import MAX_BLOB_SIZE, inflate_blobs_nogil, zlib_decompress
+
+# A batch of blobs read in one go spans at most this many bytes of the file, and is
+# decompressed in parts of at most `_BATCH_RAW_BYTES` (one blob holds up to 32 MiB).
+_BATCH_BYTES = 32 * 1024 * 1024
+_BATCH_RAW_BYTES = 64 * 1024 * 1024
+
+
+def _read_batches(items, max_count, offset=itemgetter(0), size=itemgetter(1)):
+    """``items`` (blobs in file order, each with an ``offset`` and ``size`` in the file) in
+    lists of at most ``max_count`` that span at most `_BATCH_BYTES` from the first one's
+    offset to the end of the last; a blob larger than that comes alone."""
+    batch = []
+    first = 0
+    for item in items:
+        end = offset(item) + size(item)
+        if batch and (len(batch) == max_count or end - first > _BATCH_BYTES):
+            yield batch
+            batch = []
+        if not batch:
+            first = offset(item)
+        batch.append(item)
+    if batch:
+        yield batch
+
+
+def _read_span(f, start, end):
+    """The bytes ``start:end`` of the file ``f`` read in one go, or None when they span
+    more than `_BATCH_BYTES` (a single blob that large) or the read comes short."""
+    if end - start > _BATCH_BYTES:
+        return None
+    raw = np.empty(end - start, dtype=np.uint8)
+    f.seek(start)
+    return raw if f.readinto(raw) == len(raw) else None
+
+
+def _inflated_parts(raw, offsets, sizes, read_one):
+    """The blobs at ``offsets``/``sizes`` of ``raw`` (None when they could not be read)
+    decompressed without the GIL in parts of at most `_BATCH_RAW_BYTES`: yields
+    ``(first, end, buffer, starts)`` for the blobs ``first:end``. A blob that
+    ``inflate_blobs_nogil`` does not handle comes alone, as ``read_one(i)`` reads it. A
+    part is released before the next one is decompressed, so the consumer releases its
+    references to it too."""
+    i = 0
+    while i < len(offsets):
+        if raw is not None:
+            try:
+                buffer, starts = inflate_blobs_nogil(
+                    raw, offsets[i:], sizes[i:], _BATCH_RAW_BYTES
+                )
+            except ValueError:
+                pass
+            else:
+                end = i + len(starts) - 1
+                yield i, end, buffer, starts
+                del buffer, starts
+                i = end
+                continue
+        block = read_one(i)
+        starts = np.array([0, len(block)], dtype=np.int64)
+        yield i, i + 1, np.frombuffer(block, dtype=np.uint8), starts
+        del block, starts
+        i += 1
+
+
+def _inflated_batch(raw, items, offset, size, read_one):
+    """The blobs ``items`` of a batch (each at ``offset(item)`` with ``size(item)`` bytes in
+    the file, in file order), whose bytes ``raw`` start at the first one's offset (None when
+    they could not be read), decompressed in parts by :func:`_inflated_parts`: yields
+    ``(part, buffer, starts)``, ``part`` the items of the part. A blob it does not
+    decompress is read by ``read_one(item)``."""
+    first = offset(items[0])
+    offsets = np.array([offset(item) - first for item in items], dtype=np.int64)
+    sizes = np.array([size(item) for item in items], dtype=np.int64)
+    parts = _inflated_parts(raw, offsets, sizes, lambda i: read_one(items[i]))
+    for start, end, buffer, starts in parts:
+        yield items[start:end], buffer, starts
+        # Dropped here and by the caller, so no part is alive while the next one is
+        # decompressed.
+        del buffer, starts
+
 
 # The OSM PBF format's limit for a blob, compressed and decompressed.
 _MAX_BLOB_SIZE = MAX_BLOB_SIZE
