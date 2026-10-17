@@ -22,10 +22,14 @@ import contextlib
 import os
 import shutil
 import tempfile
+import threading
 import warnings
 from collections import deque
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+from functools import partial
+from itertools import chain
+from operator import itemgetter
 from pathlib import Path
 from struct import pack, unpack
 
@@ -55,13 +59,18 @@ from pyrosm.primitive_block_decoder cimport (
     _runs_count, _runs_fill, _skip_field,
 )
 
+from pyrosm.engine.blobs import (
+    _MAX_BLOB_SIZE, _decompress_blob, _inflated_batch, _invalid_pbf, _read_batches,
+    _read_span,
+)
+from pyrosm.engine.decode import _offsets_from_lengths
 from pyrosm.int64_hash cimport Int64Set, SortedInt64Set, _set_has, kh_i64set_t
 from pyrosm.utils import default_workers
 from pyrosm.utils.progress import reporting, validate_progress
-from pyrosm.engine.blobs import _MAX_BLOB_SIZE, _decompress_blob, _invalid_pbf
 from pyrosm.zlib_blob import zlib_compress
 from pyrosm.primitive_block_decoder import (
-    check_batch_starts, decode_elements, decode_primitive_block, element_layout,
+    BLOCK_COUNTS, check_batch_starts, decode_batch_nogil, decode_elements,
+    decode_primitive_block, element_layout,
 )
 
 DIV = 1000000000
@@ -502,7 +511,7 @@ cdef _block_way_copies(pblock, candidates, nodes_in_bbox_set):
     )
 
 
-cdef _way_winners(sources, touching, nodes_in_bbox, pool, tmpdir, progress):
+cdef _way_winners(sources, touching, nodes_in_bbox, pool, progress):
     """Keep a way only where its winning copy is a copy that touches the box.
 
     `touching` holds, per file, the ways whose copy in that file has a node in the
@@ -522,7 +531,7 @@ cdef _way_winners(sources, touching, nodes_in_bbox, pool, tmpdir, progress):
             for p in sources
         ]
     else:
-        _broadcast(tmpdir, "candidate_ways", candidates)
+        pool.broadcast("candidate_ways", candidates)
         copies = [
             list(pool.imap(_w_way_copies, _iter_payloads(p, progress))) for p in sources
         ]
@@ -1896,12 +1905,12 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
 
 
 def _crop_run(source_path, output_path, region, keep_relations, compact, repack,
-              progress, pool, tmpdir):
+              progress, pool):
     """Select the elements to keep and write `output_path`; in parallel with `pool`.
     Each pass over the file is reported to `progress` (a `_ReadProgress`)."""
     bounds = region[0]
     kept_nodes, kept_ways, kept_rel = _select(
-        [source_path], region, keep_relations, pool, tmpdir, progress
+        [source_path], region, keep_relations, pool, progress
     )
     kept_ways, kept_rel = kept_ways[0], kept_rel[0]
     if repack:
@@ -1910,9 +1919,9 @@ def _crop_run(source_path, output_path, region, keep_relations, compact, repack,
             _to_set(kept_rel), bounds, progress
         )
     elif pool is not None:
-        _broadcast(tmpdir, "kept_nodes", kept_nodes)
-        _broadcast(tmpdir, "kept_ways", kept_ways)
-        _broadcast(tmpdir, "kept_rel", kept_rel)
+        pool.broadcast("kept_nodes", kept_nodes)
+        pool.broadcast("kept_ways", kept_ways)
+        pool.broadcast("kept_rel", kept_rel)
         # imap preserves input order -> the same bytes as the sequential write.
         with open(output_path, "wb") as out, progress.one_pass():
             _write_header(out, bounds)
@@ -1927,15 +1936,15 @@ def _crop_run(source_path, output_path, region, keep_relations, compact, repack,
         )
 
 
-cdef _select(sources, region, keep_relations, pool, tmpdir, progress):
+cdef _select(sources, region, keep_relations, pool, progress):
     """Run the crop selection stages over one or more PBF files.
 
     Returns the kept node ids of all files together, and a list with the kept way
     ids and a list with the kept relation ids of each file. With several files, a
     way is kept only from the file holding its winning copy (see `_way_winners`).
-    With a `pool`, each stage spreads a file's blocks over the workers, which read
-    the id sets the stage needs from `tmpdir`. Each pass over the files is reported to
-    `progress` (a `_ReadProgress`).
+    With a `pool`, each stage spreads a file's blocks over the workers, which get the
+    id sets the stage needs from `pool.broadcast`. Each pass over the files is reported
+    to `progress` (a `_ReadProgress`).
     """
     if pool is None and len(sources) == 1:
         with progress.one_pass():
@@ -1955,7 +1964,7 @@ cdef _select(sources, region, keep_relations, pool, tmpdir, progress):
                 ids for p in sources
                 for ids in pool.imap(_w_stage1, _iter_payloads(p, progress))
             ])
-            _broadcast(tmpdir, "nodes_in_bbox", nodes_in_bbox)
+            pool.broadcast("nodes_in_bbox", nodes_in_bbox)
 
     # Stage 2: ways with >=1 node in the bbox (+ all their refs -> complete ways).
     kept_ways = []
@@ -1973,7 +1982,7 @@ cdef _select(sources, region, keep_relations, pool, tmpdir, progress):
     if len(sources) > 1:
         with progress.one_pass():
             kept_ways, kept_nodes = _way_winners(
-                sources, kept_ways, nodes_in_bbox, pool, tmpdir, progress
+                sources, kept_ways, nodes_in_bbox, pool, progress
             )
     else:
         kept_nodes = _unique_concat(kept_nodes)
@@ -1991,8 +2000,8 @@ cdef _select(sources, region, keep_relations, pool, tmpdir, progress):
                 for p in sources
             ]
         else:
-            _broadcast(tmpdir, "kept_nodes", kept_nodes)
-            _broadcast(tmpdir, "kept_ways", all_ways)
+            pool.broadcast("kept_nodes", kept_nodes)
+            pool.broadcast("kept_ways", all_ways)
             kept_rel = [
                 _unique_concat(list(pool.imap(_w_stage3, _iter_payloads(p, progress))))
                 for p in sources
@@ -2015,14 +2024,21 @@ cdef _select(sources, region, keep_relations, pool, tmpdir, progress):
 # memory-mapped + cached per worker on first use) rather than re-pickled per task.
 # Output blobs come back in input order (`_Pool.imap` preserves order) so the written
 # bytes are identical to the sequential path.
+#
+# With threads (the default `PYROSM_DECODE_BACKEND`), `_ThreadPool.imap` hands its
+# threads batches of `_THREAD_BATCH` blobs, read in one go and decompressed without the
+# GIL in parts (`_batch_parts`). The batch version of each stage function (`_BATCHED`)
+# decodes them with `decode_batch_nogil`, or crops them with `_crop_blocks`, and leaves
+# the blocks those do not handle to the per-block function the worker processes use.
+# Each pool keeps what its workers share in its own `_Context`, the kept-id arrays in
+# memory with threads.
 
-# Per-worker globals populated by `_winit`; `_W_CACHE` memoizes the khash sets
-# built from the broadcast `.npy` files so each worker loads each set only once.
-_W_BOUNDS = None
-_W_POLYGON = None
-_W_TMPDIR = None
-_W_CACHE = {}
-_W_COMPACT = False
+# The context of a worker process, made by `_winit`.
+_W_CONTEXT = None
+_THREAD_BATCH = 32
+_BC_STATUS = BLOCK_COUNTS.index("status")
+_BC_NODES = BLOCK_COUNTS.index("nodes")
+_BC_ALL_WAYS = BLOCK_COUNTS.index("all_ways")
 
 
 cdef _identity(f):
@@ -2073,73 +2089,260 @@ cdef _payload_to_block(payload):
     return _parse(PrimitiveBlock(), _payload_data(payload), payload[0])
 
 
-cdef _payload_decoded(payload):
-    return _decode_block(_payload_data(payload), payload[0])
+class _Context:
+    """What the workers of one pool share: the crop box, the polygon to crop to (or None),
+    the ``compact`` flag and the broadcast kept-id sets. With ``in_memory`` (threads) the
+    sets' arrays are held here, else read from ``tmpdir``; each set is built once."""
+
+    def __init__(self, bounds, polygon_wkb, tmpdir, compact, in_memory=False):
+        self.bounds = bounds
+        self.polygon_wkb = polygon_wkb
+        self.shared_polygon = None if polygon_wkb is None else _prepared(polygon_wkb)
+        self.tmpdir = tmpdir
+        self.compact = compact
+        self.arrays = {} if in_memory else None
+        self.sets = {}
+        self.lock = threading.Lock()
+        self.local = threading.local()
+
+    def put(self, name, arr):
+        """Hold the kept-id array ``name`` for the threads, replacing its sets."""
+        with self.lock:
+            self.arrays[name] = arr
+            self.sets.pop((name, False), None)
+            self.sets.pop((name, True), None)
+
+    def get_set(self, name, sorted_ids=False):
+        """The broadcast id set ``name``; with ``sorted_ids``, as `_to_sorted_set` builds
+        it."""
+        s = self.sets.get((name, sorted_ids))
+        if s is None:
+            with self.lock:
+                s = self.sets.get((name, sorted_ids))
+                if s is None:
+                    if self.arrays is not None:
+                        arr = self.arrays[name]
+                    else:
+                        arr = np.load(Path(self.tmpdir) / (name + ".npy"))
+                    s = _to_sorted_set(arr) if sorted_ids else _to_set(arr)
+                    self.sets[(name, sorted_ids)] = s
+        return s
+
+    def polygon(self):
+        """The prepared polygon to crop to, or None: with threads, one per thread."""
+        if self.arrays is None or self.polygon_wkb is None:
+            return self.shared_polygon
+        polygon = getattr(self.local, "polygon", None)
+        if polygon is None:
+            polygon = self.local.polygon = _prepared(self.polygon_wkb)
+        return polygon
 
 
-def _winit(bounds, polygon_wkb, tmpdir, compact):
-    global _W_BOUNDS, _W_POLYGON, _W_TMPDIR, _W_CACHE, _W_COMPACT
-    _W_BOUNDS = bounds
-    _W_POLYGON = None if polygon_wkb is None else _prepared(polygon_wkb)
-    _W_TMPDIR = tmpdir
-    _W_CACHE = {}
-    _W_COMPACT = compact
+def _winit(bounds, polygon_wkb, compact, tmpdir):
+    global _W_CONTEXT
+    _W_CONTEXT = _Context(bounds, polygon_wkb, tmpdir, compact)
 
 
-def _w_get_set(name, sorted_ids=False):
-    """Lazily load + cache the broadcast id set `name` from the temp dir; with
-    `sorted_ids`, as the set `_to_sorted_set` builds."""
-    s = _W_CACHE.get((name, sorted_ids))
-    if s is None:
-        arr = np.load(Path(_W_TMPDIR) / (name + ".npy"))
-        s = _to_sorted_set(arr) if sorted_ids else _to_set(arr)
-        _W_CACHE[(name, sorted_ids)] = s
-    return s
+cdef _stage1_block(ctx, data, filepath):
+    header, nodes, _, _ = _decode_block(data, filepath)
+    return np.unique(_nodes_inside(header, nodes, ctx.bounds, ctx.polygon()))
 
 
-def _w_stage1(payload):
-    header, nodes, _, _ = _payload_decoded(payload)
-    return np.unique(_nodes_inside(header, nodes, _W_BOUNDS, _W_POLYGON))
-
-
-def _w_stage2(payload):
-    _, _, ways, _ = _payload_decoded(payload)
-    ids, refs = _ways_touching(ways, _w_get_set("nodes_in_bbox"))
+cdef _stage2_block(ctx, data, filepath):
+    _, _, ways, _ = _decode_block(data, filepath)
+    ids, refs = _ways_touching(ways, ctx.get_set("nodes_in_bbox"))
     return ids, np.unique(refs)
 
 
-def _w_way_copies(payload):
-    return _block_way_copies(
-        _payload_to_block(payload),
-        _w_get_set("candidate_ways"),
-        _w_get_set("nodes_in_bbox"),
-    )
-
-
-def _w_stage3(payload):
-    _, _, _, relations = _payload_decoded(payload)
+cdef _stage3_block(ctx, data, filepath):
+    _, _, _, relations = _decode_block(data, filepath)
     return _relations_touching(
-        relations, _w_get_set("kept_nodes"), _w_get_set("kept_ways")
+        relations, ctx.get_set("kept_nodes"), ctx.get_set("kept_ways")
     )
 
 
-def _w_write(payload):
+cdef _way_copies_block(ctx, data, filepath):
+    return _block_way_copies(
+        _parse(PrimitiveBlock(), data, filepath),
+        ctx.get_set("candidate_ways"),
+        ctx.get_set("nodes_in_bbox"),
+    )
+
+
+cdef _write_block(ctx, data, filepath):
     block = _crop_block(
-        _payload_data(payload),
-        _w_get_set("kept_nodes", True),
-        _w_get_set("kept_ways"),
-        _w_get_set("kept_rel"),
-        _W_COMPACT,
-        payload[0],
+        data,
+        ctx.get_set("kept_nodes", True),
+        ctx.get_set("kept_ways"),
+        ctx.get_set("kept_rel"),
+        ctx.compact,
+        filepath,
     )
     if block is None:
         return None
     return _frame_blob("OSMData", block)
 
 
-cdef _broadcast(tmpdir, name, arr):
-    """Write a kept-id array to the temp dir for the persistent workers to load."""
-    np.save(Path(tmpdir) / (name + ".npy"), np.ascontiguousarray(arr, dtype=np.int64))
+def _w_stage1(payload):
+    return _stage1_block(_W_CONTEXT, _payload_data(payload), payload[0])
+
+
+def _w_stage2(payload):
+    return _stage2_block(_W_CONTEXT, _payload_data(payload), payload[0])
+
+
+def _w_way_copies(payload):
+    return _way_copies_block(_W_CONTEXT, _payload_data(payload), payload[0])
+
+
+def _w_stage3(payload):
+    return _stage3_block(_W_CONTEXT, _payload_data(payload), payload[0])
+
+
+def _w_write(payload):
+    return _write_block(_W_CONTEXT, _payload_data(payload), payload[0])
+
+
+def _batch_parts(payloads):
+    """The decompressed blocks of the payloads of one file, read in one go and
+    decompressed without the GIL in parts (see `_inflated_batch`): yields ``(part,
+    buffer, starts)``, ``part`` the payloads of the part. A blob that is not zlib data
+    with its size, or each blob when the read comes short, is read by `_payload_data`."""
+    filepath, identity, first, _ = payloads[0]
+    with open(filepath, "rb") as f:
+        if _identity(f) != identity:
+            raise ValueError("'%s' changed while it was being read." % filepath)
+        raw = _read_span(f, first, payloads[-1][2] + payloads[-1][3])
+    return _inflated_batch(
+        raw, payloads, itemgetter(2), itemgetter(3), lambda p: _payload_data(p)
+    )
+
+
+def _run_batched(batched, ctx, payloads):
+    """``batched(ctx, part, buffer, starts)``, a batch function of `_BATCHED`, over the
+    parts of a batch of payloads, each released before the next one is decompressed; its
+    results in order."""
+    out = []
+    for part, buffer, starts in _batch_parts(payloads):
+        out.extend(batched(ctx, part, buffer, starts))
+        del buffer, starts
+    return out
+
+
+def _t_stage1(ctx, payloads, buffer, starts):
+    """`_w_stage1` of each payload of a part of a batch (its blocks in ``buffer``), with
+    the pool's context ``ctx``."""
+    decoded = decode_batch_nogil(buffer, starts, keys=[], bbox=ctx.bounds)
+    counts = decoded["counts"]
+    inside = decoded["in_box"]
+    polygon = ctx.polygon()
+    if polygon is not None and inside.any():
+        import shapely
+
+        rows = np.flatnonzero(inside)
+        inside[rows] = shapely.intersects_xy(
+            polygon, decoded["node_lon"][rows], decoded["node_lat"][rows]
+        )
+    ids = decoded["node_id"]
+    at = _offsets_from_lengths(counts[:, _BC_NODES])
+    out = []
+    for b, payload in enumerate(payloads):
+        if counts[b, _BC_STATUS]:
+            out.append(_stage1_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0]))
+        else:
+            out.append(np.unique(ids[at[b]:at[b + 1]][inside[at[b]:at[b + 1]]]))
+    return out
+
+
+def _t_stage2(ctx, payloads, buffer, starts):
+    """`_w_stage2` of each payload of a part of a batch (its blocks in ``buffer``), with
+    the pool's context ``ctx``."""
+    decoded = decode_batch_nogil(buffer, starts, keys=[], all_ways=True)
+    counts = decoded["counts"]
+    ids, refs, refs_off = decoded["all_id"], decoded["all_refs"], decoded["all_refs_off"]
+    touching = _any_member(_isin(refs, ctx.get_set("nodes_in_bbox")), refs_off)
+    at = _offsets_from_lengths(counts[:, _BC_ALL_WAYS])
+    out = []
+    for b, payload in enumerate(payloads):
+        if counts[b, _BC_STATUS]:
+            out.append(_stage2_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0]))
+            continue
+        w0, w1 = at[b], at[b + 1]
+        kept = touching[w0:w1]
+        way_refs = refs[refs_off[w0]:refs_off[w1]]
+        out.append((
+            ids[w0:w1][kept],
+            np.unique(way_refs[np.repeat(kept, np.diff(refs_off[w0:w1 + 1]))]),
+        ))
+    return out
+
+
+def _t_stage3(ctx, payloads, buffer, starts):
+    """`_w_stage3` of each payload of a part of a batch (its blocks in ``buffer``), with
+    the pool's context ``ctx``: only the blocks `_relation_blocks` marks are decoded."""
+    marked = _relation_blocks(buffer, starts)
+    empty = np.empty(0, dtype=np.int64)
+    return [
+        _stage3_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0])
+        if marked[b] else empty
+        for b, payload in enumerate(payloads)
+    ]
+
+
+def _t_way_copies(ctx, payloads, buffer, starts):
+    """`_w_way_copies` of each payload of a part of a batch (its blocks in ``buffer``),
+    with the pool's context ``ctx``."""
+    status, copies, refs, arrays = _way_copies_blocks(
+        buffer, starts, ctx.get_set("candidate_ways"), ctx.get_set("nodes_in_bbox")
+    )
+    copy_at, ref_at = _offsets_from_lengths(copies), _offsets_from_lengths(refs)
+    out = []
+    for b, payload in enumerate(payloads):
+        if status[b]:
+            out.append(_way_copies_block(
+                ctx, bytes(buffer[starts[b]:starts[b + 1]]), payload[0]
+            ))
+            continue
+        c0, c1, r0, r1 = copy_at[b], copy_at[b + 1], ref_at[b], ref_at[b + 1]
+        out.append(tuple(a[c0:c1] for a in arrays[:5]) + (arrays[5][r0:r1],))
+    return out
+
+
+def _t_write(ctx, payloads, buffer, starts):
+    """`_w_write` of each payload of a part of a batch (its blocks in ``buffer``), with
+    the pool's context ``ctx``: cropped by `_crop_blocks` (by `_crop_block` with
+    ``compact``)."""
+    if ctx.compact:
+        status = np.full(len(payloads), _BY_PYTHON, dtype=np.uint8)
+    else:
+        status, offsets, data = _crop_blocks(
+            buffer,
+            starts,
+            ctx.get_set("kept_nodes", True),
+            ctx.get_set("kept_ways"),
+            ctx.get_set("kept_rel"),
+        )
+    out = []
+    for b, payload in enumerate(payloads):
+        if status[b] == _CROPPED:
+            out.append(_frame_blob("OSMData", data[offsets[b]:offsets[b + 1]]))
+        elif status[b] == _NOTHING_KEPT:
+            out.append(None)
+        else:
+            out.append(
+                _write_block(ctx, bytes(buffer[starts[b]:starts[b + 1]]), payload[0])
+            )
+    return out
+
+
+# The batch version of each stage function with one.
+_BATCHED = {
+    _w_stage1: _t_stage1,
+    _w_stage2: _t_stage2,
+    _w_stage3: _t_stage3,
+    _w_way_copies: _t_way_copies,
+    _w_write: _t_write,
+}
 
 
 _POOL_FALLBACK_WARNING = (
@@ -2148,11 +2351,15 @@ _POOL_FALLBACK_WARNING = (
     '"__main__":` guard, or one read from stdin. A worker process may also have died. Guard '
     "the entry point, or pass workers=1 to silence this."
 )
+_THREAD_FALLBACK_WARNING = (
+    "The threads of the crop or merge could not start, so it ran in one thread instead. "
+    "Pass workers=1 to silence this."
+)
 
 
 class _PoolStartError(Exception):
-    """The pool could not start: an ``OSError`` from creating the executor or from submitting
-    a task (which starts a worker process)."""
+    """The pool could not start: an ``OSError`` from creating the executor, or an ``OSError``
+    or ``RuntimeError`` from submitting a task (which starts a worker process or thread)."""
 
 
 def _ordered_map(executor, func, items, window):
@@ -2164,77 +2371,114 @@ def _ordered_map(executor, func, items, window):
             yield pending.popleft().result()
         try:
             pending.append(executor.submit(func, item))
-        except OSError as err:
+        except (OSError, RuntimeError) as err:
             raise _PoolStartError(err) from err
     while pending:
         yield pending.popleft().result()
 
 
 class _Pool:
-    """Worker processes that map a function over blob payloads in order (``imap``)."""
+    """Worker processes that map a function over blob payloads in order (``imap``). The
+    kept-id arrays a stage needs are broadcast to them as files in a temp dir."""
 
     def __init__(self, workers, initargs):
+        self.tmpdir = tempfile.mkdtemp(prefix="pyrosm_crop_par_")
         try:
             self.executor = ProcessPoolExecutor(
-                int(workers), initializer=_winit, initargs=initargs
+                int(workers), initializer=_winit, initargs=initargs + (self.tmpdir,)
             )
         except OSError as err:
+            shutil.rmtree(self.tmpdir, ignore_errors=True)
             raise _PoolStartError(err) from err
+        except BaseException:
+            shutil.rmtree(self.tmpdir, ignore_errors=True)
+            raise
         self.window = 2 * int(workers)
 
     def imap(self, func, items):
         return _ordered_map(self.executor, func, items, self.window)
 
+    def broadcast(self, name, arr):
+        """Write the kept-id array ``name`` for the workers to load."""
+        np.save(
+            Path(self.tmpdir) / (name + ".npy"), np.ascontiguousarray(arr, dtype=np.int64)
+        )
+
+    def close(self):
+        self.executor.shutdown(wait=True, cancel_futures=True)
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+
+class _ThreadPool:
+    """Threads that map a function over blob payloads in order (``imap``), as `_Pool`
+    does: in batches through the function's batch version in `_BATCHED`, with this pool's
+    own `_Context`."""
+
+    def __init__(self, workers, initargs):
+        bounds, polygon_wkb, compact = initargs
+        self.context = _Context(bounds, polygon_wkb, None, compact, in_memory=True)
+        self.executor = ThreadPoolExecutor(int(workers))
+        self.window = 2 * int(workers)
+
+    def imap(self, func, items):
+        batches = _read_batches(items, _THREAD_BATCH, itemgetter(2), itemgetter(3))
+        return chain.from_iterable(_ordered_map(
+            self.executor, partial(_run_batched, _BATCHED[func], self.context), batches,
+            self.window,
+        ))
+
+    def broadcast(self, name, arr):
+        """Hold the kept-id array ``name`` for the threads."""
+        self.context.put(name, np.ascontiguousarray(arr, dtype=np.int64))
+
+    def close(self):
+        self.executor.shutdown(wait=True, cancel_futures=True)
+
 
 def _with_pool(func, args, workers, sources, region, compact):
-    """Return ``func(*args, pool, tmpdir)``, run with a worker pool when one is used (see
+    """Return ``func(*args, pool)``, run with a worker pool when one is used (see
     `_open_pool`). When the pool cannot start or breaks, warn and run ``func`` again in one
     process."""
     try:
-        pool, tmpdir = _open_pool(workers, sources, region, compact)
+        pool = _open_pool(workers, sources, region, compact)
     except _PoolStartError:
-        pool = tmpdir = None
+        pool = None
         warnings.warn(_POOL_FALLBACK_WARNING, RuntimeWarning)
     if pool is None:
-        return func(*args, None, None)
+        return func(*args, None)
     try:
-        return func(*args, pool, tmpdir)
+        return func(*args, pool)
     except (BrokenProcessPool, _PoolStartError):
         pass
     finally:
-        _close_pool(pool, tmpdir)
-    warnings.warn(_POOL_FALLBACK_WARNING, RuntimeWarning)
-    return func(*args, None, None)
+        pool.close()
+    if isinstance(pool, _ThreadPool):
+        warnings.warn(_THREAD_FALLBACK_WARNING, RuntimeWarning)
+    else:
+        warnings.warn(_POOL_FALLBACK_WARNING, RuntimeWarning)
+    return func(*args, None)
 
 
-def _merge_select(sources, region, keep_relations, progress, pool, tmpdir):
-    return _select(sources, region, keep_relations, pool, tmpdir, progress)
+def _merge_select(sources, region, keep_relations, progress, pool):
+    return _select(sources, region, keep_relations, pool, progress)
 
 
 cdef _open_pool(workers, sources, region, compact):
-    """A worker pool and its broadcast temp dir, or (None, None) to run sequentially.
+    """A worker pool, or None to run sequentially.
 
     Sequential when ``workers <= 1`` or the files have fewer than ``2 * workers``
     OSMData blocks in total.
     """
     if workers is None or workers <= 1:
-        return None, None
+        return None
     if sum([_count_data_blocks(p) for p in sources]) < 2 * int(workers):
-        return None, None
-    tmpdir = tempfile.mkdtemp(prefix="pyrosm_crop_par_")
+        return None
+    from pyrosm.engine.pool import _decode_backend
+
+    pool_type = _ThreadPool if _decode_backend() == "threads" else _Pool
     bounds, polygon = region
     wkb = None if polygon is None else polygon.wkb
-    try:
-        return _Pool(workers, (bounds, wkb, tmpdir, compact)), tmpdir
-    except BaseException:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-        raise
-
-
-cdef _close_pool(pool, tmpdir):
-    if pool is not None:
-        pool.executor.shutdown(wait=True, cancel_futures=True)
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    return pool_type(workers, (bounds, wkb, compact))
 
 
 # ---------------------------------------------------------------------------
@@ -3327,11 +3571,11 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
         are written.
 
     workers : int
-        Number of worker processes for selecting the elements inside
-        ``bounding_box`` or ``polygon``. ``1`` (by default, ``None``) runs
-        sequentially; in pyrosm 1.0 merges run in parallel by default. The merged file
-        is written sequentially either way. When the worker processes
-        cannot run (on macOS and Windows: a script without an
+        Number of threads for selecting the elements inside ``bounding_box`` or
+        ``polygon``. ``1`` (by default, ``None``) runs sequentially; in pyrosm 1.0
+        merges run in parallel by default. The merged file is written sequentially
+        either way. With ``PYROSM_DECODE_BACKEND=processes`` they are worker
+        processes; when those cannot run (on macOS and Windows: a script without an
         ``if __name__ == "__main__":`` guard, or one read from stdin), the merge runs
         in one process and warns.
 

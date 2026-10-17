@@ -14,16 +14,11 @@ osm = OSM("country.osm.pbf", workers="auto")
 buildings = osm.get_buildings()
 ```
 
-To decode in parallel pass `workers="auto"` (or `workers=N`). On macOS and Windows a parallel
-read must run under an `if __name__ == "__main__":` guard (the worker processes re-import the
-entry point); without it the read still completes but falls back to a single process with a
-warning:
-
-```python
-if __name__ == "__main__":
-    osm = OSM("country.osm.pbf", workers="auto")
-    buildings = osm.get_buildings()
-```
+To decode in parallel pass `workers="auto"` (or `workers=N`). Reads, crops and merges run in
+parallel on threads, so a script needs no `if __name__ == "__main__":` guard. Setting the
+environment variable `PYROSM_DECODE_BACKEND=processes` switches to worker processes, as earlier
+versions used; on macOS and Windows those re-import the entry point, so a parallel read from a
+script then needs the guard, and without it falls back to a single process with a warning.
 
 Since pyrosm 0.22.0, a read, crop or merge that leaves `workers` unset warns once per Python
 session that pyrosm 1.0 will run it in parallel by default; pass `workers=1` to stay on a single
