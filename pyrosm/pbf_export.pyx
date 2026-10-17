@@ -50,7 +50,7 @@ from pyrosm.primitive_block_decoder cimport (
     GROUP_RELATIONS, GROUP_WAYS, INFO_CHANGESET, INFO_TIMESTAMP, INFO_UID, INFO_USER_SID,
     INFO_VERSION, INFO_VISIBLE, PB_DATE_GRANULARITY, PB_GRANULARITY, PB_LAT_OFFSET,
     PB_LON_OFFSET, PB_PRIMITIVEGROUP, PB_STRINGTABLE, REL_MEMIDS, REL_ROLES_SID,
-    REL_TYPES, ST_S, WAY_ID, WAY_INFO, WAY_KEYS, WAY_REFS, WAY_VALS,
+    REL_TYPES, ST_S, WAY_ID, WAY_INFO, WAY_KEYS, WAY_REFS, WAY_VALS, NODE_ID, NODE_INFO,
     WIRE_LENGTH, WIRE_VARINT, _Runs, _add_span, _field_end, _read_tag, _read_varint,
     _runs_count, _runs_fill, _skip_field,
 )
@@ -922,14 +922,14 @@ cdef _write_pbf(filepath, output_path, kept_nodes_set, kept_ways_set, kept_rel_s
 # ---------------------------------------------------------------------------
 # `_crop_blocks` builds the cropped copy of each block of a batch as `_crop_block` does,
 # byte for byte, without the GIL. A block it does not handle is left to `_crop_block`:
-# plain nodes, ways or relations, data `element_layout` refuses, a packed field in more
-# than `_MAX_RUNS` runs, or dense nodes whose coordinates, metadata or tags do not match
-# their ids in number.
+# data `element_layout` refuses, a packed field in more than `_MAX_RUNS` runs, or dense
+# nodes whose coordinates, metadata or tags do not match their ids in number.
 #
 # The functions, from the outside in, and the Python code each one matches:
 #   `_crop_one`    one block: its string table copied, its kept groups, its header values
 #                  (`_crop_block`, `_block_bytes`);
-#   `_crop_group`  one PrimitiveGroup: the kept dense nodes encoded again (`_group_kind`,
+#   `_crop_group`  one PrimitiveGroup: the kept plain nodes, ways or relations copied as
+#                  they are stored, or the kept dense nodes encoded again (`_group_kind`,
 #                  `_kept_elements`);
 #   `_dense_runs`, `_dense_values`, `_dense_payload`  one DenseNodes group: find its
 #                  packed fields, decode them, write the kept nodes' fields
@@ -1303,26 +1303,62 @@ cdef bint _fields_ok(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end)
     return pos == end
 
 
+cdef int _element_id(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                     bint is_node, int64_t* out) noexcept nogil:
+    """The id of the plain node, way or relation in ``buf[start:end]``, as the decoder's
+    `_element_id` reads it; 1 for data it refuses."""
+    # The three messages share field numbers 1 (id) and 4 (Info), so NODE_ID and
+    # NODE_INFO serve for all. A node's id is a zig-zag coded sint64, the others int64.
+    cdef Py_ssize_t pos = start, f_start
+    cdef int field, wire
+    cdef uint64_t value = 0, length
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if field == NODE_ID and wire == WIRE_VARINT:
+            value = _read_varint(buf, &pos, end)
+        elif field == NODE_INFO and wire == WIRE_LENGTH:
+            length = _read_varint(buf, &pos, end)
+            f_start = pos
+            pos = _field_end(pos, length, end)
+            if pos > end or not _fields_ok(buf, f_start, pos):
+                return 1
+        else:
+            _skip_field(buf, &pos, end, wire)
+    if pos != end:
+        return 1
+    if is_node:
+        out[0] = (<int64_t>(value >> 1)) ^ (-(<int64_t>(value & 1)))
+    else:
+        out[0] = <int64_t>value
+    return 0
+
+
+cdef inline bint _is_element(int field, int wire) noexcept nogil:
+    return wire == WIRE_LENGTH and (
+        field == GROUP_NODES or field == GROUP_WAYS or field == GROUP_RELATIONS)
+
+
 cdef int _crop_group(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
                      _CropState* st) noexcept nogil:
-    """The kept dense nodes of one PrimitiveGroup into ``st.group`` (empty when none is
-    kept), as `_group_layout` and `_crop_block` read and write them; 1 for a group with
-    plain nodes, ways or relations (left to `_crop_block`) or data they refuse, -1 when
+    """The kept part of one PrimitiveGroup into ``st.group`` (empty when nothing is kept),
+    as `_group_layout` and `_crop_block` read and write it; 1 for data they refuse, -1 when
     memory runs out."""
-    cdef Py_ssize_t pos = start, f_start
-    cdef int field, wire, status
+    cdef Py_ssize_t pos = start, f_start, tag_start
+    cdef int field, wire, kind = 0, status
     cdef uint64_t length
-    cdef bint dense_seen = False
+    cdef int64_t element_id
+    cdef bint has_nodes = False, has_ways = False, has_relations = False, dense_seen = False
+    cdef bint kept
     cdef _Dense d
     st.group.n = 0
-    # Two scans of the group's fields. 1: they are well formed.
+    # Three scans of the group's fields. 1: they are well formed.
     while pos < end:
         _read_tag(buf, &pos, end, &field, &wire)
         _skip_field(buf, &pos, end, wire)
     if pos != end:
         return 1
-    # 2: every dense group is checked, as `_group_layout` decodes them all; the last one
-    # is the one kept.
+    # 2: every dense group and element is checked, as `_group_layout` decodes them all;
+    # the last dense group is the one kept. Also notes which kinds of element it holds.
     pos = start
     while pos < end:
         _read_tag(buf, &pos, end, &field, &wire)
@@ -1341,14 +1377,51 @@ cdef int _crop_group(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
             if status != 0:
                 return status
             dense_seen = True
-        elif field == GROUP_NODES or field == GROUP_WAYS or field == GROUP_RELATIONS:
-            return 1
+        elif _is_element(field, wire):
+            if _element_id(buf, f_start, pos, field == GROUP_NODES, &element_id) != 0:
+                return 1
+            has_nodes = has_nodes or field == GROUP_NODES
+            has_ways = has_ways or field == GROUP_WAYS
+            has_relations = has_relations or field == GROUP_RELATIONS
     if dense_seen and d.n > 0:
         status = _dense_payload(&d, st)
         if status < 0:
             return -1
         if status == 0 and _append_field(&st.group, GROUP_DENSE, st.dense.data,
                                          st.dense.n) < 0:
+            return -1
+        return 0
+    # 3: (no dense nodes) a group keeps one kind of element, as `_group_kind` picks it:
+    # plain nodes, else ways, else relations. The kept ones are copied with their field
+    # header.
+    if has_nodes:
+        kind = GROUP_NODES
+    elif has_ways:
+        kind = GROUP_WAYS
+    elif has_relations:
+        kind = GROUP_RELATIONS
+    else:
+        return 0
+    pos = start
+    while pos < end:
+        tag_start = pos
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        f_start = pos
+        pos = _field_end(pos, length, end)
+        if field != kind:
+            continue
+        _element_id(buf, f_start, pos, kind == GROUP_NODES, &element_id)
+        if kind == GROUP_NODES:
+            kept = _sorted_has(&st.nodes, element_id)
+        elif kind == GROUP_WAYS:
+            kept = _set_has(st.ways, element_id)
+        else:
+            kept = _set_has(st.relations, element_id)
+        if kept and _append(&st.group, buf + tag_start, pos - tag_start) < 0:
             return -1
     return 0
 
@@ -1425,7 +1498,7 @@ def _crop_blocks(const unsigned char[::1] buffer, const int64_t[::1] starts,
     the GIL as `_crop_block` builds them (``compact=False``). Returns ``(status, offsets,
     data)``: block ``i`` is ``data[offsets[i]:offsets[i + 1]]`` when its status is
     `_CROPPED`; `_NOTHING_KEPT` when nothing in it is kept, `_BY_PYTHON` when it is left to
-    `_crop_block` (a block with plain nodes, ways or relations is, for now)."""
+    `_crop_block`."""
     cdef Py_ssize_t n_blocks = starts.shape[0] - 1, b, mark
     cdef int status
     check_batch_starts(starts, buffer.shape[0])

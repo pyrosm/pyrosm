@@ -1488,7 +1488,7 @@ def test_crop_blocks_write_the_bytes_of_crop_block(tmp_path, helsinki_pbf, sourc
     """Given the elements a crop in one process kept, _crop_blocks builds each block's
     cropped copy byte for byte as that crop wrote it, gives no copy of a block that keeps
     nothing, and leaves to _crop_block a block it does not handle (ids in more packed
-    runs than it keeps, plain nodes, ways, relations)."""
+    runs than it keeps)."""
     from pyrosm.int64_hash import Int64Set, SortedInt64Set
     from pyrosm.pbf_export import _crop_blocks, _iter_block_data, crop_pbf
 
@@ -1510,7 +1510,7 @@ def test_crop_blocks_write_the_bytes_of_crop_block(tmp_path, helsinki_pbf, sourc
     )
     if source == "crafted":
         # 0 cropped, 1 left to _crop_block, 2 nothing kept.
-        assert status.tolist() == [0, 0, 1, 1, 1, 1, 1, 2]
+        assert status.tolist() == [0, 0, 1, 0, 0, 0, 0, 2]
     # Each block left to _crop_block keeps something here, so the output holds a block
     # for every block not marked "nothing kept", in order.
     written = list(_iter_block_data(out))
