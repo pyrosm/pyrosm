@@ -31,6 +31,11 @@ cdef extern from "int64_hash.h" nogil:
     khint_t kh_get_i64map(const kh_i64map_t *h, int64_t key)
 
 
+cdef inline bint _set_has(const kh_i64set_t *table, int64_t key) noexcept nogil:
+    """Whether ``key`` is in the hash set ``table``."""
+    return kh_get_i64set(table, key) != table.n_buckets
+
+
 cdef class Int64Set:
     cdef kh_i64set_t *table
     cdef bint contains(self, int64_t key) noexcept nogil
