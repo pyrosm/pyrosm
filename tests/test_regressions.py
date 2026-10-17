@@ -2619,3 +2619,45 @@ def test_crop_refuses_to_overwrite_its_source(tmp_path, alias):
         with pytest.raises(ValueError, match="is the input"):
             crop()
         assert source.read_bytes() == before
+
+
+def test_multipolygon_with_thousands_of_rings_assembles_quickly(tmp_path):
+    """A multipolygon with thousands of rings (Finland's largest lakes have 5,000-9,500)
+    is assembled in seconds with all its holes; overlaying the rings one at a time onto
+    the growing area took minutes for such relations."""
+    import time
+
+    osmium = pytest.importorskip("osmium")
+    from osmium.osm.mutable import Node, Relation, Way
+    from pyrosm import OSM
+
+    n_holes, side, cell = 4000, 64, 0.001
+    # The lake's shell, then a small square hole in each grid cell.
+    squares = [(0, 0, side * cell)] + [
+        ((h % side + 0.25) * cell, (h // side + 0.25) * cell, cell / 2)
+        for h in range(n_holes)
+    ]
+    path = str(tmp_path / "lake.osm.pbf")
+    writer = osmium.SimpleWriter(path)
+    corners = [(0, 0), (1, 0), (1, 1), (0, 1)]
+    for s, (x0, y0, size) in enumerate(squares):
+        for c, (dx, dy) in enumerate(corners):
+            location = (25 + x0 + dx * size, 60 + y0 + dy * size)
+            writer.add_node(Node(id=4 * s + c + 1, location=location))
+    for s in range(len(squares)):
+        ring = [4 * s + 1, 4 * s + 2, 4 * s + 3, 4 * s + 4, 4 * s + 1]
+        writer.add_way(Way(id=s + 1, nodes=ring))
+    members = [("w", 1, "outer")]
+    members += [("w", s + 1, "inner") for s in range(1, len(squares))]
+    tags = {"type": "multipolygon", "natural": "water"}
+    writer.add_relation(Relation(id=1, members=members, tags=tags))
+    writer.close()
+
+    start = time.perf_counter()
+    gdf = OSM(path, workers=1).get_natural()
+    seconds = time.perf_counter() - start
+    lake = gdf[gdf["osm_type"] == "relation"].geometry.iloc[0]
+    assert lake.geom_type == "Polygon" and len(lake.interiors) == n_holes
+    expected = (side * cell) ** 2 - n_holes * (cell / 2) ** 2
+    assert lake.area == pytest.approx(expected, rel=1e-6)
+    assert seconds < 10
