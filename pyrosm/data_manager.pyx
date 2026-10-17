@@ -198,10 +198,11 @@ cdef get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter, filter_t
         return None
     # Otherwise, filter the data accordingly
     filtered_nodes = filter_array_dict_by_indices_or_mask(node_arrays, indices)
-    # explode_tag_array returns only the non-empty tag columns, and overwrites the
-    # 'tags' column only when some element had leftover tags (otherwise it omits
-    # 'tags' and the original entry is left in place, as before). Merge them in.
+    # explode_tag_array returns the non-empty tag columns, and a JSON 'tags' column only
+    # when some node had leftover tags; it replaces the nodes' tag dicts (None for each
+    # node when none had leftovers).
     tags = explode_tag_array(filtered_nodes["tags"], tags_as_columns)
+    filtered_nodes["tags"] = tags.pop("tags", [None] * len(filtered_nodes["id"]))
     filtered_nodes.update(tags)
     return filtered_nodes
 

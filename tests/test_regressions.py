@@ -8,8 +8,8 @@ import pytest
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
 def test_get_methods_do_not_mutate_shared_tag_config(engine):
-    """#252 — get_* must not mutate the shared Conf default-tag lists, with either
-    engine."""
+    """#252 — get_* must not mutate the shared Conf default-tag lists, nor the
+    custom_filter they are given (True used to become [True]), with either engine."""
     from pyrosm import OSM, get_data
     from pyrosm.config import Conf
 
@@ -18,16 +18,20 @@ def test_get_methods_do_not_mutate_shared_tag_config(engine):
     building_before = list(Conf.tags.building)
     highway_before = list(Conf.tags.highway)
     natural_before = list(Conf.tags.natural)
+    custom_filter = {"amenity": True, "shop": ["bakery"]}
 
     osm.get_buildings()
     osm.get_network()
     osm.get_natural()
     osm.get_buildings(extra_attributes=["my_extra_attr"])
+    osm.get_pois(custom_filter=custom_filter)
+    osm.get_data_by_custom_criteria(custom_filter)
 
     assert Conf.tags.building == building_before
     assert Conf.tags.highway == highway_before
     assert Conf.tags.natural == natural_before
     assert "my_extra_attr" not in Conf.tags.building
+    assert custom_filter == {"amenity": True, "shop": ["bakery"]}
 
 
 def test_frame_building_emits_no_chained_assignment_warning():
@@ -2661,3 +2665,25 @@ def test_multipolygon_with_thousands_of_rings_assembles_quickly(tmp_path):
     expected = (side * cell) ** 2 - n_holes * (cell / 2) ** 2
     assert lake.area == pytest.approx(expected, rel=1e-6)
     assert seconds < 10
+
+
+@pytest.mark.parametrize("keep_ways", [True, False], ids=["with ways", "nodes only"])
+def test_nodes_without_leftover_tags_have_no_tags_value(keep_ways):
+    """Nodes whose tags all became columns have no ``tags`` value, as other elements; both
+    readers used to keep each node's tag dict there, and the out-of-core reader could not
+    write it next to the ways' JSON (ArrowTypeError)."""
+    import pandas as pd
+
+    from pyrosm import OSM, get_data
+
+    frames = [
+        OSM(get_data("test_pbf"), engine=engine, workers=1).get_data_by_custom_criteria(
+            {"shop": True}, keep_ways=keep_ways, keep_relations=keep_ways
+        )
+        for engine in ("in_memory", "out_of_core")
+    ]
+    for gdf in frames:
+        assert list(gdf.columns)[:4] == ["id", "lon", "lat", "tags"]
+        tags = [None if pd.isna(value) else value for value in gdf["tags"]]
+        leftovers = ['{"landuse":"greenhouse_horticulture","building":"yes"}']
+        assert tags == [None, None] + (leftovers if keep_ways else [])

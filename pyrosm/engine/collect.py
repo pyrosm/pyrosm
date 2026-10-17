@@ -111,11 +111,11 @@ def _collect_node_features(shard_paths, tags_as_columns, keep_metadata, keep):
         node_arrays["version"] = meta[:, 0]
         node_arrays["timestamp"] = meta[:, 1]
         node_arrays["changeset"] = meta[:, 2]
-    # Mirror get_osm_nodes: merge the exploded tag columns in (the original 'tags' dict
-    # array stays only when no node had leftover tags, exactly as the in-memory reader).
-    node_arrays.update(
-        explode_node_tag_array(node_arrays["tags"], list(tags_as_columns))
-    )
+    # Mirror get_osm_nodes: the exploded tag columns are merged in, and their JSON 'tags'
+    # column replaces the nodes' tag dicts (None for each node when none had leftovers).
+    exploded = explode_node_tag_array(node_arrays["tags"], list(tags_as_columns))
+    node_arrays["tags"] = exploded.pop("tags", [None] * len(node_arrays["id"]))
+    node_arrays.update(exploded)
     return node_arrays
 
 
