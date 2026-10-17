@@ -24,6 +24,8 @@ def validate_custom_filter(custom_filter):
             f"Got {custom_filter} with type {type(custom_filter)}."
         )
 
+    # Normalize a copy, so the caller's dict stays as given.
+    custom_filter = dict(custom_filter)
     for k, v in custom_filter.items():
         if not isinstance(k, str):
             raise ValueError(

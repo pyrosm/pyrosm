@@ -8,8 +8,8 @@ import pytest
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
 def test_get_methods_do_not_mutate_shared_tag_config(engine):
-    """#252 — get_* must not mutate the shared Conf default-tag lists, with either
-    engine."""
+    """#252 — get_* must not mutate the shared Conf default-tag lists, nor the
+    custom_filter they are given (True used to become [True]), with either engine."""
     from pyrosm import OSM, get_data
     from pyrosm.config import Conf
 
@@ -18,16 +18,20 @@ def test_get_methods_do_not_mutate_shared_tag_config(engine):
     building_before = list(Conf.tags.building)
     highway_before = list(Conf.tags.highway)
     natural_before = list(Conf.tags.natural)
+    custom_filter = {"amenity": True, "shop": ["bakery"]}
 
     osm.get_buildings()
     osm.get_network()
     osm.get_natural()
     osm.get_buildings(extra_attributes=["my_extra_attr"])
+    osm.get_pois(custom_filter=custom_filter)
+    osm.get_data_by_custom_criteria(custom_filter)
 
     assert Conf.tags.building == building_before
     assert Conf.tags.highway == highway_before
     assert Conf.tags.natural == natural_before
     assert "my_extra_attr" not in Conf.tags.building
+    assert custom_filter == {"amenity": True, "shop": ["bakery"]}
 
 
 def test_frame_building_emits_no_chained_assignment_warning():
