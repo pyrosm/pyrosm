@@ -207,15 +207,25 @@ cdef _polygonal_only(geometry):
     return None
 
 
+cdef _even_odd_overlay(list ring_polygons):
+    """The symmetric difference of all ring polygons, taken in pairs round by round:
+    ``(r0 ^ r1) ^ (r2 ^ r3)`` and so on, an odd last part carried to the next round."""
+    parts = np.asarray(ring_polygons, dtype=object)
+    while len(parts) > 1:
+        n_paired = len(parts) // 2 * 2
+        merged = symmetric_difference(parts[0:n_paired:2], parts[1:n_paired:2])
+        parts = np.concatenate([merged, parts[n_paired:]])
+    return parts[0]
+
+
 cdef _assemble_multipolygon(member_lines):
     # OSM multipolygon assembly by geometry, not member role (#21):
     #   1. line_merge all member ways into maximal lines and keep the closed rings
     #      (open/incomplete rings are dropped, not force-closed with a spurious edge);
     #   2. one simple polygon per ring;
-    #   3. even-odd overlay (reduce symmetric_difference): a point is inside iff it is
-    #      covered by an odd number of rings. This yields outers, holes and
-    #      islands-in-holes independent of roles and matches osmium for valid data.
-    cdef int i
+    #   3. even-odd overlay (symmetric_difference of the rings, in pairs): a point is
+    #      inside iff it is covered by an odd number of rings. This yields outers, holes
+    #      and islands-in-holes independent of roles and matches osmium for valid data.
     merged_lines = line_merge(multilinestrings(member_lines))
     ring_polygons = []
     for line in _line_components(merged_lines):
@@ -241,9 +251,7 @@ cdef _assemble_multipolygon(member_lines):
     # Even-odd overlay. GEOS can raise on pathological/self-touching source rings; rather
     # than abort the whole parse, drop this one relation (its rings are unassemblable).
     try:
-        area = ring_polygons[0]
-        for i in range(1, len(ring_polygons)):
-            area = symmetric_difference(area, ring_polygons[i])
+        area = _even_odd_overlay(ring_polygons)
     except GEOSException:
         return None
 
