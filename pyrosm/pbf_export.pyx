@@ -32,7 +32,7 @@ from struct import pack, unpack
 import numpy as np
 
 cimport cython
-from libc.stdint cimport int64_t, uint8_t, uint64_t
+from libc.stdint cimport int32_t, int64_t, uint8_t, uint32_t, uint64_t, uintptr_t
 from cpython.pyport cimport PY_SSIZE_T_MAX
 from libc.stdlib cimport free, realloc
 from libc.string cimport memcpy, memset
@@ -936,6 +936,10 @@ cdef _write_pbf(filepath, output_path, kept_nodes_set, kept_ways_set, kept_rel_s
 #                  (`_decode_dense_group`, `_dense_bytes`).
 # Each level writes its output into its own `_Buffer` of the `_CropState`, which the level
 # above wraps in a field of its own.
+#
+# The second part of this section is the scans the selection stages run on threads:
+# `_relation_blocks` (which blocks hold relations) and `_way_copies_blocks` (the copies
+# of the candidate ways, `_block_way_copies`).
 
 # What an empty batch buffer points to, so that offsets are never added to NULL.
 cdef unsigned char _NO_BYTES[1]
@@ -1488,6 +1492,270 @@ cdef int _crop_one(const unsigned char* buf, Py_ssize_t end, _CropState* st) noe
             or _append_varint(&st.out, <uint64_t>lon_offset) < 0):
         return -1
     return _CROPPED
+
+
+cdef bint _has_relations(const unsigned char* buf, Py_ssize_t end) noexcept nogil:
+    """Whether a block has a group holding relations, or data this scan cannot read."""
+    cdef Py_ssize_t pos = 0, g_pos, g_end
+    cdef int field, wire
+    cdef uint64_t length
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        g_pos = pos
+        pos = _field_end(pos, length, end)
+        if pos > end:
+            return True
+        if field != PB_PRIMITIVEGROUP:
+            continue
+        g_end = pos
+        while g_pos < g_end:
+            _read_tag(buf, &g_pos, g_end, &field, &wire)
+            if field == GROUP_RELATIONS and wire == WIRE_LENGTH:
+                return True
+            _skip_field(buf, &g_pos, g_end, wire)
+        if g_pos != g_end:
+            return True
+    return pos != end
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def _relation_blocks(const unsigned char[::1] buffer, const int64_t[::1] starts):
+    """For each block ``buffer[starts[i]:starts[i + 1]]``, whether it holds relations or
+    data the scan cannot read (so that `_decode_block` decodes it or raises its error)."""
+    cdef Py_ssize_t n_blocks = starts.shape[0] - 1, b
+    check_batch_starts(starts, buffer.shape[0])
+    out = np.zeros(n_blocks, dtype=np.uint8)
+    cdef uint8_t[::1] marked = out
+    cdef const unsigned char* buf = &buffer[0] if buffer.shape[0] else _NO_BYTES
+    with nogil:
+        for b in range(n_blocks):
+            marked[b] = _has_relations(buf + starts[b], starts[b + 1] - starts[b])
+    return out.view(bool)
+
+
+# A growable int64 array; its owner frees ``data``.
+cdef struct _Int64s:
+    int64_t* data
+    Py_ssize_t n
+    Py_ssize_t cap
+
+
+cdef int _push(_Int64s* a, int64_t value) noexcept nogil:
+    """Append ``value``; -1 when memory runs out."""
+    cdef Py_ssize_t cap
+    cdef void* p
+    if a.n == a.cap:
+        if a.cap > PY_SSIZE_T_MAX // (2 * <Py_ssize_t>sizeof(int64_t)):
+            return -1
+        cap = a.cap * 2 if a.cap else 1024
+        p = realloc(a.data, cap * sizeof(int64_t))
+        if p == NULL:
+            return -1
+        a.data = <int64_t*>p
+        a.cap = cap
+    a.data[a.n] = value
+    a.n += 1
+    return 0
+
+
+# The copies of candidate ways found so far, in `_block_way_copies`'s six arrays: one entry
+# per copy in the first five, and the refs of the copies that touch the box in ``refs``.
+cdef struct _Copies:
+    _Int64s ids, versions, timestamps, touches, ref_counts, refs
+    const kh_i64set_t* candidates  # the ways to look for
+    const kh_i64set_t* nodes_in_box
+
+
+cdef int _info_version_timestamp(const unsigned char* buf, Py_ssize_t start,
+                                 Py_ssize_t end, int64_t* version,
+                                 int64_t* timestamp) noexcept nogil:
+    """Read an Info's version and timestamp as protobuf does (the last of each; a version
+    as an int32) into ``version`` / ``timestamp``, which keep their values when absent; 1
+    when a field has another wire type than its own."""
+    cdef Py_ssize_t pos = start
+    cdef int field, wire
+    cdef uint64_t value
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if field == INFO_VERSION or field == INFO_TIMESTAMP:
+            if wire != WIRE_VARINT:
+                return 1
+            value = _read_varint(buf, &pos, end)
+            if field == INFO_VERSION:
+                version[0] = <int32_t><uint32_t>value
+            else:
+                timestamp[0] = <int64_t>value
+        else:
+            _skip_field(buf, &pos, end, wire)
+    return 0 if pos == end else 1
+
+
+cdef int _way_copy(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                   _Copies* c) noexcept nogil:
+    """Add the way in ``buf[start:end]`` to ``c`` when it is a candidate, as
+    `_block_way_copies` reads it; 1 for data it leaves to protobuf, -1 when memory runs
+    out."""
+    cdef Py_ssize_t pos = start, f_start, n, first
+    cdef int field, wire
+    cdef uint64_t length
+    cdef int64_t way_id = 0, version = -1, timestamp = -1
+    cdef bint touching = False
+    cdef _Runs refs
+    cdef Py_ssize_t i
+    refs.n = 0
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if field == WAY_ID:
+            if wire != WIRE_VARINT:
+                return 1
+            way_id = <int64_t>_read_varint(buf, &pos, end)
+        elif field == WAY_INFO or field == WAY_REFS:
+            if wire != WIRE_LENGTH:
+                return 1
+            length = _read_varint(buf, &pos, end)
+            f_start = pos
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                return 1
+            if field == WAY_INFO:
+                if _info_version_timestamp(buf, f_start, pos, &version, &timestamp) != 0:
+                    return 1
+            elif _add_span(&refs, f_start, pos) < 0:
+                return 1
+        else:
+            _skip_field(buf, &pos, end, wire)
+    if pos != end:
+        return 1
+    if not _set_has(c.candidates, way_id):
+        return 0
+    # The refs are decoded onto the end of ``c.refs`` and kept there only when one of
+    # them is in the box.
+    n = _runs_count(buf, &refs)
+    if n < 0:
+        return 1
+    first = c.refs.n
+    for i in range(n):
+        if _push(&c.refs, 0) < 0:
+            return -1
+    if n and _runs_fill(buf, &refs, True, True, c.refs.data + first) != n:
+        return 1
+    for i in range(n):
+        if _set_has(c.nodes_in_box, c.refs.data[first + i]):
+            touching = True
+            break
+    if not touching:
+        c.refs.n = first
+    if (_push(&c.ids, way_id) < 0 or _push(&c.versions, version) < 0
+            or _push(&c.timestamps, timestamp) < 0 or _push(&c.touches, touching) < 0
+            or _push(&c.ref_counts, n if touching else 0) < 0):
+        return -1
+    return 0
+
+
+cdef int _block_copies(const unsigned char* buf, Py_ssize_t end, _Copies* c) noexcept nogil:
+    """The candidate ways' copies of one block into ``c``; 1 for data left to protobuf, -1
+    when memory runs out."""
+    cdef Py_ssize_t pos = 0, g_pos, g_end, e_start
+    cdef int field, wire, status
+    cdef uint64_t length
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        g_pos = pos
+        pos = _field_end(pos, length, end)
+        if pos > end:
+            return 1
+        if field != PB_PRIMITIVEGROUP:
+            continue
+        g_end = pos
+        while g_pos < g_end:
+            _read_tag(buf, &g_pos, g_end, &field, &wire)
+            if field != GROUP_WAYS:
+                _skip_field(buf, &g_pos, g_end, wire)
+                continue
+            if wire != WIRE_LENGTH:
+                return 1
+            length = _read_varint(buf, &g_pos, g_end)
+            e_start = g_pos
+            g_pos = _field_end(g_pos, length, g_end)
+            if g_pos > g_end:
+                return 1
+            status = _way_copy(buf, e_start, g_pos, c)
+            if status != 0:
+                return status
+        if g_pos != g_end:
+            return 1
+    return 0 if pos == end else 1
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def _way_copies_blocks(const unsigned char[::1] buffer, const int64_t[::1] starts,
+                       Int64Set candidates, Int64Set nodes_in_box):
+    """`_block_way_copies` of each block ``buffer[starts[i]:starts[i + 1]]``, read without
+    the GIL: ``(status, copies, refs, (ids, versions, timestamps, touches, ref_counts,
+    refs))``, block ``i`` holding ``copies[i]`` of the copies and ``refs[i]`` of the refs;
+    status 1 for a block left to `_block_way_copies`."""
+    cdef Py_ssize_t n_blocks = starts.shape[0] - 1, b, k
+    cdef Py_ssize_t marks[6]
+    cdef int status
+    cdef bint out_of_memory = False
+    check_batch_starts(starts, buffer.shape[0])
+    result = np.zeros(n_blocks, dtype=np.uint8)
+    copies = np.zeros(n_blocks, dtype=np.int64)
+    ref_total = np.zeros(n_blocks, dtype=np.int64)
+    cdef uint8_t[::1] status_out = result
+    cdef int64_t[::1] copies_out = copies, refs_out = ref_total
+    cdef const unsigned char* buf = &buffer[0] if buffer.shape[0] else _NO_BYTES
+    cdef _Copies c
+    memset(&c, 0, sizeof(_Copies))
+    c.candidates = candidates.table
+    c.nodes_in_box = nodes_in_box.table
+    cdef _Int64s* arrays[6]
+    arrays[0] = &c.ids
+    arrays[1] = &c.versions
+    arrays[2] = &c.timestamps
+    arrays[3] = &c.touches
+    arrays[4] = &c.ref_counts
+    arrays[5] = &c.refs
+    try:
+        # A block left to `_block_way_copies` takes back what it added (``marks``).
+        with nogil:
+            for b in range(n_blocks):
+                for k in range(6):
+                    marks[k] = arrays[k].n
+                status = _block_copies(buf + starts[b], starts[b + 1] - starts[b], &c)
+                if status < 0:
+                    out_of_memory = True
+                    break
+                if status:
+                    for k in range(6):
+                        arrays[k].n = marks[k]
+                status_out[b] = status
+                copies_out[b] = c.ids.n - marks[0]
+                refs_out[b] = c.refs.n - marks[5]
+        if out_of_memory:
+            raise MemoryError()
+        out = []
+        for k in range(6):
+            values = np.empty(arrays[k].n, dtype=np.int64)
+            if arrays[k].n:
+                memcpy(<void*><uintptr_t>values.ctypes.data, arrays[k].data,
+                       arrays[k].n * sizeof(int64_t))
+            out.append(values)
+    finally:
+        for k in range(6):
+            free(arrays[k].data)
+    out[3] = out[3].astype(bool)
+    return result, copies, ref_total, out
 
 
 @cython.boundscheck(False)
