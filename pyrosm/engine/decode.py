@@ -9,6 +9,7 @@ relations -- selected by filter-key presence) and, for reads that look up relati
 *every* way (id + refs).
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -27,54 +28,25 @@ _SHARD_TARGET_BYTES = 8_000_000
 # these are rebuilt from the concatenated per-row lengths (the flat arrays just concatenate).
 _OFFSET_KEYS = ("refs_off", "all_refs_off", "rel_memoff")
 
-# Per-worker globals, set by the pool initializer (or directly for the in-process path).
-# ``_OSM_KEYS`` holds the layer's filter keys (utf-8 bytes) used to pre-select elements;
-# ``_INCLUDE_NODES`` is False for layers that emit no node features (buildings, boundary);
-# ``_BBOX_BOUNDS`` is ``(xmin, ymin, xmax, ymax)`` when reading a bounding box, else None.
-_FILEPATH = None
-_SHARD_DIR = None
-_OSM_KEYS = None
-_INCLUDE_NODES = True
-_BBOX_BOUNDS = None
-# When not None, the only tag keys (utf-8 bytes) to resolve into the element tag dicts
-# (the ``keep_other_tags=False`` minimal-tags mode); None resolves every tag.
-_REQUESTED_TAG_KEYS = None
-# Whether to spill every way's id and node refs, which only relation-member lookup reads.
-_SPILL_ALL_WAYS = True
-# When not None, where each decoded blob's length in the file is added (see ``_advance``).
-_PROGRESS = None
 
+@dataclass(frozen=True)
+class _DecodeSettings:
+    """What the decode of one read needs, passed to each of its tasks: the file, the folder
+    its shards are spilled to, the layer's filter keys (utf-8 bytes) used to pre-select
+    elements (``None`` selects every tagged element), whether point nodes are kept (False
+    for layers that emit none: buildings, boundaries) and the bounding box ``(xmin, ymin,
+    xmax, ymax)`` (or None). When ``requested_tag_keys`` (utf-8 bytes) is not None, only
+    those tag keys are resolved into the element tag dicts (the ``keep_other_tags=False``
+    minimal-tags mode). ``spill_all_ways`` spills every way's id and node refs, which only
+    the lookup of relation members reads."""
 
-def _init_worker(
-    filepath,
-    shard_dir,
-    osm_keys,
-    include_nodes,
-    bbox_bounds,
-    requested_tag_keys=None,
-    spill_all_ways=True,
-    progress=None,
-):
-    global _FILEPATH, _SHARD_DIR, _OSM_KEYS, _INCLUDE_NODES, _BBOX_BOUNDS
-    global _REQUESTED_TAG_KEYS, _SPILL_ALL_WAYS, _PROGRESS
-    _FILEPATH = filepath
-    _SHARD_DIR = shard_dir
-    _OSM_KEYS = osm_keys
-    _INCLUDE_NODES = include_nodes
-    _BBOX_BOUNDS = bbox_bounds
-    _REQUESTED_TAG_KEYS = requested_tag_keys
-    _SPILL_ALL_WAYS = spill_all_ways
-    _PROGRESS = progress
-
-
-def _advance(span):
-    """Add ``span`` decoded bytes to the progress target: a callable in this process, or the
-    pool's shared counter."""
-    if callable(_PROGRESS):
-        _PROGRESS(span)
-    else:
-        with _PROGRESS.get_lock():
-            _PROGRESS.value += span
+    filepath: str
+    shard_dir: str
+    osm_keys: list = None
+    include_nodes: bool = True
+    bbox_bounds: tuple = None
+    requested_tag_keys: list = None
+    spill_all_ways: bool = True
 
 
 def _key_indices(string_table, osm_keys):
@@ -113,12 +85,13 @@ def _resolve_tags(strings, keys, vals, start, end, keep_indices=None):
     }
 
 
-def _requested_keep_indices(string_table):
-    """The string-table indices for ``_REQUESTED_TAG_KEYS`` (the minimal-tags keep set) in
-    this block, or ``None`` when every tag should be resolved."""
-    if _REQUESTED_TAG_KEYS is None:
+def _requested_keep_indices(string_table, requested_tag_keys):
+    """The string-table indices of ``requested_tag_keys`` (the minimal-tags keep set) in
+    this block, or ``None`` when every tag should be resolved (``requested_tag_keys`` is
+    None)."""
+    if requested_tag_keys is None:
         return None
-    return set(_key_indices(string_table, _REQUESTED_TAG_KEYS))
+    return set(_key_indices(string_table, requested_tag_keys))
 
 
 def _tagged_elements(string_table, elements, osm_keys):
@@ -136,12 +109,13 @@ def _tagged_elements(string_table, elements, osm_keys):
     return np.unique(np.searchsorted(tags_off, key_positions, side="right") - 1)
 
 
-def _matching_ways(string_table, ways, osm_keys, strings=None):
+def _matching_ways(string_table, ways, osm_keys, strings=None, requested_tag_keys=None):
     """Select the ways carrying any of ``osm_keys`` (any tag when ``None``) and return,
     per matching way, its node-ref slice, full (resolved) tag dict and
     ``version``/``timestamp``/``visible`` metadata -- everything pyrosm's way record
-    carries. ``strings`` is the block's :func:`_decoded` table (made here when not given).
-    Returns a dict of parallel arrays/lists, or ``None``."""
+    carries. ``strings`` is the block's :func:`_decoded` table (made here when not given);
+    with ``requested_tag_keys`` only those tags are resolved. Returns a dict of parallel
+    arrays/lists, or ``None``."""
     if ways is None:
         return None
     way_index = _tagged_elements(string_table, ways, osm_keys)
@@ -149,7 +123,7 @@ def _matching_ways(string_table, ways, osm_keys, strings=None):
         return None
     keys, vals, tags_off = ways["keys"], ways["vals"], ways["tags_off"]
     refs, refs_off = ways["refs"], ways["refs_off"]
-    keep_indices = _requested_keep_indices(string_table)
+    keep_indices = _requested_keep_indices(string_table, requested_tag_keys)
     strings = (strings or _decoded(string_table))()
     keys, vals, tags_off = keys.tolist(), vals.tolist(), tags_off.tolist()
     return {
@@ -167,12 +141,15 @@ def _matching_ways(string_table, ways, osm_keys, strings=None):
     }
 
 
-def _matching_nodes(string_table, nodes, osm_keys, node_lon, node_lat):
+def _matching_nodes(
+    string_table, nodes, osm_keys, node_lon, node_lat, requested_tag_keys=None
+):
     """Dense nodes carrying any of ``osm_keys`` (any tag when ``None``) -> a dict of
     parallel arrays/lists (``id`` / ``lon`` / ``lat`` / ``tags`` + ``version`` /
     ``timestamp`` / ``changeset`` / ``visible`` metadata) for the matching nodes, or
-    ``None``. Tags are parsed from the block's dense ``keys_vals`` stream; untagged nodes
-    (the vast majority) cost nothing.
+    ``None``; with ``requested_tag_keys`` only those tags are resolved. Tags are parsed
+    from the block's dense ``keys_vals`` stream; untagged nodes (the vast majority) cost
+    nothing.
     """
     if nodes is None:
         return None
@@ -182,7 +159,7 @@ def _matching_nodes(string_table, nodes, osm_keys, node_lon, node_lat):
     keys_vals = nodes["keys_vals"]
     if key_indices == set() or len(keys_vals) == 0:
         return None
-    keep_indices = _requested_keep_indices(string_table)
+    keep_indices = _requested_keep_indices(string_table, requested_tag_keys)
     ids = nodes["id"]
     idx, tags = [], []
     p, end = 0, len(keys_vals)
@@ -268,13 +245,15 @@ def _node_records_by_id(string_table, header, nodes, wanted, keep_metadata, tags
     return record
 
 
-def _layer_relations(string_table, relations, osm_keys, strings=None):
+def _layer_relations(
+    string_table, relations, osm_keys, strings=None, requested_tag_keys=None
+):
     """The relations carrying any of ``osm_keys`` (any tag when ``None``) in this block.
     Yields, per relation, its id, member id/type/role arrays, full tag dict and
     ``version``/``timestamp``/``changeset`` metadata -- everything pyrosm needs to
     assemble the (multi)polygon and its columns. Member roles and tags are resolved
     through the block's string table, ``strings`` being its :func:`_decoded` table (made
-    here when not given)."""
+    here when not given); with ``requested_tag_keys`` only those tags are resolved."""
     if relations is None:
         return
     rel_index = _tagged_elements(string_table, relations, osm_keys)
@@ -293,7 +272,7 @@ def _layer_relations(string_table, relations, osm_keys, strings=None):
         relations["roles"],
         relations["members_off"],
     )
-    keep_indices = _requested_keep_indices(string_table)
+    keep_indices = _requested_keep_indices(string_table, requested_tag_keys)
     strings = (strings or _decoded(string_table))()
     keys, vals = keys.tolist(), vals.tolist()
     for i in rel_index:
@@ -329,10 +308,11 @@ def _object_array(items):
     return arr
 
 
-def _decode_one_block(string_table, header, nodes, ways, relations):
-    """Decode one primitive block into the per-shard arrays: node coordinates, the matching
-    layer point nodes, the matching layer ways (refs + resolved tags + metadata), *all* ways
-    (id + refs, for relation-member lookup; empty unless ``_SPILL_ALL_WAYS``) and the matching
+def _decode_one_block(settings, string_table, header, nodes, ways, relations):
+    """Decode one primitive block into the per-shard arrays of a read with the
+    :class:`_DecodeSettings` ``settings``: node coordinates, the matching layer point
+    nodes, the matching layer ways (refs + resolved tags + metadata), *all* ways (id + refs,
+    for relation-member lookup; empty unless ``settings.spill_all_ways``) and the matching
     layer relations. Returns a dict of the npz arrays ``_write_shard`` spills (every key
     present, empty when absent)."""
     node_id, node_lon, node_lat, in_box = [], [], [], []
@@ -342,6 +322,8 @@ def _decode_one_block(string_table, header, nodes, ways, relations):
     all_id, all_refs, all_count = [], [], []
     rel = {k: [] for k in ("id", "memid", "memtype", "memrole", "tags", "meta")}
     strings = _decoded(string_table)
+    osm_keys, bbox_bounds = settings.osm_keys, settings.bbox_bounds
+    requested = settings.requested_tag_keys
 
     if nodes is not None:
         gran = header["granularity"]
@@ -350,16 +332,16 @@ def _decode_one_block(string_table, header, nodes, ways, relations):
         node_id.append(nodes["id"])
         node_lat.append(lat)
         node_lon.append(lon)
-        if _BBOX_BOUNDS is not None:
-            in_box.append(nodes["id"][_in_box_mask(lon, lat, _BBOX_BOUNDS)])
+        if bbox_bounds is not None:
+            in_box.append(nodes["id"][_in_box_mask(lon, lat, bbox_bounds)])
         found = (
-            _matching_nodes(string_table, nodes, _OSM_KEYS, lon, lat)
-            if _INCLUDE_NODES
+            _matching_nodes(string_table, nodes, osm_keys, lon, lat, requested)
+            if settings.include_nodes
             else None
         )
         # A node feature is kept only if it falls inside the bounding box.
-        if found is not None and _BBOX_BOUNDS is not None:
-            found = _filter_features_to_box(found, _BBOX_BOUNDS)
+        if found is not None and bbox_bounds is not None:
+            found = _filter_features_to_box(found, bbox_bounds)
         if found is not None:
             nf["id"].append(found["id"])
             nf["lon"].append(found["lon"])
@@ -377,11 +359,11 @@ def _decode_one_block(string_table, header, nodes, ways, relations):
                 )
             )
     if ways is not None:
-        if _SPILL_ALL_WAYS:
+        if settings.spill_all_ways:
             all_id.append(ways["id"])
             all_refs.append(ways["refs"])
             all_count.append(np.diff(ways["refs_off"]))
-        found = _matching_ways(string_table, ways, _OSM_KEYS, strings)
+        found = _matching_ways(string_table, ways, osm_keys, strings, requested)
         if found is not None:
             way_match_id.append(found["id"])
             way_match_refs.extend(found["refs"])
@@ -389,7 +371,7 @@ def _decode_one_block(string_table, header, nodes, ways, relations):
             way_version.append(found["version"])
             way_timestamp.append(found["timestamp"])
             way_visible.append(found["visible"])
-    for r in _layer_relations(string_table, relations, _OSM_KEYS, strings):
+    for r in _layer_relations(string_table, relations, osm_keys, strings, requested):
         rel["id"].append(r["id"])
         rel["memid"].append(r["memid"])
         rel["memtype"].append(r["memtype"])
@@ -466,12 +448,14 @@ def _merge_shards(blocks):
     return merged
 
 
-def _decode_batch(task):
-    """Worker: decode a contiguous run of blobs, accumulating decoded blocks into a shard and
-    spilling it once it reaches ``_SHARD_TARGET_BYTES`` (so peak memory stays bounded by about
-    one shard's worth of blocks rather than the whole batch, while the file count -- and the
-    per-file overhead collect pays re-reading them -- drops by one to two orders of magnitude).
-    Returns the list of shard paths."""
+def _decode_batch(settings, task, advance=None):
+    """Worker: decode a contiguous run of blobs of the read with the :class:`_DecodeSettings`
+    ``settings``, accumulating decoded blocks into a shard and spilling it once it reaches
+    ``_SHARD_TARGET_BYTES`` (so peak memory stays bounded by about one shard's worth of
+    blocks rather than the whole batch, while the file count -- and the per-file overhead
+    collect pays re-reading them -- drops by one to two orders of magnitude). ``advance``,
+    when given, is called with each decoded blob's length in the file. Returns the list of
+    shard paths."""
     task_id, blobs = task
     paths = []
     pending = []
@@ -481,20 +465,20 @@ def _decode_batch(task):
         nonlocal pending, pending_bytes
         if not pending:
             return
-        path = Path(_SHARD_DIR) / ("shard_%d_%d.npz" % (task_id, len(paths)))
+        path = Path(settings.shard_dir) / ("shard_%d_%d.npz" % (task_id, len(paths)))
         np.savez(path, **_merge_shards(pending))
         paths.append(path)
         pending, pending_bytes = [], 0
 
-    with open(_FILEPATH, "rb") as f:
+    with open(settings.filepath, "rb") as f:
         for offset, size, span in blobs:
             data = _read_block(f, offset, size)
-            arrays = _decode_one_block(*decode_primitive_block(data))
+            arrays = _decode_one_block(settings, *decode_primitive_block(data))
             pending.append(arrays)
             pending_bytes += sum(v.nbytes for v in arrays.values())
             if pending_bytes >= _SHARD_TARGET_BYTES:
                 flush()
-            if _PROGRESS is not None:
-                _advance(span)
+            if advance is not None:
+                advance(span)
     flush()
     return paths
