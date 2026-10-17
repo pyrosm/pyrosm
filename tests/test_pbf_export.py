@@ -853,7 +853,11 @@ def _pbf_file(path, *blocks, features=("OsmSchema-V0.6", "DenseNodes")):
         ("corrupt zlib data", 1, "InvalidOSMFileError", "decompressing"),
         ("corrupt zlib data", 2, "InvalidOSMFileError", "decompressing"),
         ("corrupt block", 1, "InvalidOSMFileError", "not a valid OSM PBF file"),
+        ("corrupt block", 2, "InvalidOSMFileError", "not a valid OSM PBF file"),
         ("corrupt Info of a kept way", 1, "InvalidOSMFileError", "data block of the PBF is"),
+        ("corrupt Info of a kept way", 2, "InvalidOSMFileError", "data block of the PBF is"),
+        ("corrupt first string table", 1, "InvalidOSMFileError", "data block of the PBF is"),
+        ("corrupt first string table", 2, "InvalidOSMFileError", "data block of the PBF is"),
         ("negative blob size", 1, "InvalidOSMFileError", "declared blob size -5"),
         ("oversized blob", 1, "InvalidOSMFileError", "larger than 32 MiB"),
         ("truncated zlib stream", 1, "InvalidOSMFileError", "zlib blob is truncated"),
@@ -868,7 +872,7 @@ def test_crop_pbf_rejects_unreadable_input(
     helsinki_pbf, tmp_path, case, workers, error, match
 ):
     # With workers=2 the four blocks go through the pool, where the corrupt one is
-    # decompressed.
+    # decompressed and decoded.
     from pyrosm.exceptions import InvalidOSMFileError
     from pyrosm.pbf_export import _iter_primitive_blocks, crop_pbf
     import zlib
@@ -877,6 +881,7 @@ def test_crop_pbf_rejects_unreadable_input(
     from pyrosm.proto.osmformat_pb2 import HeaderBlock
 
     bad = tmp_path / "bad.osm.pbf"
+    valid = [pb for pb in _iter_primitive_blocks(helsinki_pbf)][: 3 * (workers - 1)]
     if case == "empty":
         bad.write_bytes(b"")
     elif case == "truncated":
@@ -886,10 +891,9 @@ def test_crop_pbf_rejects_unreadable_input(
         with open(bad, "wb") as out:
             _frame_pbf_blob(out, "OSMData", HeaderBlock())
     elif case == "corrupt zlib data":
-        valid = [pb for pb in _iter_primitive_blocks(helsinki_pbf)][:3]
         _pbf_file(bad, *valid, Blob(zlib_data=b"not zlib"))
     elif case == "corrupt block":
-        _pbf_file(bad, Blob(raw=b"\xff\xff"))
+        _pbf_file(bad, *valid, Blob(raw=b"\xff\xff"))
     elif case == "corrupt Info of a kept way":
         from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
 
@@ -903,7 +907,19 @@ def test_crop_pbf_rejects_unreadable_input(
         way = b"\x08\x05\x22\x01\x08\x42\x01\x02"
         group = b"\x1a" + bytes([len(way)]) + way
         data = blk.SerializeToString() + b"\x12" + bytes([len(group)]) + group
-        _pbf_file(bad, Blob(raw=data, raw_size=len(data)))
+        _pbf_file(bad, *valid, Blob(zlib_data=zlib.compress(data), raw_size=len(data)))
+    elif case == "corrupt first string table":
+        from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+        blk = PrimitiveBlock(granularity=100)
+        blk.stringtable.s.append(b"")
+        node = blk.primitivegroup.add().dense
+        node.id.append(1)
+        node.lat.append(round(sum(CROP_BBOX[1::2]) / 2 * 1e7))
+        node.lon.append(round(sum(CROP_BBOX[0::2]) / 2 * 1e7))
+        # A string of 5 bytes holding 2, then the block's own, valid string table.
+        data = b"\x0a\x04\x0a\x05ab" + blk.SerializeToString()
+        _pbf_file(bad, *valid, Blob(zlib_data=zlib.compress(data), raw_size=len(data)))
     elif case == "negative blob size":
         _pbf_file(bad)
         header = BlobHeader(type="OSMData", datasize=-5).SerializeToString()
@@ -1655,12 +1671,159 @@ def test_scans_corrupt_blocks(corrupted_copies):
         assert status[0] in (0, 1)
         assert len(found[0]) == copies[0] and len(found[5]) == refs[0]
 
+@pytest.mark.parametrize(
+    "region, limit",
+    [
+        ("box", None),
+        ("polygon", None),
+        ("box", "_BATCH_RAW_BYTES"),
+        ("box", "_BATCH_BYTES"),
+    ],
+    ids=["box", "polygon", "box, a blob per part", "box, each blob read alone"],
+)
+def test_threaded_crop_writes_the_sequential_bytes(
+    tmp_path, monkeypatch, region, limit
+):
+    """A crop on threads writes the bytes a crop in one process writes, also for blocks
+    the GIL-free decoder and cropper leave to the per-block code (ids in more packed
+    runs than they keep, plain nodes, relations), blocks that keep nothing, and when
+    each blob of a batch is decompressed in a part of its own, or read alone as a batch
+    spanning more than the limit is."""
+    from shapely.geometry import box
+
+    from pyrosm.engine import blobs
+    from pyrosm.pbf_export import crop_pbf
+
+    if limit is not None:
+        monkeypatch.setattr(blobs, limit, 1)
+
+    source = _pbf_file(tmp_path / "crafted.osm.pbf", *_crafted_blocks())
+    crop = {"box": {"bounding_box": CROP_BBOX}, "polygon": {"polygon": box(*CROP_BBOX)}}
+    one = crop_pbf(source, str(tmp_path / "one.osm.pbf"), workers=1, **crop[region])
+    two = crop_pbf(source, str(tmp_path / "two.osm.pbf"), workers=2, **crop[region])
+    assert Path(two).read_bytes() == Path(one).read_bytes()
+    node_ids, way_ids, rel_ids, _, _ = _read_elements(one)
+    assert node_ids == {1, 2, 3, 4, 5, 6, 9, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 32}
+    assert way_ids == {40, 42, 43} and rel_ids == {60, 62}
+
+
+def _crafted_merge_inputs(tmp_path):
+    """Two files with copies of the same ways: with and without Info, a version above
+    2**31, refs in two packed runs, and (in a block of its own) the winning copy of a way
+    with its refs written unpacked."""
+    import zlib
+
+    from pyrosm.proto.fileformat_pb2 import Blob
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    lat = round(sum(CROP_BBOX[1::2]) / 2 * 1e7)
+    lon = round(sum(CROP_BBOX[0::2]) / 2 * 1e7)
+
+    def nodes():
+        blk = PrimitiveBlock(granularity=100)
+        blk.stringtable.s.append(b"")
+        d = blk.primitivegroup.add().dense
+        d.id.extend([1, 1, 1, 1, 1])
+        d.lat.extend([lat, 0, 0, 0, 10**7])
+        d.lon.extend([lon, 0, 0, 0, 0])
+        return blk
+
+    def way(way_id, refs, version=None, timestamp=None, runs=1, unpacked=False):
+        info = b""
+        if version is not None:
+            info += _varint_bytes(1 << 3) + _varint_bytes(version)
+        if timestamp is not None:
+            info += _varint_bytes(2 << 3) + _varint_bytes(timestamp)
+        data = _varint_bytes(1 << 3) + _varint_bytes(way_id)
+        if info:
+            data += _len_field(4, info)
+        if unpacked:
+            deltas = [b - a for a, b in zip([0] + refs, refs)]
+            data += b"".join(
+                _varint_bytes(8 << 3) + _varint_bytes((d << 1) ^ (d >> 63)) for d in deltas
+            )
+        else:
+            data += b"".join(_len_field(8, run) for run in _packed_sint(refs, runs))
+        return _len_field(3, data)
+
+    def ways(*elements):
+        data = _len_field(1, _len_field(1, b"")) + _len_field(2, b"".join(elements))
+        return Blob(zlib_data=zlib.compress(data), raw_size=len(data))
+
+    a = _pbf_file(
+        tmp_path / "a.osm.pbf",
+        nodes(),
+        ways(
+            way(10, [1, 2], version=2, timestamp=100),
+            way(11, [5]),
+            way(12, [3, 4, 1], version=2**31 + 5),
+            way(13, [2, 3], version=1, runs=2),
+        ),
+        ways(way(14, [1, 5], version=2, unpacked=True)),
+    )
+    b = _pbf_file(
+        tmp_path / "b.osm.pbf",
+        nodes(),
+        ways(
+            way(10, [1, 5], version=3, timestamp=50),
+            way(11, [1], version=0),
+            way(12, [5], version=1),
+            way(14, [1], version=1),
+        ),
+    )
+    return [a, b]
+
+
+def test_threaded_merge_writes_the_sequential_bytes(tmp_path):
+    """A merge with a box on threads writes the bytes a merge in one process writes: the
+    copies of each way are read without the GIL as protobuf reads them (a missing Info, a
+    version above 2**31, refs in several runs), or by protobuf (refs written unpacked)."""
+    from pyrosm import merge_pbf
+
+    inputs = _crafted_merge_inputs(tmp_path)
+    one = merge_pbf(inputs, str(tmp_path / "one.osm.pbf"), CROP_BBOX, workers=1)
+    two = merge_pbf(inputs, str(tmp_path / "two.osm.pbf"), CROP_BBOX, workers=2)
+    assert Path(two).read_bytes() == Path(one).read_bytes()
+    _, way_ids, _, _, way_refs = _read_elements(one)
+    # The higher version wins: way 12's 2**31 + 5 is an int32, below B's 1; a way
+    # without Info has version -1, below B's 0. Way 14 touches the box in B, and its
+    # winning copy in A, read by protobuf, touches it too.
+    assert way_ids == {10, 11, 13, 14}
+    assert (way_refs[10], way_refs[11], way_refs[13]) == ([1, 5], [1], [2, 3])
+
+
+def test_concurrent_crops_keep_their_own_region(helsinki_pbf, tmp_path):
+    """Crops run at the same time in one process (each with its own pool) write what they
+    write alone."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from shapely.geometry import box
+
+    from pyrosm.pbf_export import crop_pbf
+
+    regions = [
+        {"bounding_box": CROP_BBOX},
+        {"bounding_box": MERGE_A},
+        {"polygon": box(*MERGE_B)},
+        {"bounding_box": MERGE_CROP, "compact": True},
+    ]
+
+    def crop(i, workers):
+        out = str(tmp_path / ("%d_%d.osm.pbf" % (i, workers)))
+        return Path(crop_pbf(helsinki_pbf, out, workers=workers, **regions[i])).read_bytes()
+
+    alone = [crop(i, 1) for i in range(len(regions))]
+    with ThreadPoolExecutor(len(regions)) as pool:
+        together = list(pool.map(lambda i: crop(i, 2), range(len(regions))))
+    assert together == alone
+
 
 @pytest.mark.parametrize(
     "executor, fallback",
     [
         ("threads", False),
         ("submit fails", True),
+        ("thread cannot start", True),
         ("worker dies", True),
         ("task error", False),
         ("file changes", False),
@@ -1671,7 +1834,7 @@ def test_parallel_crop_falls_back_only_when_the_pool_breaks(
 ):
     """A pool that cannot start a worker, or whose worker dies, makes the crop warn and run
     in one process; an error raised by a task, or a source that changes while the workers
-    read it, propagates without a fallback."""
+    read it, propagates without a fallback. The executor of either backend is replaced."""
     import os
     import warnings
     from concurrent.futures import Future, ThreadPoolExecutor
@@ -1688,6 +1851,8 @@ def test_parallel_crop_falls_back_only_when_the_pool_breaks(
         def submit(self, func, *args):
             if executor == "submit fails":
                 raise OSError("cannot start a process")
+            if executor == "thread cannot start":
+                raise RuntimeError("can't start new thread")
             if executor == "worker dies":
                 future = Future()
                 future.set_exception(BrokenProcessPool("a worker died"))
@@ -1697,6 +1862,7 @@ def test_parallel_crop_falls_back_only_when_the_pool_breaks(
             return super().submit(func, *args)
 
     monkeypatch.setattr(pbf_export, "ProcessPoolExecutor", Threads)
+    monkeypatch.setattr(pbf_export, "ThreadPoolExecutor", Threads)
     source = helsinki_pbf
     if executor == "file changes":
         source = str(tmp_path / "source.osm.pbf")
@@ -1741,11 +1907,13 @@ def test_parallel_crop_runs_when_workers_cannot_import_the_script(
     helsinki_pbf, tmp_path, form
 ):
     """Spawned workers that cannot import the script used to hang the crop; it now runs in
-    one process with one warning and writes the same file as workers=1."""
+    one process with one warning, and on threads in parallel without one, and writes the
+    same file as workers=1."""
     import subprocess
     import sys
 
     from pyrosm import merge_pbf
+    from pyrosm.engine.pool import _decode_backend
     from pyrosm.pbf_export import crop_pbf
 
     out = tmp_path / "two.osm.pbf"
@@ -1772,7 +1940,8 @@ def test_parallel_crop_runs_when_workers_cannot_import_the_script(
         timeout=180,
     )
     assert result.returncode == 0, result.stderr[-2000:]
-    assert "warnings: 1" in result.stdout
+    warnings = 0 if _decode_backend() == "threads" else 1
+    assert "warnings: %d" % warnings in result.stdout
     assert out.read_bytes() == Path(expected).read_bytes()
 
 

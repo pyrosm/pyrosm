@@ -4,6 +4,7 @@ Changelog
 Unreleased
 ----------
 
+- CHANGED: Out-of-core reads, crops and merges run in parallel on threads instead of worker processes, so with ``workers > 1`` they need no ``if __name__ == "__main__":`` guard on macOS and Windows. The blobs are decompressed in batches and decoded by a C decoder with the GIL released, and crops write their blocks with a C writer; a block either one does not handle goes to the existing code, so results and crop output bytes are unchanged. On Finland (737 MB), ``get_network("driving")`` takes 14.6 s on one thread instead of 19.8 s in one process, and 9.8 s on 8 threads; a box crop takes 5.7 s on 8 threads instead of 17.5 s on one. Setting the environment variable ``PYROSM_DECODE_BACKEND=processes`` brings back the worker processes (`#525 <https://github.com/pyrosm/pyrosm/pull/525>`__, `#526 <https://github.com/pyrosm/pyrosm/pull/526>`__, `#527 <https://github.com/pyrosm/pyrosm/pull/527>`__, `#528 <https://github.com/pyrosm/pyrosm/pull/528>`__, `#529 <https://github.com/pyrosm/pyrosm/pull/529>`__, `#530 <https://github.com/pyrosm/pyrosm/pull/530>`__, `#531 <https://github.com/pyrosm/pyrosm/pull/531>`__, `#532 <https://github.com/pyrosm/pyrosm/pull/532>`__)
 - DOCS: The guide to reading OSM data and the FAQ explain the warning that a read, crop or merge without ``workers`` gives since 0.22.0, and how to silence it with ``workers=1``. The list in the 0.2.0 notes of the changelog page shows as one list again (`#524 <https://github.com/pyrosm/pyrosm/pull/524>`__)
 
 v0.22.0 (Oct 18, 2026)
