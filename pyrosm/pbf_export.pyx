@@ -23,7 +23,6 @@ import os
 import shutil
 import tempfile
 import warnings
-import zlib
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -53,7 +52,8 @@ from pyrosm.primitive_block_decoder cimport (
 
 from pyrosm.int64_hash import Int64Set, SortedInt64Set
 from pyrosm.utils.progress import reporting, validate_progress
-from pyrosm.zlib_blob import zlib_compress, zlib_decompress
+from pyrosm.engine.blobs import _MAX_BLOB_SIZE, _decompress_blob, _invalid_pbf
+from pyrosm.zlib_blob import zlib_compress
 from pyrosm.primitive_block_decoder import (
     decode_elements, decode_primitive_block, element_layout,
 )
@@ -120,17 +120,12 @@ def _prepared(wkb):
 # and uncompressed); larger declared sizes mean the file is not an OSM PBF (the
 # limits osmium checks).
 _MAX_BLOB_HEADER_SIZE = 64 * 1024
-_MAX_BLOB_SIZE = 32 * 1024 * 1024
 # Re-packed blocks are split above the 16 MiB the spec recommends as a blob's size.
 _MAX_PACKED_BLOCK_SIZE = 16 * 1024 * 1024
 
 
 cdef _invalid(filepath, reason):
-    return InvalidOSMFileError(
-        "'%s' is not a valid OSM PBF file. Pyrosm reads OpenStreetMap data in the "
-        "OSM PBF format (https://wiki.openstreetmap.org/wiki/PBF_Format); this file "
-        "does not follow the OSM PBF schema (%s)." % (filepath, reason)
-    )
+    return _invalid_pbf(filepath, reason)
 
 
 cdef _read_exact(f, n):
@@ -187,29 +182,9 @@ cdef _read_blob(f, datasize):
 
 
 cdef _decompress(data, raw_size, filepath):
-    """Decompress a zlib blob of at most 32 MiB, checking it against `raw_size`: with
-    libdeflate when the blob declares its size, otherwise, or to report what is wrong
-    with a blob libdeflate cannot decompress, with zlib."""
-    if raw_size is not None:
-        out = zlib_decompress(data, raw_size)
-        if out is not None:
-            return out
-    decompressor = zlib.decompressobj()
-    try:
-        out = decompressor.decompress(data, _MAX_BLOB_SIZE)
-    except zlib.error as err:
-        raise _invalid(filepath, err) from None
-    if decompressor.unconsumed_tail:
-        raise _invalid(filepath, "a blob is larger than 32 MiB when decompressed")
-    if not decompressor.eof:
-        raise _invalid(filepath, "a zlib blob is truncated")
-    if raw_size is not None and raw_size != len(out):
-        raise _invalid(
-            filepath,
-            "a blob decompresses to %d bytes but declares raw_size %d"
-            % (len(out), raw_size),
-        )
-    return out
+    """Decompress a zlib blob of at most 32 MiB, checking it against `raw_size` (see
+    `_decompress_blob`)."""
+    return _decompress_blob(data, raw_size, filepath)
 
 
 cdef _raw_size(blob):

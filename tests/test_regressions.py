@@ -2687,3 +2687,38 @@ def test_nodes_without_leftover_tags_have_no_tags_value(keep_ways):
         tags = [None if pd.isna(value) else value for value in gdf["tags"]]
         leftovers = ['{"landuse":"greenhouse_horticulture","building":"yes"}']
         assert tags == [None, None] + (leftovers if keep_ways else [])
+
+
+@pytest.mark.parametrize(
+    "codec, raw_size, engine",
+    [("zlib", None, "in_memory"), ("zlib", 7, "out_of_core"), ("lzma", None, "in_memory")],
+    ids=["zlib without raw_size", "zlib with a wrong raw_size", "lzma"],
+)
+def test_reading_refuses_a_blob_larger_than_32_mib(tmp_path, codec, raw_size, engine):
+    """A data blob that decompresses to more than the 32 MiB the PBF format allows raises
+    InvalidOSMFileError; the readers used to decompress it whole, however large."""
+    import lzma
+    import zlib
+    from struct import pack
+
+    from pyrosm import OSM
+    from pyrosm.exceptions import InvalidOSMFileError
+    from pyrosm.proto.fileformat_pb2 import Blob, BlobHeader
+    from pyrosm.proto.osmformat_pb2 import HeaderBlock
+
+    zeros = bytes(33 * 2**20)
+    payload = {"zlib": zlib.compress, "lzma": lzma.compress}[codec](zeros)
+    header = HeaderBlock(required_features=["OsmSchema-V0.6", "DenseNodes"])
+    header = header.SerializeToString()
+    blobs = [
+        ("OSMHeader", Blob(raw=header, raw_size=len(header))),
+        ("OSMData", Blob(raw_size=raw_size, **{codec + "_data": payload})),
+    ]
+    path = tmp_path / "large.osm.pbf"
+    with open(path, "wb") as f:
+        for kind, blob in blobs:
+            data = blob.SerializeToString()
+            head = BlobHeader(type=kind, datasize=len(data)).SerializeToString()
+            f.write(pack("!L", len(head)) + head + data)
+    with pytest.raises(InvalidOSMFileError, match="larger than 32 MiB"):
+        OSM(str(path), engine=engine, workers=1).get_buildings()
