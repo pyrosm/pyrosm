@@ -84,7 +84,7 @@ _vendored_sizes_cache = None
 _movisda_cache = {}
 
 
-def _frame(provider, ids, names, urls, sizes, geometry):
+def _candidate_frame(provider, ids, names, urls, sizes, geometry):
     """One provider's candidates; invalid extent polygons (a few providers publish
     self-intersecting ones) are repaired so containment tests stay reliable."""
     return gpd.GeoDataFrame(
@@ -103,7 +103,7 @@ def _frame(provider, ids, names, urls, sizes, geometry):
 def _geofabrik_extracts(update=False):
     gdf = _load_geofabrik_index(update)
     names = gdf["name"].fillna(gdf["id"])
-    return _frame(
+    return _candidate_frame(
         "Geofabrik", gdf["id"], names, gdf["pbf"], [None] * len(gdf), gdf.geometry
     )
 
@@ -113,7 +113,7 @@ def _bbbike_extracts():
     if _bbbike_cache is None:
         with gzip.open(_BBBIKE_INDEX_PATH, "rt", encoding="utf-8") as f:
             gdf = gpd.GeoDataFrame.from_features(json.load(f)["features"])
-        _bbbike_cache = _frame(
+        _bbbike_cache = _candidate_frame(
             "BBBike",
             gdf["id"],
             gdf["name"],
@@ -250,7 +250,7 @@ def _movisda_frame(source, kind):
         else:
             ids = [_tile_id(g.bounds) for g in gdf.geometry]
             names = ["%s tile %s" % (kind, i) for i in ids]
-        return _frame("Movisda", ids, names, urls, gdf["bytes"], gdf.geometry)
+        return _candidate_frame("Movisda", ids, names, urls, gdf["bytes"], gdf.geometry)
     except Exception as e:
         raise ValueError("could not read the Movisda %s index (%s)" % (kind, e)) from e
 

@@ -501,7 +501,7 @@ def test_vendored_movisda_grid_index():
 
 
 def _candidates(provider, rows):
-    return ei._frame(
+    return ei._candidate_frame(
         provider,
         [r[0] for r in rows],
         [r[0] for r in rows],
