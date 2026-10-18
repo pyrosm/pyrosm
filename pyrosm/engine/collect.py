@@ -21,6 +21,7 @@ from pyrosm.engine.decode import (
     _shard_tags,
 )
 from pyrosm.engine.bounding_box import _in_box_nodes
+from pyrosm.engine.ways import node_coordinates, node_record_blocks, relation_ways
 
 # Relation.MemberType -> the byte labels pyrosm's relation assembly expects.
 _MEMBER_TYPE = {0: b"node", 1: b"way", 2: b"relation"}
@@ -183,6 +184,14 @@ def _node_lookup(shard_paths, needed):
     )
 
 
+def _coordinates(shard_paths, kept, relation_ways):
+    """The coordinate store of the nodes the ways ``kept`` and ``relation_ways`` refer to
+    (see :func:`_node_lookup`); for a threaded decode gathered on threads."""
+    if not _is_threaded(shard_paths):
+        return _node_lookup(shard_paths, _needed_node_ids(kept, relation_ways))
+    return node_coordinates(shard_paths, _node_refs(kept, relation_ways))
+
+
 # Node-record column dtypes for the graph-export gather (id/coords + element metadata).
 _NODE_RECORD_DTYPES = {
     "id": np.int64,
@@ -195,14 +204,18 @@ _NODE_RECORD_DTYPES = {
 }
 
 
-def _gather_node_records(filepath, node_ids, keep_metadata, progress=None):
+def _gather_node_records(
+    filepath, node_ids, keep_metadata, progress=None, threaded=False
+):
     """Second pass over the file gathering the full records (coordinates + tags + metadata)
     of ``node_ids``, returned as a rich ``NodeLocations`` -- the coordinate store the
     graph-export node frame is built from (its records carry the node tags and metadata the
     lean coordinate lookup omits). Only the requested (network) nodes are materialised, so
     peak memory stays bounded by the graph's node set rather than the whole file.
     ``progress(done, file_size)``, when given, gets the bytes of the file read: 0 first, then
-    after each data blob, and the file size at the end."""
+    after each data blob, and the file size at the end. With ``threaded`` (a threaded
+    decode's read) the blocks are decoded without the GIL on threads (see
+    :func:`~pyrosm.engine.ways.node_record_blocks`)."""
     from pyrosm.int64_hash import Int64Set
     from pyrosm.node_lookup import NodeLocations
     from pyrosm.primitive_block_decoder import decode_primitive_block
@@ -216,22 +229,38 @@ def _gather_node_records(filepath, node_ids, keep_metadata, progress=None):
         cols += ["version", "timestamp", "changeset"]
     arrays = {c: [] for c in cols}
     tags = NodeTagsBuilder()
+
+    def python_path(data):
+        st, header, nodes, _, _ = decode_primitive_block(data)
+        return _node_records_by_id(st, header, nodes, wanted, keep_metadata, tags)
+
     with open(filepath, "rb") as f:
         file_size = os.fstat(f.fileno()).st_size
         if progress is not None:
             progress(0, file_size)
-        for blob_type, offset, size in _index_blobs(filepath):
-            if blob_type != "OSMData":
-                continue
-            st, header, nodes, _, _ = decode_primitive_block(
-                _read_block(f, offset, size)
+        if threaded:
+            blocks = node_record_blocks(filepath, wanted, keep_metadata)
+        else:
+            blocks = (
+                (offset + size, _read_block(f, offset, size))
+                for blob_type, offset, size in _index_blobs(filepath)
+                if blob_type == "OSMData"
             )
-            rec = _node_records_by_id(st, header, nodes, wanted, keep_metadata, tags)
+        # ``item``: None (no wanted node), a block's bytes for the Python decoder, or the
+        # wanted nodes' records and tags decoded on threads.
+        for end, item in blocks:
+            if isinstance(item, bytes):
+                rec = python_path(item)
+            elif item is not None:
+                rec, counts, keys, vals, strings = item
+                tags.add_pairs(counts, keys, vals, strings)
+            else:
+                rec = None
             if rec is not None:
                 for c in cols:
                     arrays[c].append(rec[c])
             if progress is not None:
-                progress(offset + size, file_size)
+                progress(end, file_size)
         if progress is not None:
             progress(file_size, file_size)
     frame = {
@@ -369,6 +398,8 @@ def _collect_relation_ways(shard_paths, member_ids, in_box=None):
     """
     if len(member_ids) == 0:
         return None
+    if _is_threaded(shard_paths):
+        return relation_ways(shard_paths, member_ids, in_box)
     found = {}
     inside = None if in_box is None else set(in_box.tolist())
     for path in shard_paths:
@@ -533,6 +564,16 @@ def _result_tag_columns(kept, tags_as_columns, keep_metadata, keep_other_tags=Tr
     return columns
 
 
+def _node_refs(kept, relation_ways):
+    """The node-ref arrays of the kept ways and of the relation member ways."""
+    refs = []
+    if kept is not None:
+        refs.extend(kept["nodes"])
+    if relation_ways is not None:
+        refs.extend(relation_ways["nodes"])
+    return refs
+
+
 def _needed_node_ids(kept, relation_ways):
     """The unique node ids referenced by the kept standalone ways and the relation
     member ways -- the only coordinates the gather has to pull off disk. Returned sorted
@@ -541,11 +582,7 @@ def _needed_node_ids(kept, relation_ways):
     tens of millions of refs a country-scale read produces."""
     import pandas as pd
 
-    refs = []
-    if kept is not None:
-        refs.extend(kept["nodes"])
-    if relation_ways is not None:
-        refs.extend(relation_ways["nodes"])
+    refs = _node_refs(kept, relation_ways)
     if not refs:
         return np.empty(0, np.int64)
     unique = pd.unique(np.concatenate(refs))
@@ -604,5 +641,5 @@ def _collect_layer(
     )
     if kept is None and relations is None and node_features is None:
         return None
-    node_coordinates = _node_lookup(shard_paths, _needed_node_ids(kept, relation_ways))
+    node_coordinates = _coordinates(shard_paths, kept, relation_ways)
     return node_features, kept, relations, relation_ways, node_coordinates

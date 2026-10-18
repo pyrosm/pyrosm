@@ -24,7 +24,6 @@ import shutil
 import tempfile
 import threading
 import warnings
-from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from functools import partial
@@ -64,6 +63,7 @@ from pyrosm.engine.blobs import (
     _read_span,
 )
 from pyrosm._arrays import _offsets_from_lengths
+from pyrosm.engine.pool import _PoolStartError, _ordered_map
 from pyrosm.int64_hash cimport Int64Set, SortedInt64Set, _set_has, kh_i64set_t
 from pyrosm.utils import _file_identity, default_workers
 from pyrosm.utils.progress import reporting, validate_progress
@@ -2356,26 +2356,6 @@ _THREAD_FALLBACK_WARNING = (
     "The threads of the crop or merge could not start, so it ran in one thread instead. "
     "Pass workers=1 to silence this."
 )
-
-
-class _PoolStartError(Exception):
-    """The pool could not start: an ``OSError`` from creating the executor, or an ``OSError``
-    or ``RuntimeError`` from submitting a task (which starts a worker process or thread)."""
-
-
-def _ordered_map(executor, func, items, window):
-    """Yield ``func(item)`` for each of ``items`` in order, run by ``executor`` with at most
-    ``window`` items in flight."""
-    pending = deque()
-    for item in items:
-        if len(pending) >= window:
-            yield pending.popleft().result()
-        try:
-            pending.append(executor.submit(func, item))
-        except (OSError, RuntimeError) as err:
-            raise _PoolStartError(err) from err
-    while pending:
-        yield pending.popleft().result()
 
 
 class _Pool:

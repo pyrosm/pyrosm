@@ -4,13 +4,16 @@ The threaded decode stores each element's tags as ids of strings, not as a dict.
 :class:`ElementStore` gathers those columns from the shards for the candidate ways, and
 :func:`kept_ways` selects the ways a read outputs (the value filter in C, see
 :func:`keep_mask`); :meth:`ElementStore.way_columns` gives the column dict the rest of the
-collect step reads.
+collect step reads. The module also gathers the node coordinates, the relation member
+ways and the network's node records on the read's threads.
 """
 
 import numpy as np
 
 from pyrosm import way_columns as wc
+from pyrosm._arrays import _offsets_from_lengths
 from pyrosm.engine.decode import _merge_shards, _open_shard
+from pyrosm.engine.pool import thread_map
 
 # The shard key of each column of a store of ways, in the store's constructor's order.
 _WAY_KEYS = {
@@ -38,6 +41,15 @@ def _joined_shards(shard_paths, present, keys):
         if len(z[present]):
             parts.append({key: z[key] for key in keys})
     return _merge_shards(parts) if parts else None
+
+
+def _no_nodes():
+    """An empty coordinate store."""
+    from pyrosm.node_lookup import NodeLocations
+
+    return NodeLocations(
+        {"id": np.empty(0, np.int64), "lon": np.empty(0), "lat": np.empty(0)}
+    )
 
 
 class ElementStore:
@@ -227,3 +239,161 @@ def kept_ways(store, exclude_ids, filter_spec, in_box):
     if not mask.any():
         return None
     return store.take(np.flatnonzero(mask))
+
+
+def node_coordinates(shard_paths, refs):
+    """The coordinate store of the nodes ``refs`` (a list of id arrays) refer to, as
+    :func:`~pyrosm.engine.collect._node_lookup` builds it: their ids in ascending order
+    (the coordinates of the last shard holding an id) and coordinates, gathered from the
+    shards on the read's threads."""
+    import pandas as pd
+
+    from pyrosm.int64_hash import Int64Set
+    from pyrosm.node_lookup import NodeLocations
+
+    refs = [r for r in refs if len(r)]
+    if not refs:
+        return _no_nodes()
+    wanted = Int64Set(np.concatenate(refs))
+
+    def gather(shard):
+        z = _open_shard(shard)
+        ids = z["node_id"]
+        if len(ids) == 0:
+            return None
+        mask = wc.in_set(ids, wanted)
+        return ids[mask], z["node_lon"][mask], z["node_lat"][mask]
+
+    parts = [p for p in thread_map(gather, shard_paths) if p is not None]
+    if not parts:
+        return _no_nodes()
+    ids, lon, lat = (np.concatenate(column) for column in zip(*parts))
+    # Sorted by id with each id's last copy, unless the ids already ascend strictly.
+    if len(ids) > 1 and not np.all(ids[1:] > ids[:-1]):
+        order = np.argsort(ids, kind="stable")
+        ids, lon, lat = ids[order], lon[order], lat[order]
+        last = np.append(ids[1:] != ids[:-1], True)
+        ids, lon, lat = ids[last], lon[last], lat[last]
+    return NodeLocations(pd.DataFrame({"id": ids, "lon": lon, "lat": lat}))
+
+
+def relation_ways(shard_paths, member_ids, in_box=None):
+    """The member ways of the kept relations, as
+    :func:`~pyrosm.engine.collect._collect_relation_ways` gives them (the last shard
+    holding a way wins), gathered from a threaded decode's shards on the read's threads,
+    their node refs held in one array."""
+    from pyrosm.int64_hash import Int64Set
+
+    members = Int64Set(member_ids)
+    box = None if in_box is None else Int64Set(in_box)
+
+    def gather(shard):
+        z = _open_shard(shard)
+        ids = z["all_id"]
+        if len(ids) == 0:
+            return None
+        rows = np.flatnonzero(wc.in_set(ids, members))
+        off, refs = wc.take(z["all_refs_off"], z["all_refs"], rows)
+        if box is not None:
+            inside = np.flatnonzero(wc.with_node_in(off, refs, box))
+            rows = rows[inside]
+            off, refs = wc.take(off, refs, inside)
+        return (ids[rows], np.diff(off), refs) if len(rows) else None
+
+    parts = [part for part in thread_map(gather, shard_paths) if part is not None]
+    if not parts:
+        return None
+    ids, counts, refs = (np.concatenate(column) for column in zip(*parts))
+    starts = _offsets_from_lengths(counts)[:-1]
+    # Each id once, ascending, at its last copy.
+    unique, last_reversed = np.unique(ids[::-1], return_index=True)
+    last = len(ids) - 1 - last_reversed
+    nodes = np.empty(len(unique), dtype=object)
+    nodes[:] = [
+        refs[a : a + c] for a, c in zip(starts[last].tolist(), counts[last].tolist())
+    ]
+    return {"id": unique, "nodes": nodes}
+
+
+def node_record_blocks(filepath, wanted, keep_metadata):
+    """The records of the nodes ``wanted`` (an :class:`~pyrosm.int64_hash.Int64Set`) in
+    each data block of ``filepath``, for
+    :func:`~pyrosm.engine.collect._gather_node_records`, decoded without the GIL on the
+    read's threads: yields ``(end, item)`` for each data blob in file order,
+    ``end`` the blob's end in the file and ``item`` None (no wanted node), the block's
+    bytes (for the Python path), or ``(record, counts, keys, vals, strings)``: the
+    arrays of the wanted nodes and their tags, ``counts`` per node as ids of
+    ``strings``."""
+    from pyrosm.engine.blobs import _data_blob_spans, _index_blobs, _read_batches
+    from pyrosm.engine.decode import _THREAD_BATCH, _decoded_parts
+
+    blobs, _ = _data_blob_spans(_index_blobs(filepath))
+
+    def decode(batch):
+        out = []
+        with open(filepath, "rb") as f:
+            for part, buffer, starts in _decoded_parts(f, batch):
+                out.extend(_part_records(part, buffer, starts, wanted, keep_metadata))
+                del buffer, starts
+        return out
+
+    for items in thread_map(decode, _read_batches(blobs, _THREAD_BATCH)):
+        yield from items
+
+
+def _part_records(part, buffer, starts, wanted, keep_metadata):
+    """The ``(end, item)`` of :func:`node_record_blocks` for the blocks of a part."""
+    from pyrosm.primitive_block_decoder import BLOCK_COUNTS, decode_batch_nogil
+
+    decoded = decode_batch_nogil(
+        buffer, starts, keys=[], features=True, way_strings=True, node_ids=wanted
+    )
+    counts = decoded["counts"]
+    status = counts[:, BLOCK_COUNTS.index("status")]
+    # Block b's features are at[b]:at[b + 1]; feature_meta holds version, timestamp,
+    # changeset, visible. The tags are ids of the part's strings, so ``strings`` (decoded
+    # once) serves all its blocks.
+    at = _offsets_from_lengths(counts[:, BLOCK_COUNTS.index("features")])
+    rows, meta = decoded["feature_row"], decoded["feature_meta"]
+    pairs_off = decoded["feature_pairs_off"]
+    strings = None
+    out = []
+    for b, (offset, size, _) in enumerate(part):
+        end = offset + size
+        f0, f1 = at[b], at[b + 1]
+        if status[b]:
+            out.append((end, bytes(buffer[starts[b] : starts[b + 1]])))
+            continue
+        if f0 == f1:
+            out.append((end, None))
+            continue
+        r = rows[f0:f1]
+        record = {
+            "id": decoded["node_id"][r],
+            "lon": decoded["node_lon"][r],
+            "lat": decoded["node_lat"][r],
+            "visible": meta[f0:f1, 3].astype(bool),
+        }
+        if keep_metadata:
+            for c, name in enumerate(("version", "timestamp", "changeset")):
+                record[name] = meta[f0:f1, c].copy()
+        if strings is None:
+            off, data = decoded["string_off"], decoded["string_data"]
+            strings = [
+                data[a:b].tobytes().decode("utf-8", "replace")
+                for a, b in zip(off[:-1].tolist(), off[1:].tolist())
+            ]
+        p0, p1 = pairs_off[f0], pairs_off[f1]
+        out.append(
+            (
+                end,
+                (
+                    record,
+                    np.diff(pairs_off[f0 : f1 + 1]),
+                    decoded["feature_keys"][p0:p1],
+                    decoded["feature_vals"][p0:p1],
+                    strings,
+                ),
+            )
+        )
+    return out
