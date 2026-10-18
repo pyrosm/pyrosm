@@ -5,17 +5,19 @@ A way store (:class:`~pyrosm.engine.ways.ElementStore`) holds the candidate ways
 as flat arrays: ``ids``, the node refs (``refs`` with ``refs_off``), the metadata, and the
 tags as ids into one string buffer (``pair_key`` / ``pair_val`` with ``pairs_off``, the
 strings in ``str_data`` at ``str_off``). The functions here select ways, by the value filter
-of a read and by a bounding box, releasing the GIL for the work.
+of a read and by a bounding box, find the tag columns the ways have, and build those columns
+and the JSON ``tags`` column as Arrow string buffers, releasing the GIL for the work.
 
 The rules are those of the reader's Python path (``engine.collect`` and
-``data_filter.pyx``). A way the rules here do not cover -- a string that is not valid
-UTF-8, a value ``str.strip`` may change beyond ASCII -- is left to that path ("check").
+``data_filter.pyx``). A way the value filter here does not cover -- a string that is not
+valid UTF-8, a value ``str.strip`` may change beyond ASCII -- is left to that path
+("check"), and so are the tag columns of a "special" way (see ``special_ways``).
 """
 
 import numpy as np
 
 from cpython.pyport cimport PY_SSIZE_T_MAX
-from libc.stdint cimport int32_t, int64_t, uint8_t, uint64_t, uintptr_t
+from libc.stdint cimport int32_t, int64_t, uint8_t, uint32_t, uint64_t, uintptr_t
 from libc.string cimport memcmp, memcpy
 from libc.stdlib cimport free, malloc
 
@@ -617,3 +619,453 @@ cdef void _filter_rows(const _Filter* f, pairs_off, pair_key, pair_val, str_off,
     with nogil:
         for i in range(n):
             o[i] = _filter_decision(f, pk, pv, po[r[i]], po[r[i] + 1], so, sd, ok)
+
+
+# --- tag columns and the JSON ``tags`` column -----------------------------------------
+
+
+# JSON strings are escaped as ``rapidjson.dumps`` escapes them, output in ASCII only: ``"``
+# and ``\`` take a backslash; backspace, tab, newline, form feed and carriage return their
+# short escapes (``\b \t \n \f \r``); the other control characters below 0x20 and every
+# non-ASCII character a ``\uXXXX`` escape with uppercase hex digits, a character above
+# U+FFFF two (a UTF-16 surrogate pair).
+
+
+cdef inline Py_ssize_t _utf8_width(uint8_t c) noexcept nogil:
+    """The number of bytes of the UTF-8 character the non-ASCII lead byte ``c`` begins."""
+    return 2 if c < 0xE0 else (3 if c < 0xF0 else 4)
+
+
+cdef Py_ssize_t _escaped_length(const uint8_t* s, Py_ssize_t n) noexcept nogil:
+    """The length of the valid UTF-8 ``s[:n]`` as a JSON string body, escaped as
+    ``rapidjson.dumps`` escapes it (ASCII only), or -1 when it exceeds ``PY_SSIZE_T_MAX``.
+    For bytes that are not valid UTF-8 it is the length ``_write_escaped`` writes."""
+    cdef Py_ssize_t i = 0, length = 0
+    cdef uint8_t c
+    while i < n:
+        if length > PY_SSIZE_T_MAX - 12:
+            return -1
+        c = s[i]
+        if c < 0x80:
+            if (c == c'"' or c == c'\\' or c == c'\b' or c == c'\t' or c == c'\n'
+                    or c == c'\f' or c == c'\r'):
+                length += 2
+            elif c < 0x20:
+                length += 6
+            else:
+                length += 1
+            i += 1
+        else:
+            length += 6 if _utf8_width(c) < 4 else 12
+            i += _utf8_width(c)
+    return length
+
+
+cdef inline uint8_t _hex_digit(uint32_t v) noexcept nogil:
+    """The uppercase hex digit of ``v`` (0-15)."""
+    return <uint8_t>(c'0' + v) if v < 10 else <uint8_t>(c'A' + v - 10)
+
+
+cdef inline Py_ssize_t _write_unicode_escape(uint8_t* out,
+                                             uint32_t unit) noexcept nogil:
+    """Write the escape ``\\uXXXX`` of the UTF-16 code unit ``unit``; returns 6."""
+    out[0] = c'\\'
+    out[1] = c'u'
+    out[2] = _hex_digit((unit >> 12) & 15)
+    out[3] = _hex_digit((unit >> 8) & 15)
+    out[4] = _hex_digit((unit >> 4) & 15)
+    out[5] = _hex_digit(unit & 15)
+    return 6
+
+
+cdef Py_ssize_t _write_escaped(uint8_t* out, const uint8_t* s, Py_ssize_t n) noexcept nogil:
+    """Write the valid UTF-8 ``s[:n]`` escaped (see ``_escaped_length``); returns the
+    length written."""
+    cdef Py_ssize_t i = 0, w = 0, j, width
+    cdef uint8_t c
+    cdef uint32_t cp
+    while i < n:
+        c = s[i]
+        if c < 0x80:
+            if c == c'"' or c == c'\\':
+                out[w] = c'\\'
+                out[w + 1] = c
+                w += 2
+            elif c == c'\b':
+                out[w] = c'\\'
+                out[w + 1] = c'b'
+                w += 2
+            elif c == c'\t':
+                out[w] = c'\\'
+                out[w + 1] = c't'
+                w += 2
+            elif c == c'\n':
+                out[w] = c'\\'
+                out[w + 1] = c'n'
+                w += 2
+            elif c == c'\f':
+                out[w] = c'\\'
+                out[w + 1] = c'f'
+                w += 2
+            elif c == c'\r':
+                out[w] = c'\\'
+                out[w + 1] = c'r'
+                w += 2
+            elif c < 0x20:
+                w += _write_unicode_escape(out + w, c)
+            else:
+                out[w] = c
+                w += 1
+            i += 1
+            continue
+        # A non-ASCII character: its code point from the 2, 3 or 4 bytes its lead byte
+        # names (a byte past ``n``, only in bytes that are not valid UTF-8, read as 0). A
+        # 4-byte character, above U+FFFF, becomes a UTF-16 surrogate pair.
+        width = _utf8_width(c)
+        cp = c & (0x1F if width == 2 else (0x0F if width == 3 else 0x07))
+        for j in range(1, width):
+            cp = (cp << 6) | ((s[i + j] & 0x3F) if i + j < n else 0)
+        i += width
+        if width < 4:
+            w += _write_unicode_escape(out + w, cp)
+        else:
+            cp -= 0x10000
+            w += _write_unicode_escape(out + w, 0xD800 + (cp >> 10))
+            w += _write_unicode_escape(out + w, 0xDC00 + (cp & 0x3FF))
+    return w
+
+
+cdef Py_ssize_t _int_length(int64_t v) noexcept nogil:
+    """The number of characters of ``v`` in decimal (with the minus sign)."""
+    cdef Py_ssize_t n = 1
+    cdef uint64_t u
+    # The magnitude as unsigned, written so that it also holds for the most negative int64
+    # (whose negation does not fit in an int64).
+    if v < 0:
+        n += 1
+        u = <uint64_t>(-(v + 1)) + 1
+    else:
+        u = <uint64_t>v
+    while u >= 10:
+        u //= 10
+        n += 1
+    return n
+
+
+cdef Py_ssize_t _write_int(uint8_t* out, int64_t v) noexcept nogil:
+    """Write ``v`` in decimal; returns the number of characters written."""
+    cdef Py_ssize_t n = _int_length(v), w = n - 1
+    cdef uint64_t u
+    if v < 0:
+        out[0] = c'-'
+        u = <uint64_t>(-(v + 1)) + 1
+    else:
+        u = <uint64_t>v
+    # The digits from the last one back.
+    while True:
+        out[w] = <uint8_t>(c'0' + u % 10)
+        u //= 10
+        w -= 1
+        if u == 0:
+            break
+    return n
+
+
+cdef Py_ssize_t _write_text(uint8_t* out, const char* text) noexcept nogil:
+    """Write the NUL-terminated ``text``; returns its length."""
+    cdef Py_ssize_t n = 0
+    while text[n] != 0:
+        out[n] = <uint8_t>text[n]
+        n += 1
+    return n
+
+
+cdef struct _Chunk:
+    const int64_t* rows                # the store rows of the chunk
+    Py_ssize_t n
+    const int64_t* pairs_off
+    const int64_t* pair_key
+    const int64_t* pair_val
+    const int64_t* str_off
+    const uint8_t* str_data
+    const int32_t* column              # a string's column as a key (see string_columns)
+    const int32_t* out_column          # a column's position among the output columns
+    const uint8_t* special             # per row: the caller fills its tag columns and JSON
+    const int64_t* version
+    const int64_t* timestamp
+    const int64_t* visible
+    Py_ssize_t n_out
+    bint json_version, json_timestamp, json_visible
+
+
+cdef list _point_at_tag_arrays(_Chunk* ch, rows, pairs_off, pair_key, pair_val, str_off,
+                               str_data, valid, column, out_column, Py_ssize_t n_out,
+                               special, version, timestamp, visible, bint json_version,
+                               bint json_timestamp, bint json_visible):
+    """Point ``ch``'s row and tag fields at the arrays, made contiguous; returns them, for
+    the caller to keep while it uses ``ch``. Raises ``ValueError`` unless the arrays fit
+    together and the tags of the rows that are not special are valid UTF-8."""
+    arrays = [
+        _contiguous(rows, np.int64),
+        _contiguous(pairs_off, np.int64),
+        _contiguous(pair_key, np.int64),
+        _contiguous(pair_val, np.int64),
+        _contiguous(str_off, np.int64),
+        _contiguous(str_data, np.uint8),
+        _contiguous(valid, np.uint8),
+        _contiguous(column, np.int32),
+        _contiguous(out_column, np.int32),
+        _contiguous(special, np.uint8),
+        _contiguous(version, np.int64),
+        _contiguous(timestamp, np.int64),
+        _contiguous(visible, np.int64),
+    ]
+    (rows, pairs_off, pair_key, pair_val, str_off, str_data, valid, column, out_column,
+     special, version, timestamp, visible) = arrays
+    _check_store(pairs_off, pair_key, pair_val, str_off, str_data, rows)
+    n_strings = str_off.shape[0] - 1
+    n_ways = pairs_off.shape[0] - 1
+    if valid.shape[0] != n_strings or column.shape[0] != n_strings:
+        raise ValueError("valid and column must have one entry per string")
+    if column.shape[0] and column.max() >= out_column.shape[0]:
+        raise ValueError("a column index must be a position of out_column")
+    if n_out < 0 or (out_column.shape[0] and out_column.max() >= n_out):
+        raise ValueError("an output position must be below n_out")
+    if special.shape[0] != rows.shape[0]:
+        raise ValueError("special must have one entry per row")
+    if any(a.shape[0] != n_ways for a in (version, timestamp, visible)):
+        raise ValueError("the metadata must have one entry per way")
+    ch.rows = _int64_ptr(rows)
+    ch.n = rows.shape[0]
+    ch.pairs_off = _int64_ptr(pairs_off)
+    ch.pair_key = _int64_ptr(pair_key)
+    ch.pair_val = _int64_ptr(pair_val)
+    ch.str_off = _int64_ptr(str_off)
+    ch.str_data = _uint8_ptr(str_data)
+    ch.column = <int32_t*><uintptr_t>column.ctypes.data
+    ch.out_column = <int32_t*><uintptr_t>out_column.ctypes.data
+    ch.special = _uint8_ptr(special)
+    ch.version = _int64_ptr(version)
+    ch.timestamp = _int64_ptr(timestamp)
+    ch.visible = _int64_ptr(visible)
+    ch.n_out = n_out
+    ch.json_version = json_version
+    ch.json_timestamp = json_timestamp
+    ch.json_visible = json_visible
+    cdef const uint8_t* ok = _uint8_ptr(valid)
+    cdef Py_ssize_t i, p, w
+    cdef bint invalid = False
+    with nogil:
+        for i in range(ch.n):
+            if ch.special[i]:
+                continue
+            w = ch.rows[i]
+            for p in range(ch.pairs_off[w], ch.pairs_off[w + 1]):
+                if not ok[ch.pair_key[p]] or not ok[ch.pair_val[p]]:
+                    invalid = True
+                    break
+            if invalid:
+                break
+    if invalid:
+        raise ValueError("the tags of a row that is not special must be valid UTF-8")
+    return arrays
+
+
+def tag_columns(rows, pairs_off, pair_key, pair_val, str_off, str_data, valid, column,
+                out_column, Py_ssize_t n_out, special, version, timestamp, visible,
+                bint json, bint json_version, bint json_timestamp, bint json_visible):
+    """The tag columns and the JSON ``tags`` column of the ways ``rows`` of a store.
+
+    ``valid`` and ``column`` give each string's validity and column as a key
+    (``string_columns``), ``out_column`` each column's position among the ``n_out`` output
+    tag columns (-1 when not output). The rows marked ``special`` (one entry per row) get no
+    tag values or JSON here: the caller fills them in. ``json`` builds the JSON ``tags``
+    column, with the metadata the ``json_*`` flags name first (from ``version``,
+    ``timestamp`` and ``visible``, one entry per way of the store).
+
+    Returns a dict: ``columns`` (per output tag column ``(offsets, data, valid)``, an Arrow
+    string column of the rows) and ``json`` (the same for the JSON column, or None)."""
+    cdef _Chunk ch
+    arrays = _point_at_tag_arrays(&ch, rows, pairs_off, pair_key, pair_val, str_off,
+                                  str_data, valid, column, out_column, n_out, special,
+                                  version, timestamp, visible, json_version,
+                                  json_timestamp, json_visible)
+    kept = np.arange(ch.n, dtype=np.int64)
+    return {
+        "columns": _tag_columns(&ch, kept),
+        "json": _json_column(&ch, kept) if json else None,
+    }
+
+
+cdef list _tag_columns(const _Chunk* ch, kept):
+    """``(offsets, data, valid)`` of each output tag column for the rows ``kept`` (positions
+    in the chunk's rows)."""
+    cdef Py_ssize_t n = kept.shape[0], i, w, p, c, n_out = ch.n_out, length
+    cdef int64_t* kp = _int64_ptr(kept)
+    sizes = np.zeros(max(n_out, 1), dtype=np.int64)
+    cdef int64_t* sz = _int64_ptr(sizes)
+    cdef int col
+    cdef int64_t v
+    cdef bint too_long = False
+    # Two passes: the bytes of each output column, then the values copied in. A column
+    # is an Arrow string column: ``offsets`` per row, the values back to back, ``valid``.
+    with nogil:
+        for i in range(n):
+            if ch.special[kp[i]]:
+                continue
+            w = ch.rows[kp[i]]
+            for p in range(ch.pairs_off[w], ch.pairs_off[w + 1]):
+                col = ch.column[ch.pair_key[p]]
+                if col >= 0 and ch.out_column[col] >= 0:
+                    c = ch.out_column[col]
+                    v = ch.pair_val[p]
+                    length = ch.str_off[v + 1] - ch.str_off[v]
+                    if length > PY_SSIZE_T_MAX - sz[c]:
+                        too_long = True
+                        break
+                    sz[c] += length
+            if too_long:
+                break
+    if too_long:
+        raise OverflowError("a tag column holds more bytes than an array can")
+    offsets = np.zeros((max(n_out, 1), n + 1), dtype=np.int64)
+    valid = np.zeros((max(n_out, 1), n), dtype=np.uint8)
+    datas = [np.empty(max(sizes[c], 1), dtype=np.uint8) for c in range(n_out)]
+    pointers = np.array([d.ctypes.data for d in datas] or [0], dtype=np.uint64)
+    cdef uint64_t* ptr = <uint64_t*><uintptr_t>pointers.ctypes.data
+    cdef int64_t* off = _int64_ptr(offsets)
+    cdef uint8_t* ok = _uint8_ptr(valid)
+    used = np.zeros(max(n_out, 1), dtype=np.int64)
+    cdef int64_t* u = _int64_ptr(used)
+    with nogil:
+        for i in range(n):
+            w = ch.rows[kp[i]]
+            if not ch.special[kp[i]]:
+                for p in range(ch.pairs_off[w], ch.pairs_off[w + 1]):
+                    col = ch.column[ch.pair_key[p]]
+                    if col >= 0 and ch.out_column[col] >= 0:
+                        c = ch.out_column[col]
+                        v = ch.pair_val[p]
+                        length = ch.str_off[v + 1] - ch.str_off[v]
+                        memcpy(<uint8_t*><uintptr_t>ptr[c] + u[c],
+                               ch.str_data + ch.str_off[v], length)
+                        u[c] += length
+                        ok[c * n + i] = 1
+            for c in range(n_out):
+                off[c * (n + 1) + i + 1] = u[c]
+    return [(offsets[c], datas[c][: sizes[c]], valid[c]) for c in range(n_out)]
+
+
+cdef tuple _json_column(const _Chunk* ch, kept):
+    """``(offsets, data, valid)`` of the JSON ``tags`` column for the rows ``kept``: the
+    metadata the chunk puts there, then the tags that route to no output column."""
+    cdef Py_ssize_t n = kept.shape[0], i, w, p, size = 0, length, entries
+    cdef Py_ssize_t key_len, val_len
+    cdef int64_t* kp = _int64_ptr(kept)
+    cdef int col
+    cdef int64_t k, v
+    cdef bint too_long = False
+    lengths = np.zeros(n, dtype=np.int64)
+    cdef int64_t* ln = _int64_ptr(lengths)
+    # Two passes, as in ``_tag_columns``. The lengths: ``"version":`` and ``"visible":``
+    # are 10 characters and ``"timestamp":`` 12, ``true``/``false`` 4/5; a tag adds its
+    # escaped key and value with 5 characters (``"`` ``":"`` ``"``); the braces and the
+    # commas between the entries add ``1 + entries``. A row without entries has no JSON.
+    with nogil:
+        for i in range(n):
+            if ch.special[kp[i]]:
+                continue
+            w = ch.rows[kp[i]]
+            length = 0
+            entries = 0
+            if ch.json_version:
+                length += 10 + _int_length(ch.version[w])
+                entries += 1
+            if ch.json_timestamp:
+                length += 12 + _int_length(ch.timestamp[w])
+                entries += 1
+            if ch.json_visible:
+                length += 10 + (4 if ch.visible[w] else 5)
+                entries += 1
+            for p in range(ch.pairs_off[w], ch.pairs_off[w + 1]):
+                k = ch.pair_key[p]
+                col = ch.column[k]
+                if col >= 0 and ch.out_column[col] >= 0:
+                    continue
+                v = ch.pair_val[p]
+                key_len = _escaped_length(ch.str_data + ch.str_off[k],
+                                          ch.str_off[k + 1] - ch.str_off[k])
+                val_len = _escaped_length(ch.str_data + ch.str_off[v],
+                                          ch.str_off[v + 1] - ch.str_off[v])
+                if (key_len < 0 or val_len < 0 or key_len > PY_SSIZE_T_MAX - 5 - val_len
+                        or 5 + key_len + val_len > PY_SSIZE_T_MAX - length):
+                    too_long = True
+                    break
+                length += 5 + key_len + val_len
+                entries += 1
+            if too_long or (entries and length > PY_SSIZE_T_MAX - 1 - entries - size):
+                too_long = True
+                break
+            if entries:
+                ln[i] = length + 1 + entries
+            size += ln[i]
+    if too_long:
+        raise OverflowError("the JSON column holds more bytes than an array can")
+    offsets = np.zeros(n + 1, dtype=np.int64)
+    np.cumsum(lengths, out=offsets[1:])
+    data = np.empty(max(size, 1), dtype=np.uint8)
+    cdef uint8_t* d = _uint8_ptr(data)
+    cdef int64_t* off = _int64_ptr(offsets)
+    cdef uint8_t* out
+    cdef bint comma
+    with nogil:
+        for i in range(n):
+            if ln[i] == 0:
+                continue
+            w = ch.rows[kp[i]]
+            out = d + off[i]
+            out[0] = c'{'
+            length = 1
+            comma = False
+            if ch.json_version:
+                length += _write_text(out + length, "\"version\":")
+                length += _write_int(out + length, ch.version[w])
+                comma = True
+            if ch.json_timestamp:
+                if comma:
+                    out[length] = c','
+                    length += 1
+                length += _write_text(out + length, "\"timestamp\":")
+                length += _write_int(out + length, ch.timestamp[w])
+                comma = True
+            if ch.json_visible:
+                if comma:
+                    out[length] = c','
+                    length += 1
+                length += _write_text(out + length, "\"visible\":")
+                length += _write_text(out + length, "true" if ch.visible[w] else "false")
+                comma = True
+            for p in range(ch.pairs_off[w], ch.pairs_off[w + 1]):
+                k = ch.pair_key[p]
+                col = ch.column[k]
+                if col >= 0 and ch.out_column[col] >= 0:
+                    continue
+                v = ch.pair_val[p]
+                if comma:
+                    out[length] = c','
+                    length += 1
+                out[length] = c'"'
+                length += 1
+                length += _write_escaped(out + length, ch.str_data + ch.str_off[k],
+                                         ch.str_off[k + 1] - ch.str_off[k])
+                out[length] = c'"'
+                out[length + 1] = c':'
+                out[length + 2] = c'"'
+                length += 3
+                length += _write_escaped(out + length, ch.str_data + ch.str_off[v],
+                                         ch.str_off[v + 1] - ch.str_off[v])
+                out[length] = c'"'
+                length += 1
+                comma = True
+            out[length] = c'}'
+    return offsets, data[:size], (lengths > 0).astype(np.uint8)
