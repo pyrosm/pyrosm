@@ -232,8 +232,7 @@ def geom_pyrosm_out_of_core(pbf, key="building"):
 
     OSM.clear_cache(pbf)  # measure parsing, not a cache hit
     gdf = OSM(pbf, engine="out_of_core", workers="auto").get_data_by_custom_criteria(
-        {key: True}, keep_other_tags=False, filter_type="keep", tags_as_columns=[key],
-        keep_nodes=False, keep_relations=False)
+        {key: True}, keep_other_tags=False, filter_type="keep", tags_as_columns=[key])
     keep = [c for c in (key, "geometry") if c in gdf.columns]
     return gdf[keep]
 

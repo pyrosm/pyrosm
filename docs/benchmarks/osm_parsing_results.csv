@@ -1,82 +1,82 @@
 task,area,tool,seconds,peak_mb,features,status
-buildings,Kamppi,pyrosm (in-memory),0.81,126.1,684.0,ok
-buildings,Kamppi,pyrosm (out-of-core),0.84,126.8,684.0,ok
+buildings,Kamppi,pyrosm (in-memory),0.8,122.1,684.0,ok
+buildings,Kamppi,pyrosm (out-of-core),0.79,128.2,684.0,ok
 buildings,Kamppi,quackosm (with columns),10.35,290.8,682.0,ok
 buildings,Kamppi,quackosm (no columns),9.99,291.0,682.0,ok
 buildings,Kamppi,pyosmium,0.58,90.0,682.0,ok
 buildings,Kamppi,osmium-tool,0.68,663.5,638.0,ok
-buildings,Helsinki region,pyrosm (in-memory),2.52,1034.0,187421.0,ok
-buildings,Helsinki region,pyrosm (out-of-core),3.02,627.9,187421.0,ok
+buildings,Helsinki region,pyrosm (in-memory),2.41,1039.9,187418.0,ok
+buildings,Helsinki region,pyrosm (out-of-core),2.41,560.6,187418.0,ok
 buildings,Helsinki region,quackosm (with columns),18.48,4597.1,187452.0,ok
 buildings,Helsinki region,quackosm (no columns),12.71,1054.7,187452.0,ok
 buildings,Helsinki region,pyosmium,13.79,3142.8,187452.0,ok
 buildings,Helsinki region,osmium-tool,10.47,2969.4,186971.0,ok
-buildings,New York City,pyrosm (in-memory),10.17,5555.2,1602597.0,ok
-buildings,New York City,pyrosm (out-of-core),11.7,2231.3,1602597.0,ok
+buildings,New York City,pyrosm (in-memory),10.88,5864.0,1602538.0,ok
+buildings,New York City,pyrosm (out-of-core),4.23,2300.8,1602538.0,ok
 buildings,New York City,quackosm (with columns),77.53,24011.5,1602652.0,ok
 buildings,New York City,quackosm (no columns),21.75,3375.6,1602652.0,ok
 buildings,New York City,pyosmium,,18387.9,,timeout
 buildings,New York City,osmium-tool,102.94,30632.7,1600058.0,ok
-buildings,Paris,pyrosm (in-memory),12.55,6500.9,1888463.0,ok
-buildings,Paris,pyrosm (out-of-core),14.2,2899.4,1888463.0,ok
+buildings,Paris,pyrosm (in-memory),13.21,6742.2,1888405.0,ok
+buildings,Paris,pyrosm (out-of-core),5.05,3024.4,1888405.0,ok
 buildings,Paris,quackosm (with columns),120.88,35739.8,1888696.0,ok
 buildings,Paris,quackosm (no columns),24.09,5586.8,1888696.0,ok
 buildings,Paris,pyosmium,,26515.2,,timeout
 buildings,Paris,osmium-tool,146.34,44424.3,1873130.0,ok
-buildings,Finland,pyrosm (in-memory),38.46,17833.9,4379257.0,ok
-buildings,Finland,pyrosm (out-of-core),29.04,5654.3,4379257.0,ok
+buildings,Finland,pyrosm (in-memory),37.86,17881.7,4379225.0,ok
+buildings,Finland,pyrosm (out-of-core),9.65,5138.5,4379225.0,ok
 buildings,Finland,quackosm (with columns),438.96,103273.7,4379400.0,ok
 buildings,Finland,quackosm (no columns),41.46,5958.5,4379400.0,ok
 buildings,Finland,osmium-tool,,121573.7,,OOM/crash (exit -9)
-buildings,Spain,pyrosm (out-of-core),55.64,9432.2,5731551.0,ok
+buildings,Spain,pyrosm (out-of-core),22.5,7877.2,5730804.0,ok
 buildings,Spain,quackosm (with columns),,147705.3,,OOM/crash (exit -9)
 buildings,Spain,quackosm (no columns),66.2,19742.2,5735125.0,ok
-roads,Kamppi,pyrosm (in-memory),0.81,124.3,4800.0,ok
-roads,Kamppi,pyrosm (out-of-core),0.85,131.4,4800.0,ok
+roads,Kamppi,pyrosm (in-memory),0.81,126.2,4800.0,ok
+roads,Kamppi,pyrosm (out-of-core),0.83,136.3,4800.0,ok
 roads,Kamppi,quackosm (with columns),10.96,340.6,4794.0,ok
 roads,Kamppi,quackosm (no columns),10.02,291.1,4794.0,ok
 roads,Kamppi,pyosmium,0.66,119.2,4854.0,ok
 roads,Kamppi,osmium-tool,0.8,1149.1,4800.0,ok
-roads,Helsinki region,pyrosm (in-memory),2.67,1119.6,305327.0,ok
-roads,Helsinki region,pyrosm (out-of-core),3.26,659.2,305327.0,ok
+roads,Helsinki region,pyrosm (in-memory),2.58,1131.7,305327.0,ok
+roads,Helsinki region,pyrosm (out-of-core),2.47,646.0,305327.0,ok
 roads,Helsinki region,quackosm (with columns),57.5,12153.0,305060.0,ok
 roads,Helsinki region,quackosm (no columns),13.01,1044.3,305060.0,ok
 roads,Helsinki region,pyosmium,62.24,10144.0,308683.0,ok
 roads,Helsinki region,osmium-tool,29.98,9791.7,305327.0,ok
-roads,New York City,pyrosm (in-memory),5.85,2939.1,674870.0,ok
-roads,New York City,pyrosm (out-of-core),5.62,1047.2,674870.0,ok
+roads,New York City,pyrosm (in-memory),5.34,2921.0,674870.0,ok
+roads,New York City,pyrosm (out-of-core),2.7,1032.4,674870.0,ok
 roads,New York City,quackosm (with columns),43.44,12255.0,674641.0,ok
 roads,New York City,quackosm (no columns),16.19,1872.4,674641.0,ok
 roads,New York City,pyosmium,64.27,10693.2,677387.0,ok
 roads,New York City,osmium-tool,34.86,10322.6,674870.0,ok
-roads,Paris,pyrosm (in-memory),6.51,3303.2,639950.0,ok
-roads,Paris,pyrosm (out-of-core),5.73,1062.6,639950.0,ok
+roads,Paris,pyrosm (in-memory),5.82,3249.9,639950.0,ok
+roads,Paris,pyrosm (out-of-core),2.92,1005.5,639950.0,ok
 roads,Paris,quackosm (with columns),69.02,18457.5,637311.0,ok
 roads,Paris,quackosm (no columns),17.69,1911.4,637311.0,ok
 roads,Paris,pyosmium,85.87,14205.2,649388.0,ok
 roads,Paris,osmium-tool,44.73,13673.9,639950.0,ok
-roads,Finland,pyrosm (in-memory),25.27,14588.1,2225136.0,ok
-roads,Finland,pyrosm (out-of-core),17.86,3996.1,2225136.0,ok
+roads,Finland,pyrosm (in-memory),24.39,14713.0,2225136.0,ok
+roads,Finland,pyrosm (out-of-core),7.48,3661.4,2225136.0,ok
 roads,Finland,quackosm (with columns),660.51,110100.2,2223189.0,ok
 roads,Finland,quackosm (no columns),35.81,15815.1,2223189.0,ok
 roads,Finland,pyosmium,,57483.5,,timeout
 roads,Finland,osmium-tool,357.69,102908.9,2225136.0,ok
-roads,Spain,pyrosm (out-of-core),51.33,12025.9,5816779.0,ok
+roads,Spain,pyrosm (out-of-core),20.86,10598.4,5816779.0,ok
 roads,Spain,quackosm (with columns),,148696.0,,OOM/crash (exit -9)
 roads,Spain,quackosm (no columns),101.06,22058.0,5788516.0,ok
-buildings (geometry + key),Kamppi,pyrosm (out-of-core),0.82,122.8,638.0,ok
+buildings (geometry + key),Kamppi,pyrosm (out-of-core),0.82,126.2,684.0,ok
 buildings (geometry + key),Kamppi,quackosm,10.35,295.2,682.0,ok
-buildings (geometry + key),Helsinki region,pyrosm (out-of-core),2.4,545.0,186971.0,ok
+buildings (geometry + key),Helsinki region,pyrosm (out-of-core),2.12,499.9,187418.0,ok
 buildings (geometry + key),Helsinki region,quackosm,13.29,1043.8,187452.0,ok
-buildings (geometry + key),New York City,pyrosm (out-of-core),8.62,1799.3,1600059.0,ok
+buildings (geometry + key),New York City,pyrosm (out-of-core),3.52,1869.4,1602538.0,ok
 buildings (geometry + key),New York City,quackosm,21.4,3374.1,1602652.0,ok
-buildings (geometry + key),Paris,pyrosm (out-of-core),10.26,2236.9,1873130.0,ok
+buildings (geometry + key),Paris,pyrosm (out-of-core),4.43,2450.7,1888405.0,ok
 buildings (geometry + key),Paris,quackosm,24.52,5596.7,1888696.0,ok
-buildings (geometry + key),Finland,pyrosm (out-of-core),20.8,4719.0,4378123.0,ok
+buildings (geometry + key),Finland,pyrosm (out-of-core),8.05,4348.3,4379225.0,ok
 buildings (geometry + key),Finland,quackosm,41.7,5969.7,4379400.0,ok
-buildings (geometry + key),Spain,pyrosm (out-of-core),32.89,7044.8,5615393.0,ok
+buildings (geometry + key),Spain,pyrosm (out-of-core),20.54,6889.3,5730804.0,ok
 buildings (geometry + key),Spain,quackosm,66.14,19760.6,5735125.0,ok
-buildings (geometry + key),South America,pyrosm (out-of-core),150.05,26179.1,25522557.0,ok
+buildings (geometry + key),South America,pyrosm (out-of-core),69.81,24986.1,25614984.0,ok
 buildings (geometry + key),South America,quackosm,341.8,25736.2,25618595.0,ok
 buildings,New York City,osmnx,,,,error: Overpass API overloaded (timeouts)
 buildings,Paris,osmnx,,,,error: Overpass API overloaded (timeouts)
