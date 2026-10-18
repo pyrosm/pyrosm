@@ -14,7 +14,12 @@ from rapidjson import dumps
 from pyrosm._arrays import columns_to_arrays
 from pyrosm.tagparser import explode_node_tag_array
 from pyrosm.data_filter import element_should_be_kept
-from pyrosm.engine.decode import _object_array, _open_shard, _shard_tags
+from pyrosm.engine.decode import (
+    _is_threaded,
+    _object_array,
+    _open_shard,
+    _shard_tags,
+)
 from pyrosm.engine.bounding_box import _in_box_nodes
 
 # Relation.MemberType -> the byte labels pyrosm's relation assembly expects.
@@ -283,7 +288,14 @@ def _keep_fn(filter_spec):
 def _collect_kept_ways(shard_paths, exclude_ids, keep, in_box=None):
     """The standalone way columns to output: read the spilled candidates and refine them by
     the value filter, the bounding box, and the relation-member exclusion (see
-    :func:`_filter_way_columns`). ``None`` if nothing survives."""
+    :func:`_filter_way_columns`). ``None`` if nothing survives. The ways of a threaded
+    decode are selected in its :class:`~pyrosm.engine.ways.ElementStore`."""
+    if _is_threaded(shard_paths):
+        from pyrosm.engine.ways import ElementStore, kept_ways
+
+        store = ElementStore.from_shards(shard_paths)
+        kept = kept_ways(store, exclude_ids, keep, in_box)
+        return None if kept is None else kept.way_columns()
     return _filter_way_columns(
         _read_way_columns(shard_paths), exclude_ids, keep, in_box
     )
