@@ -1432,6 +1432,7 @@ def _crafted_relations(members):
         "version": np.ones(len(members), dtype=np.int64),
         "timestamp": np.ones(len(members), dtype=np.int64),
         "changeset": np.ones(len(members), dtype=np.int64),
+        "visible": np.ones(len(members), dtype=bool),
     }
     for i, ids in enumerate(members):
         relations["members"][i] = {
@@ -1750,7 +1751,7 @@ def _write_shard(path, **overrides):
         rel_memtype=np.empty(0, np.int64),
         rel_memrole=np.empty(0, object),
         rel_tags=np.empty(0, object),
-        rel_meta=np.empty((0, 3), np.int64),
+        rel_meta=np.empty((0, 4), np.int64),
     )
     arrays.update(overrides)
     np.savez(path, **arrays)
@@ -3291,6 +3292,7 @@ def test_block_tags_share_one_decoded_string_table():
         "types": np.array([1]),
         "roles": np.array([5]),
         "changeset": np.array([0]),
+        "visible": np.array([1]),
         **meta,
     }
     header = {"granularity": 100, "lat_offset": 0, "lon_offset": 0}

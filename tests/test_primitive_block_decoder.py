@@ -201,14 +201,14 @@ def _ref_plain_nodes(plain):
 
 
 def _ref_join(groups, key):
-    """Concatenate ``key`` over the node groups, a 0 per node for a group without it
-    when another group has it."""
+    """Concatenate ``key`` over the node groups, a 0 per node (a 1 for ``visible``) for a
+    group without it when another group has it."""
     have = [len(g[key]) > 0 for g in groups]
     if all(have) or not any(have):
         return np.concatenate([g[key] for g in groups])
     return np.concatenate(
         [
-            g[key] if h else np.zeros(len(g["id"]), np.int64)
+            g[key] if h else np.full(len(g["id"]), int(key == "visible"), np.int64)
             for g, h in zip(groups, have)
         ]
     )
@@ -224,7 +224,8 @@ def _ref_info(acc, info):
     acc["changeset"].append(info.changeset)
     acc["uid"].append(info.uid)
     acc["user_sid"].append(info.user_sid)
-    acc["visible"].append(int(info.visible))
+    # A missing visible flag reads as 1, as the PBF format reads it.
+    acc["visible"].append(int(info.visible) if info.HasField("visible") else 1)
 
 
 def _ref_build(acc, members, memn, keep_metadata):
@@ -316,6 +317,7 @@ def test_node_groups_keep_each_nodes_own_values():
     tagged.keys_vals.extend([1, 2, 0, 0])
     tagged.denseinfo.version.extend([3, 4])
     tagged.denseinfo.timestamp.extend([100, 1])
+    tagged.denseinfo.visible.extend([False, True])
     untagged = pb.primitivegroup.add().dense
     untagged.id.extend([3, 1])
     untagged.lat.extend([30, 1])
@@ -336,6 +338,8 @@ def test_node_groups_keep_each_nodes_own_values():
     assert nodes["keys_vals"].tolist() == [1, 2, 0, 0, 0, 0, 3, 4, 0, 0]
     assert nodes["version"].tolist() == [3, 4, 0, 0, 2, -1]
     assert nodes["timestamp"].tolist() == [100, 101, 0, 0, 500, 0]
+    # A node without the flag is visible, as the PBF format reads it.
+    assert nodes["visible"].tolist() == [0, 1, 1, 1, 1, 1]
 
 
 def _all_nodes(fp):
@@ -446,7 +450,11 @@ def _expected_dense(block, keys, bbox):
     xmin, ymin, xmax, ymax = bbox
     wanted = None if keys is None else {table.index(k) for k in keys if k in table}
     meta = [
-        nodes[name] if len(nodes[name]) else np.zeros(len(nodes["id"]), dtype=np.int64)
+        (
+            nodes[name]
+            if len(nodes[name])
+            else np.full(len(nodes["id"]), int(name == "visible"), dtype=np.int64)
+        )
         for name in _DENSE_META
     ]
     rows, pairs, feature_meta = [], [], []
@@ -698,7 +706,7 @@ def test_decode_batch_nogil_empty_buffer():
 def test_decode_batch_nogil_selects_nodes_by_id(case, block, tags):
     """With node_ids a dense node whose id is in the set is a node feature, tagged or
     not, with its tags (here node 2's amenity=cafe, string ids 1 and 2) and its metadata
-    (0 without DenseInfo)."""
+    (without DenseInfo 0, and 1 for visible)."""
     from pyrosm.int64_hash import Int64Set
     from pyrosm.primitive_block_decoder import decode_batch_nogil
 
@@ -716,7 +724,7 @@ def test_decode_batch_nogil_selects_nodes_by_id(case, block, tags):
     assert np.diff(out["feature_pairs_off"]).tolist() == tags
     pairs = list(zip(out["feature_keys"].tolist(), out["feature_vals"].tolist()))
     assert pairs == ([(1, 2)] if sum(tags) else [])
-    assert out["feature_meta"].tolist() == [[0, 0, 0, 0]] * 2
+    assert out["feature_meta"].tolist() == [[0, 0, 0, 1]] * 2
 
 
 def test_decode_batch_nogil_corrupt_blocks(test_pbf, corrupted_copies):

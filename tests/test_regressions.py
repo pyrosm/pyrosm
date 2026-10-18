@@ -2971,3 +2971,70 @@ def test_lone_surrogate_keys_read_out_of_core(monkeypatch, fresh_cache, backend)
     osm = OSM(fp, engine="out_of_core", workers=1)
     with pytest.warns(UserWarning, match="Could not find any OSM data"):
         assert osm.get_data_by_custom_criteria(custom_filter={key: True}) is None
+
+
+@pytest.mark.parametrize(
+    "engine, backend",
+    [("in_memory", None), ("out_of_core", "threads"), ("out_of_core", "processes")],
+    ids=["in_memory", "threads", "processes"],
+)
+def test_missing_visible_flag_reads_as_visible(
+    tmp_path, monkeypatch, fresh_cache, engine, backend
+):
+    """An element whose metadata has no ``visible`` flag, as every element of a file that
+    is not a history file, is visible, as the PBF format reads it: nodes, ways and
+    relations alike."""
+    osmium = pytest.importorskip("osmium")
+    from osmium.osm.mutable import Node, Relation, Way
+    from pyrosm import OSM
+
+    path = str(tmp_path / "no_visible_flags.osm.pbf")
+    with osmium.SimpleWriter(path) as writer:
+        writer.add_node(Node(id=100, location=(25.01, 60), tags={"amenity": "cafe"}))
+        for k, (dx, dy) in enumerate([(0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)]):
+            writer.add_node(Node(id=k + 1, location=(25 + dx, 60 + dy)))
+        writer.add_way(Way(id=10, nodes=[1, 2, 3, 4, 1], tags={"building": "yes"}))
+        writer.add_way(Way(id=11, nodes=[1, 2, 3, 4, 1], tags={}))
+        writer.add_relation(
+            Relation(
+                id=200,
+                members=[("w", 11, "outer")],
+                tags={"type": "multipolygon", "building": "yes"},
+            )
+        )
+    if backend is not None:
+        monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    osm = OSM(path, engine=engine, workers=1)
+
+    pois = osm.get_pois(custom_filter={"amenity": True})
+    assert pois["visible"].tolist() == [True]
+    buildings = osm.get_buildings().set_index("osm_type")
+    assert buildings["visible"].to_dict() == {"way": True, "relation": True}
+
+
+def test_block_decoders_read_the_visible_flag():
+    """Both block decoders read a way's ``visible`` flag as it is written, and as 1 when
+    its Info has no flag or the way has no Info."""
+    import numpy as np
+
+    from pyrosm.primitive_block_decoder import decode_batch_nogil, decode_primitive_block
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    block = PrimitiveBlock()
+    block.stringtable.s.extend([b"", b"building", b"yes"])
+    ways = block.primitivegroup.add().ways
+    for way_id in (1, 2, 3, 4):
+        way = ways.add(id=way_id, keys=[1], vals=[2], refs=[1, 1])
+        if way_id < 3:
+            way.info.visible = way_id == 2
+        elif way_id == 3:
+            way.info.version = 1
+    data = block.SerializeToString()
+    _, _, _, decoded, _ = decode_primitive_block(np.frombuffer(data, dtype=np.uint8))
+    assert decoded["visible"].tolist() == [0, 1, 1, 1]
+    out = decode_batch_nogil(
+        np.frombuffer(data, dtype=np.uint8),
+        np.array([0, len(data)], dtype=np.int64),
+        keys=None,
+    )
+    assert out["way_meta"][:, 2].tolist() == [0, 1, 1, 1]

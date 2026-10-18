@@ -219,6 +219,8 @@ cpdef list relation_records(relations, relation_ways, node_coordinates,
             relation["version"] = rel["version"][0]
             relation["changeset"] = rel["changeset"][0]
             relation["timestamp"] = rel["timestamp"][0]
+        # Like a way's, kept also without the metadata.
+        relation["visible"] = bool(rel["visible"][0])
 
         # Add tags; one keyed "id" as "id_tag", so the relation keeps its id.
         for k, v in rel["tags"][0].items():

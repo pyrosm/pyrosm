@@ -213,22 +213,26 @@ def _matching_nodes(
         return None
     idx = np.array(idx, dtype=np.int64)
 
-    # DenseInfo metadata is optional; when a field is absent the decoder returns an empty
-    # array, so default it like the in-memory parse (visible -> False, the rest -> 0).
-    def meta(name):
-        arr = nodes[name]
-        return arr[idx] if len(arr) == len(ids) else np.zeros(len(idx), dtype=np.int64)
-
     return {
         "id": ids[idx],
         "lon": node_lon[idx],
         "lat": node_lat[idx],
         "tags": tags,
-        "version": meta("version"),
-        "timestamp": meta("timestamp"),
-        "changeset": meta("changeset"),
-        "visible": meta("visible"),
+        "version": _dense_meta(nodes, "version", idx),
+        "timestamp": _dense_meta(nodes, "timestamp", idx),
+        "changeset": _dense_meta(nodes, "changeset", idx),
+        "visible": _dense_meta(nodes, "visible", idx),
     }
+
+
+def _dense_meta(nodes, name, idx):
+    """The DenseInfo column ``name`` of the dense nodes ``idx``. The decoder returns an
+    empty array for a column the block lacks, read like the in-memory parse: ``visible``
+    as 1 (as the PBF format reads it), the rest as 0."""
+    arr = nodes[name]
+    if len(arr) == len(nodes["id"]):
+        return arr[idx]
+    return np.full(len(idx), 1 if name == "visible" else 0, dtype=np.int64)
 
 
 def _node_records_by_id(string_table, header, nodes, wanted, keep_metadata, tags):
@@ -251,22 +255,18 @@ def _node_records_by_id(string_table, header, nodes, wanted, keep_metadata, tags
     lon = (nodes["lon"][idx] * gran + header["lon_offset"]) / 1e9
     tags.add(nodes["keys_vals"], len(ids), _lazy_string_table(string_table)(), keep)
 
-    def meta(name):
-        arr = nodes[name]
-        return arr[idx] if len(arr) == len(ids) else np.zeros(len(idx), dtype=np.int64)
-
     # 'visible' is kept regardless of keep_metadata (the in-memory node frame retains it);
     # version/timestamp/changeset are the metadata dropped when keep_metadata is False.
     record = {
         "id": ids[idx],
         "lon": lon,
         "lat": lat,
-        "visible": meta("visible").astype(bool),
+        "visible": _dense_meta(nodes, "visible", idx).astype(bool),
     }
     if keep_metadata:
-        record["version"] = meta("version")
-        record["timestamp"] = meta("timestamp")
-        record["changeset"] = meta("changeset")
+        record["version"] = _dense_meta(nodes, "version", idx)
+        record["timestamp"] = _dense_meta(nodes, "timestamp", idx)
+        record["changeset"] = _dense_meta(nodes, "changeset", idx)
     return record
 
 
@@ -275,7 +275,7 @@ def _layer_relations(
 ):
     """The relations carrying any of ``osm_keys`` (any tag when ``None``) in this block.
     Yields, per relation, its id, member id/type/role arrays, full tag dict and
-    ``version``/``timestamp``/``changeset`` metadata -- everything pyrosm needs to
+    ``version``/``timestamp``/``changeset``/``visible`` metadata -- everything pyrosm needs to
     assemble the (multi)polygon and its columns. Member roles and tags are resolved
     through the block's string table, ``strings`` being its :func:`_lazy_string_table`
     (made here when not given); with ``requested_tag_keys`` only those tags are
@@ -287,10 +287,11 @@ def _layer_relations(
         return
     tags_off = relations["tags_off"]
     ids, keys, vals = relations["id"], relations["keys"], relations["vals"]
-    version, timestamp, changeset = (
+    version, timestamp, changeset, visible = (
         relations["version"],
         relations["timestamp"],
         relations["changeset"],
+        relations["visible"],
     )
     memids, types, roles, moff = (
         relations["memids"],
@@ -316,6 +317,7 @@ def _layer_relations(
             "version": version[i],
             "timestamp": timestamp[i],
             "changeset": changeset[i],
+            "visible": visible[i],
         }
 
 
@@ -395,7 +397,7 @@ def _decode_one_block(settings, string_table, header, nodes, ways, relations):
         rel["memtype"].append(r["memtype"])
         rel["memrole"].append(r["memrole"])
         rel["tags"].append(r["tags"])
-        rel["meta"].append((r["version"], r["timestamp"], r["changeset"]))
+        rel["meta"].append((r["version"], r["timestamp"], r["changeset"], r["visible"]))
 
     return {
         "node_id": np.concatenate(node_id) if node_id else np.empty(0, np.int64),
@@ -445,7 +447,7 @@ def _decode_one_block(settings, string_table, header, nodes, ways, relations):
             else np.empty(0, dtype=object)
         ),
         "rel_tags": _object_array(rel["tags"]),
-        "rel_meta": np.array(rel["meta"], dtype=np.int64).reshape(-1, 3),
+        "rel_meta": np.array(rel["meta"], dtype=np.int64).reshape(-1, 4),
     }
 
 
@@ -662,7 +664,7 @@ _NO_RELATIONS = {
     "rel_memtype": np.empty(0, np.int64),
     "rel_memrole": np.empty(0, dtype=object),
     "rel_tags": _object_array([]),
-    "rel_meta": np.empty((0, 3), np.int64),
+    "rel_meta": np.empty((0, 4), np.int64),
 }
 
 

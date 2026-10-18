@@ -405,7 +405,7 @@ def _collect_relations(shard_paths, keep):
             meta.append(rmeta[k])
     if not ids:
         return None, np.empty(0, np.int64)
-    meta = np.array(meta, dtype=np.int64).reshape(-1, 3)
+    meta = np.array(meta, dtype=np.int64).reshape(-1, 4)
     relations = {
         "id": np.array(ids, dtype=np.int64),
         "members": _object_array(members),
@@ -413,6 +413,7 @@ def _collect_relations(shard_paths, keep):
         "version": meta[:, 0],
         "timestamp": meta[:, 1],
         "changeset": meta[:, 2],
+        "visible": meta[:, 3].astype(bool),
     }
     member_ids = (
         np.unique(np.concatenate(way_member_ids))
