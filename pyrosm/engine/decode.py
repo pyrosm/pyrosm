@@ -61,7 +61,7 @@ def _key_indices(string_table, osm_keys):
     return [string_table.index(k) for k in osm_keys if k in string_table]
 
 
-def _decoded(string_table):
+def _lazy_string_table(string_table):
     """A function returning the block's string table as str (decoded as pyrosm's protobuf
     path decodes it). It decodes the table on its first call only, so the block's way and
     relation tags decode each string once and share their string objects."""
@@ -119,9 +119,9 @@ def _matching_ways(string_table, ways, osm_keys, strings=None, requested_tag_key
     """Select the ways carrying any of ``osm_keys`` (any tag when ``None``) and return,
     per matching way, its node-ref slice, full (resolved) tag dict and
     ``version``/``timestamp``/``visible`` metadata -- everything pyrosm's way record
-    carries. ``strings`` is the block's :func:`_decoded` table (made here when not given);
-    with ``requested_tag_keys`` only those tags are resolved. Returns a dict of parallel
-    arrays/lists, or ``None``."""
+    carries. ``strings`` is the block's :func:`_lazy_string_table` (made here when not
+    given); with ``requested_tag_keys`` only those tags are resolved. Returns a dict of
+    parallel arrays/lists, or ``None``."""
     if ways is None:
         return None
     way_index = _tagged_elements(string_table, ways, osm_keys)
@@ -130,7 +130,7 @@ def _matching_ways(string_table, ways, osm_keys, strings=None, requested_tag_key
     keys, vals, tags_off = ways["keys"], ways["vals"], ways["tags_off"]
     refs, refs_off = ways["refs"], ways["refs_off"]
     keep_indices = _requested_keep_indices(string_table, requested_tag_keys)
-    strings = (strings or _decoded(string_table))()
+    strings = (strings or _lazy_string_table(string_table))()
     keys, vals, tags_off = keys.tolist(), vals.tolist(), tags_off.tolist()
     return {
         "id": ways["id"][way_index],
@@ -230,7 +230,7 @@ def _node_records_by_id(string_table, header, nodes, wanted, keep_metadata, tags
     gran = header["granularity"]
     lat = (nodes["lat"][idx] * gran + header["lat_offset"]) / 1e9
     lon = (nodes["lon"][idx] * gran + header["lon_offset"]) / 1e9
-    tags.add(nodes["keys_vals"], len(ids), _decoded(string_table)(), keep)
+    tags.add(nodes["keys_vals"], len(ids), _lazy_string_table(string_table)(), keep)
 
     def meta(name):
         arr = nodes[name]
@@ -258,8 +258,9 @@ def _layer_relations(
     Yields, per relation, its id, member id/type/role arrays, full tag dict and
     ``version``/``timestamp``/``changeset`` metadata -- everything pyrosm needs to
     assemble the (multi)polygon and its columns. Member roles and tags are resolved
-    through the block's string table, ``strings`` being its :func:`_decoded` table (made
-    here when not given); with ``requested_tag_keys`` only those tags are resolved."""
+    through the block's string table, ``strings`` being its :func:`_lazy_string_table`
+    (made here when not given); with ``requested_tag_keys`` only those tags are
+    resolved."""
     if relations is None:
         return
     rel_index = _tagged_elements(string_table, relations, osm_keys)
@@ -279,7 +280,7 @@ def _layer_relations(
         relations["members_off"],
     )
     keep_indices = _requested_keep_indices(string_table, requested_tag_keys)
-    strings = (strings or _decoded(string_table))()
+    strings = (strings or _lazy_string_table(string_table))()
     keys, vals = keys.tolist(), vals.tolist()
     for i in rel_index:
         s, e = moff[i], moff[i + 1]
@@ -327,7 +328,7 @@ def _decode_one_block(settings, string_table, header, nodes, ways, relations):
     way_version, way_timestamp, way_visible = [], [], []
     all_id, all_refs, all_count = [], [], []
     rel = {k: [] for k in ("id", "memid", "memtype", "memrole", "tags", "meta")}
-    strings = _decoded(string_table)
+    strings = _lazy_string_table(string_table)
     osm_keys, bbox_bounds = settings.osm_keys, settings.bbox_bounds
     requested = settings.requested_tag_keys
 
@@ -590,7 +591,7 @@ def _block_features(settings, decoded, span, string_table):
         keys = decoded["feature_keys"][p0 : pairs_off[-1]].tolist()
         vals = decoded["feature_vals"][p0 : pairs_off[-1]].tolist()
         keep_indices = _requested_keep_indices(strings, settings.requested_tag_keys)
-        decoded_strings = _decoded(strings)()
+        decoded_strings = _lazy_string_table(strings)()
         meta = decoded["feature_meta"][f0:f1]
         found = {
             "id": decoded["node_id"][rows],
@@ -651,7 +652,7 @@ def _block_ways(settings, decoded, span, string_table):
     if w1 > w0:
         strings = string_table()
         keep_indices = _requested_keep_indices(strings, settings.requested_tag_keys)
-        decoded_strings = _decoded(strings)()
+        decoded_strings = _lazy_string_table(strings)()
         keys = decoded["way_keys"][t0:t1].tolist()
         vals = decoded["way_vals"][t0:t1].tolist()
         tags_off = (decoded["way_tags_off"][w0 : w1 + 1] - t0).tolist()
@@ -705,7 +706,7 @@ def _decoded_parts(f, blobs):
     )
 
 
-def _owned(arrays):
+def _copied_views(arrays):
     """A block's shard dict ``arrays`` with every view of another array copied."""
     return {
         key: (
@@ -773,7 +774,7 @@ def _decode_batch_threads(settings, task, advance=None):
                     advance(sum(span for _, _, span in batch))
                 # The part is released before the next one is decompressed: the pending
                 # shards' slices of its arrays are copied out of them.
-                pending = [_owned(arrays) for arrays in pending]
+                pending = [_copied_views(arrays) for arrays in pending]
                 del buffer, starts, decoded, data, arrays
     flush()
     return shards

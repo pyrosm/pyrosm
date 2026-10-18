@@ -254,7 +254,7 @@ def _file_source(value, where, recipe_dir, suffixes, pbf=False):
     return source
 
 
-def _area(value, where, recipe_dir):
+def _validate_area(value, where, recipe_dir):
     _mapping(value, where)
     kinds = [kind for kind in _AREA_KINDS if kind in value]
     if len(kinds) != 1:
@@ -297,14 +297,14 @@ def _area(value, where, recipe_dir):
     return {kind: item}
 
 
-def _extract(section, recipe_dir):
+def _validate_extract(section, recipe_dir):
     from pyrosm.data import get_data
     from pyrosm.data.extract_index import get_data_by_area
 
     _mapping(section, "extract")
     if "area" not in section:
         raise ValueError("extract: needs an area")
-    area = _area(section["area"], "extract.area", recipe_dir)
+    area = _validate_area(section["area"], "extract.area", recipe_dir)
     if "name" in area:
         function, fixed = get_data, ("dataset", "opener")
     else:
@@ -329,7 +329,7 @@ def _extract(section, recipe_dir):
     return resolved
 
 
-def _layers(section):
+def _validate_layers(section):
     from pyrosm import OSM
 
     _mapping(section, "layers")
@@ -353,7 +353,7 @@ def _layers(section):
     return layers
 
 
-def _graph(section):
+def _validate_graph(section):
     from pyrosm import OSM
     from pyrosm.graphs import graph_tables
 
@@ -405,7 +405,7 @@ def _output_path(value, where, suffix):
     return posix.as_posix()
 
 
-def _outputs(section, stem, extract, layers, graph):
+def _validate_outputs(section, stem, extract, layers, graph):
     _mapping(section, "outputs")
     _reject_foreign(section, ("extract", "layers", "graph", "provenance"), "outputs")
     outputs = {"extract": None, "layers": {}, "graph": None}
@@ -499,15 +499,15 @@ def validate(path):
     extract = pbf = graph = None
     layers = {}
     if "extract" in document:
-        extract = _extract(document["extract"], recipe_dir)
+        extract = _validate_extract(document["extract"], recipe_dir)
     if "pbf" in document:
         if extract is not None:
             raise ValueError("pbf: a recipe has either an extract stage or a pbf input")
         pbf = _file_source(document["pbf"], "pbf", recipe_dir, (".pbf",), pbf=True)
     if "layers" in document:
-        layers = _layers(document["layers"])
+        layers = _validate_layers(document["layers"])
     if "graph" in document:
-        graph = _graph(document["graph"])
+        graph = _validate_graph(document["graph"])
     if extract is None and not layers and graph is None:
         raise ValueError("recipe: needs at least one of extract, layers, graph")
     if (layers or graph is not None) and extract is None and pbf is None:
@@ -526,7 +526,9 @@ def validate(path):
         )
     if "outputs" not in document:
         raise ValueError("recipe: needs an outputs section")
-    outputs = _outputs(document["outputs"], recipe_path.stem, extract, layers, graph)
+    outputs = _validate_outputs(
+        document["outputs"], recipe_path.stem, extract, layers, graph
+    )
     return {
         "recipe_path": recipe_path,
         "recipe_dir": recipe_dir,
@@ -843,7 +845,7 @@ def _check_pins(extract, entry):
         )
 
 
-def _get(record, *keys):
+def _nested_get(record, *keys):
     """``record[key][...]``, ``None`` where a level is missing or not a mapping."""
     for key in keys:
         record = record.get(key) if isinstance(record, dict) else None
@@ -865,9 +867,9 @@ def _reusable(work, previous, fingerprint, files):
     output's identity, taken before it is hashed, in ``work["reused"]``."""
     from pyrosm.data.extract_index import _identity, _sha256
 
-    old = _get(previous, "outputs")
+    old = _nested_get(previous, "outputs")
     if (
-        _get(previous, "fingerprint") != fingerprint
+        _nested_get(previous, "fingerprint") != fingerprint
         or not isinstance(old, dict)
         or sorted(old) != sorted(files)
     ):
@@ -884,7 +886,7 @@ def _reusable(work, previous, fingerprint, files):
     return True
 
 
-def _stage(work, previous, inputs, files, run, reusable=True):
+def _stage_entry(work, previous, inputs, files, run, reusable=True):
     """The record entry of one stage: ``previous``, its entry in the previous record, when
     it can be reused (:func:`_reusable`); else the entry ``run`` makes. The fingerprint
     covers ``inputs`` (the stage's section and what it reads), the output names and the
@@ -948,7 +950,7 @@ def _run(path, out_dir, invocation, force=False):
 
                 inputs = {"stage": extract, "upstream": record["inputs"]}
                 reusable = not extract["keywords"].get("update")
-                record["extract"] = _stage(
+                record["extract"] = _stage_entry(
                     work, previous.get("extract"), inputs, [name], run_extract, reusable
                 )
                 if work["status"][name] == "reused":
@@ -960,9 +962,9 @@ def _run(path, out_dir, invocation, force=False):
             for layer_name, layer in recipe["layers"].items():
                 name = outputs["layers"][layer_name]
                 inputs = {"stage": layer, "reader": reader, "upstream": upstream}
-                entry = _stage(
+                entry = _stage_entry(
                     work,
-                    _get(previous, "layers", layer_name),
+                    _nested_get(previous, "layers", layer_name),
                     inputs,
                     [name],
                     functools.partial(_run_layer, osm, layer, name, staging),
@@ -972,7 +974,7 @@ def _run(path, out_dir, invocation, force=False):
             if recipe["graph"] is not None:
                 graph, files = recipe["graph"], outputs["graph"]
                 inputs = {"stage": graph, "reader": reader, "upstream": upstream}
-                record["graph"] = _stage(
+                record["graph"] = _stage_entry(
                     work,
                     previous.get("graph"),
                     inputs,

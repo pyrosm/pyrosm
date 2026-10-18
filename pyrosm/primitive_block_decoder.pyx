@@ -1027,12 +1027,13 @@ def decode_elements(const unsigned char[::1] data, starts, ends, bint is_relatio
 # caller decodes it with ``decode_primitive_block``.
 #
 # C code cannot grow numpy arrays without the GIL, so every block is decoded twice by the
-# same functions (``_block`` and the ones it calls). In the count pass ``_Out.fill`` is
-# False: the functions only add to the ``n_*`` counters, and a block that fails is undone.
-# The caller then allocates arrays of exactly those sizes, and in the fill pass
-# (``_Out.fill`` True) the same functions write the values, using the counters as write
-# positions. Both passes see the same bytes, so they take the same steps; a block that
-# decodes in the first pass but not the second (status 2) is a bug and raises.
+# same functions (``_decode_block_nogil`` and the ones it calls). In the count pass
+# ``_Out.fill`` is False: the functions only add to the ``n_*`` counters, and a block
+# that fails is undone. The caller then allocates arrays of exactly those sizes, and in
+# the fill pass (``_Out.fill`` True) the same functions write the values, using the
+# counters as write positions. Both passes see the same bytes, so they take the same
+# steps; a block that decodes in the first pass but not the second (status 2) is a bug
+# and raises.
 #
 # A variable-length list per element (a way's refs, its tags) is stored CSR style: one flat
 # value array plus an offsets array with one entry more than there are elements, so element
@@ -1113,8 +1114,8 @@ cdef struct _Out:
     int64_t* scratch               # 4 values per node of the current dense group
 
 
-# Which fields the block's dense groups have, so ``_dense_group`` can check that they all
-# have the same ones.
+# Which fields the block's dense groups have, so ``_decode_dense_group_nogil`` can check
+# that they all have the same ones.
 cdef struct _DenseState:
     bint seen                      # a dense group of the block was decoded
     bint has_tags
@@ -1184,7 +1185,8 @@ cdef Py_ssize_t _runs_fill(const unsigned char* buf, _Runs* runs, bint delta, bi
     return i
 
 
-cdef inline bint _wanted(int64_t key, const int64_t* key_ids, Py_ssize_t n_ids) noexcept nogil:
+cdef inline bint _is_wanted_key(int64_t key, const int64_t* key_ids,
+                                Py_ssize_t n_ids) noexcept nogil:
     """Whether ``key`` is one of the ``n_ids`` ids (a linear scan: there are few)."""
     cdef Py_ssize_t j
     for j in range(n_ids):
@@ -1253,7 +1255,8 @@ cdef int _tag_stream_ok(const unsigned char* buf, Py_ssize_t start, Py_ssize_t e
 
 
 # A cursor over a delta-coded packed field, for reading its values one at a time alongside
-# another stream (the node ids next to the tag stream in ``_features``).
+# another stream (the node ids next to the tag stream in
+# ``_decode_node_features_nogil``).
 cdef struct _Deltas:
     const _Runs* runs              # a delta-coded packed field, read value after value
     Py_ssize_t run
@@ -1279,10 +1282,11 @@ cdef inline int64_t _next_delta(const unsigned char* buf, _Deltas* d) noexcept n
     return d.value
 
 
-cdef int _features(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
-                   _Runs* info, const _Request* req, const int64_t* key_ids,
-                   Py_ssize_t n_ids, Py_ssize_t n_table, _Out* out, Py_ssize_t row0,
-                   Py_ssize_t n, const _Runs* ids) noexcept nogil:
+cdef int _decode_node_features_nogil(const unsigned char* buf, Py_ssize_t start,
+                                     Py_ssize_t end, _Runs* info, const _Request* req,
+                                     const int64_t* key_ids, Py_ssize_t n_ids,
+                                     Py_ssize_t n_table, _Out* out, Py_ssize_t row0,
+                                     Py_ssize_t n, const _Runs* ids) noexcept nogil:
     """Count, or write, the node features of a dense group: the nodes whose tags (the
     stream ``buf[start:end]``, empty when the group has none) carry a wanted key, or
     whose id (``ids``) is in ``req.node_set``, with their tag pairs and DenseInfo
@@ -1333,7 +1337,7 @@ cdef int _features(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
         )
         key = <int64_t>_read_varint(buf, &pos, end)
         while key != 0:
-            if not req.key_filter or _wanted(key, key_ids, n_ids):
+            if not req.key_filter or _is_wanted_key(key, key_ids, n_ids):
                 matched = True
             _read_varint(buf, &pos, end)
             key = <int64_t>_read_varint(buf, &pos, end)
@@ -1360,11 +1364,12 @@ cdef int _features(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
     return 0
 
 
-cdef int _dense_group(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
-                      const _Request* req, _Out* out, int64_t granularity,
-                      int64_t lat_offset, int64_t lon_offset, const int64_t* key_ids,
-                      Py_ssize_t n_ids, Py_ssize_t n_table,
-                      _DenseState* state) noexcept nogil:
+cdef int _decode_dense_group_nogil(const unsigned char* buf, Py_ssize_t start,
+                                   Py_ssize_t end, const _Request* req, _Out* out,
+                                   int64_t granularity, int64_t lat_offset,
+                                   int64_t lon_offset, const int64_t* key_ids,
+                                   Py_ssize_t n_ids, Py_ssize_t n_table,
+                                   _DenseState* state) noexcept nogil:
     """Count or decode one ``DenseNodes`` group. 1 when the block needs the Python path."""
     # A DenseNodes group stores its nodes column by column: packed fields of ids, lats and
     # lons (each delta coded), one tag stream for all nodes, and a DenseInfo message with
@@ -1476,10 +1481,11 @@ cdef int _dense_group(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end
     out.n_nodes += n
     # Node features: tagged nodes with a wanted key, or with a wanted id (untagged too).
     if req.features and kv.n:
-        return _features(buf, kv.start[0], kv.end[0], info, req, key_ids, n_ids, n_table,
-                         out, row0, n, &ids)
+        return _decode_node_features_nogil(buf, kv.start[0], kv.end[0], info, req,
+                                           key_ids, n_ids, n_table, out, row0, n, &ids)
     if req.features and req.node_set != NULL:
-        return _features(buf, 0, 0, info, req, key_ids, n_ids, n_table, out, row0, n, &ids)
+        return _decode_node_features_nogil(buf, 0, 0, info, req, key_ids, n_ids,
+                                           n_table, out, row0, n, &ids)
     return 0
 
 
@@ -1496,9 +1502,9 @@ cdef bint _ids_in_table(const unsigned char* buf, const _Runs* runs,
     return True
 
 
-cdef int _way(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
-              const _Request* req, _Out* out, const int64_t* key_ids,
-              Py_ssize_t n_ids, Py_ssize_t n_table) noexcept nogil:
+cdef int _decode_way_nogil(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                           const _Request* req, _Out* out, const int64_t* key_ids,
+                           Py_ssize_t n_ids, Py_ssize_t n_table) noexcept nogil:
     """Count or decode one ``Way``. 1 when the block needs the Python path."""
     # The steps: find the way's fields (id, the packed keys, vals and refs, and Info), read
     # its Info, decide whether it is wanted, then count (count pass) or write (fill pass).
@@ -1574,7 +1580,8 @@ cdef int _way(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
         for k in range(keys.n):
             i_pos = keys.start[k]
             while i_pos < keys.end[k]:
-                if _wanted(<int64_t>_read_varint(buf, &i_pos, keys.end[k]), key_ids, n_ids):
+                if _is_wanted_key(<int64_t>_read_varint(buf, &i_pos, keys.end[k]),
+                                  key_ids, n_ids):
                     matched = True
             if i_pos != keys.end[k]:
                 return 1
@@ -1622,8 +1629,8 @@ cdef int _way(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
     return 0
 
 
-cdef int _block(const unsigned char* buf, Py_ssize_t end, const _Request* req,
-                _Out* out) noexcept nogil:
+cdef int _decode_block_nogil(const unsigned char* buf, Py_ssize_t end,
+                             const _Request* req, _Out* out) noexcept nogil:
     """Count or decode one block. 1 when it needs the Python path."""
     cdef Py_ssize_t pos = 0, f_start, g_pos, g_end, e_start, st_start = -1, st_end = -1
     cdef int field, wire
@@ -1697,11 +1704,13 @@ cdef int _block(const unsigned char* buf, Py_ssize_t end, const _Request* req,
             if field == GROUP_NODES or field == GROUP_RELATIONS:
                 return 1
             if field == GROUP_DENSE:
-                if _dense_group(buf, e_start, g_pos, req, out, granularity, lat_offset,
-                                lon_offset, key_ids, n_ids, n_table, &state) != 0:
+                if _decode_dense_group_nogil(buf, e_start, g_pos, req, out, granularity,
+                                             lat_offset, lon_offset, key_ids, n_ids,
+                                             n_table, &state) != 0:
                     return 1
             elif field == GROUP_WAYS:
-                if _way(buf, e_start, g_pos, req, out, key_ids, n_ids, n_table) != 0:
+                if _decode_way_nogil(buf, e_start, g_pos, req, out, key_ids, n_ids,
+                                     n_table) != 0:
                     return 1
         if g_pos != g_end:
             return 1
@@ -1722,7 +1731,7 @@ def check_batch_starts(starts, Py_ssize_t size):
         raise ValueError("starts must rise from 0 to at most the buffer's length")
 
 
-cdef inline int64_t* _int64_data(array):
+cdef inline int64_t* _int64_ptr(array):
     return <int64_t*><uintptr_t>array.ctypes.data
 
 
@@ -1757,11 +1766,11 @@ def decode_batch_nogil(const unsigned char[::1] buffer, const int64_t[::1] start
     if key_list:
         np.cumsum([len(k) for k in key_list], out=key_starts[1:])
     req.keys = <const unsigned char*><uintptr_t>key_bytes.ctypes.data
-    req.keys_off = _int64_data(key_starts)
+    req.keys_off = _int64_ptr(key_starts)
     req.n_keys = len(key_list)
     key_ids = np.empty(len(key_list) + 1, dtype=np.int64)
     found = np.empty(len(key_list) + 1, dtype=np.uint8)
-    req.key_ids = _int64_data(key_ids)
+    req.key_ids = _int64_ptr(key_ids)
     req.found = <uint8_t*><uintptr_t>found.ctypes.data
     req.key_filter = keys is not None
     req.features = features
@@ -1785,7 +1794,7 @@ def decode_batch_nogil(const unsigned char[::1] buffer, const int64_t[::1] start
     with nogil:
         for b in range(n_blocks):
             before = out
-            if _block(buf + at[b], at[b + 1] - at[b], &req, &out) != 0:
+            if _decode_block_nogil(buf + at[b], at[b + 1] - at[b], &req, &out) != 0:
                 c[b, BC_STATUS] = 1
                 out = before
                 continue
@@ -1822,31 +1831,31 @@ def decode_batch_nogil(const unsigned char[::1] buffer, const int64_t[::1] start
     }
     scratch = np.empty(4 * out.max_group + 1, dtype=np.int64)
     fill.fill = True
-    fill.node_id = _int64_data(arrays["node_id"])
+    fill.node_id = _int64_ptr(arrays["node_id"])
     fill.node_lon = <double*><uintptr_t>arrays["node_lon"].ctypes.data
     fill.node_lat = <double*><uintptr_t>arrays["node_lat"].ctypes.data
     fill.in_box = <uint8_t*><uintptr_t>arrays["in_box"].ctypes.data
-    fill.feature_row = _int64_data(arrays["feature_row"])
-    fill.feature_pairs_off = _int64_data(arrays["feature_pairs_off"])
-    fill.feature_keys = _int64_data(arrays["feature_keys"])
-    fill.feature_vals = _int64_data(arrays["feature_vals"])
-    fill.feature_meta = _int64_data(arrays["feature_meta"])
-    fill.all_id = _int64_data(arrays["all_id"])
-    fill.all_refs_off = _int64_data(arrays["all_refs_off"])
-    fill.all_refs = _int64_data(arrays["all_refs"])
-    fill.way_id = _int64_data(arrays["way_id"])
-    fill.way_refs_off = _int64_data(arrays["way_refs_off"])
-    fill.way_refs = _int64_data(arrays["way_refs"])
-    fill.way_tags_off = _int64_data(arrays["way_tags_off"])
-    fill.way_keys = _int64_data(arrays["way_keys"])
-    fill.way_vals = _int64_data(arrays["way_vals"])
-    fill.way_meta = _int64_data(arrays["way_meta"])
-    fill.scratch = _int64_data(scratch)
+    fill.feature_row = _int64_ptr(arrays["feature_row"])
+    fill.feature_pairs_off = _int64_ptr(arrays["feature_pairs_off"])
+    fill.feature_keys = _int64_ptr(arrays["feature_keys"])
+    fill.feature_vals = _int64_ptr(arrays["feature_vals"])
+    fill.feature_meta = _int64_ptr(arrays["feature_meta"])
+    fill.all_id = _int64_ptr(arrays["all_id"])
+    fill.all_refs_off = _int64_ptr(arrays["all_refs_off"])
+    fill.all_refs = _int64_ptr(arrays["all_refs"])
+    fill.way_id = _int64_ptr(arrays["way_id"])
+    fill.way_refs_off = _int64_ptr(arrays["way_refs_off"])
+    fill.way_refs = _int64_ptr(arrays["way_refs"])
+    fill.way_tags_off = _int64_ptr(arrays["way_tags_off"])
+    fill.way_keys = _int64_ptr(arrays["way_keys"])
+    fill.way_vals = _int64_ptr(arrays["way_vals"])
+    fill.way_meta = _int64_ptr(arrays["way_meta"])
+    fill.scratch = _int64_ptr(scratch)
     # Fill pass: the blocks of status 0 again, now writing into the arrays.
     with nogil:
         for b in range(n_blocks):
-            if c[b, BC_STATUS] == 0 and _block(buf + at[b], at[b + 1] - at[b], &req,
-                                               &fill) != 0:
+            if c[b, BC_STATUS] == 0 and _decode_block_nogil(
+                    buf + at[b], at[b + 1] - at[b], &req, &fill) != 0:
                 c[b, BC_STATUS] = 2
     if (counts[:, BC_STATUS] == 2).any():
         raise RuntimeError("a block decoded differently in its two passes")

@@ -232,19 +232,19 @@ class _ReadProgress:
     @contextlib.contextmanager
     def one_pass(self):
         self.done = {}
-        self._send(0)
+        self._report_progress(0)
         try:
             yield
         finally:
-            self._send(self.total)
+            self._report_progress(self.total)
 
     def advance(self, reader, position):
         """The file `reader` (any object that stands for one reading of a file, as a
         file object does) has been read up to `position` in this pass."""
         self.done[reader] = position
-        self._send(sum(self.done.values()))
+        self._report_progress(sum(self.done.values()))
 
-    def _send(self, done):
+    def _report_progress(self, done):
         done = min(done, self.total)
         if self.report is not None and done != self.sent:
             self.sent = done
@@ -533,7 +533,8 @@ cdef _way_winners(sources, touching, nodes_in_bbox, pool, progress):
     else:
         pool.broadcast("candidate_ways", candidates)
         copies = [
-            list(pool.imap(_w_way_copies, _iter_payloads(p, progress))) for p in sources
+            list(pool.imap(_worker_way_copies, _iter_payloads(p, progress)))
+            for p in sources
         ]
     blocks = [block for source_blocks in copies for block in source_blocks]
     ids, versions, timestamps, touches, ref_counts, refs = [
@@ -935,8 +936,8 @@ cdef _write_pbf(filepath, output_path, kept_nodes_set, kept_ways_set, kept_rel_s
 # nodes whose coordinates, metadata or tags do not match their ids in number.
 #
 # The functions, from the outside in, and the Python code each one matches:
-#   `_crop_one`    one block: its string table copied, its kept groups, its header values
-#                  (`_crop_block`, `_block_bytes`);
+#   `_append_cropped_block`  one block: its string table copied, its kept groups, its
+#                  header values (`_crop_block`, `_block_bytes`);
 #   `_crop_group`  one PrimitiveGroup: the kept plain nodes, ways or relations copied as
 #                  they are stored, or the kept dense nodes encoded again (`_group_kind`,
 #                  `_kept_elements`);
@@ -954,7 +955,7 @@ cdef _write_pbf(filepath, output_path, kept_nodes_set, kept_ways_set, kept_rel_s
 cdef unsigned char _NO_BYTES[1]
 
 
-# What `_crop_one` did with a block.
+# What `_append_cropped_block` did with a block.
 cdef enum:
     _CROPPED = 0                   # its cropped copy is in the output
     _BY_PYTHON = 1                 # left to `_crop_block`
@@ -1439,7 +1440,8 @@ cdef int _crop_group(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
     return 0
 
 
-cdef int _crop_one(const unsigned char* buf, Py_ssize_t end, _CropState* st) noexcept nogil:
+cdef int _append_cropped_block(const unsigned char* buf, Py_ssize_t end,
+                               _CropState* st) noexcept nogil:
     """The cropped copy of one block appended to ``st.out``, as `_crop_block` builds it:
     `_CROPPED`, `_NOTHING_KEPT` (nothing appended), `_BY_PYTHON` for data it leaves to
     `_crop_block`, or -1 when memory runs out."""
@@ -1800,7 +1802,9 @@ def _crop_blocks(const unsigned char[::1] buffer, const int64_t[::1] starts,
                 mark = st.out.n
                 st.nodes.at = 0
                 st.nodes.last = 0
-                status = _crop_one(buf + starts[b], starts[b + 1] - starts[b], &st)
+                status = _append_cropped_block(
+                    buf + starts[b], starts[b + 1] - starts[b], &st
+                )
                 if status < 0:
                     out_of_memory = True
                     break
@@ -1896,7 +1900,7 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
         progress, "Cropping %s" % name, delay=2.0, leave=False, timed=True
     ) as report:
         _with_pool(
-            _crop_run,
+            _select_and_write,
             (source_path, output_path, region, keep_relations, compact, repack,
              _ReadProgress(report, [source_path])),
             workers, [source_path], region, compact,
@@ -1904,7 +1908,7 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     return output_path
 
 
-def _crop_run(source_path, output_path, region, keep_relations, compact, repack,
+def _select_and_write(source_path, output_path, region, keep_relations, compact, repack,
               progress, pool):
     """Select the elements to keep and write `output_path`; in parallel with `pool`.
     Each pass over the file is reported to `progress` (a `_ReadProgress`)."""
@@ -1926,7 +1930,7 @@ def _crop_run(source_path, output_path, region, keep_relations, compact, repack,
         with open(output_path, "wb") as out, progress.one_pass():
             _write_header(out, bounds)
             payloads = _iter_payloads(source_path, progress)
-            for blob_bytes in pool.imap(_w_write, payloads):
+            for blob_bytes in pool.imap(_worker_write, payloads):
                 if blob_bytes is not None:
                     out.write(blob_bytes)
     else:
@@ -1962,7 +1966,7 @@ cdef _select(sources, region, keep_relations, pool, progress):
         else:
             nodes_in_bbox = _unique_concat([
                 ids for p in sources
-                for ids in pool.imap(_w_nodes_inside, _iter_payloads(p, progress))
+                for ids in pool.imap(_worker_nodes_inside, _iter_payloads(p, progress))
             ])
             pool.broadcast("nodes_in_bbox", nodes_in_bbox)
 
@@ -1974,7 +1978,9 @@ cdef _select(sources, region, keep_relations, pool, progress):
             if pool is None:
                 ways, refs = _ways_touching_file(p, nib_set, progress)
             else:
-                results = list(pool.imap(_w_ways_touching, _iter_payloads(p, progress)))
+                results = list(
+                    pool.imap(_worker_ways_touching, _iter_payloads(p, progress))
+                )
                 ways = _unique_concat([w for w, _ in results])
                 refs = _unique_concat([r for _, r in results])
             kept_ways.append(ways)
@@ -2002,12 +2008,11 @@ cdef _select(sources, region, keep_relations, pool, progress):
         else:
             pool.broadcast("kept_nodes", kept_nodes)
             pool.broadcast("kept_ways", all_ways)
-            kept_rel = [
-                _unique_concat(
-                    list(pool.imap(_w_relations_touching, _iter_payloads(p, progress)))
-                )
-                for p in sources
-            ]
+            kept_rel = []
+            for p in sources:
+                payloads = _iter_payloads(p, progress)
+                parts = pool.imap(_worker_relations_touching, payloads)
+                kept_rel.append(_unique_concat(list(parts)))
     return kept_nodes, kept_ways, kept_rel
 
 
@@ -2035,8 +2040,8 @@ cdef _select(sources, region, keep_relations, pool, progress):
 # Each pool keeps what its workers share in its own `_Context`, the kept-id arrays in
 # memory with threads.
 
-# The context of a worker process, made by `_winit`.
-_W_CONTEXT = None
+# The context of a worker process, made by `_init_worker`.
+_WORKER_CONTEXT = None
 _THREAD_BATCH = 32
 _BC_STATUS = BLOCK_COUNTS.index("status")
 _BC_NODES = BLOCK_COUNTS.index("nodes")
@@ -2140,9 +2145,9 @@ class _Context:
         return polygon
 
 
-def _winit(bounds, polygon_wkb, compact, tmpdir):
-    global _W_CONTEXT
-    _W_CONTEXT = _Context(bounds, polygon_wkb, tmpdir, compact)
+def _init_worker(bounds, polygon_wkb, compact, tmpdir):
+    global _WORKER_CONTEXT
+    _WORKER_CONTEXT = _Context(bounds, polygon_wkb, tmpdir, compact)
 
 
 cdef _nodes_inside_block(ctx, data, filepath):
@@ -2185,24 +2190,26 @@ cdef _write_block(ctx, data, filepath):
     return _frame_blob("OSMData", block)
 
 
-def _w_nodes_inside(payload):
-    return _nodes_inside_block(_W_CONTEXT, _payload_data(payload), payload[0])
+def _worker_nodes_inside(payload):
+    return _nodes_inside_block(_WORKER_CONTEXT, _payload_data(payload), payload[0])
 
 
-def _w_ways_touching(payload):
-    return _ways_touching_block(_W_CONTEXT, _payload_data(payload), payload[0])
+def _worker_ways_touching(payload):
+    return _ways_touching_block(_WORKER_CONTEXT, _payload_data(payload), payload[0])
 
 
-def _w_way_copies(payload):
-    return _way_copies_block(_W_CONTEXT, _payload_data(payload), payload[0])
+def _worker_way_copies(payload):
+    return _way_copies_block(_WORKER_CONTEXT, _payload_data(payload), payload[0])
 
 
-def _w_relations_touching(payload):
-    return _relations_touching_block(_W_CONTEXT, _payload_data(payload), payload[0])
+def _worker_relations_touching(payload):
+    return _relations_touching_block(
+        _WORKER_CONTEXT, _payload_data(payload), payload[0]
+    )
 
 
-def _w_write(payload):
-    return _write_block(_W_CONTEXT, _payload_data(payload), payload[0])
+def _worker_write(payload):
+    return _write_block(_WORKER_CONTEXT, _payload_data(payload), payload[0])
 
 
 def _batch_parts(payloads):
@@ -2231,8 +2238,8 @@ def _run_batched(batched, ctx, payloads):
     return out
 
 
-def _t_nodes_inside(ctx, payloads, buffer, starts):
-    """`_w_nodes_inside` of each payload of a part of a batch (its blocks in
+def _batch_nodes_inside(ctx, payloads, buffer, starts):
+    """`_worker_nodes_inside` of each payload of a part of a batch (its blocks in
     ``buffer``), with the pool's context ``ctx``."""
     decoded = decode_batch_nogil(buffer, starts, keys=[], bbox=ctx.bounds)
     counts = decoded["counts"]
@@ -2258,8 +2265,8 @@ def _t_nodes_inside(ctx, payloads, buffer, starts):
     return out
 
 
-def _t_ways_touching(ctx, payloads, buffer, starts):
-    """`_w_ways_touching` of each payload of a part of a batch (its blocks in
+def _batch_ways_touching(ctx, payloads, buffer, starts):
+    """`_worker_ways_touching` of each payload of a part of a batch (its blocks in
     ``buffer``), with the pool's context ``ctx``."""
     decoded = decode_batch_nogil(buffer, starts, keys=[], all_ways=True)
     counts = decoded["counts"]
@@ -2283,9 +2290,9 @@ def _t_ways_touching(ctx, payloads, buffer, starts):
     return out
 
 
-def _t_relations_touching(ctx, payloads, buffer, starts):
-    """`_w_relations_touching` of each payload of a part of a batch (its blocks in
-    ``buffer``), with the pool's context ``ctx``: only the blocks `_relation_blocks`
+def _batch_relations_touching(ctx, payloads, buffer, starts):
+    """`_worker_relations_touching` of each payload of a part of a batch (its blocks
+    in ``buffer``), with the pool's context ``ctx``: only the blocks `_relation_blocks`
     marks are decoded."""
     marked = _relation_blocks(buffer, starts)
     empty = np.empty(0, dtype=np.int64)
@@ -2296,9 +2303,9 @@ def _t_relations_touching(ctx, payloads, buffer, starts):
     ]
 
 
-def _t_way_copies(ctx, payloads, buffer, starts):
-    """`_w_way_copies` of each payload of a part of a batch (its blocks in ``buffer``),
-    with the pool's context ``ctx``."""
+def _batch_way_copies(ctx, payloads, buffer, starts):
+    """`_worker_way_copies` of each payload of a part of a batch (its blocks in
+    ``buffer``), with the pool's context ``ctx``."""
     status, copies, refs, arrays = _way_copies_blocks(
         buffer, starts, ctx.get_set("candidate_ways"), ctx.get_set("nodes_in_bbox")
     )
@@ -2315,9 +2322,9 @@ def _t_way_copies(ctx, payloads, buffer, starts):
     return out
 
 
-def _t_write(ctx, payloads, buffer, starts):
-    """`_w_write` of each payload of a part of a batch (its blocks in ``buffer``), with
-    the pool's context ``ctx``: cropped by `_crop_blocks` (by `_crop_block` with
+def _batch_write(ctx, payloads, buffer, starts):
+    """`_worker_write` of each payload of a part of a batch (its blocks in ``buffer``),
+    with the pool's context ``ctx``: cropped by `_crop_blocks` (by `_crop_block` with
     ``compact``)."""
     if ctx.compact:
         status = np.full(len(payloads), _BY_PYTHON, dtype=np.uint8)
@@ -2344,11 +2351,11 @@ def _t_write(ctx, payloads, buffer, starts):
 
 # The batch version of each stage function with one.
 _BATCHED = {
-    _w_nodes_inside: _t_nodes_inside,
-    _w_ways_touching: _t_ways_touching,
-    _w_relations_touching: _t_relations_touching,
-    _w_way_copies: _t_way_copies,
-    _w_write: _t_write,
+    _worker_nodes_inside: _batch_nodes_inside,
+    _worker_ways_touching: _batch_ways_touching,
+    _worker_relations_touching: _batch_relations_touching,
+    _worker_way_copies: _batch_way_copies,
+    _worker_write: _batch_write,
 }
 
 
@@ -2392,7 +2399,9 @@ class _Pool:
         self.tmpdir = tempfile.mkdtemp(prefix="pyrosm_crop_par_")
         try:
             self.executor = ProcessPoolExecutor(
-                int(workers), initializer=_winit, initargs=initargs + (self.tmpdir,)
+                int(workers),
+                initializer=_init_worker,
+                initargs=initargs + (self.tmpdir,),
             )
         except OSError as err:
             shutil.rmtree(self.tmpdir, ignore_errors=True)

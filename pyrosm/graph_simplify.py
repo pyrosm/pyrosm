@@ -491,7 +491,7 @@ class _WayEdges:
             return gpd.GeoSeries(segment_lines(self.start, self.end), crs=self.crs)
         return self._segment_columns.get(col)
 
-    def _read(self, col, read):
+    def _segment_values(self, col, read):
         """``read`` of the values of ``col``, one per segment."""
         values = self._segment_column(col)
         if values is not None:
@@ -499,16 +499,20 @@ class _WayEdges:
         return read(self.ways[col])[self.way_of]
 
     def values(self, col):
-        return self._read(col, lambda series: series.to_numpy())
+        return self._segment_values(col, lambda series: series.to_numpy())
 
     def codes(self, col):
-        return self._read(col, lambda series: pd.factorize(series, sort=False)[0])
+        return self._segment_values(
+            col, lambda series: pd.factorize(series, sort=False)[0]
+        )
 
     def floats(self, col):
-        return self._read(col, lambda series: series.to_numpy(dtype="float64"))
+        return self._segment_values(
+            col, lambda series: series.to_numpy(dtype="float64")
+        )
 
     def missing(self, col):
-        return self._read(col, lambda series: series.isna().to_numpy())
+        return self._segment_values(col, lambda series: series.isna().to_numpy())
 
     def take(self, col, positions):
         values = self._segment_column(col)

@@ -10,7 +10,7 @@ _RECORD_KEYS = frozenset({"id", "version", "timestamp", "visible", "nodes"})
 _CHUNK = 65536
 
 
-def _ranges(starts, lengths):
+def _range_indices(starts, lengths):
     """The indices of the ranges ``starts[i] .. starts[i] + lengths[i] - 1``, joined in
     order."""
     lengths = np.asarray(lengths, dtype=np.int64)
@@ -95,8 +95,8 @@ cdef class WayStore:
         ref_counts = self.refs_off[rows + 1] - ref_starts
         tag_starts = self.tags_off[rows]
         tag_counts = self.tags_off[rows + 1] - tag_starts
-        tag_rows = _ranges(tag_starts, tag_counts)
-        refs = self.refs[_ranges(ref_starts, ref_counts)].tolist()
+        tag_rows = _range_indices(tag_starts, tag_counts)
+        refs = self.refs[_range_indices(ref_starts, ref_counts)].tolist()
         keys = self.keys[tag_rows].tolist()
         vals = self.vals[tag_rows].tolist()
         ids = self.ids[rows].tolist()
@@ -190,8 +190,8 @@ cdef class WayStoreBuilder:
             if len(rows) == 0:
                 return
             part = {name: values[rows] for name, values in part.items()}
-            refs = refs[_ranges(ways["refs_off"][rows], ref_counts[rows])]
-            tag_rows = _ranges(ways["tags_off"][rows], tag_counts[rows])
+            refs = refs[_range_indices(ways["refs_off"][rows], ref_counts[rows])]
+            tag_rows = _range_indices(ways["tags_off"][rows], tag_counts[rows])
             keys, vals = keys[tag_rows], vals[tag_rows]
             ref_counts, tag_counts = ref_counts[rows], tag_counts[rows]
         # The block's string ids used by these ways -> ids in the store's table.
@@ -365,7 +365,7 @@ cdef class NodeTagsBuilder:
         keys, vals = pairs[0::2], pairs[1::2]
         if keep is not None:
             rows = np.flatnonzero(keep)
-            tag_rows = _ranges(_offsets(counts)[rows], counts[rows])
+            tag_rows = _range_indices(_offsets(counts)[rows], counts[rows])
             keys, vals, counts = keys[tag_rows], vals[tag_rows], counts[rows]
         tagged = np.flatnonzero(counts > 0)
         mapping = _map_strings(

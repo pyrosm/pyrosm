@@ -241,11 +241,11 @@ class _Transfer:
         self.attempts = 0
 
     def _restart(self):
-        _local(self.out_file.seek, 0)
-        _local(self.out_file.truncate)
+        _call_local(self.out_file.seek, 0)
+        _call_local(self.out_file.truncate)
         self.written = 0
 
-    def _mismatch(self, reason):
+    def _abandon_resume(self, reason):
         """Stop resuming for the rest of the call, drop the copy and fail this attempt."""
         self.resumable = False
         self.validator = None
@@ -259,14 +259,14 @@ class _Transfer:
         content_range = (headers.get("Content-Range") or "").strip()
         match = _CONTENT_RANGE.fullmatch(content_range)
         if match is None or _encoded(headers):
-            raise self._mismatch(f"the partial content '{content_range}'")
+            raise self._abandon_resume(f"the partial content '{content_range}'")
         first, last, total = (int(v) for v in match.groups())
         if (
             first != self.written
             or not first <= last < total
             or (self.total is not None and total != self.total)
         ):
-            raise self._mismatch(f"the range '{content_range}'")
+            raise self._abandon_resume(f"the range '{content_range}'")
         self.total = total
         return last - first + 1
 
@@ -283,7 +283,7 @@ class _Transfer:
         with self.net.open(self.url, headers=headers) as response:
             if getattr(response, "status", 200) == 206:
                 if not resume:
-                    raise self._mismatch("partial content it was not asked for")
+                    raise self._abandon_resume("partial content it was not asked for")
                 limit = self._range_length(response.headers)
             else:
                 # A full answer, also to a range request whose copy has changed.
@@ -293,16 +293,16 @@ class _Transfer:
                 if self.resumable and not _encoded(response.headers):
                     self.validator = _validator(response.headers)
                 self.total = _content_length(response.headers.get("Content-Length"))
-            _local(self.out_file.seek, self.written)
+            _call_local(self.out_file.seek, self.written)
             received = 0
             while chunk := response.read(_CHUNK):
                 received += len(chunk)
                 if limit is not None and received > limit:
-                    raise self._mismatch("more bytes than its range")
-                _local(self.out_file.write, chunk)
+                    raise self._abandon_resume("more bytes than its range")
+                _call_local(self.out_file.write, chunk)
                 self.written += len(chunk)
                 if self.progress is not None:
-                    _local(self.progress, self.written, self.total)
+                    _call_local(self.progress, self.written, self.total)
         if self.total is not None and self.written != self.total:
             raise OSError(
                 f"The download of '{self.url}' stopped after {self.written} of "
@@ -317,7 +317,7 @@ class _LocalWriteError(Exception):
     :func:`_retry` without a retry."""
 
 
-def _local(call, *args):
+def _call_local(call, *args):
     """Call a method of the local file or the progress callback, marking its ``OSError`` as
     not a network failure."""
     try:

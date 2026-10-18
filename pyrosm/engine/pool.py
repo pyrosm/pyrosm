@@ -71,7 +71,7 @@ class _ReportError(Exception):
     it raises is not taken for a pool that cannot run."""
 
 
-def _tracked(progress):
+def _raising_progress(progress):
     """``progress`` with its callback's exceptions raised as :class:`_ReportError`."""
     if progress is None:
         return None
@@ -116,7 +116,7 @@ def _add_to_counter(span):
         _COUNTER.value += span
 
 
-def _in_pool(func, task):
+def _call_in_worker(func, task):
     """``func(task, advance)`` in a worker process of a pool, ``advance`` adding to its
     shared counter (None without progress)."""
     return func(task, None if _COUNTER is None else _add_to_counter)
@@ -160,7 +160,7 @@ def _run_pool(func, tasks, workers, fallback_warning=None, progress=None):
     addition in one process or every ``_PROGRESS_INTERVAL`` seconds while a pool runs, and
     ``(total, total)`` at the end. A fallback to one process reports from ``(0, total)``
     again."""
-    progress = _tracked(progress)
+    progress = _raising_progress(progress)
     try:
         if workers == 1:
             return _run_serial(func, tasks, progress), False
@@ -172,7 +172,7 @@ def _run_pool(func, tasks, workers, fallback_warning=None, progress=None):
             with ProcessPoolExecutor(
                 max_workers=workers, initializer=_init_counter, initargs=(counter,)
             ) as pool:
-                in_pool = partial(_in_pool, func)
+                in_pool = partial(_call_in_worker, func)
                 if counter is None:
                     return list(pool.map(in_pool, tasks)), True
                 return _map_tracked(pool, in_pool, tasks, counter, progress), True
