@@ -3,9 +3,9 @@
 The threaded decode stores each element's tags as ids of strings, not as a dict. An
 :class:`ElementStore` gathers those columns from the shards for the candidate ways, and
 :func:`kept_ways` selects the ways a read outputs (the value filter in C, see
-:func:`keep_mask`); :meth:`ElementStore.way_columns` gives the column dict the rest of the
-collect step reads. The module also gathers the node coordinates, the relation member
-ways and the network's node records on the read's threads.
+:func:`keep_mask`); :func:`tag_lists` builds their tag columns and JSON ``tags`` column
+in C. The module also gathers the node coordinates, the relation member ways and the
+network's node records on the read's threads.
 """
 
 import numpy as np
@@ -273,6 +273,124 @@ def result_tag_columns(store, tags_as_columns, keep_metadata, keep_other_tags):
     if keep_other_tags and leftover and len(store) > 0:
         columns.add("tags")
     return columns
+
+
+class ChunkContext:
+    """What building the tag columns of a store's ways needs of a read: the output tag
+    columns (in the order of the Python path), each string's column as a key and the
+    special ways."""
+
+    def __init__(
+        self, store, tags_as_columns, keep_metadata, keep_other_tags, way_columns
+    ):
+        from pyrosm.engine.collect import _way_column_keys
+
+        self.store = store
+        column_keys, self.tag_cols = _way_column_keys(tags_as_columns, keep_metadata)
+        self.keep_other_tags = keep_other_tags
+        # Whether the JSON ``tags`` column is built, and the metadata fields it holds.
+        self.json = keep_other_tags and "tags" in way_columns
+        self.json_version = self.json and "version" not in column_keys
+        self.json_timestamp = self.json and "timestamp" not in column_keys
+        self.json_visible = self.json and "visible" not in column_keys
+        # The output tag columns: the tag columns the result has, in column order.
+        # ``out_column[c]`` is tag column ``c``'s position among them, -1 when not output.
+        self.out_names = [k for k in self.tag_cols if k in way_columns]
+        position = {k: i for i, k in enumerate(self.out_names)}
+        self.out_column = np.array(
+            [position.get(k, -1) for k in self.tag_cols], dtype=np.int32
+        )
+        self.valid, self.column, self.special = _string_columns(store, self.tag_cols)
+        self.requested = None if keep_other_tags else set(tags_as_columns)
+
+    def special_rows(self, ways):
+        """The tag columns (``{column: list}``) and JSON values of the ways ``ways`` of the
+        store, from their tag dicts as :func:`~pyrosm.engine.collect._ways_arrays` builds
+        them."""
+        from pyrosm.engine.collect import _route_tags
+
+        store = self.store
+        col_lists, leftover, _ = _route_tags(
+            [store.tags(w, self.requested) for w in ways],
+            store.version[ways],
+            store.timestamp[ways],
+            store.visible[ways],
+            self.tag_cols,
+            self.keep_other_tags,
+            self.json_version,
+            self.json_timestamp,
+            self.json_visible,
+        )
+        return col_lists, leftover
+
+    def tag_arrays(self, rows):
+        """:func:`pyrosm.way_columns.tag_columns` of the ways ``rows`` of the store."""
+        store = self.store
+        return wc.tag_columns(
+            rows,
+            store.pairs_off,
+            store.pair_key,
+            store.pair_val,
+            store.str_off,
+            store.str_data,
+            valid=self.valid,
+            column=self.column,
+            out_column=self.out_column,
+            n_out=len(self.out_names),
+            special=self.special[rows],
+            version=store.version,
+            timestamp=store.timestamp,
+            visible=store.visible,
+            json=self.json,
+            json_version=self.json_version,
+            json_timestamp=self.json_timestamp,
+            json_visible=self.json_visible,
+        )
+
+
+def tag_lists(store, tags_as_columns, keep_metadata, keep_other_tags):
+    """The tag columns (``{column: object array}``, None where a way lacks the tag) and the
+    JSON ``tags`` values of all the ways of ``store``, as the loop of
+    :func:`~pyrosm.engine.collect._ways_arrays` builds them from tag dicts."""
+    from pyrosm.engine.collect import _way_column_keys
+
+    _, tag_cols = _way_column_keys(tags_as_columns, keep_metadata)
+    ctx = ChunkContext(
+        store, tags_as_columns, keep_metadata, keep_other_tags, set(tag_cols) | {"tags"}
+    )
+    built = ctx.tag_arrays(np.arange(len(store), dtype=np.int64))
+    columns = {
+        name: _string_array(*arrays).to_numpy(zero_copy_only=False)
+        for name, arrays in zip(ctx.out_names, built["columns"])
+    }
+    if built["json"] is None:
+        json = np.full(len(store), None, dtype=object)
+    else:
+        json = _string_array(*built["json"]).to_numpy(zero_copy_only=False)
+    special = np.flatnonzero(ctx.special)
+    if len(special):
+        col_lists, leftover = ctx.special_rows(special)
+        for i, w in enumerate(special.tolist()):
+            json[w] = leftover[i]
+            for name in ctx.out_names:
+                columns[name][w] = col_lists[name][i]
+    return columns, json
+
+
+def _string_array(offsets, data, valid):
+    """The Arrow string array of the values ``data[offsets[i]:offsets[i + 1]]``, null where
+    ``valid`` is 0."""
+    import pyarrow as pa
+
+    valid = np.asarray(valid, dtype=bool)
+    nulls = int(len(valid) - valid.sum())
+    return pa.LargeStringArray.from_buffers(
+        len(valid),
+        pa.py_buffer(np.ascontiguousarray(offsets, dtype=np.int64)),
+        pa.py_buffer(np.ascontiguousarray(data, dtype=np.uint8)),
+        pa.py_buffer(np.packbits(valid, bitorder="little")) if nulls else None,
+        nulls,
+    )
 
 
 def kept_ways(store, exclude_ids, filter_spec, in_box):

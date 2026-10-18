@@ -2,6 +2,7 @@
 OSM(fp, engine="in_memory").get_buildings() way and relation rows, plus the output=
 GeoParquet path and the worker-count policy."""
 
+import re
 import shutil
 import threading
 import zlib
@@ -1037,10 +1038,11 @@ def test_engine_thread_map_bounds_the_items_in_flight():
 
 
 # Ways for the tag columns of a store: the area and linear tags of closed ways, JSON
-# escaping, and special ways (an ``id`` key, a key twice, a value that is not UTF-8, a
-# metadata name as a key, many keys with one twice).
+# escaping, special ways (an ``id`` key, a key twice, a value that is not UTF-8, a
+# metadata name as a key, many keys with one twice), and negative metadata.
 _BUILDING = [(b"building", b"yes")]
-_ESCAPED = 'Tie "A"\n\t\x01\x7f\\/\r\b\x0cä\U0001f600'.encode()
+_METADATA = ("version", "timestamp", "visible")
+_ESCAPED = 'Tie "A"\n\t\x01\x7f\\/\r\b\x0cä€\U0001f600'.encode()
 _CRAFTED_WAYS = [
     (1, [1, 2, 3, 4, 1], _BUILDING),
     (2, [1, 4, 3, 2, 1], _BUILDING + [(b"source", b"survey")]),
@@ -1055,6 +1057,7 @@ _CRAFTED_WAYS = [
     (18, [1, 2, 3, 4, 1], []),
     (19, [1, 2, 3, 1], [(b"k%d" % i, b"v") for i in range(20)]),
     (20, [1, 2, 3, 1], [(b"k%d" % i, b"v") for i in range(20)] + [(b"k3", b"x")]),
+    (-7, [1, 2, 3], [(b"highway", b"path"), (b"surface", b"gravel")]),
 ]
 
 
@@ -1072,9 +1075,10 @@ def test_engine_store_tag_columns_match_the_python_path(
     ways, tags_as_columns, keep_metadata, keep_other_tags
 ):
     # The tag columns a store's ways give, found in C (special ways by their tag dicts),
-    # are those the Python path finds in the ways' tag dicts.
+    # are those the Python path finds in the ways' tag dicts, and the tag columns and JSON
+    # values built in C are those it routes the tag dicts to.
     from pyrosm.engine import collect
-    from pyrosm.engine.ways import result_tag_columns
+    from pyrosm.engine.ways import result_tag_columns, tag_lists
 
     store = _way_store(_CRAFTED_WAYS[ways])
     keys = None if keep_other_tags else set(tags_as_columns)
@@ -1086,6 +1090,20 @@ def test_engine_store_tag_columns_match_the_python_path(
     assert collect._result_tag_columns(
         store, tags_as_columns, keep_metadata, keep_other_tags
     ) == ref
+    column_keys, tag_cols = collect._way_column_keys(tags_as_columns, keep_metadata)
+    by_dicts = store.way_columns(keys)
+    col_lists, leftover, _ = collect._route_tags(
+        by_dicts["tags"],
+        store.version,
+        store.timestamp,
+        store.visible,
+        tag_cols,
+        keep_other_tags,
+        *(keep_other_tags and k not in column_keys for k in _METADATA),
+    )
+    columns, json = tag_lists(store, tags_as_columns, keep_metadata, keep_other_tags)
+    assert {k: v.tolist() for k, v in columns.items()} == col_lists
+    assert json.tolist() == leftover
 
 
 def test_way_columns_special_ways_and_column_presence():
@@ -1128,6 +1146,71 @@ def test_way_columns_special_ways_and_column_presence():
             wc.column_presence(
                 store.pairs_off, store.pair_key, column, np.array(rows), n_columns
             )
+
+
+def test_way_columns_tag_columns_check_their_arrays():
+    # tag_columns refuses arrays that do not fit together, and a tag that is not valid
+    # UTF-8 in a row that is not special; bytes that are not valid UTF-8 but marked valid
+    # (cut off at the end of the strings) fill the JSON value to the length it counts.
+    from pyrosm import way_columns as wc
+
+    store = _way_store(_CRAFTED_WAYS)
+    valid, column = wc.string_columns(store.str_off, store.str_data, [b"building"])
+    n = len(store)
+    arrays = dict(
+        rows=np.arange(n),
+        pairs_off=store.pairs_off,
+        pair_key=store.pair_key,
+        pair_val=store.pair_val,
+        str_off=store.str_off,
+        str_data=store.str_data,
+        valid=valid,
+        column=column,
+        out_column=np.array([0], dtype=np.int32),
+        n_out=1,
+        special=np.ones(n, dtype=np.uint8),
+        version=store.version,
+        timestamp=store.timestamp,
+        visible=store.visible,
+        json=True,
+        json_version=True,
+        json_timestamp=True,
+        json_visible=True,
+    )
+    for change, match in (
+        ({"valid": valid[:-1]}, "one entry per string"),
+        ({"out_column": np.empty(0, dtype=np.int32)}, "position of out_column"),
+        ({"n_out": 0}, "below n_out"),
+        ({"special": np.ones(n - 1, dtype=np.uint8)}, "one entry per row"),
+        ({"visible": store.visible[:-1]}, "one entry per way"),
+        ({"special": np.zeros(n, dtype=np.uint8)}, "valid UTF-8"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            wc.tag_columns(**{**arrays, **change})
+    cut = _way_store([(1, [1, 2], [(b"a", b"\xe2\x82"), (b"b", b"\xf0\x9f")])])
+    built = wc.tag_columns(
+        **{
+            **arrays,
+            "rows": [0],
+            "pairs_off": cut.pairs_off,
+            "pair_key": cut.pair_key,
+            "pair_val": cut.pair_val,
+            "str_off": cut.str_off,
+            "str_data": cut.str_data,
+            "valid": np.ones(4, dtype=np.uint8),
+            "column": np.full(4, -1, dtype=np.int32),
+            "special": np.zeros(1, dtype=np.uint8),
+            "version": cut.version,
+            "timestamp": cut.timestamp,
+            "visible": cut.visible,
+            "json_version": False,
+            "json_timestamp": False,
+            "json_visible": False,
+        }
+    )
+    offsets, data, _ = built["json"]
+    assert offsets.tolist() == [0, 33]
+    assert re.fullmatch(rb'{"a":"\\u[0-9A-F]{4}","b":"(\\u[0-9A-F]{4}){2}"}', data)
 
 
 def test_engine_cut_off_file_raises_the_same_error(test_pbf, tmp_path, monkeypatch):
