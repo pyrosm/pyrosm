@@ -2596,6 +2596,28 @@ def test_block_decoder_joins_split_packed_runs():
     assert nodes["timestamp"].tolist() == [10, 11, 12]
 
 
+def test_block_decoder_wraps_delta_sums_around():
+    """Way refs and relation member ids whose deltas sum past the int64 range wrap around
+    as numpy's int64 arithmetic does (a signed overflow is undefined in C)."""
+    import numpy as np
+
+    from pyrosm.primitive_block_decoder import decode_primitive_block
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    deltas = [2**62, 2**62, -5]
+    block = PrimitiveBlock()
+    block.stringtable.s.append(b"")
+    block.primitivegroup.add().ways.add(id=1, refs=deltas)
+    block.primitivegroup.add().relations.add(
+        id=2, memids=deltas, types=[1, 1, 1], roles_sid=[0, 0, 0]
+    )
+    data = np.frombuffer(block.SerializeToString(), dtype=np.uint8)
+    _, _, _, ways, relations = decode_primitive_block(data, True)
+    expected = [2**62, -(2**63), 2**63 - 5]
+    assert ways["refs"].tolist() == expected
+    assert relations["memids"].tolist() == expected
+
+
 @pytest.mark.parametrize("alias", ["same path", "hard link"])
 def test_crop_refuses_to_overwrite_its_source(tmp_path, alias):
     """crop_pbf and OSM.to_pbf refuse an output path that is their source, under the same
@@ -2788,3 +2810,304 @@ def test_reads_decoding_at_the_same_time_keep_their_own_settings(fresh_cache, mo
             frame.drop(columns="geometry"), expected.drop(columns="geometry")
         )
         assert (frame.geometry.to_wkb() == expected.geometry.to_wkb()).all()
+
+
+@pytest.mark.parametrize(
+    "engine, backend, chunk_size",
+    [
+        ("in_memory", None, None),
+        ("out_of_core", "threads", None),
+        ("out_of_core", "threads", 1),
+        ("out_of_core", "processes", None),
+    ],
+    ids=["in_memory", "threads", "threads_chunks_in_c", "processes"],
+)
+def test_area_rule_reads_tags_that_are_not_columns(
+    tmp_path, monkeypatch, fresh_cache, engine, backend, chunk_size
+):
+    """The ``area``, ``highway``, ``barrier`` and ``route`` tags decide whether a closed way
+    is a Polygon also when they are not columns of the read: a building tagged
+    ``area=no`` or ``barrier`` is a LineString, ``area=yes`` keeps a building with a
+    ``highway`` tag a Polygon. The tags stay in the JSON ``tags`` column."""
+    import json
+
+    osmium = pytest.importorskip("osmium")
+    from osmium.osm.mutable import Node, Way
+    from pyrosm import OSM
+    from pyrosm.engine import geoparquet
+
+    ways = {
+        1: ({"building": "yes"}, "Polygon"),
+        2: ({"building": "yes", "area": "no"}, "LineString"),
+        3: ({"building": "yes", "barrier": "wall"}, "LineString"),
+        4: ({"building": "yes", "highway": "pedestrian", "area": "yes"}, "Polygon"),
+        5: ({"building": "yes", "route": "ferry", "area": "unknown"}, "LineString"),
+    }
+    path = str(tmp_path / "closed_ways.osm.pbf")
+    with osmium.SimpleWriter(path) as writer:
+        for w in ways:
+            corners = [(0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)]
+            for k, (dx, dy) in enumerate(corners):
+                writer.add_node(Node(id=10 * w + k, location=(25 + w / 100 + dx, 60 + dy)))
+        for w, (tags, _) in ways.items():
+            nodes = [10 * w + k for k in range(4)]
+            writer.add_way(Way(id=w, nodes=nodes + nodes[:1], tags=tags))
+    if backend is not None:
+        monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    if chunk_size is not None:
+        monkeypatch.setattr(geoparquet, "_OUTPUT_CHUNK_SIZE", chunk_size)
+
+    gdf = OSM(path, engine=engine, workers=1).get_buildings().set_index("id")
+    assert {w: gdf.geometry[w].geom_type for w in ways} == {
+        w: expected for w, (_, expected) in ways.items()
+    }
+    assert "area" not in gdf.columns
+    assert json.loads(gdf.loc[2, "tags"])["area"] == "no"
+
+
+@pytest.mark.parametrize(
+    "engine, backend",
+    [("in_memory", None), ("out_of_core", "threads"), ("out_of_core", "processes")],
+    ids=["in_memory", "threads", "processes"],
+)
+def test_relation_id_tag_does_not_overwrite_the_relation_id(
+    tmp_path, monkeypatch, fresh_cache, engine, backend
+):
+    """A relation's tag keyed ``id`` is surfaced as ``id_tag``, as a way's is, and the
+    relation keeps its id."""
+    import numpy as np
+
+    osmium = pytest.importorskip("osmium")
+    from osmium.osm.mutable import Node, Relation, Way
+    from pyrosm import OSM
+
+    path = str(tmp_path / "relation_id_tag.osm.pbf")
+    with osmium.SimpleWriter(path) as writer:
+        for k, (dx, dy) in enumerate([(0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)]):
+            writer.add_node(Node(id=k + 1, location=(25 + dx, 60 + dy)))
+        writer.add_way(Way(id=10, nodes=[1, 2, 3, 4, 1], tags={}))
+        writer.add_relation(
+            Relation(
+                id=100,
+                members=[("w", 10, "outer")],
+                tags={"type": "multipolygon", "building": "yes", "id": "B-7"},
+            )
+        )
+    if backend is not None:
+        monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+
+    gdf = OSM(path, engine=engine, workers=1).get_buildings(extra_attributes=["id_tag"])
+    assert gdf["id"].tolist() == [100] and gdf["id"].dtype == np.int64
+    assert gdf["id_tag"].tolist() == ["B-7"]
+
+
+@pytest.mark.parametrize(
+    "engine, backend",
+    [("in_memory", None), ("out_of_core", "threads"), ("out_of_core", "processes")],
+    ids=["in_memory", "threads", "processes"],
+)
+def test_node_id_tag_does_not_overwrite_the_node_id(
+    tmp_path, monkeypatch, fresh_cache, engine, backend
+):
+    """A node's tag keyed ``id`` is surfaced as ``id_tag``, as a way's is: requesting
+    ``id`` as a column keeps the node ids, ``id_tag`` is a column when requested and
+    a key of the JSON ``tags`` otherwise."""
+    import json
+
+    import numpy as np
+    import pandas as pd
+
+    osmium = pytest.importorskip("osmium")
+    from osmium.osm.mutable import Node
+    from pyrosm import OSM
+
+    path = str(tmp_path / "node_id_tag.osm.pbf")
+    with osmium.SimpleWriter(path) as writer:
+        writer.add_node(
+            Node(id=100, location=(25, 60), tags={"amenity": "cafe", "id": "stray"})
+        )
+        writer.add_node(Node(id=101, location=(25.001, 60), tags={"amenity": "cafe"}))
+    if backend is not None:
+        monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    osm = OSM(path, engine=engine, workers=1)
+
+    gdf = osm.get_pois(custom_filter={"amenity": True}, extra_attributes=["id", "id_tag"])
+    assert gdf["id"].tolist() == [100, 101] and gdf["id"].dtype == np.int64
+    assert gdf["id_tag"][0] == "stray" and pd.isna(gdf["id_tag"][1])
+    gdf = osm.get_pois(custom_filter={"amenity": True})
+    assert json.loads(gdf["tags"][0]) == {"id_tag": "stray"}
+
+
+@pytest.mark.parametrize("backend", ["threads", "processes"])
+def test_lone_surrogate_keys_read_out_of_core(monkeypatch, fresh_cache, backend):
+    """A requested tag key UTF-8 cannot encode (a lone surrogate) reads out of core as it
+    does in memory: no PBF tag has it, so its column is absent and a filter by it keeps
+    nothing."""
+    import pandas as pd
+    from pyrosm import OSM, get_data
+
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    fp = get_data("test_pbf")
+    key = "\ud800"
+    reads = [
+        lambda osm: osm.get_buildings(extra_attributes=[key]),
+        lambda osm: osm.get_data_by_custom_criteria(
+            custom_filter={"building": True}, extra_attributes=[key], keep_other_tags=False
+        ),
+    ]
+    for i, read in enumerate(reads):
+        gdf = read(OSM(fp, engine="out_of_core", workers=1))
+        if i == 0:
+            ref = read(OSM(fp, engine="in_memory"))
+        else:
+            # The in-memory reader keeps every tag; without them the JSON column goes.
+            ref = ref.drop(columns="tags")
+        assert key not in gdf.columns
+        # The in-memory reader's ``visible`` column holds Python bools (object dtype).
+        pd.testing.assert_frame_equal(
+            gdf.drop(columns="geometry"), ref.drop(columns="geometry"), check_dtype=False
+        )
+        assert (gdf.geometry.to_wkb() == ref.geometry.to_wkb()).all()
+    osm = OSM(fp, engine="out_of_core", workers=1)
+    with pytest.warns(UserWarning, match="Could not find any OSM data"):
+        assert osm.get_data_by_custom_criteria(custom_filter={key: True}) is None
+
+
+@pytest.mark.parametrize(
+    "engine, backend",
+    [("in_memory", None), ("out_of_core", "threads"), ("out_of_core", "processes")],
+    ids=["in_memory", "threads", "processes"],
+)
+def test_missing_visible_flag_reads_as_visible(
+    tmp_path, monkeypatch, fresh_cache, engine, backend
+):
+    """An element whose metadata has no ``visible`` flag, as every element of a file that
+    is not a history file, is visible, as the PBF format reads it: nodes, ways and
+    relations alike."""
+    osmium = pytest.importorskip("osmium")
+    from osmium.osm.mutable import Node, Relation, Way
+    from pyrosm import OSM
+
+    path = str(tmp_path / "no_visible_flags.osm.pbf")
+    with osmium.SimpleWriter(path) as writer:
+        writer.add_node(Node(id=100, location=(25.01, 60), tags={"amenity": "cafe"}))
+        for k, (dx, dy) in enumerate([(0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)]):
+            writer.add_node(Node(id=k + 1, location=(25 + dx, 60 + dy)))
+        writer.add_way(Way(id=10, nodes=[1, 2, 3, 4, 1], tags={"building": "yes"}))
+        writer.add_way(Way(id=11, nodes=[1, 2, 3, 4, 1], tags={}))
+        writer.add_relation(
+            Relation(
+                id=200,
+                members=[("w", 11, "outer")],
+                tags={"type": "multipolygon", "building": "yes"},
+            )
+        )
+    if backend is not None:
+        monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    osm = OSM(path, engine=engine, workers=1)
+
+    pois = osm.get_pois(custom_filter={"amenity": True})
+    assert pois["visible"].tolist() == [True]
+    buildings = osm.get_buildings().set_index("osm_type")
+    assert buildings["visible"].to_dict() == {"way": True, "relation": True}
+
+
+def test_block_decoders_read_the_visible_flag():
+    """Both block decoders read a way's ``visible`` flag as it is written, and as 1 when
+    its Info has no flag or the way has no Info."""
+    import numpy as np
+
+    from pyrosm.primitive_block_decoder import decode_batch_nogil, decode_primitive_block
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    block = PrimitiveBlock()
+    block.stringtable.s.extend([b"", b"building", b"yes"])
+    ways = block.primitivegroup.add().ways
+    for way_id in (1, 2, 3, 4):
+        way = ways.add(id=way_id, keys=[1], vals=[2], refs=[1, 1])
+        if way_id < 3:
+            way.info.visible = way_id == 2
+        elif way_id == 3:
+            way.info.version = 1
+    data = block.SerializeToString()
+    _, _, _, decoded, _ = decode_primitive_block(np.frombuffer(data, dtype=np.uint8))
+    assert decoded["visible"].tolist() == [0, 1, 1, 1]
+    out = decode_batch_nogil(
+        np.frombuffer(data, dtype=np.uint8),
+        np.array([0, len(data)], dtype=np.int64),
+        keys=None,
+    )
+    assert out["way_meta"][:, 2].tolist() == [0, 1, 1, 1]
+
+
+@pytest.mark.parametrize(
+    "engine, backend",
+    [("in_memory", None), ("out_of_core", "threads"), ("out_of_core", "processes")],
+    ids=["in_memory", "threads", "processes"],
+)
+def test_filters_read_the_id_tag_as_id_tag(
+    tmp_path, monkeypatch, fresh_cache, engine, backend
+):
+    """A filter reads a tag keyed ``id`` as ``id_tag``, the column it is returned in, on
+    nodes, ways and relations; ``id``, the element's OSM id, is refused as a filter key.
+    Out of core, ``keep_other_tags=False`` returns the requested ``id_tag`` column."""
+    import pandas as pd
+
+    osmium = pytest.importorskip("osmium")
+    from osmium.osm.mutable import Node, Relation, Way
+    from pyrosm import OSM
+
+    path = str(tmp_path / "id_tags.osm.pbf")
+    with osmium.SimpleWriter(path) as writer:
+        writer.add_node(Node(id=100, location=(25, 60), tags={"amenity": "cafe", "id": "n"}))
+        writer.add_node(Node(id=101, location=(25.001, 60), tags={"amenity": "cafe"}))
+        for k, (dx, dy) in enumerate([(0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)]):
+            writer.add_node(Node(id=k + 1, location=(25 + dx, 60.01 + dy)))
+        writer.add_way(Way(id=10, nodes=[1, 2], tags={"highway": "path", "id": "w"}))
+        writer.add_way(Way(id=11, nodes=[2, 3], tags={"highway": "path"}))
+        writer.add_way(Way(id=12, nodes=[1, 2, 3, 4, 1], tags={}))
+        for rel_id, tags in ((200, {"id": "r"}), (201, {})):
+            writer.add_relation(
+                Relation(
+                    id=rel_id,
+                    members=[("w", 12, "outer")],
+                    tags={"type": "multipolygon", "building": "yes", **tags},
+                )
+            )
+    if backend is not None:
+        monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    osm = OSM(path, engine=engine, workers=1)
+    tagged = [("node", 100, "n"), ("relation", 200, "r"), ("way", 10, "w")]
+
+    def kept(gdf, column="id_tag"):
+        return sorted(zip(gdf["osm_type"], gdf["id"], gdf[column]))
+
+    assert kept(osm.get_data_by_custom_criteria(custom_filter={"id_tag": True})) == tagged
+    found = osm.get_data_by_custom_criteria(
+        custom_filter={"amenity": True, "highway": True, "building": True},
+        osm_keys_to_keep=["id_tag"],
+        extra_attributes=["id_tag"],
+    )
+    assert kept(found) == tagged
+    assert kept(osm.get_data_by_custom_criteria(custom_filter='["id_tag"="w"]')) == [
+        ("way", 10, "w")
+    ]
+    for refused in ({"id": True}, '["id"="w"]'):
+        with pytest.raises(ValueError, match="'id' is the element's OSM id"):
+            osm.get_data_by_custom_criteria(custom_filter=refused)
+    for custom_filter in ({"amenity": True}, None):
+        with pytest.raises(ValueError, match="'id' is the element's OSM id"):
+            osm.get_data_by_custom_criteria(
+                custom_filter=custom_filter, osm_keys_to_keep="id"
+            )
+    for flt in ({"id_tag": True}, '["highway"]["id_tag"]'):
+        edges = osm.get_network(custom_filter=flt, filter_type="keep")
+        assert edges["id"].tolist() == [10], flt
+    if engine == "out_of_core":
+        lean = osm.get_data_by_custom_criteria(
+            custom_filter={"amenity": True},
+            extra_attributes=["id_tag"],
+            keep_other_tags=False,
+        )
+        lean = lean.set_index("id")["id_tag"]
+        assert lean[100] == "n" and pd.isna(lean[101])

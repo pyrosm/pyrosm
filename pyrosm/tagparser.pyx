@@ -4,11 +4,10 @@ cdef unicode tounicode(char *s):
     return s.decode("UTF-8")
 
 cdef explode_tag_array(tag_array, tags_as_columns):
-    # Build only the tag-columns that actually occur (a candidate key with at least
-    # one value). Each element's tags are routed in a single pass; the leftover keys
-    # form the JSON 'tags' column. Candidate columns that would be entirely empty are
-    # never materialised -- they were dropped downstream anyway -- so the result is
-    # the same set of non-empty columns the caller kept before, built far more cheaply.
+    """The tag columns of the tag dicts ``tag_array`` that occur (a key of
+    ``tags_as_columns`` with at least one value), then, when some element has other tags,
+    the JSON ``tags`` column of those. A tag keyed ``id`` is routed as ``id_tag``, so it
+    cannot replace the element's id."""
     cdef int i, n = len(tag_array)
     cdef bint any_other = False
     column_keys = list(dict.fromkeys(tags_as_columns))
@@ -21,11 +20,12 @@ cdef explode_tag_array(tag_array, tags_as_columns):
         record = {}
         other_tags = {}
         for k, v in tag.items():
-            if k in column_set:
-                record[k] = v
-                appearing.add(k)
+            key = "id_tag" if k == "id" else k
+            if key in column_set:
+                record[key] = v
+                appearing.add(key)
             else:
-                other_tags[k] = v
+                other_tags[key] = v
         records.append(record)
         if len(other_tags) > 0:
             other_list.append(dumps(other_tags))
@@ -45,6 +45,7 @@ cdef explode_tag_array(tag_array, tags_as_columns):
 
 cpdef explode_node_tag_array(tag_array, tags_as_columns):
     """Python entry point to the node tag-explosion (splits a tag-dict array into the
-    occurring ``tags_as_columns`` columns plus a JSON ``tags`` column), so an alternative
+    occurring ``tags_as_columns`` columns plus a JSON ``tags`` column; a tag keyed ``id``
+    as ``id_tag``), so an alternative
     reader can build node features with the same columns as the in-memory reader."""
     return explode_tag_array(tag_array, tags_as_columns)

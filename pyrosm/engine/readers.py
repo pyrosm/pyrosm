@@ -9,7 +9,9 @@ import numpy as np
 from rapidjson import dumps, loads
 
 from pyrosm.data_manager import parse_custom_filter
+from pyrosm.filter_compiler import rename_filter_key
 from pyrosm.utils import _compat, default_workers
+from pyrosm.engine.decode import _key_bytes
 from pyrosm.engine.pool import _decode_and_run
 from pyrosm.engine.bounding_box import _bbox_bounds, _normalize_bounding_box
 from pyrosm.engine.assemble import (
@@ -90,7 +92,9 @@ def _get_layer(
         data_filter, derived_keys = parse_custom_filter(custom_filter)
         if osm_keys is None:
             osm_keys = derived_keys
-        osm_key_bytes = [k.encode("utf-8") for k in osm_keys]
+        # The tag pyrosm returns as "id_tag" is keyed "id" in the elements' tags.
+        data_filter, osm_keys = rename_filter_key(data_filter, osm_keys, "id_tag", "id")
+        osm_key_bytes = [_key_bytes(k) for k in osm_keys]
     filter_spec = (osm_keys, data_filter, filter_type)
     # keep_other_tags=False: the workers resolve only the requested tag keys -- the output
     # columns (tags_as_columns) plus the filter keys (so the value filter still has what it
@@ -98,7 +102,9 @@ def _get_layer(
     requested_tag_keys = None
     if not keep_other_tags:
         wanted = list(tags_as_columns) + list(osm_keys or []) + list(_GEOMETRY_TAG_KEYS)
-        requested_tag_keys = [k.encode("utf-8") for k in dict.fromkeys(wanted)]
+        if "id_tag" in tags_as_columns:
+            wanted.append("id")
+        requested_tag_keys = [_key_bytes(k) for k in dict.fromkeys(wanted)]
     bounding_box = _normalize_bounding_box(bounding_box)
     bounds = _bbox_bounds(bounding_box)
 
@@ -489,6 +495,7 @@ def get_data_by_custom_criteria(
         validate_tags_as_columns,
     )
 
+    validate_osm_keys(osm_keys_to_keep)
     keep_all = custom_filter is None
     if keep_all:
         # Every tagged element: there is nothing to keep or exclude by value, and the
@@ -498,7 +505,6 @@ def get_data_by_custom_criteria(
     else:
         custom_filter = validate_custom_filter(custom_filter)
     filter_type = filter_type.lower()
-    validate_osm_keys(osm_keys_to_keep)
     if isinstance(osm_keys_to_keep, str):
         osm_keys_to_keep = [osm_keys_to_keep]
     if tags_as_columns is None and keep_all:
@@ -765,6 +771,10 @@ def _network_spec(
     data_filter = (
         None if network_filter is None else parse_custom_filter(network_filter)[0]
     )
+    # The tag pyrosm returns as "id_tag" is keyed "id" in the ways' tags.
+    data_filter, network_keys = rename_filter_key(
+        data_filter, network_keys, "id_tag", "id"
+    )
     return tags_as_columns, (network_keys, data_filter, filter_type)
 
 
@@ -775,7 +785,7 @@ def _decode_network(filepath, filter_spec, bounding_box, workers, progress, asse
     """
     return _decode_and_run(
         filepath,
-        [k.encode("utf-8") for k in filter_spec[0]],
+        [_key_bytes(k) for k in filter_spec[0]],
         False,
         workers,
         assemble,

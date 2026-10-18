@@ -11,12 +11,11 @@ no cache.
 """
 
 import hashlib
+import json
 import logging
 import os
 import tempfile
 from pathlib import Path
-
-from rapidjson import dumps
 
 from pyrosm._log import log_event
 
@@ -25,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # The version of the cached results' content, part of every key: bumped whenever a read
 # returns different output, so a file cached by an older pyrosm is not served.
-_RESULT_FORMAT = 5
+_RESULT_FORMAT = 10
 
 
 def cache_dir():
@@ -69,7 +68,7 @@ def result_path(filepath, key_params):
         "params": _stable(key_params),
     }
     digest = hashlib.sha1(
-        dumps(key, sort_keys=True, default=str).encode("utf-8")
+        json.dumps(key, sort_keys=True, default=str).encode("ascii")
     ).hexdigest()[:16]
     return cache_dir() / ("result_%s_%s.parquet" % (_source_digest(filepath), digest))
 

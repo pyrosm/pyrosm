@@ -85,7 +85,8 @@ cdef dict _node_columns(
         tags_builder=None,
 ):
     """The node columns of a decoded block: ``id``, ``lon``, ``lat``, ``tags`` and
-    ``visible`` (False when the block has no visibility), and with metadata ``version``,
+    ``visible`` (True when the block has no visibility, as the PBF format reads it), and
+    with metadata ``version``,
     ``timestamp`` (seconds) and ``changeset``. Nodes outside ``bounding_box``, or not in
     ``node_id_filter`` when given (a pass fetching the nodes of kept ways), and nodes
     newer than ``unix_time_filter`` are left out. With ``tags_builder`` (a
@@ -101,7 +102,7 @@ cdef dict _node_columns(
     lat = (nodes["lat"] * granularity + header["lat_offset"]) / 1000000000
     visible = nodes["visible"].astype(bool)
     if len(visible) == 0:
-        visible = np.zeros(n, dtype=bool)
+        visible = np.ones(n, dtype=bool)
     columns = {"id": ids, "lon": lon, "lat": lat}
     if tags_builder is None:
         columns["tags"] = _node_tags(nodes["keys_vals"], n, strings)

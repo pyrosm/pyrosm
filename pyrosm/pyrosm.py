@@ -1114,7 +1114,9 @@ class OSM:
             key/value filtering (tagged nodes, ways, and relations); standalone
             ways with no tags are dropped. Reading everything is memory-heavy on
             large extracts, so prefer a pre-filtered PBF and/or a bounding box.
-            ``filter_type`` is ignored in this mode.
+            ``filter_type`` is ignored in this mode. A tag keyed ``id`` is filtered
+            as ``id_tag``, the column it is returned in; ``id`` is the element's OSM id
+            and not a filter key.
 
         osm_keys_to_keep : str | list
             A filter to specify which OSM keys should be kept.
@@ -1142,8 +1144,7 @@ class OSM:
             By default (``True``) every tag is parsed: ``tags_as_columns`` become their own
             columns and the rest are kept in a JSON ``tags`` column. ``False`` resolves only
             the requested tags (``tags_as_columns`` plus the filter keys) and drops the JSON
-            ``tags`` column, so the read does minimal tag work (a stray tag literally keyed
-            ``id`` is not surfaced as ``id_tag`` in this mode). Only supported by the
+            ``tags`` column, so the read does minimal tag work. Only supported by the
             out-of-core engine (``OSM(..., engine='out_of_core')``).
 
         timestamp: str | datetime | int

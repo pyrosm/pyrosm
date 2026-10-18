@@ -155,7 +155,8 @@ cpdef tuple relation_kind(dict tag):
 
 cpdef list relation_records(relations, relation_ways, node_coordinates,
                             bint keep_metadata):
-    """The records of ``relations``, one relation at a time."""
+    """The records of ``relations``, one relation at a time. A tag keyed ``id`` is kept
+    as ``id_tag``."""
     cdef int i, j, n2, m_cnt
     way_index = way_id_index(relation_ways["id"])
     prepared_relations = []
@@ -218,10 +219,12 @@ cpdef list relation_records(relations, relation_ways, node_coordinates,
             relation["version"] = rel["version"][0]
             relation["changeset"] = rel["changeset"][0]
             relation["timestamp"] = rel["timestamp"][0]
+        # Like a way's, kept also without the metadata.
+        relation["visible"] = bool(rel["visible"][0])
 
-        # Add tags
+        # Add tags; one keyed "id" as "id_tag", so the relation keeps its id.
         for k, v in rel["tags"][0].items():
-            relation[k] = v
+            relation["id_tag" if k == "id" else k] = v
 
         # Add the relation members. Not listed in tags_to_keep, so it is folded
         # into the JSON 'tags' column. Set after the tag loop so a stray tag

@@ -132,41 +132,30 @@ cpdef ring_polygon(coords):
     return polygon
 
 
+cdef _geometry_or_none(constructor, coordinates):
+    """``constructor(coordinates)`` (``shapely.linearrings`` or ``shapely.linestrings``), or
+    ``None`` when the coordinates are too few for the geometry. Coordinates of the wrong
+    shape raise."""
+    try:
+        return constructor(coordinates)
+    except GEOSException as e:
+        if "Invalid number of points" in str(e) or "point array must contain" in str(e):
+            return None
+        raise
+    except ValueError as e:
+        if "not have enough dimensions" in str(e):
+            raise
+        return None
+
+
 cpdef create_linear_ring(coordinates):
     """The ring of ``coordinates``, or ``None`` when there are too few of them."""
-    try:
-        return linearrings(coordinates)
-    # pygeos 0.7.1 throws GEOSException
-    except GEOSException as e:
-        if "Invalid number of points" in str(e):
-            return None
-        elif "point array must contain" in str(e):
-            return None
-        raise e
-    # pygeos 0.8.0 throws ValueError
-    except ValueError as e:
-        if "Provide at least 4 coordinates" in str(e):
-            return None
-    except Exception as e:
-        raise e
+    return _geometry_or_none(linearrings, coordinates)
 
 
 cdef create_linestring(coordinates):
-    try:
-        return linestrings(coordinates)
-    except GEOSException as e:
-        if "Invalid number of points" in str(e):
-            return None
-        elif "point array must contain" in str(e):
-            return None
-        raise e
-    except ValueError as e:
-        if "Provide at least 2 coordinates" in str(e):
-            return None
-        if "not have enough dimensions" in str(e):
-            raise e
-    except Exception as e:
-        raise e
+    """The line of ``coordinates``, or ``None`` when there are too few of them."""
+    return _geometry_or_none(linestrings, coordinates)
 
 
 cdef _create_point_geometries(xarray, yarray):
@@ -411,6 +400,26 @@ cdef _closed_way_is_polygon(area_value, has_linear_tag):
         return False
     return not has_linear_tag
 
+
+# The key of ``way_elements`` that holds, per way, whether its tags make it an area when it
+# is closed (see :func:`tags_make_area`). A tuple, so no tag column can have it; the way
+# frame builder takes it out before it builds the columns.
+AREA_BY_TAGS = ("area by tags",)
+
+
+cpdef tags_make_area(tag_dicts):
+    """Whether the tags of each way make it an area when it is closed, from its tags
+    ``tag_dicts`` (one mapping per way, all of its tags): ``area=yes`` does, ``area=no``
+    does not, otherwise a ``highway``, ``barrier`` or ``route`` tag makes it a line."""
+    cdef Py_ssize_t i, n = len(tag_dicts)
+    out = np.empty(n, dtype=bool)
+    for i in range(n):
+        tags = tag_dicts[i]
+        out[i] = _closed_way_is_polygon(
+            tags.get("area"), "highway" in tags or "barrier" in tags or "route" in tags
+        )
+    return out
+
 cdef _concatenated_ranges(starts, counts):
     # Vectorised concatenation of ``[start, start + count)`` for each (start, count)
     # pair: e.g. starts=[10, 20], counts=[2, 3] -> [10, 11, 20, 21, 22].
@@ -566,31 +575,47 @@ cdef _has_linear_tag(highway_arr, barrier_arr, route_arr, int i):
     )
 
 
-cdef _single_area_geometry(nodes, node_coordinates, area_value, bint has_linear_tag):
-    # One way's non-network geometry: a Polygon when it is a closed area, otherwise a
-    # LineString through its kept nodes. Used for the ways the vectorised builder
-    # leaves out (ways with dropped nodes, areas with fewer than four nodes).
-    if nodes[0] == nodes[-1] and _closed_way_is_polygon(area_value, has_linear_tag):
+cdef _area_by_tag_columns(way_elements, Py_ssize_t n):
+    """:func:`tags_make_area` from the tag columns of ``way_elements``, for ways passed
+    without their flags: a tag of the rule that is not a column counts as absent."""
+    highway_arr = way_elements["highway"] if "highway" in way_elements else None
+    barrier_arr = way_elements["barrier"] if "barrier" in way_elements else None
+    route_arr = way_elements["route"] if "route" in way_elements else None
+    area_arr = way_elements["area"] if "area" in way_elements else None
+    out = np.empty(n, dtype=bool)
+    for i in range(n):
+        out[i] = _closed_way_is_polygon(
+            area_arr[i] if area_arr is not None else None,
+            _has_linear_tag(highway_arr, barrier_arr, route_arr, i),
+        )
+    return out
+
+
+cdef _single_area_geometry(nodes, node_coordinates, bint area_by_tags):
+    """One way's non-network geometry: a Polygon when it is closed and its tags make it
+    an area, otherwise a LineString through its kept nodes. Used for the ways the
+    vectorised builder leaves out (ways with dropped nodes, areas with fewer than four
+    nodes)."""
+    if nodes[0] == nodes[-1] and area_by_tags:
         return create_polygon_geometry(nodes, node_coordinates)
     return create_line_geometry(nodes, node_coordinates)
 
 
-cdef _create_area_geometries_vectorized(node_coordinates, way_elements):
+cdef _create_area_geometries_vectorized(node_coordinates, way_elements, area_by_tags):
     """The geometries of ``way_elements``: the closed-area Polygons built with a single
     batched ``shapely.polygons(linearrings(...))`` call, and the lines (open ways, closed
     ways tagged linear) with a single ``shapely.linestrings`` call, instead of one call per
     way. A way takes a batched path only when every node is present with valid coordinates
     and it has enough of them (4 for a ring, 2 for a line). Every other way (ways with
-    dropped nodes, too-short rings) falls back to the per-way builder."""
+    dropped nodes, too-short rings) falls back to the per-way builder. ``area_by_tags``
+    tells whether each way's tags make it an area when closed (see
+    :func:`tags_make_area`); without it, the tag columns decide."""
     cdef NodeLocations nc = node_coordinates
     cdef int n = len(way_elements['id'])
     cdef int i, w, W, poly_i
     nodes_col = way_elements['nodes']
-
-    highway_arr = way_elements["highway"] if "highway" in way_elements else None
-    barrier_arr = way_elements["barrier"] if "barrier" in way_elements else None
-    route_arr = way_elements["route"] if "route" in way_elements else None
-    area_arr = way_elements["area"] if "area" in way_elements else None
+    if area_by_tags is None:
+        area_by_tags = _area_by_tag_columns(way_elements, n)
 
     # Flat node ids + per-way offsets, dropping empty ways (as the loop did), with a
     # per-way "closed area" flag decided from each way's own tags.
@@ -605,14 +630,7 @@ cdef _create_area_geometries_vectorized(node_coordinates, way_elements):
         flat_list.extend(wnodes)
         offsets.append(len(flat_list))
         nonempty_idx.append(i)
-        if wnodes[0] == wnodes[-1]:
-            area_value = area_arr[i] if area_arr is not None else None
-            is_area.append(_closed_way_is_polygon(
-                area_value,
-                _has_linear_tag(highway_arr, barrier_arr, route_arr, i),
-            ))
-        else:
-            is_area.append(False)
+        is_area.append(wnodes[0] == wnodes[-1] and bool(area_by_tags[i]))
 
     W = len(nonempty_idx)
     geometries = [None] * W
@@ -672,26 +690,23 @@ cdef _create_area_geometries_vectorized(node_coordinates, way_elements):
         for w in range(W):
             if not vectorizable[w]:
                 i = nonempty_idx[w]
-                area_value = area_arr[i] if area_arr is not None else None
-                geometries[w] = _single_area_geometry(
-                    nodes_col[i],
-                    nc,
-                    area_value,
-                    _has_linear_tag(highway_arr, barrier_arr, route_arr, i),
-                )
+                geometries[w] = _single_area_geometry(nodes_col[i], nc, area_by_tags[i])
 
     way_elements = _keep_rows(way_elements, nonempty_idx, n)
 
     return way_elements, geometries, [], [], []
 
 
-cdef _create_way_geometries(node_coordinates, way_elements, parse_network):
-    # Networks are linear and have their own vectorised builder; everything else
-    # (buildings, landuse, ...) goes through the vectorised area builder.
+cdef _create_way_geometries(node_coordinates, way_elements, parse_network, area_by_tags):
+    """The geometries of ``way_elements``: networks are linear and have their own
+    vectorised builder; everything else (buildings, landuse, ...) goes through the
+    vectorised area builder, ``area_by_tags`` deciding which closed ways are areas."""
     if parse_network:
         return _create_network_lines(node_coordinates, way_elements)
-    return _create_area_geometries_vectorized(node_coordinates, way_elements)
+    return _create_area_geometries_vectorized(node_coordinates, way_elements, area_by_tags)
 
 
-cpdef create_way_geometries(node_coordinates, way_elements, parse_network):
-    return _create_way_geometries(node_coordinates, way_elements, parse_network)
+cpdef create_way_geometries(node_coordinates, way_elements, parse_network, area_by_tags=None):
+    """The geometries of ``way_elements``; ``area_by_tags`` (per way, see
+    :func:`tags_make_area`) decides which closed ways are areas, else the tag columns."""
+    return _create_way_geometries(node_coordinates, way_elements, parse_network, area_by_tags)

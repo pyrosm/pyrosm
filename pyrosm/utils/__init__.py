@@ -9,15 +9,26 @@ import sys
 import threading
 import warnings
 
+# A filter key ``id`` is refused: ``id`` is the element's OSM id, and a tag keyed ``id`` is
+# filtered, like its column, as ``id_tag``.
+_ID_FILTER_KEY_ERROR = (
+    "'id' is the element's OSM id, not a tag key; a tag keyed 'id' is filtered as "
+    "'id_tag', the column pyrosm returns it in."
+)
+
 
 def validate_custom_filter(custom_filter):
-    # Opt-in advanced forms (a bracket-filter string, a list of them, or a dict containing
-    # compiled regex values) compile into a CompiledFilter predicate; compilation validates
-    # the syntax. A plain dict keeps the existing exact-value fast path below.
+    """``custom_filter`` checked and in the form the readers take: an advanced form (a
+    bracket-filter string, a list of them, or a dict with compiled regex values) compiled
+    into a ``CompiledFilter``, a plain dict copied with ``True`` values as ``[True]``.
+    Raises ``ValueError`` for a malformed filter or one keyed ``id``."""
     from pyrosm.filter_compiler import compile_custom_filter, is_advanced_filter
 
     if is_advanced_filter(custom_filter):
-        return compile_custom_filter(custom_filter)
+        compiled = compile_custom_filter(custom_filter)
+        if "id" in compiled.keys():
+            raise ValueError(_ID_FILTER_KEY_ERROR)
+        return compiled
 
     # Check that the custom filter is in correct format
     if not isinstance(custom_filter, dict):
@@ -34,6 +45,8 @@ def validate_custom_filter(custom_filter):
                 f"OSM key in 'custom_filter' should be string. "
                 f"Got {k} of type {type(k)}"
             )
+        if k == "id":
+            raise ValueError(_ID_FILTER_KEY_ERROR)
         if v is True:
             custom_filter[k] = [v]
             continue
@@ -74,12 +87,16 @@ def ensure_filter_key(custom_filter, key):
 
 
 def validate_osm_keys(osm_keys):
+    """Raise ``ValueError`` unless ``osm_keys`` (``osm_keys_to_keep``) is None, a key or a
+    list of keys, without the key ``id``."""
     if osm_keys is not None:
         if type(osm_keys) not in [str, list]:
             raise ValueError(
                 f"'osm_keys_to_keep' -parameter should be of type str or list. "
                 f"Got {osm_keys} of type {type(osm_keys)}."
             )
+        if "id" in ([osm_keys] if isinstance(osm_keys, str) else osm_keys):
+            raise ValueError(_ID_FILTER_KEY_ERROR)
 
 
 def validate_tags_as_columns(tags_as_columns):

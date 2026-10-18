@@ -54,8 +54,8 @@ from pyrosm.primitive_block_decoder cimport (
     INFO_VERSION, INFO_VISIBLE, PB_DATE_GRANULARITY, PB_GRANULARITY, PB_LAT_OFFSET,
     PB_LON_OFFSET, PB_PRIMITIVEGROUP, PB_STRINGTABLE, REL_MEMIDS, REL_ROLES_SID,
     REL_TYPES, ST_S, WAY_ID, WAY_INFO, WAY_KEYS, WAY_REFS, WAY_VALS, NODE_ID, NODE_INFO,
-    WIRE_LENGTH, WIRE_VARINT, _Runs, _add_span, _field_end, _read_tag, _read_varint,
-    _runs_count, _runs_fill, _skip_field,
+    WIRE_LENGTH, WIRE_VARINT, _Runs, _add_span, _field_end, _fields_end,
+    _read_element_id, _read_tag, _read_varint, _runs_count, _runs_fill, _skip_field,
 )
 
 from pyrosm.engine.blobs import (
@@ -1304,46 +1304,6 @@ cdef int _dense_payload(_Dense* d, _CropState* st) noexcept nogil:
     return 0
 
 
-cdef bint _fields_ok(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end) noexcept nogil:
-    """Whether ``buf[start:end]`` is a run of well-formed fields (`_check_fields`)."""
-    cdef Py_ssize_t pos = start
-    cdef int field, wire
-    while pos < end:
-        _read_tag(buf, &pos, end, &field, &wire)
-        _skip_field(buf, &pos, end, wire)
-    return pos == end
-
-
-cdef int _element_id(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
-                     bint is_node, int64_t* out) noexcept nogil:
-    """The id of the plain node, way or relation in ``buf[start:end]``, as the decoder's
-    `_element_id` reads it; 1 for data it refuses."""
-    # The three messages share field numbers 1 (id) and 4 (Info), so NODE_ID and
-    # NODE_INFO serve for all. A node's id is a zig-zag coded sint64, the others int64.
-    cdef Py_ssize_t pos = start, f_start
-    cdef int field, wire
-    cdef uint64_t value = 0, length
-    while pos < end:
-        _read_tag(buf, &pos, end, &field, &wire)
-        if field == NODE_ID and wire == WIRE_VARINT:
-            value = _read_varint(buf, &pos, end)
-        elif field == NODE_INFO and wire == WIRE_LENGTH:
-            length = _read_varint(buf, &pos, end)
-            f_start = pos
-            pos = _field_end(pos, length, end)
-            if pos > end or not _fields_ok(buf, f_start, pos):
-                return 1
-        else:
-            _skip_field(buf, &pos, end, wire)
-    if pos != end:
-        return 1
-    if is_node:
-        out[0] = (<int64_t>(value >> 1)) ^ (-(<int64_t>(value & 1)))
-    else:
-        out[0] = <int64_t>value
-    return 0
-
-
 cdef inline bint _is_element(int field, int wire) noexcept nogil:
     return wire == WIRE_LENGTH and (
         field == GROUP_NODES or field == GROUP_WAYS or field == GROUP_RELATIONS)
@@ -1389,7 +1349,7 @@ cdef int _crop_group(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
                 return status
             dense_seen = True
         elif _is_element(field, wire):
-            if _element_id(buf, f_start, pos, field == GROUP_NODES, &element_id) != 0:
+            if _read_element_id(buf, f_start, pos, field == GROUP_NODES, &element_id) != 0:
                 return 1
             has_nodes = has_nodes or field == GROUP_NODES
             has_ways = has_ways or field == GROUP_WAYS
@@ -1425,7 +1385,7 @@ cdef int _crop_group(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
         pos = _field_end(pos, length, end)
         if field != kind:
             continue
-        _element_id(buf, f_start, pos, kind == GROUP_NODES, &element_id)
+        _read_element_id(buf, f_start, pos, kind == GROUP_NODES, &element_id)
         if kind == GROUP_NODES:
             kept = _sorted_has(&st.nodes, element_id)
         elif kind == GROUP_WAYS:
@@ -1479,7 +1439,7 @@ cdef int _append_cropped_block(const unsigned char* buf, Py_ssize_t end,
             _skip_field(buf, &pos, end, wire)
     if pos != end:
         return _BY_PYTHON
-    if table_start >= 0 and not _fields_ok(buf, table_start, table_end):
+    if table_start >= 0 and _fields_end(buf, table_start, table_end) != table_end:
         return _BY_PYTHON  # `_crop_block` raises for the table
     if st.parts.n == 0:
         return _NOTHING_KEPT

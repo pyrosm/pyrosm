@@ -148,7 +148,8 @@ def _network_ways(
         )
     else:
         node_coordinates = _coordinates(shard_paths, kept, None)
-    return _ways_arrays(kept, tags_as_columns, keep_metadata), node_coordinates
+    ways = _ways_arrays(kept, tags_as_columns, keep_metadata, area_rule=False)
+    return ways, node_coordinates
 
 
 def _assemble_network(

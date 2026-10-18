@@ -505,3 +505,25 @@ def test_relation_member_ways_match_an_isin_selection(member_ids, way_ids):
     np.testing.assert_array_equal(got[0], unique[present])
     np.testing.assert_array_equal(got[1], roles[first][present])
     np.testing.assert_array_equal(got[2]["row"], ways["row"][selected])
+
+
+@pytest.mark.parametrize(
+    "coordinates, expected",
+    [
+        ([[0, 0], [1, 0], [1, 1], [0, 0]], "LinearRing"),
+        ([[0, 0], [1, 1]], None),
+        ([0, 1, 2, 3], ValueError),
+    ],
+    ids=["ring", "too_few_points", "one_dimensional"],
+)
+def test_create_linear_ring_is_none_only_for_too_few_points(coordinates, expected):
+    """Too few points give no ring; coordinates of the wrong shape raise."""
+    from pyrosm.geometry import create_linear_ring
+
+    if expected is ValueError:
+        with pytest.raises(ValueError, match="not have enough dimensions"):
+            create_linear_ring(coordinates)
+    elif expected is None:
+        assert create_linear_ring(coordinates) is None
+    else:
+        assert create_linear_ring(coordinates).geom_type == expected

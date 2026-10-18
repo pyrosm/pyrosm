@@ -14,6 +14,7 @@ from rapidjson import dumps
 from pyrosm._arrays import columns_to_arrays
 from pyrosm.tagparser import explode_node_tag_array
 from pyrosm.data_filter import element_should_be_kept
+from pyrosm.geometry import AREA_BY_TAGS, tags_make_area
 from pyrosm.engine.decode import (
     _is_threaded,
     _object_array,
@@ -404,7 +405,7 @@ def _collect_relations(shard_paths, keep):
             meta.append(rmeta[k])
     if not ids:
         return None, np.empty(0, np.int64)
-    meta = np.array(meta, dtype=np.int64).reshape(-1, 3)
+    meta = np.array(meta, dtype=np.int64).reshape(-1, 4)
     relations = {
         "id": np.array(ids, dtype=np.int64),
         "members": _object_array(members),
@@ -412,6 +413,7 @@ def _collect_relations(shard_paths, keep):
         "version": meta[:, 0],
         "timestamp": meta[:, 1],
         "changeset": meta[:, 2],
+        "visible": meta[:, 3].astype(bool),
     }
     member_ids = (
         np.unique(np.concatenate(way_member_ids))
@@ -538,7 +540,12 @@ def _route_tags(
 
 
 def _ways_arrays(
-    cols, tags_as_columns, keep_metadata, keep_other_tags=True, columns=None
+    cols,
+    tags_as_columns,
+    keep_metadata,
+    keep_other_tags=True,
+    columns=None,
+    area_rule=True,
 ):
     """Convert the standalone way columns (from :func:`_collect_kept_ways`) into the
     ``way_elements`` dict (all occurring tag columns + the JSON ``tags`` column + metadata)
@@ -562,12 +569,22 @@ def _ways_arrays(
     The columns come in the in-memory reader's order (see :func:`_way_column_keys`), then
     the JSON ``tags`` column. ``columns``, when given, are the tag columns of the whole
     result (:func:`_result_tag_columns`): one these ways lack is added as Nones, so every
-    chunk of the result carries the same columns."""
+    chunk of the result carries the same columns. With ``area_rule`` the ways also carry,
+    under ``AREA_BY_TAGS``, whether their tags make them areas when closed (see
+    :func:`pyrosm.geometry.tags_make_area`); a network's ways are lines and go without.
+    """
     column_keys, tag_cols = _way_column_keys(tags_as_columns, keep_metadata)
     column_set = set(column_keys)
     version_col = "version" in column_set
     timestamp_col = "timestamp" in column_set
     visible_col = "visible" in column_set
+    # The area rule of closed ways reads all of a way's tags, also those not output.
+    area_by_tags = None
+    if area_rule:
+        if isinstance(cols, ElementStore):
+            area_by_tags = cols.area_by_tags()
+        else:
+            area_by_tags = tags_make_area(cols["tags"])
     # ``tag_lists`` builds Arrow arrays; without pyarrow the store goes through tag dicts.
     if isinstance(cols, ElementStore) and not _compat.HAS_PYARROW:
         cols = cols.way_columns(None if keep_other_tags else set(tags_as_columns))
@@ -618,7 +635,10 @@ def _ways_arrays(
     for key in columns or ():
         if key not in ways:
             ways[key] = np.full(n, None, dtype=object)
-    return {key: ways[key] for key in column_keys + ["tags"] if key in ways}
+    way_elements = {key: ways[key] for key in column_keys + ["tags"] if key in ways}
+    if area_by_tags is not None:
+        way_elements[AREA_BY_TAGS] = area_by_tags
+    return way_elements
 
 
 def _result_tag_columns(kept, tags_as_columns, keep_metadata, keep_other_tags=True):

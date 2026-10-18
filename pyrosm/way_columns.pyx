@@ -394,6 +394,56 @@ def column_presence(pairs_off, pair_key, column, rows, Py_ssize_t n_columns):
     return present[:n_columns].view(bool), leftover
 
 
+def area_by_tags(pairs_off, pair_key, pair_val, str_off, str_data):
+    """Whether the tags of each way make it an area when it is closed, as
+    :func:`pyrosm.geometry.tags_make_area` decides from its tag dict: the way's last
+    ``area`` tag decides when it is ``yes`` or ``no``, otherwise a ``highway``,
+    ``barrier`` or ``route`` tag makes it a line."""
+    pairs_off = _contiguous(pairs_off, np.int64)
+    pair_key = _contiguous(pair_key, np.int64)
+    pair_val = _contiguous(pair_val, np.int64)
+    str_off = _contiguous(str_off, np.int64)
+    str_data = _contiguous(str_data, np.uint8)
+    _check_store(pairs_off, pair_key, pair_val, str_off, str_data, np.empty(0, np.int64))
+    cdef Py_ssize_t n = pairs_off.shape[0] - 1, i, p, area
+    cdef int64_t* po = _int64_ptr(pairs_off)
+    cdef int64_t* pk = _int64_ptr(pair_key)
+    cdef int64_t* pv = _int64_ptr(pair_val)
+    cdef int64_t* so = _int64_ptr(str_off)
+    cdef uint8_t* sd = _uint8_ptr(str_data)
+    flags = np.empty(n, dtype=np.uint8)
+    cdef uint8_t* out = _uint8_ptr(flags)
+    cdef const uint8_t* s
+    cdef Py_ssize_t length
+    cdef int64_t k
+    cdef bint linear
+    with nogil:
+        for i in range(n):
+            area = -1
+            linear = False
+            for p in range(po[i], po[i + 1]):
+                k = pk[p]
+                s = sd + so[k]
+                length = so[k + 1] - so[k]
+                if _equals(s, length, "area"):
+                    area = p
+                elif (_equals(s, length, "highway") or _equals(s, length, "barrier")
+                        or _equals(s, length, "route")):
+                    linear = True
+            if area >= 0:
+                k = pv[area]
+                s = sd + so[k]
+                length = so[k + 1] - so[k]
+                if _equals(s, length, "yes"):
+                    out[i] = 1
+                    continue
+                if _equals(s, length, "no"):
+                    out[i] = 0
+                    continue
+            out[i] = not linear
+    return flags.view(bool)
+
+
 # --- the value filter -----------------------------------------------------------------
 
 
@@ -812,7 +862,7 @@ cdef struct _Chunk:
     const double* lon
     const double* lat
     bint network                       # lines only
-    int area_col, highway_col, barrier_col, route_col   # output positions, or -1
+    const uint8_t* area_by_tags        # per way of the store: an area when closed, or NULL
     uint8_t* kind                      # per row: 0 (no geometry), LINESTRING or POLYGON
     int64_t* n_points
     uint8_t* close                     # per row: the ring repeats its first point
@@ -1182,31 +1232,13 @@ cdef inline bint _valid_node(const _Chunk* ch, int64_t row) noexcept nogil:
     return x <= 180.0 and x >= -180.0 and y <= 90.0 and y >= -90.0
 
 
-cdef inline Py_ssize_t _col_value(const _Chunk* ch, Py_ssize_t w, int out_col) noexcept nogil:
-    """The last pair of way ``w`` whose key routes to output column ``out_col`` (a tag dict
-    keeps the last value of a key), or -1."""
-    cdef Py_ssize_t p, found = -1
-    cdef int c
-    for p in range(ch.pairs_off[w], ch.pairs_off[w + 1]):
-        c = ch.column[ch.pair_key[p]]
-        if c >= 0 and ch.out_column[c] == out_col:
-            found = p
-    return found
-
-
-cdef inline bint _value_is(const _Chunk* ch, Py_ssize_t p, const char* text) noexcept nogil:
-    """Whether the value of pair ``p`` is ``text``."""
-    cdef int64_t v = ch.pair_val[p]
-    return _equals(ch.str_data + ch.str_off[v], ch.str_off[v + 1] - ch.str_off[v], text)
-
-
 cdef void _measure_geometry(const _Chunk* ch, Py_ssize_t i) noexcept nogil:
     """The geometry of row ``i`` as geometry.pyx builds it: its kind, its number of points,
     whether the ring repeats its first point and whether all its nodes are valid."""
     cdef Py_ssize_t w = ch.rows[i], j, n, k = 0, p, first = -1, last = -1
     cdef const int64_t* nrow = ch.node_row + ch.node_start[i]
     cdef int64_t r0 = ch.refs_off[w]
-    cdef bint is_area = False, linear, all_valid = True
+    cdef bint is_area = False, all_valid = True
     n = ch.refs_off[w + 1] - r0
     ch.kind[i] = 0
     ch.close[i] = 0
@@ -1224,19 +1256,10 @@ cdef void _measure_geometry(const _Chunk* ch, Py_ssize_t i) noexcept nogil:
         else:
             all_valid = False
     ch.all_valid[i] = all_valid
-    # A closed way is an area unless ``area=no``, or (without ``area=yes``) it has a
-    # ``highway``, ``barrier`` or ``route`` tag; a network's ways are lines.
+    # A closed way is an area when its tags make it one (``area_by_tags``); a network's
+    # ways are lines.
     if not ch.network and ch.refs[r0] == ch.refs[r0 + n - 1]:
-        p = _col_value(ch, w, ch.area_col) if ch.area_col >= 0 else -1
-        if p >= 0 and _value_is(ch, p, "yes"):
-            is_area = True
-        elif p >= 0 and _value_is(ch, p, "no"):
-            is_area = False
-        else:
-            linear = ((ch.highway_col >= 0 and _col_value(ch, w, ch.highway_col) >= 0)
-                      or (ch.barrier_col >= 0 and _col_value(ch, w, ch.barrier_col) >= 0)
-                      or (ch.route_col >= 0 and _col_value(ch, w, ch.route_col) >= 0))
-            is_area = not linear
+        is_area = ch.area_by_tags[w] != 0
     # An area with every node valid and 4 or more of them is a polygon of all its nodes;
     # otherwise of its valid nodes when there are 3 or more, closed by repeating the first
     # when there are only 3 or the first and last differ. A line needs 2 valid nodes.
@@ -1324,14 +1347,15 @@ cdef inline Py_ssize_t _wkb_size(const _Chunk* ch, Py_ssize_t i) noexcept nogil:
 
 def build_chunk(rows, refs_off, refs, pairs_off, pair_key, pair_val, str_off, str_data,
                 valid, column, out_column, Py_ssize_t n_out, special, version, timestamp,
-                visible, NodeLocations nodes not None, bint network, int area_col,
-                int highway_col, int barrier_col, int route_col, bint json,
+                visible, NodeLocations nodes not None, bint network, area_by_tags,
+                bint json,
                 bint json_version, bint json_timestamp, bint json_visible):
     """Build the ways ``rows`` of a store as the columns of a result chunk.
 
     The tag arguments are those of :func:`tag_columns`. ``nodes`` holds the coordinates of
-    the ways' nodes; ``network`` builds lines only; the ``*_col`` arguments are the output
-    positions of the tag columns the area rule of closed ways reads (-1 when not output).
+    the ways' nodes; ``network`` builds lines only; ``area_by_tags`` holds, per way of the
+    store, whether its tags make it an area when it is closed (see
+    :func:`area_by_tags`), and is not read for a network.
 
     Returns a dict: ``kept`` (the positions in ``rows`` that have a geometry, the chunk's
     rows), ``wkb_off`` and ``wkb`` (their geometries), ``types`` (bits of
@@ -1349,6 +1373,10 @@ def build_chunk(rows, refs_off, refs, pairs_off, pair_key, pair_val, str_off, st
     _check_offsets(refs_off, refs.shape[0])
     if refs_off.shape[0] != pairs_off.shape[0]:
         raise ValueError("refs_off and pairs_off must have one entry per way and one more")
+    if not network:
+        area_by_tags = _contiguous(area_by_tags, np.bool_).view(np.uint8)
+        if area_by_tags.shape[0] != refs_off.shape[0] - 1:
+            raise ValueError("area_by_tags must have one flag per way")
     lon = np.asarray(nodes._lon)
     lat = np.asarray(nodes._lat)
     if len(nodes._ids) > min(lon.shape[0], lat.shape[0]):
@@ -1392,10 +1420,7 @@ def build_chunk(rows, refs_off, refs, pairs_off, pair_key, pair_val, str_off, st
     ch.lon = _double_ptr(lon) if lon.shape[0] else NULL
     ch.lat = _double_ptr(lat) if lat.shape[0] else NULL
     ch.network = network
-    ch.area_col = area_col
-    ch.highway_col = highway_col
-    ch.barrier_col = barrier_col
-    ch.route_col = route_col
+    ch.area_by_tags = NULL if network else _uint8_ptr(area_by_tags)
     ch.kind = _uint8_ptr(kind)
     ch.n_points = _int64_ptr(n_points)
     ch.close = _uint8_ptr(close)

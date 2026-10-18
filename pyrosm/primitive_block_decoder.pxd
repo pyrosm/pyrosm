@@ -149,6 +149,46 @@ cdef inline void _skip_field(const unsigned char* buf, Py_ssize_t* pos,
         pos[0] = _CORRUPT
 
 
+cdef inline Py_ssize_t _fields_end(const unsigned char* buf, Py_ssize_t start,
+                                   Py_ssize_t end) noexcept nogil:
+    """Where a scan of ``buf[start:end]`` as a run of fields stops: ``end`` when the
+    fields are well-formed."""
+    cdef Py_ssize_t pos = start
+    cdef int field, wire
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        _skip_field(buf, &pos, end, wire)
+    return pos
+
+
+cdef inline int _read_element_id(const unsigned char* buf, Py_ssize_t start,
+                                 Py_ssize_t end, bint is_node,
+                                 int64_t* out) noexcept nogil:
+    """Write to ``out`` the id of the plain node, way or relation in ``buf[start:end]``:
+    the last one, as protobuf reads it, or 0, the proto2 default, when it has none. A
+    node's id is zig-zag coded. Returns 1 unless the element and its ``Info`` are
+    well-formed fields, else 0. The three messages number the id and ``Info`` alike."""
+    cdef Py_ssize_t pos = start, f_start
+    cdef int field, wire
+    cdef uint64_t value = 0, length
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if field == NODE_ID and wire == WIRE_VARINT:
+            value = _read_varint(buf, &pos, end)
+        elif field == NODE_INFO and wire == WIRE_LENGTH:
+            length = _read_varint(buf, &pos, end)
+            f_start = pos
+            pos = _field_end(pos, length, end)
+            if pos > end or _fields_end(buf, f_start, pos) != pos:
+                return 1
+        else:
+            _skip_field(buf, &pos, end, wire)
+    if pos != end:
+        return 1
+    out[0] = _zig_zag_decode(value) if is_node else <int64_t>value
+    return 0
+
+
 # A packed repeated field (a way's refs, a dense group's ids) may come as several fields
 # with the same number, which together form one list. ``_Runs`` keeps each one's byte span
 # (``start[i]:end[i]``), up to ``_MAX_RUNS``; writers put a field in one run.

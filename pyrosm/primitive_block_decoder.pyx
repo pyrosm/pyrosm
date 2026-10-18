@@ -93,12 +93,12 @@ cdef Py_ssize_t _fill_packed_delta(const unsigned char* buf, Py_ssize_t start,
                                    Py_ssize_t end, int64_t[::1] out, Py_ssize_t at,
                                    int64_t running) nogil:
     """Like ``_fill_packed`` for a delta-coded ``sint`` field: write the running
-    cumulative sum, which starts from ``running``, into ``out[at:]`` and return how many
-    were written, or -1."""
+    cumulative sum, which starts from ``running`` and wraps around as numpy's int64
+    arithmetic does, into ``out[at:]`` and return how many were written, or -1."""
     cdef Py_ssize_t pos = start
     cdef Py_ssize_t i = at
     while pos < end:
-        running += _zig_zag_decode(_read_varint(buf, &pos, end))
+        running = _wrapping_add(running, _zig_zag_decode(_read_varint(buf, &pos, end)))
         out[i] = running
         i += 1
     if pos != end:
@@ -286,12 +286,14 @@ cdef dict _decode_dense_group(const unsigned char* buf, Py_ssize_t start,
 cdef _join_aligned(list groups, str name):
     """Concatenate the groups' ``name`` arrays. When only some groups have one (an
     untagged group's empty ``keys_vals``, an absent ``DenseInfo`` field), each of the
-    others contributes a 0 per node, so every node keeps its own values."""
+    others contributes a 0 per node (a 1 for ``visible``, as the PBF format reads a
+    missing flag), so every node keeps its own values."""
     parts = [g[name] for g in groups]
     if all(len(p) for p in parts) or not any(len(p) for p in parts):
         return np.concatenate(parts)
+    fill = 1 if name == "visible" else 0
     return np.concatenate([
-        p if len(p) else np.zeros(len(g["id"]), dtype=np.int64)
+        p if len(p) else np.full(len(g["id"]), fill, dtype=np.int64)
         for p, g in zip(parts, groups)
     ])
 
@@ -395,11 +397,12 @@ cdef class _ElementArrays:
 cdef int _fill_metadata(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
                         _ElementArrays b, Py_ssize_t i) except -1:
     """Decode an ``Info`` sub-message (or the proto2 default when absent) into ``b``'s
-    per-element metadata arrays at index ``i``. Info fields are plain absolute values;
-    when ``b`` tracks them, ``info_fields`` gets bit ``1 << (n - 1)`` for each field
-    number ``n`` the Info holds."""
+    per-element metadata arrays at index ``i``; a missing ``visible`` is 1, as the PBF
+    format reads it. Info fields are plain absolute values; when ``b`` tracks them,
+    ``info_fields`` gets bit ``1 << (n - 1)`` for each field number ``n`` the Info
+    holds."""
     cdef int64_t version = -1, timestamp = 0, changeset = 0
-    cdef int64_t uid = 0, user_sid = 0, visible = 0, present = 0
+    cdef int64_t uid = 0, user_sid = 0, visible = 1, present = 0
     cdef Py_ssize_t pos
     cdef int field, wire
     if start >= 0:
@@ -860,41 +863,15 @@ def decode_primitive_block(const unsigned char[::1] data, bint keep_metadata=Tru
     return string_table, header, nodes, ways, relations
 
 
-cdef int _check_fields(const unsigned char* buf, Py_ssize_t start,
-                       Py_ssize_t end) except -1:
-    """Raise unless ``buf[start:end]`` is a run of well-formed fields."""
-    cdef Py_ssize_t pos = start
-    cdef int field, wire
-    while pos < end:
-        _read_tag(buf, &pos, end, &field, &wire)
-        _skip_field(buf, &pos, end, wire)
-    return _check_end(pos, end)
-
-
 cdef int64_t _element_id(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
                          bint is_signed) except? -1:
-    """The id of the plain node, way or relation stored in ``buf[start:end]``, zig-zag
-    decoded when ``is_signed`` (a node's): the last one, as protobuf and the decoder read
-    it, or 0, the proto2 default, when it has none. Raises unless the element and its
-    ``Info`` are well-formed fields; the three number the id and ``Info`` alike."""
-    cdef Py_ssize_t pos = start, f_start
-    cdef int field, wire
-    cdef uint64_t value = 0, length
-    while pos < end:
-        _read_tag(buf, &pos, end, &field, &wire)
-        if field == NODE_ID and wire == WIRE_VARINT:
-            value = _read_varint(buf, &pos, end)
-        elif field == NODE_INFO and wire == WIRE_LENGTH:
-            length = _read_varint(buf, &pos, end)
-            f_start = pos
-            pos = _field_end(pos, length, end)
-            if pos > end:
-                break
-            _check_fields(buf, f_start, pos)
-        else:
-            _skip_field(buf, &pos, end, wire)
-    _check_end(pos, end)
-    return _zig_zag_decode(value) if is_signed else <int64_t>value
+    """The id of the plain node, way or relation stored in ``buf[start:end]`` (see
+    `_read_element_id`), zig-zag decoded when ``is_signed`` (a node's). Raises unless the
+    element and its ``Info`` are well-formed fields."""
+    cdef int64_t element_id = 0
+    if _read_element_id(buf, start, end, is_signed, &element_id) != 0:
+        _corrupt("a field or a number does not fit in the data that holds it")
+    return element_id
 
 
 cdef inline bint _is_element(int field, int wire) nogil:
@@ -1398,6 +1375,7 @@ cdef int _decode_node_features_nogil(const unsigned char* buf, Py_ssize_t start,
     if out.fill:
         # The group's version, timestamp, changeset and visible columns, decoded into
         # scratch[c * n:(c + 1) * n] so a feature's metadata can be picked by its node.
+        # A missing column is 0, but a missing visible is 1, as the PBF format reads it.
         fields[0] = DI_VERSION
         fields[1] = DI_TIMESTAMP
         fields[2] = DI_CHANGESET
@@ -1410,7 +1388,7 @@ cdef int _decode_node_features_nogil(const unsigned char* buf, Py_ssize_t start,
                     return 1
             else:
                 for i in range(n):
-                    columns[c][i] = 0
+                    columns[c][i] = 1 if c == 3 else 0
     if start >= end:
         # A group without tags: its features are the nodes with a wanted id.
         for node in range(n if req.node_set != NULL else 0):
@@ -1656,7 +1634,7 @@ cdef int _decode_way_nogil(const unsigned char* buf, Py_ssize_t start, Py_ssize_
     cdef Py_ssize_t i_pos
     cdef int field, wire
     cdef uint64_t length, value
-    cdef int64_t way_id = 0, version = -1, timestamp = 0, visible = 0
+    cdef int64_t way_id = 0, version = -1, timestamp = 0, visible = 1
     cdef bint matched
     keys.n = 0
     vals.n = 0
@@ -1881,9 +1859,10 @@ def check_batch_starts(starts, Py_ssize_t size):
     """Raise ``ValueError`` unless the block offsets ``starts`` of a batch rise from 0 or
     more to at most ``size``, the length of the batch's buffer."""
     starts = np.asarray(starts)
+    cdef Py_ssize_t n = len(starts)
     # Compared, not subtracted: a difference of int64 offsets can overflow.
-    if (len(starts) == 0 or (starts < 0).any() or (starts > size).any()
-            or (starts[1:] < starts[:-1]).any()):
+    if (n == 0 or (starts < 0).any() or (starts > size).any()
+            or (starts[1:] < starts[: n - 1]).any()):
         raise ValueError("starts must rise from 0 to at most the buffer's length")
 
 
