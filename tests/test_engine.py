@@ -1091,22 +1091,19 @@ def test_engine_store_tag_columns_match_the_python_path(
         store, tags_as_columns, keep_metadata, keep_other_tags
     ) == ref
     column_keys, tag_cols = collect._way_column_keys(tags_as_columns, keep_metadata)
-    metadata = (store.version, store.timestamp, store.visible)
-    flags = [keep_other_tags and k not in column_keys for k in _METADATA]
+    by_dicts = store.way_columns(keys)
     col_lists, leftover, _ = collect._route_tags(
-        store.way_columns(keys)["tags"], *metadata, tag_cols, keep_other_tags, *flags
+        by_dicts["tags"],
+        store.version,
+        store.timestamp,
+        store.visible,
+        tag_cols,
+        keep_other_tags,
+        *(keep_other_tags and k not in column_keys for k in _METADATA),
     )
     columns, json = tag_lists(store, tags_as_columns, keep_metadata, keep_other_tags)
     assert {k: v.tolist() for k, v in columns.items()} == col_lists
     assert json.tolist() == leftover
-    if keys is not None:
-        # The process decode's tag dicts also hold the geometry tag keys: those that are not
-        # output columns are dropped.
-        from pyrosm.engine.readers import _GEOMETRY_TAG_KEYS
-
-        decoded = store.way_columns(keys | set(_GEOMETRY_TAG_KEYS))["tags"]
-        routed = collect._route_tags(decoded, *metadata, tag_cols, keep_other_tags, *flags)
-        assert routed[:2] == (col_lists, leftover)
 
 
 def test_way_columns_special_ways_and_column_presence():
@@ -1214,6 +1211,26 @@ def test_way_columns_tag_columns_check_their_arrays():
     offsets, data, _ = built["json"]
     assert offsets.tolist() == [0, 33]
     assert re.fullmatch(rb'{"a":"\\u[0-9A-F]{4}","b":"(\\u[0-9A-F]{4}){2}"}', data)
+
+
+def test_route_tags_drops_the_tags_of_no_column_without_other_tags():
+    # Without other tags the process decode's tag dicts hold the requested keys and the
+    # geometry tag keys; those that are not output columns are dropped, so the columns and
+    # JSON are those of the requested keys alone.
+    from pyrosm.engine import collect
+    from pyrosm.engine.readers import _GEOMETRY_TAG_KEYS
+
+    store = _way_store(_CRAFTED_WAYS)
+    requested = ["building", "source", "id_tag"]
+    _, tag_cols = collect._way_column_keys(requested, True)
+    metadata = (store.version, store.timestamp, store.visible)
+    routed = [
+        collect._route_tags(
+            store.way_columns(keys)["tags"], *metadata, tag_cols, False, False, False, False
+        )[:2]
+        for keys in (set(requested), set(requested) | set(_GEOMETRY_TAG_KEYS))
+    ]
+    assert routed[1] == routed[0]
 
 
 def test_engine_cut_off_file_raises_the_same_error(test_pbf, tmp_path, monkeypatch):
