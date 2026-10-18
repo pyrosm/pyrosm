@@ -1111,19 +1111,23 @@ def test_engine_store_tag_columns_match_the_python_path(
         store, tags_as_columns, keep_metadata, keep_other_tags
     ) == ref
     column_keys, tag_cols = collect._way_column_keys(tags_as_columns, keep_metadata)
+    metadata = (store.version, store.timestamp, store.visible)
+    flags = [keep_other_tags and k not in column_keys for k in _METADATA]
     by_dicts = store.way_columns(keys)
     col_lists, leftover, _ = collect._route_tags(
-        by_dicts["tags"],
-        store.version,
-        store.timestamp,
-        store.visible,
-        tag_cols,
-        keep_other_tags,
-        *(keep_other_tags and k not in column_keys for k in _METADATA),
+        by_dicts["tags"], *metadata, tag_cols, keep_other_tags, *flags
     )
     columns, json = tag_lists(store, tags_as_columns, keep_metadata, keep_other_tags)
     assert {k: v.tolist() for k, v in columns.items()} == col_lists
     assert json.tolist() == leftover
+    if keys is not None:
+        # The process decode's tag dicts also hold the geometry tag keys: those that are not
+        # output columns are dropped.
+        from pyrosm.engine.readers import _GEOMETRY_TAG_KEYS
+
+        decoded = store.way_columns(keys | set(_GEOMETRY_TAG_KEYS))["tags"]
+        routed = collect._route_tags(decoded, *metadata, tag_cols, keep_other_tags, *flags)
+        assert routed[:2] == (col_lists, leftover)
     for columns, has_pyarrow in ((None, True), (ref, True), (ref, False)):
         monkeypatch.setattr(_compat, "HAS_PYARROW", has_pyarrow)
         expected, got = (
@@ -1825,12 +1829,14 @@ def test_engine_stream_parquet_chunk_table_branches(
     pytest.importorskip("pyarrow")
     import tempfile
     import shutil
+    import pyarrow.parquet as pq
     from pyrosm.config import Conf
     from pyrosm.data_manager import parse_custom_filter
     from pyrosm.engine import geoparquet
     from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
     from pyrosm.engine.pool import _decode_all
     from pyrosm.engine.collect import _collect_layer
+    from pyrosm.engine.ways import ElementStore
 
     data_filter, osm_keys = parse_custom_filter({"building": [True]})
     filter_spec = (osm_keys, data_filter, "keep")
@@ -1862,7 +1868,15 @@ def test_engine_stream_parquet_chunk_table_branches(
         # relations only (no standalone ways): way loop skipped, relation chunk written.
         assert write((None, None, relations, relation_ways, nc)) is not None
         # ways only (no relations): relation branch skipped.
-        assert write((None, kept, None, None, nc)) is not None
+        whole = write((None, kept, None, None, nc))
+        assert whole is not None
+        # the way columns of a process decode, in two chunks, write the rows of one chunk.
+        columns = kept.way_columns() if isinstance(kept, ElementStore) else kept
+        half = len(columns["id"]) // 2 + 1
+        in_two = write((None, columns, None, None, nc), "in_two.parquet", half)
+        assert pq.ParquetFile(whole).metadata.num_row_groups == 1
+        assert pq.ParquetFile(in_two).metadata.num_row_groups == 2
+        _assert_full_parity(gpd.read_parquet(in_two), gpd.read_parquet(whole))
         # a way referencing an absent node assembles empty -> no parts -> None.
         absent_nodes = np.empty(1, dtype=object)
         absent_nodes[0] = np.array([10**18], np.int64)
@@ -2433,9 +2447,14 @@ def test_engine_network_nodes_cache_reuse_skips_decode(
     _assert_full_parity(n1.assign(osm_type="node"), n2.assign(osm_type="node"))
 
 
-def test_engine_network_output_path_writes_edges(helsinki_pbf, tmp_path):
+@pytest.mark.parametrize("backend", ["threads", "processes"])
+def test_engine_network_output_path_writes_edges(
+    helsinki_pbf, tmp_path, monkeypatch, backend
+):
     # output= writes the edges to that GeoParquet and returns the path; the file matches the
-    # in-memory network edges.
+    # in-memory network edges, from the Arrow tables of a threaded decode and from the
+    # frame of a process decode.
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
     out = tmp_path / "network.parquet"
     ret = get_network(helsinki_pbf, network_type="driving", output=out)
     assert ret == out and out.exists()
