@@ -707,6 +707,81 @@ def test_engine_threaded_decode_releases_each_part(tmp_path, monkeypatch):
     assert peak < 10 * per_block
 
 
+@pytest.mark.parametrize(
+    "osm_keys, data_filter, bbox, exclude",
+    [
+        ([b"building"], {"building": ["yes"]}, None, False),
+        ([b"highway"], {"highway": ["footway", "path"]}, (24.940, 60.168, 24.948, 60.174), False),
+        ([b"natural", b"water"], {"natural": ["water"]}, None, True),
+    ],
+    ids=["values", "values in a box", "excluded members"],
+)
+def test_engine_element_store_selects_as_the_python_path(
+    repacked_pbf, tmp_path, monkeypatch, osm_keys, data_filter, bbox, exclude
+):
+    # The ways a threaded decode's element store keeps (value filter, nodes in the box,
+    # relation members excluded) are the ways the Python path keeps from the same shards,
+    # with the same columns.
+    from pyrosm.engine import collect
+    from pyrosm.engine.bounding_box import _in_box_nodes
+    from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
+    from pyrosm.engine.ways import ElementStore, kept_ways
+
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", "threads")
+    blobs, _ = _data_blob_spans(_index_blobs(repacked_pbf))
+    shards, _ = pool._decode_all(
+        repacked_pbf, blobs, 2, str(tmp_path), osm_keys, True, bbox_bounds=bbox
+    )
+    keep = collect._keep_fn(([k.decode() for k in osm_keys], data_filter, "keep"))
+    in_box = _in_box_nodes(shards) if bbox is not None else None
+    store = ElementStore.from_shards(shards)
+    exclude_ids = store.id[::3] if exclude else np.empty(0, np.int64)
+    mine = kept_ways(store, exclude_ids, keep, in_box).way_columns()
+    ref = collect._filter_way_columns(
+        collect._read_way_columns(shards), exclude_ids, keep, in_box
+    )
+    assert 0 < len(ref["id"]) < len(store)
+    assert list(mine) == list(ref)
+    for key in ("id", "version", "timestamp", "visible"):
+        assert mine[key].tolist() == ref[key].tolist(), key
+    assert list(mine["tags"]) == list(ref["tags"])
+    assert [n.tolist() for n in mine["nodes"]] == [n.tolist() for n in ref["nodes"]]
+
+
+def test_way_columns_take_and_membership():
+    # Rows of a ragged column, ids in a set, and ways with a node in a set; offsets that do
+    # not fit the values and rows outside the column raise.
+    from pyrosm import way_columns as wc
+    from pyrosm.int64_hash import Int64Set
+
+    off, values = np.array([0, 2, 2, 5]), np.array([1, 2, 3, 4, 5])
+    new_off, new_values = wc.take(off, values, np.array([2, 0, 1]))
+    assert new_off.tolist() == [0, 3, 5, 5] and new_values.tolist() == [3, 4, 5, 1, 2]
+    assert wc.in_set(np.array([1, 7, 3]), Int64Set(np.array([3, 1]))).tolist() == [
+        True,
+        False,
+        True,
+    ]
+    nodes = Int64Set(np.array([4]))
+    assert wc.with_node_in(off, values, nodes).tolist() == [False, False, True]
+    for bad_off, rows in (([0, 2, 9], [0]), ([1, 5], [0]), ([0, 3, 2, 5], [0])):
+        with pytest.raises(ValueError, match="offsets"):
+            wc.take(np.array(bad_off), values, np.array(rows))
+    for rows in ([3], [-1]):
+        with pytest.raises(ValueError, match="rows"):
+            wc.take(off, values, np.array(rows))
+    with pytest.raises(ValueError, match="offsets"):
+        wc.with_node_in(np.array([0, 9]), values, nodes)
+    flat = np.empty((1, 0), dtype=np.int64)
+    for call in (
+        lambda: wc.take(np.array([0, 1]), flat, np.array([0])),
+        lambda: wc.in_set(flat, Int64Set(np.array([1]))),
+        lambda: wc.with_node_in(np.array([0, 1]), flat, nodes),
+    ):
+        with pytest.raises(ValueError, match="one-dimensional"):
+            call()
+
+
 def test_engine_cut_off_file_raises_the_same_error(test_pbf, tmp_path, monkeypatch):
     # A file cut off in its last blob raises the same error with either backend.
     from pathlib import Path

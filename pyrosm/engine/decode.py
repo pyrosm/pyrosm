@@ -21,6 +21,7 @@ from pyrosm.primitive_block_decoder import (
     decode_batch_nogil,
     decode_primitive_block,
 )
+from pyrosm.way_columns import take
 from pyrosm.engine.blobs import _inflated_batch, _read_batches, _read_block, _read_span
 from pyrosm.engine.bounding_box import _in_box_mask, _filter_features_to_box
 
@@ -548,6 +549,11 @@ def _open_shard(shard):
     return np.load(shard, allow_pickle=True)
 
 
+def _is_threaded(shard_paths):
+    """Whether ``shard_paths`` are the shards of a threaded decode (:class:`_Shard`)."""
+    return bool(shard_paths) and isinstance(shard_paths[0], _Shard)
+
+
 def _block_shard(decoded, at, b, bbox_bounds):
     """The shard dict of block ``b`` of a batch decoded by ``decode_batch_nogil`` (with
     ``way_strings``): :func:`_decode_one_block`'s arrays, the tags as string ids (see
@@ -588,8 +594,8 @@ def _block_nodes(decoded, span, bbox_bounds):
         inside = np.flatnonzero(
             _in_box_mask(node_lon[rows], node_lat[rows], bbox_bounds)
         )
-        _, keys = _take_rows(pairs_off, keys, inside)
-        pairs_off, vals = _take_rows(pairs_off, vals, inside)
+        _, keys = take(pairs_off, keys, inside)
+        pairs_off, vals = take(pairs_off, vals, inside)
         rows, meta = rows[inside], meta[inside]
     return {
         "node_id": node_id,
@@ -650,15 +656,6 @@ _NO_RELATIONS = {
     "rel_tags": _object_array([]),
     "rel_meta": np.empty((0, 3), np.int64),
 }
-
-
-def _take_rows(off, values, rows):
-    """The rows ``rows`` of the CSR ``values`` (row ``i`` is ``values[off[i]:off[i + 1]]``)
-    as ``(offsets, values)``."""
-    lengths = off[rows + 1] - off[rows]
-    new_off = _offsets_from_lengths(lengths)
-    at = np.repeat(off[rows] - new_off[:-1], lengths) + np.arange(new_off[-1])
-    return new_off, values[at]
 
 
 def _columnar_tags(shard):
