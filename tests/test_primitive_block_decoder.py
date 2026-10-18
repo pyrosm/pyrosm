@@ -477,12 +477,8 @@ def _expected_dense(block, keys, bbox):
 def test_decode_batch_nogil_dense_nodes(test_pbf, helsinki_pbf, keys):
     """The GIL-free batch decoder gives the dense nodes and node features of the bundled
     extracts as decode_primitive_block decodes them; it hands back the blocks with
-    relations (status 1). block_string_table gives a block's string table."""
-    from pyrosm.primitive_block_decoder import (
-        BLOCK_COUNTS,
-        block_string_table,
-        decode_batch_nogil,
-    )
+    relations (status 1)."""
+    from pyrosm.primitive_block_decoder import BLOCK_COUNTS, decode_batch_nogil
 
     blocks = list(_iter_block_bytes(test_pbf)) + list(_iter_block_bytes(helsinki_pbf))
     bbox = (24.94, 60.16, 24.96, 60.17)
@@ -509,12 +505,6 @@ def test_decode_batch_nogil_dense_nodes(test_pbf, helsinki_pbf, keys):
     assert got == pairs
     meta = [m for e in expected for m in e["feature_meta"]]
     assert out["feature_meta"].tolist() == np.array(meta).tolist()
-    # The tags' string ids are resolved with the block's string table.
-    for block in blocks + [_two_string_tables()]:
-        assert block_string_table(block) == decode_primitive_block(block)[0]
-    for corrupt in (_two_string_tables() + b"\x12\x02x", _corrupt_string_table()):
-        with pytest.raises(InvalidOSMFileError):
-            block_string_table(corrupt)
 
 
 def _dense_block(id_runs, keys_vals=None, untagged_group=False):
@@ -803,3 +793,58 @@ def test_decode_batch_nogil_ways(test_pbf, helsinki_pbf, keys):
         )
     ]
     assert got == matched
+
+
+def _resolved_pairs(off, keys, vals, strings_of):
+    """The tag pairs of each element as (key, value) bytes, ``strings_of(i)`` giving the
+    strings element ``i``'s ids index."""
+    off = off.tolist()
+    return [
+        [
+            (strings_of(i)[k], strings_of(i)[v])
+            for k, v in zip(keys[a:b].tolist(), vals[a:b].tolist())
+        ]
+        for i, (a, b) in enumerate(zip(off[:-1], off[1:]))
+    ]
+
+
+@pytest.mark.parametrize("requested", [None, [b"highway", b"name", b"amenity"]])
+def test_decode_batch_nogil_string_mode(test_pbf, helsinki_pbf, requested):
+    """With way_strings the tags of the node features and ways are ids of one string
+    buffer for the batch, which holds each block's strings once; with requested keys only
+    the tags with one of them are given. The tags are those of the block's string table."""
+    from pyrosm.primitive_block_decoder import BLOCK_COUNTS, decode_batch_nogil
+
+    blocks = list(_iter_block_bytes(test_pbf)) + list(_iter_block_bytes(helsinki_pbf))
+    args = dict(keys=[b"highway", b"amenity"], features=True, all_ways=True)
+    by_id = decode_batch_nogil(*_batch(blocks), **args)
+    by_string = decode_batch_nogil(
+        *_batch(blocks), way_strings=True, requested=requested, **args
+    )
+    counts = dict(zip(BLOCK_COUNTS, by_string["counts"].T.tolist()))
+    assert counts["status"] == by_id["counts"][:, 0].tolist()
+    for name in ("node_id", "feature_row", "way_id", "way_refs", "all_id", "all_refs"):
+        assert by_string[name].tolist() == by_id[name].tolist(), name
+
+    tables = [decode_primitive_block(b)[0] for b in blocks]
+    off, data = by_string["string_off"].tolist(), by_string["string_data"].tobytes()
+    strings = [data[a:b] for a, b in zip(off[:-1], off[1:])]
+    for kind, per_block in (("feature", "features"), ("way", "ways")):
+        block_of = np.repeat(np.arange(len(blocks)), counts[per_block])
+        pairs_off = "feature_pairs_off" if kind == "feature" else "way_tags_off"
+        keys, vals = kind + "_keys", kind + "_vals"
+        expected = _resolved_pairs(
+            by_id[pairs_off], by_id[keys], by_id[vals], lambda i: tables[block_of[i]]
+        )
+        if requested is not None:
+            expected = [[(k, v) for k, v in p if k in requested] for p in expected]
+        got = _resolved_pairs(
+            by_string[pairs_off], by_string[keys], by_string[vals], lambda i: strings
+        )
+        assert got == expected, kind
+        assert any(expected)
+    # Each block's strings come once, one after another.
+    s0 = np.concatenate([[0], np.cumsum(counts["strings"])])
+    for b in range(len(blocks)):
+        block_strings = strings[s0[b] : s0[b + 1]]
+        assert len(set(block_strings)) == len(block_strings)

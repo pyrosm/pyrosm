@@ -14,7 +14,7 @@ from rapidjson import dumps
 from pyrosm._arrays import columns_to_arrays
 from pyrosm.tagparser import explode_node_tag_array
 from pyrosm.data_filter import element_should_be_kept
-from pyrosm.engine.decode import _object_array, _open_shard
+from pyrosm.engine.decode import _object_array, _open_shard, _shard_tags
 from pyrosm.engine.bounding_box import _in_box_nodes
 
 # Relation.MemberType -> the byte labels pyrosm's relation assembly expects.
@@ -44,7 +44,7 @@ def _read_way_columns(shard_paths):
         ids.append(wid)
         # Per-way node-ref arrays (views into the shard's flat refs); no per-way list build.
         nodes_list.extend(np.split(refs, off[1:-1]) if len(wid) > 1 else [refs])
-        tags.append(z["way_tags"])
+        tags.append(_shard_tags(z, "way"))
         vers.append(z["way_version"])
         tss.append(z["way_timestamp"])
         viss.append(z["way_visible"])
@@ -91,7 +91,7 @@ def _collect_node_features(shard_paths, tags_as_columns, keep_metadata, keep):
         ids.append(nid)
         lon.append(z["nfeat_lon"])
         lat.append(z["nfeat_lat"])
-        tags.append(z["nfeat_tags"])
+        tags.append(_shard_tags(z, "nfeat"))
         meta.append(z["nfeat_meta"])
     if not ids:
         return None
