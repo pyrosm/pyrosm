@@ -18,7 +18,6 @@ import numpy as np
 from pyrosm._arrays import _offsets_from_lengths
 from pyrosm.primitive_block_decoder import (
     BLOCK_COUNTS,
-    block_string_table,
     decode_batch_nogil,
     decode_primitive_block,
 )
@@ -33,7 +32,17 @@ _SHARD_TARGET_BYTES = 8_000_000
 
 # The CSR offset arrays in a shard dict: when several blocks' shard dicts are merged into one,
 # these are rebuilt from the concatenated per-row lengths (the flat arrays just concatenate).
-_OFFSET_KEYS = ("refs_off", "all_refs_off", "rel_memoff")
+_OFFSET_KEYS = (
+    "refs_off",
+    "all_refs_off",
+    "rel_memoff",
+    "way_pairs_off",
+    "nfeat_pairs_off",
+    "str_off",
+)
+# The string-id arrays in a threaded decode's shard dict (ids of the strings ``str_off`` /
+# ``str_data`` hold): merged shards renumber them past the strings of the blocks before.
+_STRING_ID_KEYS = ("way_pair_key", "way_pair_val", "nfeat_pair_key", "nfeat_pair_val")
 
 
 @dataclass(frozen=True)
@@ -442,7 +451,12 @@ def _merge_shards(blocks):
     for key in blocks[0]:
         if key in _OFFSET_KEYS:
             lengths = np.concatenate([np.diff(b[key]) for b in blocks])
-            merged[key] = _offsets_from_lengths(lengths.tolist())
+            merged[key] = _offsets_from_lengths(lengths)
+        elif key in _STRING_ID_KEYS:
+            bases = _offsets_from_lengths([len(b["str_off"]) - 1 for b in blocks])
+            merged[key] = np.concatenate(
+                [b[key] + base for b, base in zip(blocks, bases[:-1].tolist())]
+            )
         else:
             merged[key] = np.concatenate([b[key] for b in blocks])
     return merged
@@ -491,7 +505,7 @@ _THREAD_BATCH = 64
 # The status column of ``decode_batch_nogil``'s counts.
 _STATUS = BLOCK_COUNTS.index("status")
 # The shard keys that hold Python objects; a threaded decode keeps them in memory.
-_OBJECT_KEYS = ("nfeat_tags", "way_tags", "rel_memrole", "rel_tags")
+_OBJECT_KEYS = ("rel_memrole", "rel_tags")
 
 
 class _Shard:
@@ -534,133 +548,88 @@ def _open_shard(shard):
     return np.load(shard, allow_pickle=True)
 
 
-def _block_shard(settings, decoded, at, b, data):
-    """The shard dict of block ``b`` of a batch decoded by ``decode_batch_nogil``, as
-    :func:`_decode_one_block` gives it for the read with the :class:`_DecodeSettings`
-    ``settings``. ``at[name][b]`` is where block ``b``'s entries of the count column
-    ``name`` (``BLOCK_COUNTS``) start in the batch's arrays; ``data`` is the block's bytes,
-    whose string table resolves the tags."""
+def _block_shard(decoded, at, b, bbox_bounds):
+    """The shard dict of block ``b`` of a batch decoded by ``decode_batch_nogil`` (with
+    ``way_strings``): :func:`_decode_one_block`'s arrays, the tags as string ids (see
+    :func:`_columnar_tags`). ``at[name][b]`` is where block ``b``'s entries of the count
+    column ``name`` (``BLOCK_COUNTS``) start in the batch's arrays. With ``bbox_bounds``
+    only the node features inside the box are kept.
+
+    The batch's arrays hold all its blocks one after another, so a block's slices are
+    rebased to the block: rows by the block's first node, string ids by its first string,
+    offsets by their first value."""
 
     def span(name):
         return at[name][b], at[name][b + 1]
 
-    table = []
+    shard = _block_nodes(decoded, span, bbox_bounds)
+    shard.update(_block_ways(decoded, span))
+    shard.update(_NO_RELATIONS)
+    return shard
 
-    def string_table():
-        if not table:
-            table.append(block_string_table(data))
-        return table[0]
 
+def _block_nodes(decoded, span, bbox_bounds):
+    """The node coordinates and node features of a block (see :func:`_block_shard`), only
+    those inside ``bbox_bounds`` when it is not None."""
     n0, n1 = span("nodes")
     node_id = decoded["node_id"][n0:n1]
     node_lon = decoded["node_lon"][n0:n1]
     node_lat = decoded["node_lat"][n0:n1]
-    shard = {
+    s0 = span("strings")[0]
+    f0, f1 = span("features")
+    rows = decoded["feature_row"][f0:f1] - n0
+    pairs_off = decoded["feature_pairs_off"][f0 : f1 + 1]
+    p0, p1 = pairs_off[0], pairs_off[-1]
+    pairs_off = pairs_off - p0
+    keys = decoded["feature_keys"][p0:p1] - s0
+    vals = decoded["feature_vals"][p0:p1] - s0
+    meta = decoded["feature_meta"][f0:f1]
+    if bbox_bounds is not None and len(rows):
+        inside = np.flatnonzero(
+            _in_box_mask(node_lon[rows], node_lat[rows], bbox_bounds)
+        )
+        _, keys = _take_rows(pairs_off, keys, inside)
+        pairs_off, vals = _take_rows(pairs_off, vals, inside)
+        rows, meta = rows[inside], meta[inside]
+    return {
         "node_id": node_id,
         "node_lon": node_lon,
         "node_lat": node_lat,
         "in_box_id": (
             node_id[decoded["in_box"][n0:n1]]
-            if settings.bbox_bounds is not None
+            if bbox_bounds is not None
             else np.empty(0, np.int64)
         ),
-    }
-    shard.update(_block_features(settings, decoded, span, string_table))
-    shard.update(_block_ways(settings, decoded, span, string_table))
-    shard.update(_NO_RELATIONS)
-    return shard
-
-
-def _block_features(settings, decoded, span, string_table):
-    """The node features of a block (see :func:`_block_shard`), only those inside the
-    bounding box when the read has one."""
-    f0, f1 = span("features")
-    found = None
-    if f1 > f0:
-        strings = string_table()
-        rows = decoded["feature_row"][f0:f1]
-        pairs_off = (decoded["feature_pairs_off"][f0 : f1 + 1]).tolist()
-        p0 = pairs_off[0]
-        keys = decoded["feature_keys"][p0 : pairs_off[-1]].tolist()
-        vals = decoded["feature_vals"][p0 : pairs_off[-1]].tolist()
-        keep_indices = _requested_keep_indices(strings, settings.requested_tag_keys)
-        decoded_strings = _lazy_string_table(strings)()
-        meta = decoded["feature_meta"][f0:f1]
-        found = {
-            "id": decoded["node_id"][rows],
-            "lon": decoded["node_lon"][rows],
-            "lat": decoded["node_lat"][rows],
-            "tags": [
-                _resolve_tags(
-                    decoded_strings,
-                    keys,
-                    vals,
-                    pairs_off[i] - p0,
-                    pairs_off[i + 1] - p0,
-                    keep_indices,
-                )
-                for i in range(f1 - f0)
-            ],
-            "version": meta[:, 0],
-            "timestamp": meta[:, 1],
-            "changeset": meta[:, 2],
-            "visible": meta[:, 3],
-        }
-        if settings.bbox_bounds is not None:
-            found = _filter_features_to_box(found, settings.bbox_bounds)
-    if found is None:
-        return {
-            "nfeat_id": np.empty(0, np.int64),
-            "nfeat_lon": np.empty(0),
-            "nfeat_lat": np.empty(0),
-            "nfeat_tags": _object_array([]),
-            "nfeat_meta": np.empty((0, 4), np.int64),
-        }
-    return {
-        "nfeat_id": found["id"],
-        "nfeat_lon": found["lon"],
-        "nfeat_lat": found["lat"],
-        "nfeat_tags": _object_array(found["tags"]),
-        "nfeat_meta": np.stack(
-            [
-                found["version"],
-                found["timestamp"],
-                found["changeset"],
-                found["visible"],
-            ],
-            axis=1,
-        ),
+        "nfeat_id": node_id[rows],
+        "nfeat_lon": node_lon[rows],
+        "nfeat_lat": node_lat[rows],
+        "nfeat_meta": meta,  # version, timestamp, changeset, visible
+        "nfeat_pairs_off": pairs_off,
+        "nfeat_pair_key": keys,
+        "nfeat_pair_val": vals,
     }
 
 
-def _block_ways(settings, decoded, span, string_table):
-    """The ways with a wanted key and every way's refs of a block (see
+def _block_ways(decoded, span):
+    """The ways with a wanted key, every way's refs and the block's strings (see
     :func:`_block_shard`)."""
     w0, w1 = span("ways")
     r0, r1 = span("way_refs")
     t0, t1 = span("way_tags")
+    s0, s1 = span("strings")
+    b0, b1 = span("string_bytes")
     a0, a1 = span("all_ways")
     ar0, ar1 = span("all_refs")
-    tags = []
-    if w1 > w0:
-        strings = string_table()
-        keep_indices = _requested_keep_indices(strings, settings.requested_tag_keys)
-        decoded_strings = _lazy_string_table(strings)()
-        keys = decoded["way_keys"][t0:t1].tolist()
-        vals = decoded["way_vals"][t0:t1].tolist()
-        tags_off = (decoded["way_tags_off"][w0 : w1 + 1] - t0).tolist()
-        tags = [
-            _resolve_tags(
-                decoded_strings, keys, vals, tags_off[i], tags_off[i + 1], keep_indices
-            )
-            for i in range(w1 - w0)
-        ]
     way_meta = decoded["way_meta"][w0:w1]  # version, timestamp, visible
     return {
         "way_id": decoded["way_id"][w0:w1],
         "refs": decoded["way_refs"][r0:r1],
         "refs_off": decoded["way_refs_off"][w0 : w1 + 1] - r0,
-        "way_tags": _object_array(tags),
+        "way_pairs_off": decoded["way_tags_off"][w0 : w1 + 1] - t0,
+        "way_pair_key": decoded["way_keys"][t0:t1] - s0,
+        "way_pair_val": decoded["way_vals"][t0:t1] - s0,
+        "str_off": decoded["string_off"][s0 : s1 + 1] - b0,
+        "str_data": decoded["string_data"][b0:b1],
         "way_version": way_meta[:, 0],
         "way_timestamp": way_meta[:, 1],
         "way_visible": way_meta[:, 2],
@@ -681,6 +650,58 @@ _NO_RELATIONS = {
     "rel_tags": _object_array([]),
     "rel_meta": np.empty((0, 3), np.int64),
 }
+
+
+def _take_rows(off, values, rows):
+    """The rows ``rows`` of the CSR ``values`` (row ``i`` is ``values[off[i]:off[i + 1]]``)
+    as ``(offsets, values)``."""
+    lengths = off[rows + 1] - off[rows]
+    new_off = _offsets_from_lengths(lengths)
+    at = np.repeat(off[rows] - new_off[:-1], lengths) + np.arange(new_off[-1])
+    return new_off, values[at]
+
+
+def _columnar_tags(shard):
+    """``shard`` (a :func:`_decode_one_block` dict) with its node features' and ways' tag
+    dicts as the threaded decode stores them: ``nfeat_pairs_off`` / ``way_pairs_off`` and
+    the ids ``*_pair_key`` / ``*_pair_val`` of the strings ``str_off`` / ``str_data`` hold,
+    each string once."""
+    ids = {}
+    for kind in ("nfeat", "way"):
+        keys, vals, off = [], [], [0]
+        for tags in shard.pop(kind + "_tags"):
+            for k, v in tags.items():
+                keys.append(ids.setdefault(k, len(ids)))
+                vals.append(ids.setdefault(v, len(ids)))
+            off.append(len(keys))
+        shard[kind + "_pairs_off"] = np.array(off, dtype=np.int64)
+        shard[kind + "_pair_key"] = np.array(keys, dtype=np.int64)
+        shard[kind + "_pair_val"] = np.array(vals, dtype=np.int64)
+    data = [string.encode("utf-8") for string in ids]
+    shard["str_off"] = _offsets_from_lengths([len(d) for d in data])
+    shard["str_data"] = np.frombuffer(b"".join(data), dtype=np.uint8)
+    return shard
+
+
+def _shard_tags(shard, kind):
+    """The tag dicts of the node features (``kind`` ``"nfeat"``) or ways (``"way"``) of a
+    shard: its object array for a shard of the process decode, built from the string ids
+    for one of the threaded decode."""
+    if not isinstance(shard, _Shard):
+        return shard[kind + "_tags"]
+    str_off, data = shard["str_off"].tolist(), shard["str_data"].tobytes()
+    strings = [
+        data[a:b].decode("utf-8", "replace") for a, b in zip(str_off[:-1], str_off[1:])
+    ]
+    off = shard[kind + "_pairs_off"].tolist()
+    keys = shard[kind + "_pair_key"].tolist()
+    vals = shard[kind + "_pair_val"].tolist()
+    return _object_array(
+        [
+            {strings[keys[p]]: strings[vals[p]] for p in range(off[i], off[i + 1])}
+            for i in range(len(off) - 1)
+        ]
+    )
 
 
 def _decoded_parts(f, blobs):
@@ -742,6 +763,8 @@ def _decode_batch_threads(settings, task, advance=None):
                     features=settings.include_nodes,
                     all_ways=settings.spill_all_ways,
                     bbox=settings.bbox_bounds,
+                    way_strings=True,
+                    requested=settings.requested_tag_keys,
                 )
                 counts = decoded["counts"]
                 at = {
@@ -752,11 +775,11 @@ def _decode_batch_threads(settings, task, advance=None):
                     data = buffer[starts[b] : starts[b + 1]]
                     if counts[b, _STATUS]:
                         # A block the GIL-free decoder hands back.
-                        arrays = _decode_one_block(
-                            settings, *decode_primitive_block(data)
+                        arrays = _columnar_tags(
+                            _decode_one_block(settings, *decode_primitive_block(data))
                         )
                     else:
-                        arrays = _block_shard(settings, decoded, at, b, data)
+                        arrays = _block_shard(decoded, at, b, settings.bbox_bounds)
                     pending.append(arrays)
                     pending_bytes += sum(
                         v.nbytes for k, v in arrays.items() if k not in _OBJECT_KEYS

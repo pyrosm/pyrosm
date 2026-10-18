@@ -544,7 +544,7 @@ def _decoded_shards(filepath, backend, workers, shard_dir, monkeypatch, **kwargs
     """The shards ``backend`` decodes ``filepath`` into, merged into one shard dict, with
     the object arrays (tag dicts, member roles) as lists."""
     from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
-    from pyrosm.engine.decode import _merge_shards, _open_shard
+    from pyrosm.engine.decode import _merge_shards, _open_shard, _shard_tags
 
     monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
     blobs, _ = _data_blob_spans(_index_blobs(filepath))
@@ -553,7 +553,11 @@ def _decoded_shards(filepath, backend, workers, shard_dir, monkeypatch, **kwargs
     keys = [key for key in _SHARD_KEYS if key not in _OBJECT_SHARD_KEYS]
     merged = _merge_shards([{key: _open_shard(s)[key] for key in keys} for s in shards])
     for key in _OBJECT_SHARD_KEYS:
-        merged[key] = [item for s in shards for item in _open_shard(s)[key]]
+        if key in ("way_tags", "nfeat_tags"):
+            parts = [_shard_tags(_open_shard(s), key[: -len("_tags")]) for s in shards]
+        else:
+            parts = [_open_shard(s)[key] for s in shards]
+        merged[key] = [item for part in parts for item in part]
     return merged
 
 
