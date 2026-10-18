@@ -408,7 +408,7 @@ cdef _relations_touching(relations, nodes_set, ways_set):
     return relations["id"][_any_member(hits, relations["members_off"])]
 
 
-cdef _stage1_nodes_inside(filepath, region, progress):
+cdef _nodes_inside_file(filepath, region, progress):
     bounds, polygon = region
     return _unique_concat([
         _nodes_inside(header, nodes, bounds, polygon)
@@ -416,7 +416,7 @@ cdef _stage1_nodes_inside(filepath, region, progress):
     ])
 
 
-cdef _stage2_ways(filepath, nodes_in_bbox_set, progress):
+cdef _ways_touching_file(filepath, nodes_in_bbox_set, progress):
     kept_way_ids = []
     extra_nodes = []
     for _, _, ways, _ in _iter_decoded_blocks(filepath, progress):
@@ -428,7 +428,7 @@ cdef _stage2_ways(filepath, nodes_in_bbox_set, progress):
     )
 
 
-cdef _stage3_relations(filepath, kept_nodes_set, kept_ways_set, progress):
+cdef _relations_touching_file(filepath, kept_nodes_set, kept_ways_set, progress):
     return np.concatenate([
         _relations_touching(relations, kept_nodes_set, kept_ways_set)
         for _, _, _, relations in _iter_decoded_blocks(filepath, progress)
@@ -1956,13 +1956,13 @@ cdef _select(sources, region, keep_relations, pool, progress):
     with progress.one_pass():
         if pool is None:
             nodes_in_bbox = _unique_concat(
-                [_stage1_nodes_inside(p, region, progress) for p in sources]
+                [_nodes_inside_file(p, region, progress) for p in sources]
             )
             nib_set = _to_set(nodes_in_bbox)
         else:
             nodes_in_bbox = _unique_concat([
                 ids for p in sources
-                for ids in pool.imap(_w_stage1, _iter_payloads(p, progress))
+                for ids in pool.imap(_w_nodes_inside, _iter_payloads(p, progress))
             ])
             pool.broadcast("nodes_in_bbox", nodes_in_bbox)
 
@@ -1972,9 +1972,9 @@ cdef _select(sources, region, keep_relations, pool, progress):
     with progress.one_pass():
         for p in sources:
             if pool is None:
-                ways, refs = _stage2_ways(p, nib_set, progress)
+                ways, refs = _ways_touching_file(p, nib_set, progress)
             else:
-                results = list(pool.imap(_w_stage2, _iter_payloads(p, progress)))
+                results = list(pool.imap(_w_ways_touching, _iter_payloads(p, progress)))
                 ways = _unique_concat([w for w, _ in results])
                 refs = _unique_concat([r for _, r in results])
             kept_ways.append(ways)
@@ -1996,14 +1996,16 @@ cdef _select(sources, region, keep_relations, pool, progress):
             kept_nodes_set = _to_set(kept_nodes)
             kept_ways_set = _to_set(all_ways)
             kept_rel = [
-                _stage3_relations(p, kept_nodes_set, kept_ways_set, progress)
+                _relations_touching_file(p, kept_nodes_set, kept_ways_set, progress)
                 for p in sources
             ]
         else:
             pool.broadcast("kept_nodes", kept_nodes)
             pool.broadcast("kept_ways", all_ways)
             kept_rel = [
-                _unique_concat(list(pool.imap(_w_stage3, _iter_payloads(p, progress))))
+                _unique_concat(
+                    list(pool.imap(_w_relations_touching, _iter_payloads(p, progress)))
+                )
                 for p in sources
             ]
     return kept_nodes, kept_ways, kept_rel
@@ -2143,18 +2145,18 @@ def _winit(bounds, polygon_wkb, compact, tmpdir):
     _W_CONTEXT = _Context(bounds, polygon_wkb, tmpdir, compact)
 
 
-cdef _stage1_block(ctx, data, filepath):
+cdef _nodes_inside_block(ctx, data, filepath):
     header, nodes, _, _ = _decode_block(data, filepath)
     return np.unique(_nodes_inside(header, nodes, ctx.bounds, ctx.polygon()))
 
 
-cdef _stage2_block(ctx, data, filepath):
+cdef _ways_touching_block(ctx, data, filepath):
     _, _, ways, _ = _decode_block(data, filepath)
     ids, refs = _ways_touching(ways, ctx.get_set("nodes_in_bbox"))
     return ids, np.unique(refs)
 
 
-cdef _stage3_block(ctx, data, filepath):
+cdef _relations_touching_block(ctx, data, filepath):
     _, _, _, relations = _decode_block(data, filepath)
     return _relations_touching(
         relations, ctx.get_set("kept_nodes"), ctx.get_set("kept_ways")
@@ -2183,20 +2185,20 @@ cdef _write_block(ctx, data, filepath):
     return _frame_blob("OSMData", block)
 
 
-def _w_stage1(payload):
-    return _stage1_block(_W_CONTEXT, _payload_data(payload), payload[0])
+def _w_nodes_inside(payload):
+    return _nodes_inside_block(_W_CONTEXT, _payload_data(payload), payload[0])
 
 
-def _w_stage2(payload):
-    return _stage2_block(_W_CONTEXT, _payload_data(payload), payload[0])
+def _w_ways_touching(payload):
+    return _ways_touching_block(_W_CONTEXT, _payload_data(payload), payload[0])
 
 
 def _w_way_copies(payload):
     return _way_copies_block(_W_CONTEXT, _payload_data(payload), payload[0])
 
 
-def _w_stage3(payload):
-    return _stage3_block(_W_CONTEXT, _payload_data(payload), payload[0])
+def _w_relations_touching(payload):
+    return _relations_touching_block(_W_CONTEXT, _payload_data(payload), payload[0])
 
 
 def _w_write(payload):
@@ -2229,9 +2231,9 @@ def _run_batched(batched, ctx, payloads):
     return out
 
 
-def _t_stage1(ctx, payloads, buffer, starts):
-    """`_w_stage1` of each payload of a part of a batch (its blocks in ``buffer``), with
-    the pool's context ``ctx``."""
+def _t_nodes_inside(ctx, payloads, buffer, starts):
+    """`_w_nodes_inside` of each payload of a part of a batch (its blocks in
+    ``buffer``), with the pool's context ``ctx``."""
     decoded = decode_batch_nogil(buffer, starts, keys=[], bbox=ctx.bounds)
     counts = decoded["counts"]
     inside = decoded["in_box"]
@@ -2248,15 +2250,17 @@ def _t_stage1(ctx, payloads, buffer, starts):
     out = []
     for b, payload in enumerate(payloads):
         if counts[b, _BC_STATUS]:
-            out.append(_stage1_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0]))
+            out.append(
+                _nodes_inside_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0])
+            )
         else:
             out.append(np.unique(ids[at[b]:at[b + 1]][inside[at[b]:at[b + 1]]]))
     return out
 
 
-def _t_stage2(ctx, payloads, buffer, starts):
-    """`_w_stage2` of each payload of a part of a batch (its blocks in ``buffer``), with
-    the pool's context ``ctx``."""
+def _t_ways_touching(ctx, payloads, buffer, starts):
+    """`_w_ways_touching` of each payload of a part of a batch (its blocks in
+    ``buffer``), with the pool's context ``ctx``."""
     decoded = decode_batch_nogil(buffer, starts, keys=[], all_ways=True)
     counts = decoded["counts"]
     ids, refs, refs_off = decoded["all_id"], decoded["all_refs"], decoded["all_refs_off"]
@@ -2265,7 +2269,9 @@ def _t_stage2(ctx, payloads, buffer, starts):
     out = []
     for b, payload in enumerate(payloads):
         if counts[b, _BC_STATUS]:
-            out.append(_stage2_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0]))
+            out.append(
+                _ways_touching_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0])
+            )
             continue
         w0, w1 = at[b], at[b + 1]
         kept = touching[w0:w1]
@@ -2277,13 +2283,14 @@ def _t_stage2(ctx, payloads, buffer, starts):
     return out
 
 
-def _t_stage3(ctx, payloads, buffer, starts):
-    """`_w_stage3` of each payload of a part of a batch (its blocks in ``buffer``), with
-    the pool's context ``ctx``: only the blocks `_relation_blocks` marks are decoded."""
+def _t_relations_touching(ctx, payloads, buffer, starts):
+    """`_w_relations_touching` of each payload of a part of a batch (its blocks in
+    ``buffer``), with the pool's context ``ctx``: only the blocks `_relation_blocks`
+    marks are decoded."""
     marked = _relation_blocks(buffer, starts)
     empty = np.empty(0, dtype=np.int64)
     return [
-        _stage3_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0])
+        _relations_touching_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0])
         if marked[b] else empty
         for b, payload in enumerate(payloads)
     ]
@@ -2337,9 +2344,9 @@ def _t_write(ctx, payloads, buffer, starts):
 
 # The batch version of each stage function with one.
 _BATCHED = {
-    _w_stage1: _t_stage1,
-    _w_stage2: _t_stage2,
-    _w_stage3: _t_stage3,
+    _w_nodes_inside: _t_nodes_inside,
+    _w_ways_touching: _t_ways_touching,
+    _w_relations_touching: _t_relations_touching,
     _w_way_copies: _t_way_copies,
     _w_write: _t_write,
 }
