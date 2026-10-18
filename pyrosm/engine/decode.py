@@ -15,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
+from pyrosm._arrays import _offsets_from_lengths
 from pyrosm.primitive_block_decoder import (
     BLOCK_COUNTS,
     block_string_table,
@@ -298,14 +299,6 @@ def _layer_relations(
             "timestamp": timestamp[i],
             "changeset": changeset[i],
         }
-
-
-def _offsets_from_lengths(lengths):
-    """CSR offsets array for variable-length rows: ``[0, l0, l0+l1, ...]``."""
-    off = np.zeros(len(lengths) + 1, dtype=np.int64)
-    if len(lengths):
-        np.cumsum(lengths, out=off[1:])
-    return off
 
 
 def _object_array(items):

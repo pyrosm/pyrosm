@@ -1046,6 +1046,7 @@ from libc.string cimport memcmp, memset
 from libc.stdint cimport uint8_t, uintptr_t
 
 from pyrosm.int64_hash cimport Int64Set, _set_has, kh_i64set_t
+from pyrosm._pointers cimport _double_ptr, _int64_ptr, _uint8_ptr
 
 # The columns of the per-block count table ``decode_batch_nogil`` returns.
 BLOCK_COUNTS = (
@@ -1731,9 +1732,6 @@ def check_batch_starts(starts, Py_ssize_t size):
         raise ValueError("starts must rise from 0 to at most the buffer's length")
 
 
-cdef inline int64_t* _int64_ptr(array):
-    return <int64_t*><uintptr_t>array.ctypes.data
-
 
 def decode_batch_nogil(const unsigned char[::1] buffer, const int64_t[::1] starts,
                        keys=None, bint features=False, bint all_ways=False, bbox=None,
@@ -1765,13 +1763,13 @@ def decode_batch_nogil(const unsigned char[::1] buffer, const int64_t[::1] start
     key_starts = np.zeros(len(key_list) + 1, dtype=np.int64)
     if key_list:
         np.cumsum([len(k) for k in key_list], out=key_starts[1:])
-    req.keys = <const unsigned char*><uintptr_t>key_bytes.ctypes.data
+    req.keys = _uint8_ptr(key_bytes)
     req.keys_off = _int64_ptr(key_starts)
     req.n_keys = len(key_list)
     key_ids = np.empty(len(key_list) + 1, dtype=np.int64)
     found = np.empty(len(key_list) + 1, dtype=np.uint8)
     req.key_ids = _int64_ptr(key_ids)
-    req.found = <uint8_t*><uintptr_t>found.ctypes.data
+    req.found = _uint8_ptr(found)
     req.key_filter = keys is not None
     req.features = features
     req.all_ways = all_ways
@@ -1832,9 +1830,9 @@ def decode_batch_nogil(const unsigned char[::1] buffer, const int64_t[::1] start
     scratch = np.empty(4 * out.max_group + 1, dtype=np.int64)
     fill.fill = True
     fill.node_id = _int64_ptr(arrays["node_id"])
-    fill.node_lon = <double*><uintptr_t>arrays["node_lon"].ctypes.data
-    fill.node_lat = <double*><uintptr_t>arrays["node_lat"].ctypes.data
-    fill.in_box = <uint8_t*><uintptr_t>arrays["in_box"].ctypes.data
+    fill.node_lon = _double_ptr(arrays["node_lon"])
+    fill.node_lat = _double_ptr(arrays["node_lat"])
+    fill.in_box = _uint8_ptr(arrays["in_box"])
     fill.feature_row = _int64_ptr(arrays["feature_row"])
     fill.feature_pairs_off = _int64_ptr(arrays["feature_pairs_off"])
     fill.feature_keys = _int64_ptr(arrays["feature_keys"])

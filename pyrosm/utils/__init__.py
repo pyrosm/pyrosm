@@ -222,6 +222,13 @@ _default_workers_warned = False
 _default_workers_lock = threading.Lock()
 
 
+def _file_identity(file):
+    """A file's device, inode, size and modification time, to notice it changing:
+    ``file`` an open file (of what it opened) or a path."""
+    st = os.fstat(file.fileno()) if hasattr(file, "fileno") else os.stat(file)
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
+
+
 def default_workers(workers):
     """``workers``, or 1 when it is not given (None). The first time in a process that
     the default is used, warns that it changes in pyrosm 1.0; a warning turned into an

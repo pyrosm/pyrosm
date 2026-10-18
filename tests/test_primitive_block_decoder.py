@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from pyrosm import get_data
+from pyrosm._arrays import _offsets_from_lengths
 from pyrosm.exceptions import InvalidOSMFileError
 from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
 from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
@@ -60,13 +61,6 @@ def _iter_block_bytes(fp):
                 continue
             if bh.type == "OSMData":
                 yield data
-
-
-def _offsets(counts):
-    off = np.zeros(len(counts) + 1, dtype=np.int64)
-    if counts:
-        np.cumsum(counts, out=off[1:])
-    return off
 
 
 def _i64(field):
@@ -240,11 +234,11 @@ def _ref_build(acc, members, memn, keep_metadata):
         "id": np.array(acc["id"], dtype=np.int64),
         "keys": np.concatenate(acc["keys"]) if acc["keys"] else np.empty(0, np.int64),
         "vals": np.concatenate(acc["vals"]) if acc["vals"] else np.empty(0, np.int64),
-        "tags_off": _offsets(acc["tags"]),
+        "tags_off": _offsets_from_lengths(acc["tags"]),
         members: (
             np.concatenate(acc[members]) if acc[members] else np.empty(0, np.int64)
         ),
-        members + "_off": _offsets(acc[memn]),
+        members + "_off": _offsets_from_lengths(acc[memn]),
     }
     if keep_metadata:
         for k in ("version", "timestamp", "changeset", "uid", "user_sid", "visible"):
@@ -434,7 +428,7 @@ def test_plain_node_tags_in_any_protobuf_encoding():
 def _batch(blocks):
     """The blocks as one buffer with their start offsets, as decode_batch_nogil takes them."""
     buffer = np.frombuffer(b"".join(blocks), dtype=np.uint8)
-    return buffer, _offsets([len(b) for b in blocks])
+    return buffer, _offsets_from_lengths([len(b) for b in blocks])
 
 
 _DENSE_META = ("version", "timestamp", "changeset", "visible")

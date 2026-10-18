@@ -63,9 +63,9 @@ from pyrosm.engine.blobs import (
     _MAX_BLOB_SIZE, _decompress_blob, _inflated_batch, _invalid_pbf, _read_batches,
     _read_span,
 )
-from pyrosm.engine.decode import _offsets_from_lengths
+from pyrosm._arrays import _offsets_from_lengths
 from pyrosm.int64_hash cimport Int64Set, SortedInt64Set, _set_has, kh_i64set_t
-from pyrosm.utils import default_workers
+from pyrosm.utils import _file_identity, default_workers
 from pyrosm.utils.progress import reporting, validate_progress
 from pyrosm.zlib_blob import zlib_compress
 from pyrosm.primitive_block_decoder import (
@@ -139,14 +139,10 @@ _MAX_BLOB_HEADER_SIZE = 64 * 1024
 _MAX_PACKED_BLOCK_SIZE = 16 * 1024 * 1024
 
 
-cdef _invalid(filepath, reason):
-    return _invalid_pbf(filepath, reason)
-
-
 cdef _read_exact(f, n):
     data = f.read(n)
     if len(data) < n:
-        raise _invalid(f.name, "the file is truncated")
+        raise _invalid_pbf(f.name, "the file is truncated")
     return data
 
 
@@ -155,7 +151,7 @@ cdef _parse(message, data, filepath, reason=None):
     try:
         message.ParseFromString(data)
     except DecodeError as err:
-        raise _invalid(filepath, reason or err) from None
+        raise _invalid_pbf(filepath, reason or err) from None
     return message
 
 
@@ -165,10 +161,10 @@ cdef _read_blob_header(f):
     if len(buf) == 0:
         return None
     if len(buf) < 4:
-        raise _invalid(f.name, "the file is truncated")
+        raise _invalid_pbf(f.name, "the file is truncated")
     msg_len = unpack("!L", buf)[0]
     if msg_len > _MAX_BLOB_HEADER_SIZE:
-        raise _invalid(
+        raise _invalid_pbf(
             f.name,
             "declared BlobHeader size %d exceeds the %d-byte maximum"
             % (msg_len, _MAX_BLOB_HEADER_SIZE),
@@ -177,7 +173,7 @@ cdef _read_blob_header(f):
         BlobHeader(), _read_exact(f, msg_len), f.name, "the BlobHeader could not be parsed"
     )
     if not 0 <= blob_header.datasize <= _MAX_BLOB_SIZE:
-        raise _invalid(
+        raise _invalid_pbf(
             f.name,
             "declared blob size %d is outside 0-%d bytes"
             % (blob_header.datasize, _MAX_BLOB_SIZE),
@@ -273,7 +269,7 @@ cdef _raw_decoded(decode, data, filepath, args=()):
     try:
         return decode(np.frombuffer(data, dtype=np.uint8), *args)
     except InvalidOSMFileError as err:
-        raise _invalid(filepath, err) from None
+        raise _invalid_pbf(filepath, err) from None
 
 
 cdef _decode_block(data, filepath):
@@ -306,9 +302,9 @@ cpdef read_header_block(filepath):
     with open(filepath, "rb") as f:
         blob_header, data = _read_next_blob(f)
         if blob_header is None:
-            raise _invalid(f.name, "the file is empty")
+            raise _invalid_pbf(f.name, "the file is empty")
         if blob_header.type != "OSMHeader":
-            raise _invalid(
+            raise _invalid_pbf(
                 f.name, "first block is '%s', expected 'OSMHeader'" % blob_header.type
             )
         return _parse(HeaderBlock(), data, f.name)
@@ -2048,12 +2044,6 @@ _BC_NODES = BLOCK_COUNTS.index("nodes")
 _BC_ALL_WAYS = BLOCK_COUNTS.index("all_ways")
 
 
-cdef _identity(f):
-    """Device, inode, size and modification time of the open file `f`."""
-    st = os.fstat(f.fileno())
-    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
-
-
 def _iter_payloads(filepath, progress=None):
     """Yield ``(filepath, identity, offset, size)`` of each OSMData blob; other blobs are
     read and checked here. The bytes passed are reported to `progress` (a
@@ -2064,7 +2054,7 @@ def _iter_payloads(filepath, progress=None):
     worker dies.
     """
     with open(filepath, "rb") as f:
-        identity = _identity(f)
+        identity = _file_identity(f)
         while True:
             if progress is not None:
                 progress.advance(f, f.tell())
@@ -2083,7 +2073,7 @@ cdef _payload_data(payload):
     """The decompressed bytes of the blob a payload of `_iter_payloads` points at."""
     filepath, identity, offset, size = payload
     with open(filepath, "rb") as f:
-        if _identity(f) != identity:
+        if _file_identity(f) != identity:
             raise ValueError("'%s' changed while it was being read." % filepath)
         f.seek(offset)
         blob = _read_blob(f, size)
@@ -2219,7 +2209,7 @@ def _batch_parts(payloads):
     with its size, or each blob when the read comes short, is read by `_payload_data`."""
     filepath, identity, first, _ = payloads[0]
     with open(filepath, "rb") as f:
-        if _identity(f) != identity:
+        if _file_identity(f) != identity:
             raise ValueError("'%s' changed while it was being read." % filepath)
         raw = _read_span(f, first, payloads[-1][2] + payloads[-1][3])
     return _inflated_batch(
