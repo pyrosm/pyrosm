@@ -57,7 +57,9 @@ class ElementStore:
     refs (``refs``, way ``i`` owning ``refs[refs_off[i]:refs_off[i + 1]]``), ``version``,
     ``timestamp``, ``visible``, and the tags as pairs of string ids (``pair_key`` /
     ``pair_val``, way ``i`` owning ``pairs_off[i]:pairs_off[i + 1]``) of the strings
-    ``str_off`` / ``str_data`` hold."""
+    ``str_off`` / ``str_data`` hold. ``string_info`` keeps the
+    :func:`pyrosm.way_columns.string_columns` of the strings per tuple of column keys; the
+    stores :meth:`take` gives share it, as they share the strings."""
 
     def __init__(
         self,
@@ -72,6 +74,7 @@ class ElementStore:
         pair_val,
         str_off,
         str_data,
+        string_info=None,
     ):
         self.id = id
         self.refs_off = refs_off
@@ -84,6 +87,7 @@ class ElementStore:
         self.pair_val = pair_val
         self.str_off = str_off
         self.str_data = str_data
+        self.string_info = {} if string_info is None else string_info
 
     def __len__(self):
         return len(self.id)
@@ -114,6 +118,7 @@ class ElementStore:
             pair_val=pair_val,
             str_off=self.str_off,
             str_data=self.str_data,
+            string_info=self.string_info,
         )
 
     def string(self, i):
@@ -229,10 +234,15 @@ def _string_columns(store, keys):
     """``(valid, column, special)`` for the tag columns ``keys`` of ``store``: whether each
     string is valid UTF-8 and the column it names as a key (see
     :func:`pyrosm.way_columns.string_columns`), and the special elements, whose tags only
-    their tag dicts give (see :func:`pyrosm.way_columns.special_ways`)."""
-    valid, column = wc.string_columns(
-        store.str_off, store.str_data, [k.encode("utf-8") for k in keys]
-    )
+    their tag dicts give (see :func:`pyrosm.way_columns.special_ways`). The first two
+    are found once for the strings of a store and ``keys`` (see ``store.string_info``).
+    """
+    keys = tuple(keys)
+    if keys not in store.string_info:
+        store.string_info[keys] = wc.string_columns(
+            store.str_off, store.str_data, [k.encode("utf-8") for k in keys]
+        )
+    valid, column = store.string_info[keys]
     special = wc.special_ways(
         store.pairs_off,
         store.pair_key,
