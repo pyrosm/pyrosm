@@ -50,7 +50,7 @@ def test_default_workers_warns_once_that_it_changes_in_1_0(run, helsinki_pbf, tm
         "merge": lambda **kw: merge_pbf([helsinki_pbf], out, **kw),
     }
     line = runs[run].__code__.co_firstlineno
-    pyrosm.utils._default_workers_warned = False
+    pyrosm.utils._future_warnings_shown.discard(pyrosm.utils._DEFAULT_WORKERS_WARNING)
     for options, expected in [({"workers": 1}, 0), ({}, 1), ({}, 0)]:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -68,13 +68,32 @@ def test_default_workers_warning_as_an_error_raises_at_every_default_call():
 
     import pyrosm.utils
 
-    pyrosm.utils._default_workers_warned = False
+    pyrosm.utils._future_warnings_shown.discard(pyrosm.utils._DEFAULT_WORKERS_WARNING)
     with warnings.catch_warnings():
         warnings.simplefilter("error", FutureWarning)
         for _ in range(2):
             with pytest.raises(FutureWarning, match="In pyrosm 1.0"):
                 pyrosm.utils.default_workers(None)
         assert pyrosm.utils.default_workers(2) == 2
+
+
+def test_processes_backend_warns_once_that_it_is_deprecated(monkeypatch):
+    """Selecting the processes backend warns once per process that it is deprecated,
+    pointing at the caller; the threads backend does not warn."""
+    import warnings
+
+    import pyrosm.utils
+    from pyrosm.engine.pool import _PROCESSES_BACKEND_WARNING, _decode_backend
+
+    pyrosm.utils._future_warnings_shown.discard(_PROCESSES_BACKEND_WARNING)
+    for backend, expected in [("threads", 0), ("processes", 1), ("processes", 0)]:
+        monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert _decode_backend() == backend
+        future = [w for w in caught if issubclass(w.category, FutureWarning)]
+        assert [str(w.message) for w in future] == [_PROCESSES_BACKEND_WARNING] * expected
+        assert all(w.filename == __file__ for w in future)
 
 
 def test_network(test_pbf):

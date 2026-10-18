@@ -18,7 +18,9 @@ To decode in parallel pass `workers="auto"` (or `workers=N`). Reads, crops and m
 parallel on threads, so a script needs no `if __name__ == "__main__":` guard. Setting the
 environment variable `PYROSM_DECODE_BACKEND=processes` switches to worker processes, as earlier
 versions used; on macOS and Windows those re-import the entry point, so a parallel read from a
-script then needs the guard, and without it falls back to a single process with a warning.
+script then needs the guard, and without it falls back to a single process with a warning. The
+processes setting is deprecated: it warns, and it will be removed in a future release. If you
+need it, please tell us why in an [issue](https://github.com/pyrosm/pyrosm/issues).
 
 Since pyrosm 0.22.0, a read, crop or merge that leaves `workers` unset warns once per Python
 session that pyrosm 1.0 will run it in parallel by default; pass `workers=1` to stay on a single
