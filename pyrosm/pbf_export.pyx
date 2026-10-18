@@ -140,6 +140,7 @@ _MAX_PACKED_BLOCK_SIZE = 16 * 1024 * 1024
 
 
 cdef _read_exact(f, n):
+    """The next ``n`` bytes of the file ``f``; a file that ends sooner is truncated."""
     data = f.read(n)
     if len(data) < n:
         raise _invalid_pbf(f.name, "the file is truncated")
@@ -2080,10 +2081,6 @@ cdef _payload_data(payload):
     if blob.HasField("raw"):
         return blob.raw
     return _decompress(blob.zlib_data, _raw_size(blob), filepath)
-
-
-cdef _payload_to_block(payload):
-    return _parse(PrimitiveBlock(), _payload_data(payload), payload[0])
 
 
 class _Context:

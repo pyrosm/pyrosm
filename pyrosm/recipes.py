@@ -748,7 +748,9 @@ def run(path, out_dir=None, force=False):
         The paths of the outputs, written or reused, in the recipe's order, and the
         provenance record last.
     """
-    return list(_run(path, out_dir, {"entry_point": "python", "argv": None}, force))
+    return list(
+        _run_recipe(path, out_dir, {"entry_point": "python", "argv": None}, force)
+    )
 
 
 def _recorded(recipe):
@@ -904,7 +906,9 @@ def _stage_entry(work, previous, inputs, files, run, reusable=True):
     return dict(entry, fingerprint=fingerprint, outputs=written)
 
 
-def _run(path, out_dir, invocation, force=False):
+def _run_recipe(path, out_dir, invocation, force=False):
+    """:func:`run` with ``invocation`` (how pyrosm was called) in the record: returns each
+    output's status, ``{path: "written" or "reused"}``, the provenance record last."""
     from pyrosm import OSM
     from pyrosm.data.extract_index import _sha256
     from pyrosm.utils import _file_identity
@@ -1034,7 +1038,9 @@ def main(argv=None):
     try:
         if arguments.command == "run":
             invocation = {"entry_point": "cli", "argv": argv}
-            done = _run(arguments.recipe, arguments.out, invocation, arguments.force)
+            done = _run_recipe(
+                arguments.recipe, arguments.out, invocation, arguments.force
+            )
             for path, status in done.items():
                 print(status, path)
         else:
