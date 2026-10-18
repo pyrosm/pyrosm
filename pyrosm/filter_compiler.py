@@ -331,7 +331,7 @@ def rename_filter_key(data_filter, osm_keys, old, new):
         data_filter = {(new if k == old else k): v for k, v in data_filter.items()}
     if isinstance(osm_keys, str):
         osm_keys = new if osm_keys == old else osm_keys
-    elif osm_keys is not None:
+    else:
         osm_keys = [new if k == old else k for k in osm_keys]
     return data_filter, osm_keys
 
