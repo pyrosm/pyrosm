@@ -72,6 +72,14 @@ def _key_indices(string_table, osm_keys):
     return [string_table.index(k) for k in osm_keys if k in string_table]
 
 
+def _key_bytes(key):
+    """The bytes of the requested tag key ``key`` that a block's string table holds for it. A
+    key UTF-8 cannot encode (a lone surrogate) is encoded with ``surrogatepass``: only a
+    string that is not valid UTF-8 can hold those bytes, and the tags of an element with one
+    come from its strings decoded with ``"replace"``, which never give the key."""
+    return key.encode("utf-8", "surrogatepass")
+
+
 def _lazy_string_table(string_table):
     """A function returning the block's string table as str (decoded as pyrosm's protobuf
     path decodes it). It decodes the table on its first call only, so the block's way and

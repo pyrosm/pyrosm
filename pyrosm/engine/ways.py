@@ -18,7 +18,7 @@ from rapidjson import dumps
 
 from pyrosm import way_columns as wc
 from pyrosm._arrays import _offsets_from_lengths
-from pyrosm.engine.decode import _merge_shards, _open_shard
+from pyrosm.engine.decode import _key_bytes, _merge_shards, _open_shard
 from pyrosm.engine.pool import read_threads, thread_map
 
 # The shard key of each column of a store of ways, in the store's constructor's order.
@@ -260,7 +260,7 @@ def _string_columns(store, keys):
     keys = tuple(keys)
     if keys not in store.string_info:
         store.string_info[keys] = wc.string_columns(
-            store.str_off, store.str_data, [k.encode("utf-8") for k in keys]
+            store.str_off, store.str_data, [_key_bytes(k) for k in keys]
         )
     valid, column = store.string_info[keys]
     special = wc.special_ways(

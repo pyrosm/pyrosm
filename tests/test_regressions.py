@@ -2914,3 +2914,38 @@ def test_node_id_tag_does_not_overwrite_the_node_id(
     assert gdf["id_tag"][0] == "stray" and pd.isna(gdf["id_tag"][1])
     gdf = osm.get_pois(custom_filter={"amenity": True})
     assert json.loads(gdf["tags"][0]) == {"id_tag": "stray"}
+
+
+@pytest.mark.parametrize("backend", ["threads", "processes"])
+def test_lone_surrogate_keys_read_out_of_core(monkeypatch, fresh_cache, backend):
+    """A requested tag key UTF-8 cannot encode (a lone surrogate) reads out of core as it
+    does in memory: no PBF tag has it, so its column is absent and a filter by it keeps
+    nothing."""
+    import pandas as pd
+    from pyrosm import OSM, get_data
+
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    fp = get_data("test_pbf")
+    key = "\ud800"
+    reads = [
+        lambda osm: osm.get_buildings(extra_attributes=[key]),
+        lambda osm: osm.get_data_by_custom_criteria(
+            custom_filter={"building": True}, extra_attributes=[key], keep_other_tags=False
+        ),
+    ]
+    for i, read in enumerate(reads):
+        gdf = read(OSM(fp, engine="out_of_core", workers=1))
+        if i == 0:
+            ref = read(OSM(fp, engine="in_memory"))
+        else:
+            # The in-memory reader keeps every tag; without them the JSON column goes.
+            ref = ref.drop(columns="tags")
+        assert key not in gdf.columns
+        # The in-memory reader's ``visible`` column holds Python bools (object dtype).
+        pd.testing.assert_frame_equal(
+            gdf.drop(columns="geometry"), ref.drop(columns="geometry"), check_dtype=False
+        )
+        assert (gdf.geometry.to_wkb() == ref.geometry.to_wkb()).all()
+    osm = OSM(fp, engine="out_of_core", workers=1)
+    with pytest.warns(UserWarning, match="Could not find any OSM data"):
+        assert osm.get_data_by_custom_criteria(custom_filter={key: True}) is None

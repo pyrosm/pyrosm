@@ -10,6 +10,7 @@ from rapidjson import dumps, loads
 
 from pyrosm.data_manager import parse_custom_filter
 from pyrosm.utils import _compat, default_workers
+from pyrosm.engine.decode import _key_bytes
 from pyrosm.engine.pool import _decode_and_run
 from pyrosm.engine.bounding_box import _bbox_bounds, _normalize_bounding_box
 from pyrosm.engine.assemble import (
@@ -90,7 +91,7 @@ def _get_layer(
         data_filter, derived_keys = parse_custom_filter(custom_filter)
         if osm_keys is None:
             osm_keys = derived_keys
-        osm_key_bytes = [k.encode("utf-8") for k in osm_keys]
+        osm_key_bytes = [_key_bytes(k) for k in osm_keys]
     filter_spec = (osm_keys, data_filter, filter_type)
     # keep_other_tags=False: the workers resolve only the requested tag keys -- the output
     # columns (tags_as_columns) plus the filter keys (so the value filter still has what it
@@ -98,7 +99,7 @@ def _get_layer(
     requested_tag_keys = None
     if not keep_other_tags:
         wanted = list(tags_as_columns) + list(osm_keys or []) + list(_GEOMETRY_TAG_KEYS)
-        requested_tag_keys = [k.encode("utf-8") for k in dict.fromkeys(wanted)]
+        requested_tag_keys = [_key_bytes(k) for k in dict.fromkeys(wanted)]
     bounding_box = _normalize_bounding_box(bounding_box)
     bounds = _bbox_bounds(bounding_box)
 
@@ -775,7 +776,7 @@ def _decode_network(filepath, filter_spec, bounding_box, workers, progress, asse
     """
     return _decode_and_run(
         filepath,
-        [k.encode("utf-8") for k in filter_spec[0]],
+        [_key_bytes(k) for k in filter_spec[0]],
         False,
         workers,
         assemble,
