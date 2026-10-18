@@ -55,7 +55,8 @@ def _contiguous(a, dtype):
 
 def _check_offsets(off, Py_ssize_t n_values):
     """Raise ``ValueError`` unless the CSR offsets ``off`` rise from 0 to ``n_values``."""
-    if len(off) == 0 or off[0] != 0 or off[-1] != n_values or (off[1:] < off[:-1]).any():
+    cdef Py_ssize_t n = len(off)
+    if n == 0 or off[0] != 0 or off[n - 1] != n_values or (off[1:] < off[: n - 1]).any():
         raise ValueError("offsets must rise from 0 to the number of values")
 
 
