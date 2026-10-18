@@ -1294,7 +1294,7 @@ def test_engine_way_chunk_matches_python_path(
         keep_node_info,
         bounding_box,
     )
-    mine = ways._chunk_table(ctx, 0, len(store))
+    mine = ways._chunk_parts(ctx, 0, len(store))[0]
     assert len(mine) < len(store)
     assert geoparquet._align_table(mine, ref.schema).equals(ref)
     token = pool._READ_THREADS.set(2)
@@ -1304,9 +1304,70 @@ def test_engine_way_chunk_matches_python_path(
         pool._READ_THREADS.reset(token)
     assert pa.concat_tables([t for t in parts if t is not None]).equals(mine)
     no_geometry = [i for i, way in enumerate(_CRAFTED_WAYS) if way[0] in (10, 11)]
-    assert ways._chunk_table(ctx, no_geometry[0], no_geometry[-1] + 1) is None
+    assert ways._chunk_parts(ctx, no_geometry[0], no_geometry[-1] + 1)[0] is None
+    no_lines = ways.ChunkContext(
+        _way_store([_CRAFTED_WAYS[i] for i in no_geometry]),
+        tags_as_columns,
+        keep_metadata,
+        True,
+        set(),
+        nodes,
+        network=True,
+    )
+    assert ways.network_frame(no_lines, 1) is None
     ctx.area = shapely.box(50.0, 50.0, 51.0, 51.0)
-    assert ways._chunk_table(ctx, 0, len(store)) is None
+    assert ways._chunk_parts(ctx, 0, len(store))[0] is None
+
+
+def test_engine_network_frame_matches_python_path(monkeypatch):
+    # The edges a threaded read builds in chunks are the frame the Python path builds for
+    # the same ways (a closed way is a line, a tag ``length`` holds the lengths, a tag only
+    # a way without a geometry has is a column of nulls), written with the schema and
+    # metadata geopandas gives it (the null type pandas 2 infers for such a column too).
+    import pyarrow as pa
+    from geopandas.io.arrow import _geopandas_to_arrow
+    from pyrosm.engine import ways
+    from pyrosm.engine.collect import _result_tag_columns, _ways_arrays
+    from pyrosm.frames import prepare_geodataframe
+
+    nodes = _crafted_nodes()
+    store = _way_store(
+        [
+            (1, [1, 2, 3], [(b"highway", b"residential"), (b"length", b"5")]),
+            (2, [3, 6], [(b"highway", b"footway")]),
+            (3, [1, 2, 3, 4, 1], [(b"highway", b"pedestrian"), (b"area", b"yes")]),
+            (4, [1, 99], [(b"highway", b"service"), (b"name", b"lost")]),
+        ]
+    )
+    tags_as_columns = ["highway", "length", "area", "name"]
+    edges, _ = prepare_geodataframe(
+        None,
+        nodes,
+        _ways_arrays(store.way_columns(), tags_as_columns, True),
+        None,
+        None,
+        tags_as_columns,
+        None,
+        parse_network=True,
+        keep_metadata=True,
+    )
+    ctx = ways.ChunkContext(
+        store,
+        tags_as_columns,
+        True,
+        True,
+        _result_tag_columns(store, tags_as_columns, True),
+        nodes,
+        network=True,
+    )
+    frame = ways.network_frame(ctx, 2)
+    assert frame.to_arrow().equals(
+        _geopandas_to_arrow(edges.drop(columns=["nodes"])), check_metadata=True
+    )
+    schema = frame.schema()
+    nulls = schema.set(schema.get_field_index("name"), pa.field("name", pa.null()))
+    monkeypatch.setattr(frame, "schema", lambda: nulls)
+    assert frame.to_arrow().column("name").type == pa.null()
 
 
 def test_engine_binary_array_splits_past_32_bit_offsets(monkeypatch):

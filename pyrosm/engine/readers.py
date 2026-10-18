@@ -18,6 +18,7 @@ from pyrosm.engine.assemble import (
     _assemble_network,
 )
 from pyrosm.engine import cache, geoparquet
+from pyrosm.engine.ways import ArrowFrame
 from pyrosm.utils.progress import validate_progress
 
 # Tags the geometry assembly reads straight from an element's tag dict (not from the exploded
@@ -544,12 +545,15 @@ def _network_filter(network_type):
     return get_osm_filter(network_type)
 
 
-def _write_parquet(gdf, path):
+def _write_result_parquet(gdf, path):
     """Write an assembled frame to ``path`` (a result-cache temp file or an ``output=`` path);
     a ``None`` (empty read) writes nothing and reports the empty result."""
     if gdf is None:
         return False
-    gdf.to_parquet(path)
+    if isinstance(gdf, ArrowFrame):
+        gdf.write(path)
+    else:
+        gdf.to_parquet(path)
     return True
 
 
@@ -670,7 +674,7 @@ def get_network(
     if output is not None:
         if nodes:
             return _write_network_dir(decode(), output)
-        return output if _write_parquet(decode(), output) else None
+        return output if _write_result_parquet(decode(), output) else None
 
     # With pyarrow absent there is nowhere to cache, so return the direct in-memory result (the
     # edges frame, or the (nodes, edges) tuple for nodes=True).
@@ -701,7 +705,7 @@ def get_network(
 
     cache_path = cache.result_path(filepath, key_params)
     result = cache.materialize(
-        cache_path, lambda tmp_path: _write_parquet(decode(), tmp_path)
+        cache_path, lambda tmp_path: _write_result_parquet(decode(), tmp_path)
     )
     return record_network_type(_node_lists(result), network_type)
 

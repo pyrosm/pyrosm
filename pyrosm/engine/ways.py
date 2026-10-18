@@ -5,8 +5,9 @@ The threaded decode stores each element's tags as ids of strings, not as a dict.
 :func:`kept_ways` selects the ways a read outputs (the value filter in C, see
 :func:`keep_mask`); :func:`tag_lists` builds their tag columns and JSON ``tags`` column
 in C, and :func:`chunk_tables` the chunks of a result, with the geometries, on the read's
-threads. The module also gathers the node coordinates, the relation member ways and the
-network's node records on the read's threads.
+threads (:func:`network_frame` the edges of a network). The module also gathers the node
+coordinates, the relation member ways and the network's node records on the read's
+threads.
 """
 
 import numpy as np
@@ -289,7 +290,8 @@ def result_tag_columns(store, tags_as_columns, keep_metadata, keep_other_tags):
 class ChunkContext:
     """What building a store's ways as the chunks of a result needs of a read: the output
     columns (in the order of the Python path), each string's column as a key, the special
-    ways, the node coordinates and the area the geometries must intersect."""
+    ways, the node coordinates and the area the geometries must intersect. ``network``
+    builds a network's edges: lines, with a ``length`` column."""
 
     def __init__(
         self,
@@ -301,6 +303,7 @@ class ChunkContext:
         node_coordinates=None,
         keep_node_info=False,
         bounding_box=None,
+        network=False,
     ):
         from pyrosm.engine.collect import _way_column_keys
 
@@ -313,6 +316,7 @@ class ChunkContext:
         self.visible_col = "visible" in self.column_keys
         self.keep_other_tags = keep_other_tags
         self.keep_node_info = keep_node_info
+        self.network = network
         # The area the geometries must intersect, as prepare_geodataframe filters them.
         if isinstance(bounding_box, list):
             from shapely import box
@@ -533,7 +537,7 @@ def _build_chunk(ctx, rows):
         timestamp=store.timestamp,
         visible=store.visible,
         nodes=ctx.node_coordinates,
-        network=False,
+        network=ctx.network,
         area_col=area,
         highway_col=highway,
         barrier_col=barrier,
@@ -563,16 +567,18 @@ def _build_chunk(ctx, rows):
     return chunk, rows[kept]
 
 
-def _chunk_table(ctx, start, stop):
+def _chunk_parts(ctx, start, stop):
     """The Arrow table of the ways ``start:stop`` of ``ctx.store`` as the Python path
-    writes a chunk of a layer (without schema metadata), or ``None`` when none of them has
-    a geometry (in ``ctx.area``)."""
+    writes a chunk of a layer, or the edges of a network with ``ctx.network`` (without
+    schema metadata), with the bounds and the geometry types (bits of
+    ``way_columns.LINESTRING`` / ``POLYGON``) of its geometries; ``(None, None, 0)`` when
+    none of them has a geometry (in ``ctx.area``)."""
     import pyarrow as pa
 
     store = ctx.store
     chunk, rows = _build_chunk(ctx, np.arange(start, stop))
     if len(rows) == 0:
-        return None
+        return None, None, 0
     names, arrays = [], []
     tags = dict(zip(ctx.out_names, chunk["tag_arrays"]))
     for key in ctx.column_keys:
@@ -604,13 +610,26 @@ def _chunk_table(ctx, start, stop):
     arrays.append(_constant_strings("way", len(rows)))
     names.append("geometry")
     arrays.append(_binary_array(chunk["wkb_off"], chunk["wkb"]))
+    if ctx.network:
+        from pyrosm.distance import line_lengths
+
+        owner = np.repeat(np.arange(len(rows)), np.diff(chunk["coords_off"]))
+        lengths = pa.array(line_lengths(chunk["coords"], owner, len(rows)))
+        # As ``DataFrame.assign`` does, a tag column ``length`` takes the lengths in place.
+        if "length" in names:
+            arrays[names.index("length")] = lengths
+        else:
+            names.append("length")
+            arrays.append(lengths)
     table = pa.Table.from_arrays(arrays, names=names)
-    return table if ctx.area is None else _in_area(table, ctx.area)
+    if ctx.area is not None:
+        return _in_area(table, ctx.area)
+    return table, chunk["bounds"], chunk["types"]
 
 
 def _in_area(table, area):
-    """The rows of ``table`` whose geometry intersects ``area``, as the spatial filter of
-    ``prepare_geodataframe`` keeps them, or ``None`` when none does."""
+    """:func:`_chunk_parts`'s parts of the rows of ``table`` whose geometry intersects
+    ``area``, as the spatial filter of ``prepare_geodataframe`` keeps them."""
     import pyarrow as pa
     import shapely
 
@@ -619,19 +638,139 @@ def _in_area(table, area):
     )
     inside = shapely.intersects(geometries, area)
     if not inside.any():
-        return None
-    return table if inside.all() else table.filter(pa.array(inside))
+        return None, None, 0
+    if not inside.all():
+        table = table.filter(pa.array(inside))
+        geometries = geometries[inside]
+    kinds = set(shapely.get_type_id(geometries).tolist())
+    types = (wc.LINESTRING if 1 in kinds else 0) | (wc.POLYGON if 3 in kinds else 0)
+    bounds = shapely.bounds(geometries)
+    return (
+        table,
+        (
+            bounds[:, 0].min(),
+            bounds[:, 1].min(),
+            bounds[:, 2].max(),
+            bounds[:, 3].max(),
+        ),
+        types,
+    )
 
 
 def chunk_tables(ctx, starts, chunk_size):
-    """The tables (see :func:`_chunk_table`) of the chunks of ``chunk_size`` ways of
+    """The tables (see :func:`_chunk_parts`) of the chunks of ``chunk_size`` ways of
     ``ctx.store`` that begin at ``starts``, in order, built on the read's threads with at
     most one more chunk than threads in flight."""
+    for table, _, _ in _chunks(ctx, starts, chunk_size):
+        yield table
+
+
+def _chunks(ctx, starts, chunk_size):
+    """:func:`chunk_tables` with each table's bounds and geometry types."""
     n = len(ctx.store)
     yield from thread_map(
-        lambda start: _chunk_table(ctx, start, min(start + chunk_size, n)),
+        lambda start: _chunk_parts(ctx, start, min(start + chunk_size, n)),
         starts,
         window=read_threads() + 1,
+    )
+
+
+class ArrowFrame:
+    """A result held as an Arrow table (the network edges a threaded read builds), with
+    the bounds and the geometry type names of its geometries. Written with :meth:`write`
+    as ``GeoDataFrame.to_parquet`` writes the frame it holds."""
+
+    def __init__(self, table, bounds, types):
+        self.table = table
+        self.bounds = bounds
+        self.types = types
+
+    def schema(self):
+        """The schema ``_geopandas_to_arrow`` gives the frame: that of one row holding each
+        column's first value that is not null (so the column types the installed pandas
+        infers for the whole frame), with the row count, the bounds and the geometry types
+        of all rows in its metadata."""
+        import json
+
+        import geopandas as gpd
+        import pyarrow as pa
+        import pyarrow.compute as pc
+        import shapely
+        from geopandas.io.arrow import _geopandas_to_arrow
+
+        values = []
+        for column in self.table.columns:
+            first = pc.index(pc.is_valid(column), True).as_py()
+            values.append(column.take([max(first, 0)]))
+        head = pa.Table.from_arrays(values, names=self.table.column_names).to_pandas()
+        head["geometry"] = gpd.GeoSeries(
+            shapely.from_wkb(head["geometry"].to_numpy()), crs="epsg:4326"
+        )
+        head = gpd.GeoDataFrame(head, geometry="geometry", crs="epsg:4326")
+        schema = _geopandas_to_arrow(head).schema
+        metadata = dict(schema.metadata)
+        # The head's RangeIndex stands for that of the frame, which has all the rows.
+        frame = json.loads(metadata[b"pandas"])
+        frame["index_columns"][0]["stop"] = self.table.num_rows
+        metadata[b"pandas"] = json.dumps(frame).encode("utf-8")
+        geo = json.loads(metadata[b"geo"])
+        column = geo["columns"]["geometry"]
+        column["geometry_types"] = sorted(self.types)
+        column["bbox"] = [float(v) for v in self.bounds]
+        metadata[b"geo"] = json.dumps(geo).encode("utf-8")
+        return schema.with_metadata(metadata)
+
+    def to_arrow(self):
+        """The table as ``_geopandas_to_arrow`` gives the frame: its schema's types and
+        metadata (a column without values, which arrow types as null, as nulls)."""
+        import pyarrow as pa
+
+        schema = self.schema()
+        columns = [
+            (
+                pa.nulls(self.table.num_rows)
+                if field.type == pa.null()
+                else column.cast(field.type)
+            )
+            for column, field in zip(self.table.columns, schema)
+        ]
+        return pa.Table.from_arrays(columns, schema=schema)
+
+    def write(self, path):
+        """Write the frame to the GeoParquet file ``path``."""
+        import pyarrow.parquet as pq
+
+        pq.write_table(self.to_arrow(), path, compression="snappy")
+
+
+def network_frame(ctx, chunk_size):
+    """The edges of ``ctx.store`` (a network context) as an :class:`ArrowFrame`, built in
+    chunks of ``chunk_size`` ways, or ``None`` when no way has a geometry."""
+    import pyarrow as pa
+
+    tables, bounds, types = [], [], 0
+    starts = range(0, len(ctx.store), chunk_size)
+    for table, box, kinds in _chunks(ctx, starts, chunk_size):
+        if table is not None:
+            tables.append(table)
+            bounds.append(box)
+            types |= kinds
+    if not tables:
+        return None
+    bounds = np.array(bounds)
+    return ArrowFrame(
+        pa.concat_tables(tables),
+        (
+            bounds[:, 0].min(),
+            bounds[:, 1].min(),
+            bounds[:, 2].max(),
+            bounds[:, 3].max(),
+        ),
+        [
+            name
+            for bit, name in ((wc.LINESTRING, "LineString"), (wc.POLYGON, "Polygon"))
+            if types & bit
+        ],
     )
 
 
