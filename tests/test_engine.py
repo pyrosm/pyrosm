@@ -732,11 +732,12 @@ def test_engine_element_store_selects_as_the_python_path(
     shards, _ = pool._decode_all(
         repacked_pbf, blobs, 2, str(tmp_path), osm_keys, True, bbox_bounds=bbox
     )
-    keep = collect._keep_fn(([k.decode() for k in osm_keys], data_filter, "keep"))
+    spec = ([k.decode() for k in osm_keys], data_filter, "keep")
+    keep = collect._keep_fn(spec)
     in_box = _in_box_nodes(shards) if bbox is not None else None
     store = ElementStore.from_shards(shards)
     exclude_ids = store.id[::3] if exclude else np.empty(0, np.int64)
-    mine = kept_ways(store, exclude_ids, keep, in_box).way_columns()
+    mine = kept_ways(store, exclude_ids, spec, in_box).way_columns()
     ref = collect._filter_way_columns(
         collect._read_way_columns(shards), exclude_ids, keep, in_box
     )
@@ -780,6 +781,131 @@ def test_way_columns_take_and_membership():
     ):
         with pytest.raises(ValueError, match="one-dimensional"):
             call()
+
+
+def _way_store(ways):
+    """An :class:`~pyrosm.engine.ways.ElementStore` of ``ways``: ``(id, refs, tags)``
+    with the tags as ``(key, value)`` bytes, version and timestamp from the id,
+    visible."""
+    from pyrosm.engine.ways import ElementStore
+
+    strings, pairs, refs, refs_off, pairs_off = [], [], [], [0], [0]
+    for _, way_refs, tags in ways:
+        refs.extend(way_refs)
+        refs_off.append(len(refs))
+        for key, value in tags:
+            pairs.append((len(strings), len(strings) + 1))
+            strings += [key, value]
+        pairs_off.append(len(pairs))
+    ids = np.array([w[0] for w in ways], dtype=np.int64)
+    str_off = np.zeros(len(strings) + 1, dtype=np.int64)
+    np.cumsum([len(x) for x in strings], out=str_off[1:])
+    return ElementStore(
+        id=ids,
+        refs_off=np.array(refs_off, dtype=np.int64),
+        refs=np.array(refs, dtype=np.int64),
+        version=ids + 1,
+        timestamp=ids * 1000,
+        visible=ids % 2,
+        pairs_off=np.array(pairs_off, dtype=np.int64),
+        pair_key=np.array([k for k, _ in pairs], dtype=np.int64),
+        pair_val=np.array([v for _, v in pairs], dtype=np.int64),
+        str_off=str_off,
+        str_data=np.frombuffer(b"".join(strings), dtype=np.uint8),
+    )
+
+
+_FILTER_WAYS = [
+    (1, [1, 2], [(b"highway", b"residential")]),
+    (2, [1, 2], [(b"highway", b"footway")]),
+    (3, [1, 2], [(b"highway", b"residential"), (b"access", b"no"), (b"motorcar", b"yes")]),
+    (4, [1, 2], [(b"highway", b"residential"), (b"access", b"private")]),
+    (5, [1, 2], [(b"highway", b"service"), (b"service", b"driveway")]),
+    (6, [1, 2], [(b"highway", b"residential"), (b"area", b"yes")]),
+    (7, [1, 2], [(b"highway", b"residential"), (b"access", "\u00a0private;x".encode())]),
+    (8, [1, 2], [(b"highway", b"residential"), (b"access", b"yes ; private")]),
+    (9, [1, 2], [(b"highway", b"footway"), (b"highway", b"residential")]),
+    (10, [1, 2], [(b"building", b"yes"), (b"name", b"x")]),
+    (11, [1, 2], [(b"building", b"roof")]),
+    (12, [1, 2], []),
+    (13, [1, 2], [(b"building", b"\xff")]),
+]
+
+
+@pytest.mark.parametrize("filter_type", ["keep", "exclude"])
+@pytest.mark.parametrize(
+    "custom_filter",
+    [
+        {"building": [True]},
+        {"building": ["yes", "garage"]},
+        {"highway": ["footway"]},
+        "driving",
+        "walking",
+        {"building": "yes"},
+        {"building": ["\ufffd"]},
+        {"building": ["\ud800"]},
+        '["building"~"^ro"]',
+        None,
+    ],
+)
+def test_engine_way_value_filter_matches_python(custom_filter, filter_type):
+    # The value filter of a store's ways decides as the Python predicate does on their tag
+    # dicts (a filter it does not cover is left to that predicate).
+    from pyrosm.config.osm_filters import get_osm_filter
+    from pyrosm.data_filter import element_should_be_kept
+    from pyrosm.engine.ways import keep_mask
+    from pyrosm.utils import validate_custom_filter
+
+    if custom_filter is None:
+        spec = (None, None, filter_type)
+    elif custom_filter in ("driving", "walking"):
+        spec = (["highway"], get_osm_filter(custom_filter), filter_type)
+    elif isinstance(custom_filter, str):
+        compiled = validate_custom_filter(custom_filter)
+        spec = (list(compiled.keys()), compiled, filter_type)
+    else:
+        spec = (list(custom_filter), custom_filter, filter_type)
+    store = _way_store(_FILTER_WAYS)
+    expected = [
+        spec[1] is None
+        or element_should_be_kept(store.tags(w), spec[0], spec[1], filter_type)
+        for w in range(len(store))
+    ]
+    assert keep_mask(store, spec).tolist() == expected
+
+
+def test_way_columns_string_columns_and_value_filter_check_their_input():
+    # Each string's validity and column; tag columns that do not fit together raise.
+    from pyrosm import way_columns as wc
+
+    strings = [b"building", b"yes", b"id", b"\xff"]
+    str_off = np.cumsum([0] + [len(x) for x in strings])
+    str_data = np.frombuffer(b"".join(strings), dtype=np.uint8)
+    valid, column = wc.string_columns(str_off, str_data, [b"yes"])
+    assert valid.tolist() == [True, True, True, False]
+    assert column.tolist() == [-1, 0, -2, -1]
+    good = dict(
+        pairs_off=np.array([0, 1]),
+        pair_key=np.array([0]),
+        pair_val=np.array([1]),
+        str_off=str_off,
+        str_data=str_data,
+        valid=valid.view(np.uint8),
+        rows=np.array([0]),
+    )
+    args = dict(osm_keys=[b"building"], entries=[], keep=True)
+    assert wc.value_filter(**good, **args).tolist() == [wc.KEEP]
+    for entries in ([(9, [b"building"], [])], [(wc.FILTER_VALUES, [], [])]):
+        with pytest.raises(ValueError, match="entry"):
+            wc.value_filter(**good, **dict(args, entries=entries))
+    for name, value, match in (
+        ("pair_val", np.array([9]), "strings of the store"),
+        ("pair_key", np.array([0, 1]), "offsets"),
+        ("rows", np.array([1]), "ways of the store"),
+        ("valid", np.zeros(2, dtype=np.uint8), "one flag per string"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            wc.value_filter(**dict(good, **{name: value}), **args)
 
 
 def test_engine_cut_off_file_raises_the_same_error(test_pbf, tmp_path, monkeypatch):
