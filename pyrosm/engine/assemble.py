@@ -12,8 +12,11 @@ from pyrosm.engine.collect import (
     _collect_kept_ways,
     _coordinates,
     _gather_node_records,
+    _keep_fn,
     _needed_node_ids,
+    _result_tag_columns,
 )
+from pyrosm.utils import _compat
 
 
 def _assemble_chunk(
@@ -106,6 +109,16 @@ def _assemble_layer(
     )
 
 
+def _network_kept(shard_paths, filter_spec, bounding_box):
+    """The highway ways a network read keeps (see
+    :func:`~pyrosm.engine.collect._collect_kept_ways`), or ``None``. A ``None``
+    ``data_filter`` (network types ``all`` / ``driving_psv``) keeps every highway way.
+    """
+    keep = _keep_fn(filter_spec)
+    in_box = _in_box_nodes(shard_paths) if bounding_box is not None else None
+    return _collect_kept_ways(shard_paths, np.empty(0, np.int64), keep, in_box)
+
+
 def _network_ways(
     shard_paths,
     tags_as_columns,
@@ -121,13 +134,8 @@ def _network_ways(
     ``segments`` the store holds the node records (tags + metadata), gathered with a
     second pass over ``filepath`` that ``progress`` reports (see
     :func:`~pyrosm.engine.collect._gather_node_records`); otherwise only the coordinates.
-    A ``None`` ``data_filter`` (network types ``all`` / ``driving_psv``) keeps every
-    highway way."""
-    from pyrosm.engine.collect import _keep_fn
-
-    keep = _keep_fn(filter_spec)
-    in_box = _in_box_nodes(shard_paths) if bounding_box is not None else None
-    kept = _collect_kept_ways(shard_paths, np.empty(0, np.int64), keep, in_box)
+    """
+    kept = _network_kept(shard_paths, filter_spec, bounding_box)
     if kept is None:
         return None
     if segments:
@@ -157,9 +165,20 @@ def _assemble_network(
     """Assemble the matching highway ways as a network (LineString edges + a ``length``
     column) through pyrosm's ``parse_network`` path. Returns ``(edges, nodes)``; ``nodes``
     is the graph-export node frame, only built when ``segments`` is True
-    (``get_network(nodes=True)``), from the node records of :func:`_network_ways`."""
+    (``get_network(nodes=True)``), from the node records of :func:`_network_ways`. A
+    threaded read without ``segments`` gives the edges as an
+    :class:`~pyrosm.engine.ways.ArrowFrame` (see :func:`_network_frame`)."""
     from pyrosm.frames import prepare_geodataframe
 
+    if not segments and _compat.HAS_PYARROW and _is_threaded(shard_paths):
+        return _network_frame(
+            shard_paths,
+            tags_as_columns,
+            keep_metadata,
+            filter_spec,
+            bounding_box,
+            keep_node_info,
+        )
     read = _network_ways(
         shard_paths,
         tags_as_columns,
@@ -190,6 +209,35 @@ def _assemble_network(
     if not keep_node_info and edges is not None and "nodes" in edges.columns:
         edges = edges.drop(columns=["nodes"])
     return edges, node_gdf
+
+
+def _network_frame(
+    shard_paths,
+    tags_as_columns,
+    keep_metadata,
+    filter_spec,
+    bounding_box,
+    keep_node_info,
+):
+    """:func:`_assemble_network` without ``segments`` for a threaded decode: the edges as
+    an :class:`~pyrosm.engine.ways.ArrowFrame`, ``(edges, None)``."""
+    from pyrosm.engine import geoparquet, ways
+
+    kept = _network_kept(shard_paths, filter_spec, bounding_box)
+    if kept is None:
+        return None, None
+    ctx = ways.ChunkContext(
+        kept,
+        tags_as_columns,
+        keep_metadata,
+        True,
+        _result_tag_columns(kept, tags_as_columns, keep_metadata),
+        _coordinates(shard_paths, kept, None),
+        keep_node_info,
+        network=True,
+        bounding_box=bounding_box,
+    )
+    return ways.network_frame(ctx, geoparquet._OUTPUT_CHUNK_SIZE), None
 
 
 def _assemble_graph_network(
