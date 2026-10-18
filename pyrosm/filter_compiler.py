@@ -110,6 +110,18 @@ class CompiledFilter:
         """Every referenced key, so callers can expose filter keys as result columns."""
         return sorted({condition.key for group in self.groups for condition in group})
 
+    def renamed(self, old, new):
+        """The filter with every condition on the key ``old`` reading the key ``new``."""
+        return CompiledFilter(
+            tuple(
+                tuple(
+                    Condition(new, c.operator, c.value, c.flags) if c.key == old else c
+                    for c in group
+                )
+                for group in self.groups
+            )
+        )
+
     def or_require(self, key):
         """Return a filter that also keeps elements carrying ``key`` (an extra OR-group).
 
@@ -307,6 +319,21 @@ def is_advanced_filter(custom_filter):
     if isinstance(custom_filter, dict):
         return _dict_has_regex(custom_filter)
     return False
+
+
+def rename_filter_key(data_filter, osm_keys, old, new):
+    """``(data_filter, osm_keys)`` with the key ``old`` read as ``new``: in a dict filter, in
+    a :class:`CompiledFilter` and in the candidate keys ``osm_keys`` (a key or a list).
+    """
+    if isinstance(data_filter, CompiledFilter):
+        data_filter = data_filter.renamed(old, new)
+    elif isinstance(data_filter, dict) and old in data_filter:
+        data_filter = {(new if k == old else k): v for k, v in data_filter.items()}
+    if isinstance(osm_keys, str):
+        osm_keys = new if osm_keys == old else osm_keys
+    elif osm_keys is not None:
+        osm_keys = [new if k == old else k for k in osm_keys]
+    return data_filter, osm_keys
 
 
 def compile_custom_filter(custom_filter):

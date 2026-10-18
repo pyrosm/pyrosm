@@ -2,7 +2,7 @@ from pyrosm.data_filter cimport filter_osm_records, filter_node_indices, \
     filter_array_dict_by_indices_or_mask, filter_relation_indices
 from pyrosm._arrays cimport convert_to_arrays_and_drop_empty, convert_way_records_to_lists, concatenate_dicts_of_arrays
 from pyrosm.tagparser cimport explode_tag_array
-from pyrosm.filter_compiler import compile_custom_filter, CompiledFilter
+from pyrosm.filter_compiler import compile_custom_filter, CompiledFilter, rename_filter_key
 from pyrosm.way_store import NodeTags, WayStore
 from pyrosm.geometry import AREA_BY_TAGS, tags_make_area
 import numpy as np
@@ -90,6 +90,8 @@ cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, da
     ``(way_arrays, relation_arrays)``, each ``None`` when empty. The standalone ways also
     carry, under ``AREA_BY_TAGS``, whether their tags make them areas when closed. From a
     WayStore, only the ways the key check of filter_osm_records can keep are built."""
+    # A way record holds its tag keyed "id" as "id_tag", and "id" is the way's id.
+    data_filter, osm_keys = rename_filter_key(data_filter, osm_keys, "id", "id_tag")
     if isinstance(way_records, WayStore):
         way_records = way_records.records(
             way_records.candidate_rows(osm_keys, relation_way_ids, keep_all)
@@ -213,9 +215,13 @@ cdef get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter, filter_t
     return filtered_nodes
 
 cdef _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys, bint keep_metadata=True, relation_member_ways=None, bint keep_all=False):
+    """The nodes, ways, relation member ways and relations that pass the filter
+    ``data_filter`` (its keys ``osm_keys`` parsed from it when None), as arrays."""
     if osm_keys is None:
         # Convert filter to appropriate form and parse keys
         data_filter, osm_keys = get_data_filter_and_osm_keys(data_filter)
+    # The tag pyrosm returns as "id_tag" is keyed "id" in the elements' tags.
+    data_filter, osm_keys = rename_filter_key(data_filter, osm_keys, "id_tag", "id")
 
     # A truthy node_arrays is a non-empty dict of node columns. An empty dict (e.g. when a
     # bounding box selected no nodes) or None means there are no nodes to filter.

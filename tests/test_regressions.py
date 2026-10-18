@@ -3038,3 +3038,76 @@ def test_block_decoders_read_the_visible_flag():
         keys=None,
     )
     assert out["way_meta"][:, 2].tolist() == [0, 1, 1, 1]
+
+
+@pytest.mark.parametrize(
+    "engine, backend",
+    [("in_memory", None), ("out_of_core", "threads"), ("out_of_core", "processes")],
+    ids=["in_memory", "threads", "processes"],
+)
+def test_filters_read_the_id_tag_as_id_tag(
+    tmp_path, monkeypatch, fresh_cache, engine, backend
+):
+    """A filter reads a tag keyed ``id`` as ``id_tag``, the column it is returned in, on
+    nodes, ways and relations; ``id``, the element's OSM id, is refused as a filter key.
+    Out of core, ``keep_other_tags=False`` returns the requested ``id_tag`` column."""
+    import pandas as pd
+
+    osmium = pytest.importorskip("osmium")
+    from osmium.osm.mutable import Node, Relation, Way
+    from pyrosm import OSM
+
+    path = str(tmp_path / "id_tags.osm.pbf")
+    with osmium.SimpleWriter(path) as writer:
+        writer.add_node(Node(id=100, location=(25, 60), tags={"amenity": "cafe", "id": "n"}))
+        writer.add_node(Node(id=101, location=(25.001, 60), tags={"amenity": "cafe"}))
+        for k, (dx, dy) in enumerate([(0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)]):
+            writer.add_node(Node(id=k + 1, location=(25 + dx, 60.01 + dy)))
+        writer.add_way(Way(id=10, nodes=[1, 2], tags={"highway": "path", "id": "w"}))
+        writer.add_way(Way(id=11, nodes=[2, 3], tags={"highway": "path"}))
+        writer.add_way(Way(id=12, nodes=[1, 2, 3, 4, 1], tags={}))
+        for rel_id, tags in ((200, {"id": "r"}), (201, {})):
+            writer.add_relation(
+                Relation(
+                    id=rel_id,
+                    members=[("w", 12, "outer")],
+                    tags={"type": "multipolygon", "building": "yes", **tags},
+                )
+            )
+    if backend is not None:
+        monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    osm = OSM(path, engine=engine, workers=1)
+    tagged = [("node", 100, "n"), ("relation", 200, "r"), ("way", 10, "w")]
+
+    def kept(gdf, column="id_tag"):
+        return sorted(zip(gdf["osm_type"], gdf["id"], gdf[column]))
+
+    assert kept(osm.get_data_by_custom_criteria(custom_filter={"id_tag": True})) == tagged
+    found = osm.get_data_by_custom_criteria(
+        custom_filter={"amenity": True, "highway": True, "building": True},
+        osm_keys_to_keep=["id_tag"],
+        extra_attributes=["id_tag"],
+    )
+    assert kept(found) == tagged
+    assert kept(osm.get_data_by_custom_criteria(custom_filter='["id_tag"="w"]')) == [
+        ("way", 10, "w")
+    ]
+    for refused in ({"id": True}, '["id"="w"]'):
+        with pytest.raises(ValueError, match="'id' is the element's OSM id"):
+            osm.get_data_by_custom_criteria(custom_filter=refused)
+    for custom_filter in ({"amenity": True}, None):
+        with pytest.raises(ValueError, match="'id' is the element's OSM id"):
+            osm.get_data_by_custom_criteria(
+                custom_filter=custom_filter, osm_keys_to_keep="id"
+            )
+    for flt in ({"id_tag": True}, '["highway"]["id_tag"]'):
+        edges = osm.get_network(custom_filter=flt, filter_type="keep")
+        assert edges["id"].tolist() == [10], flt
+    if engine == "out_of_core":
+        lean = osm.get_data_by_custom_criteria(
+            custom_filter={"amenity": True},
+            extra_attributes=["id_tag"],
+            keep_other_tags=False,
+        )
+        lean = lean.set_index("id")["id_tag"]
+        assert lean[100] == "n" and pd.isna(lean[101])
