@@ -286,12 +286,18 @@ def result_tag_columns(store, tags_as_columns, keep_metadata, keep_other_tags):
 
 
 class ChunkContext:
-    """What building the tag columns of a store's ways needs of a read: the output tag
-    columns (in the order of the Python path), each string's column as a key and the
-    special ways."""
+    """What building a store's ways as the chunks of a result needs of a read: the output
+    tag columns (in the order of the Python path), each string's column as a key, the
+    special ways and the node coordinates."""
 
     def __init__(
-        self, store, tags_as_columns, keep_metadata, keep_other_tags, way_columns
+        self,
+        store,
+        tags_as_columns,
+        keep_metadata,
+        keep_other_tags,
+        way_columns,
+        node_coordinates=None,
     ):
         from pyrosm.engine.collect import _way_column_keys
 
@@ -312,6 +318,15 @@ class ChunkContext:
         )
         self.valid, self.column, self.special = _string_columns(store, self.tag_cols)
         self.requested = None if keep_other_tags else set(tags_as_columns)
+        self.node_coordinates = node_coordinates
+
+    def rule_columns(self):
+        """The output positions of the tag columns the area rule of closed ways reads
+        (``area``, ``highway``, ``barrier``, ``route``), -1 when not output."""
+        return [
+            self.out_names.index(k) if k in self.out_names else -1
+            for k in ("area", "highway", "barrier", "route")
+        ]
 
     def special_rows(self, ways):
         """The tag columns (``{column: list}``) and JSON values of the ways ``ways`` of the
@@ -401,6 +416,89 @@ def _string_array(offsets, data, valid):
         pa.py_buffer(np.packbits(valid, bitorder="little")) if nulls else None,
         nulls,
     )
+
+
+def _replace(array, positions, values):
+    """``array`` with the values at ``positions`` replaced by ``values`` (str or None)."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    mask = np.zeros(len(array), dtype=bool)
+    mask[positions] = True
+    return pc.replace_with_mask(
+        array, pa.array(mask), pa.array(values, type=array.type)
+    )
+
+
+def _fix_orientation(chunk, positions):
+    """Write the WKB of the rings at ``positions`` of ``chunk``, oriented by GEOS."""
+    import shapely
+
+    wkb, wkb_off = chunk["wkb"], chunk["wkb_off"]
+    coords, coords_off = chunk["coords"], chunk["coords_off"]
+    for k in positions:
+        ring = coords[coords_off[k] : coords_off[k + 1]]
+        polygon = shapely.orient_polygons(shapely.polygons(ring), exterior_cw=False)
+        data = shapely.to_wkb(polygon)
+        wkb[wkb_off[k] : wkb_off[k + 1]] = np.frombuffer(data, dtype=np.uint8)
+        coords[coords_off[k] : coords_off[k + 1]] = shapely.get_coordinates(polygon)
+
+
+def _build_chunk(ctx, rows):
+    """The chunk of the ways ``rows`` of ``ctx.store`` (see
+    :func:`pyrosm.way_columns.build_chunk`), with the special ways' columns and the
+    orientation GEOS decides filled in, the tag columns and the JSON as Arrow arrays
+    (``tag_arrays``, ``json_array``). Returns ``(chunk, kept_rows)``."""
+    store = ctx.store
+    rows = np.asarray(rows, dtype=np.int64)
+    area, highway, barrier, route = ctx.rule_columns()
+    special = ctx.special[rows]
+    chunk = wc.build_chunk(
+        rows,
+        store.refs_off,
+        store.refs,
+        store.pairs_off,
+        store.pair_key,
+        store.pair_val,
+        store.str_off,
+        store.str_data,
+        valid=ctx.valid,
+        column=ctx.column,
+        out_column=ctx.out_column,
+        n_out=len(ctx.out_names),
+        special=special,
+        version=store.version,
+        timestamp=store.timestamp,
+        visible=store.visible,
+        nodes=ctx.node_coordinates,
+        network=False,
+        area_col=area,
+        highway_col=highway,
+        barrier_col=barrier,
+        route_col=route,
+        json=ctx.json,
+        json_version=ctx.json_version,
+        json_timestamp=ctx.json_timestamp,
+        json_visible=ctx.json_visible,
+    )
+    if len(chunk["check"]):
+        _fix_orientation(chunk, chunk["check"])
+    # ``kept`` indexes ``rows`` (the ways with a geometry); ``positions`` index ``kept``.
+    kept = chunk["kept"]
+    columns = [_string_array(*c) for c in chunk["columns"]]
+    json = _string_array(*chunk["json"]) if chunk["json"] is not None else None
+    positions = np.flatnonzero(special[kept])
+    if len(positions):
+        col_lists, leftover = ctx.special_rows(rows[kept[positions]])
+        columns = [
+            _replace(array, positions, col_lists[name])
+            for array, name in zip(columns, ctx.out_names)
+        ]
+        if json is not None:
+            json = _replace(json, positions, leftover)
+    chunk["tag_arrays"] = columns
+    chunk["json_array"] = json
+    return chunk, rows[kept]
 
 
 def kept_ways(store, exclude_ids, filter_spec, in_box):
