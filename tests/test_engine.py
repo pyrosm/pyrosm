@@ -2298,9 +2298,14 @@ def test_engine_network_nodes_cache_reuse_skips_decode(
     _assert_full_parity(n1.assign(osm_type="node"), n2.assign(osm_type="node"))
 
 
-def test_engine_network_output_path_writes_edges(helsinki_pbf, tmp_path):
+@pytest.mark.parametrize("backend", ["threads", "processes"])
+def test_engine_network_output_path_writes_edges(
+    helsinki_pbf, tmp_path, monkeypatch, backend
+):
     # output= writes the edges to that GeoParquet and returns the path; the file matches the
-    # in-memory network edges.
+    # in-memory network edges, from the Arrow tables of a threaded decode and from the
+    # frame of a process decode.
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
     out = tmp_path / "network.parquet"
     ret = get_network(helsinki_pbf, network_type="driving", output=out)
     assert ret == out and out.exists()
