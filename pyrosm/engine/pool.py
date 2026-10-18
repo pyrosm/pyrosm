@@ -73,16 +73,17 @@ def _ordered_map(executor, func, items, window):
         yield pending.popleft().result()
 
 
-def thread_map(function, items):
+def thread_map(function, items, window=None):
     """Yield ``function(item)`` for each of ``items`` in order, run on the threads of the
-    threaded read running in this thread (see :func:`read_threads`)."""
+    threaded read running in this thread (see :func:`read_threads`), with at most
+    ``window`` items in flight (twice the threads by default)."""
     items = list(items)
     threads = read_threads()
     if threads <= 1 or len(items) <= 1:
         yield from map(function, items)
         return
     with ThreadPoolExecutor(threads) as pool:
-        yield from _ordered_map(pool, function, items, 2 * threads)
+        yield from _ordered_map(pool, function, items, window or 2 * threads)
 
 
 def _auto_workers(filepath, n_blobs):

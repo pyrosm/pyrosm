@@ -17,6 +17,7 @@ from pyrosm.engine.collect import (
     _slice_way_columns,
 )
 from pyrosm.engine.assemble import _assemble_chunk
+from pyrosm.engine.ways import ChunkContext, ElementStore, chunk_tables
 
 # Assemble and write this many ways per chunk, so the output frame is never fully
 # materialised.
@@ -75,7 +76,8 @@ def _stream_layer_to_parquet(
     keep_node_info=False,
 ):
     """Stream the layer (point nodes, then ways in chunks, then relations) to a GeoParquet
-    at ``output``, one chunk in memory at a time. Returns the path, or ``None`` if there
+    at ``output``, a few chunks in memory at a time (see
+    :func:`~pyrosm.engine.ways.chunk_tables`). Returns the path, or ``None`` if there
     was nothing to write. ``keep_node_info`` keeps the ways' ``nodes`` column."""
     import pyarrow.parquet as pq
     from geopandas.io.arrow import _geopandas_to_arrow
@@ -177,11 +179,24 @@ def _stream_layer_to_parquet(
             with writer:
                 write_set_aside(node_path)
                 write(first_ways)
-                # A further way chunk is referenced only while it is written, so one chunk
-                # is in memory at a time.
+                # A further way chunk is referenced only while it is written.
                 first_ways = None
-                for start in starts:
-                    write(way_table(start))
+                if isinstance(kept, ElementStore):
+                    ctx = ChunkContext(
+                        kept,
+                        tags_as_columns,
+                        keep_metadata,
+                        keep_other_tags,
+                        way_columns,
+                        node_coordinates,
+                        keep_node_info,
+                        bounding_box,
+                    )
+                    for table in chunk_tables(ctx, starts, chunk_size):
+                        write(table)
+                else:
+                    for start in starts:
+                        write(way_table(start))
                 write_set_aside(relation_path)
         except BaseException:
             # A read that fails leaves no partial file.

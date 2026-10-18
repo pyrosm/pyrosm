@@ -4,7 +4,8 @@ The threaded decode stores each element's tags as ids of strings, not as a dict.
 :class:`ElementStore` gathers those columns from the shards for the candidate ways, and
 :func:`kept_ways` selects the ways a read outputs (the value filter in C, see
 :func:`keep_mask`); :func:`tag_lists` builds their tag columns and JSON ``tags`` column
-in C. The module also gathers the node coordinates, the relation member ways and the
+in C, and :func:`chunk_tables` the chunks of a result, with the geometries, on the read's
+threads. The module also gathers the node coordinates, the relation member ways and the
 network's node records on the read's threads.
 """
 
@@ -13,7 +14,7 @@ import numpy as np
 from pyrosm import way_columns as wc
 from pyrosm._arrays import _offsets_from_lengths
 from pyrosm.engine.decode import _merge_shards, _open_shard
-from pyrosm.engine.pool import thread_map
+from pyrosm.engine.pool import read_threads, thread_map
 
 # The shard key of each column of a store of ways, in the store's constructor's order.
 _WAY_KEYS = {
@@ -287,8 +288,8 @@ def result_tag_columns(store, tags_as_columns, keep_metadata, keep_other_tags):
 
 class ChunkContext:
     """What building a store's ways as the chunks of a result needs of a read: the output
-    tag columns (in the order of the Python path), each string's column as a key, the
-    special ways and the node coordinates."""
+    columns (in the order of the Python path), each string's column as a key, the special
+    ways, the node coordinates and the area the geometries must intersect."""
 
     def __init__(
         self,
@@ -298,17 +299,31 @@ class ChunkContext:
         keep_other_tags,
         way_columns,
         node_coordinates=None,
+        keep_node_info=False,
+        bounding_box=None,
     ):
         from pyrosm.engine.collect import _way_column_keys
 
         self.store = store
-        column_keys, self.tag_cols = _way_column_keys(tags_as_columns, keep_metadata)
+        self.column_keys, self.tag_cols = _way_column_keys(
+            tags_as_columns, keep_metadata
+        )
+        self.version_col = "version" in self.column_keys
+        self.timestamp_col = "timestamp" in self.column_keys
+        self.visible_col = "visible" in self.column_keys
         self.keep_other_tags = keep_other_tags
+        self.keep_node_info = keep_node_info
+        # The area the geometries must intersect, as prepare_geodataframe filters them.
+        if isinstance(bounding_box, list):
+            from shapely import box
+
+            bounding_box = box(*bounding_box)
+        self.area = bounding_box
         # Whether the JSON ``tags`` column is built, and the metadata fields it holds.
         self.json = keep_other_tags and "tags" in way_columns
-        self.json_version = self.json and "version" not in column_keys
-        self.json_timestamp = self.json and "timestamp" not in column_keys
-        self.json_visible = self.json and "visible" not in column_keys
+        self.json_version = self.json and not self.version_col
+        self.json_timestamp = self.json and not self.timestamp_col
+        self.json_visible = self.json and not self.visible_col
         # The output tag columns: the tag columns the result has, in column order.
         # ``out_column[c]`` is tag column ``c``'s position among them, -1 when not output.
         self.out_names = [k for k in self.tag_cols if k in way_columns]
@@ -418,6 +433,41 @@ def _string_array(offsets, data, valid):
     )
 
 
+# The largest offset of an Arrow binary array (32-bit offsets).
+_BINARY_LIMIT = 2**31 - 1
+
+
+def _binary_array(offsets, data):
+    """A binary array of the values ``data[offsets[i]:offsets[i + 1]]``, in several chunks
+    when the data exceed what 32-bit offsets reach."""
+    import pyarrow as pa
+
+    parts, start = [], 0
+    n = len(offsets) - 1
+    # Each chunk runs from ``start`` to ``stop``: the last row whose data end within
+    # _BINARY_LIMIT bytes of the chunk's start, at least one row. An empty input still
+    # gives one (empty) chunk.
+    while start < n or not parts:
+        stop = n
+        if offsets[n] - offsets[start] > _BINARY_LIMIT:
+            stop = max(
+                start + 1,
+                int(np.searchsorted(offsets, offsets[start] + _BINARY_LIMIT, "right"))
+                - 1,
+            )
+        part = (offsets[start : stop + 1] - offsets[start]).astype(np.int32)
+        values = data[offsets[start] : offsets[stop]]
+        parts.append(
+            pa.Array.from_buffers(
+                pa.binary(),
+                stop - start,
+                [None, pa.py_buffer(part), pa.py_buffer(values)],
+            )
+        )
+        start = stop
+    return parts[0] if len(parts) == 1 else pa.chunked_array(parts, type=pa.binary())
+
+
 def _replace(array, positions, values):
     """``array`` with the values at ``positions`` replaced by ``values`` (str or None)."""
     import pyarrow as pa
@@ -427,6 +477,18 @@ def _replace(array, positions, values):
     mask[positions] = True
     return pc.replace_with_mask(
         array, pa.array(mask), pa.array(values, type=array.type)
+    )
+
+
+def _constant_strings(text, n):
+    """A string array of ``n`` times ``text``."""
+    import pyarrow as pa
+
+    size = len(text)
+    return pa.LargeStringArray.from_buffers(
+        n,
+        pa.py_buffer(np.arange(0, size * n + 1, size, dtype=np.int64)),
+        pa.py_buffer(text.encode("utf-8") * n),
     )
 
 
@@ -499,6 +561,78 @@ def _build_chunk(ctx, rows):
     chunk["tag_arrays"] = columns
     chunk["json_array"] = json
     return chunk, rows[kept]
+
+
+def _chunk_table(ctx, start, stop):
+    """The Arrow table of the ways ``start:stop`` of ``ctx.store`` as the Python path
+    writes a chunk of a layer (without schema metadata), or ``None`` when none of them has
+    a geometry (in ``ctx.area``)."""
+    import pyarrow as pa
+
+    store = ctx.store
+    chunk, rows = _build_chunk(ctx, np.arange(start, stop))
+    if len(rows) == 0:
+        return None
+    names, arrays = [], []
+    tags = dict(zip(ctx.out_names, chunk["tag_arrays"]))
+    for key in ctx.column_keys:
+        if key == "id":
+            array = pa.array(store.id[rows])
+        elif key == "nodes":
+            if not ctx.keep_node_info:
+                continue
+            offsets, refs = wc.take(store.refs_off, store.refs, rows)
+            array = pa.ListArray.from_arrays(
+                pa.array(offsets.astype(np.int32)), pa.array(refs)
+            )
+        elif key == "version" and ctx.version_col:
+            array = pa.array(store.version[rows].astype(np.int32))
+        elif key == "timestamp" and ctx.timestamp_col:
+            array = pa.array(store.timestamp[rows].astype(np.uint32))
+        elif key == "visible" and ctx.visible_col:
+            array = pa.array(store.visible[rows].astype(bool))
+        elif key in tags:
+            array = tags[key]
+        else:
+            continue
+        names.append(key)
+        arrays.append(array)
+    if chunk["json_array"] is not None:
+        names.append("tags")
+        arrays.append(chunk["json_array"])
+    names.append("osm_type")
+    arrays.append(_constant_strings("way", len(rows)))
+    names.append("geometry")
+    arrays.append(_binary_array(chunk["wkb_off"], chunk["wkb"]))
+    table = pa.Table.from_arrays(arrays, names=names)
+    return table if ctx.area is None else _in_area(table, ctx.area)
+
+
+def _in_area(table, area):
+    """The rows of ``table`` whose geometry intersects ``area``, as the spatial filter of
+    ``prepare_geodataframe`` keeps them, or ``None`` when none does."""
+    import pyarrow as pa
+    import shapely
+
+    geometries = shapely.from_wkb(
+        table.column("geometry").to_numpy(zero_copy_only=False)
+    )
+    inside = shapely.intersects(geometries, area)
+    if not inside.any():
+        return None
+    return table if inside.all() else table.filter(pa.array(inside))
+
+
+def chunk_tables(ctx, starts, chunk_size):
+    """The tables (see :func:`_chunk_table`) of the chunks of ``chunk_size`` ways of
+    ``ctx.store`` that begin at ``starts``, in order, built on the read's threads with at
+    most one more chunk than threads in flight."""
+    n = len(ctx.store)
+    yield from thread_map(
+        lambda start: _chunk_table(ctx, start, min(start + chunk_size, n)),
+        starts,
+        window=read_threads() + 1,
+    )
 
 
 def kept_ways(store, exclude_ids, filter_spec, in_box):
