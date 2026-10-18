@@ -1244,6 +1244,88 @@ def test_engine_way_geometries_match_python_path(keep_other_tags):
         assert chunk["json_array"] is None
 
 
+@pytest.mark.parametrize(
+    "keep_metadata, keep_other_tags, keep_node_info, bounding_box",
+    [
+        (True, True, False, None),
+        (False, True, True, None),
+        (True, False, False, [0.5, 0.5, 3.0, 3.0]),
+    ],
+)
+def test_engine_way_chunk_matches_python_path(
+    keep_metadata, keep_other_tags, keep_node_info, bounding_box
+):
+    # A chunk of a store's ways built without the GIL holds the table the Python path
+    # builds for the same ways' tag dicts, also when the chunks are built on threads; ways
+    # without a geometry, or none in the box, give no chunk.
+    import pyarrow as pa
+    from geopandas.io.arrow import _geopandas_to_arrow
+    from pyrosm.engine import geoparquet, pool, ways
+    from pyrosm.engine.assemble import _assemble_chunk
+    from pyrosm.engine.collect import _result_tag_columns
+
+    nodes = _crafted_nodes()
+    store = _way_store(_CRAFTED_WAYS)
+    columns = ["building", "highway", "area", "name", "id_tag", "barrier", "source"]
+    tags_as_columns = columns + ["visible", "roof"] if keep_other_tags else columns[:3]
+    way_columns = _result_tag_columns(
+        store, tags_as_columns, keep_metadata, keep_other_tags
+    )
+    gdf = _assemble_chunk(
+        nodes,
+        store.way_columns(None if keep_other_tags else set(tags_as_columns)),
+        None,
+        None,
+        tags_as_columns,
+        keep_metadata,
+        bounding_box=bounding_box,
+        keep_other_tags=keep_other_tags,
+        keep_node_info=keep_node_info,
+        way_columns=way_columns,
+    )
+    ref = _geopandas_to_arrow(gdf, index=False, geometry_encoding="WKB")
+    ctx = ways.ChunkContext(
+        store,
+        tags_as_columns,
+        keep_metadata,
+        keep_other_tags,
+        way_columns,
+        nodes,
+        keep_node_info,
+        bounding_box,
+    )
+    mine = ways._chunk_table(ctx, 0, len(store))
+    assert len(mine) < len(store)
+    assert geoparquet._align_table(mine, ref.schema).equals(ref)
+    token = pool._READ_THREADS.set(2)
+    try:
+        parts = list(ways.chunk_tables(ctx, range(0, len(store), 4), 4))
+    finally:
+        pool._READ_THREADS.reset(token)
+    assert pa.concat_tables([t for t in parts if t is not None]).equals(mine)
+    no_geometry = [i for i, way in enumerate(_CRAFTED_WAYS) if way[0] in (10, 11)]
+    assert ways._chunk_table(ctx, no_geometry[0], no_geometry[-1] + 1) is None
+    ctx.area = shapely.box(50.0, 50.0, 51.0, 51.0)
+    assert ways._chunk_table(ctx, 0, len(store)) is None
+
+
+def test_engine_binary_array_splits_past_32_bit_offsets(monkeypatch):
+    # The geometries of a chunk go into several Arrow arrays when their bytes exceed what
+    # 32-bit offsets reach.
+    import pyarrow as pa
+    from pyrosm.engine import ways
+
+    values = [b"a" * 4, b"b" * 5, b"c" * 6, b"d" * 7]
+    offsets = np.concatenate([[0], np.cumsum([len(v) for v in values])])
+    data = np.frombuffer(b"".join(values), dtype=np.uint8)
+    monkeypatch.setattr(ways, "_BINARY_LIMIT", 10)
+    array = ways._binary_array(offsets, data)
+    assert array.num_chunks == 3
+    assert array.to_pylist() == values
+    monkeypatch.setattr(ways, "_BINARY_LIMIT", 2**31 - 1)
+    assert isinstance(ways._binary_array(offsets, data), pa.BinaryArray)
+
+
 def test_way_columns_tag_columns_check_their_arrays():
     # tag_columns refuses arrays that do not fit together, and a tag that is not valid
     # UTF-8 in a row that is not special; bytes that are not valid UTF-8 but marked valid
@@ -1587,20 +1669,16 @@ def test_engine_stream_parquet_chunk_table_branches(
         empty_ways = {"id": np.empty(0, np.int64), "nodes": np.empty(0, dtype=object)}
         assert write((None, None, relations, empty_ways, nc)) is None
         # a chunk that fails after the first was written leaves no file behind.
-        assemble, align = geoparquet._assemble_chunk, geoparquet._align_table
+        align = geoparquet._align_table
         written = []
 
-        def assemble_once(*args, **kwargs):
+        def align_once(table, schema):
             if written:
                 raise MemoryError
-            return assemble(*args, **kwargs)
-
-        def align_and_count(table, schema):
             written.append(table.num_rows)
             return align(table, schema)
 
-        monkeypatch.setattr(geoparquet, "_assemble_chunk", assemble_once)
-        monkeypatch.setattr(geoparquet, "_align_table", align_and_count)
+        monkeypatch.setattr(geoparquet, "_align_table", align_once)
         with pytest.raises(MemoryError):
             write((None, kept, None, None, nc), "failed.parquet", chunk_size=10)
         assert written and not (tmp_path / "failed.parquet").exists()
