@@ -101,6 +101,14 @@ cdef convert_to_arrays_and_drop_empty(data):
 
     return arrays
 
+def _offsets_from_lengths(lengths):
+    """CSR offsets array for variable-length rows: ``[0, l0, l0+l1, ...]``."""
+    off = np.zeros(len(lengths) + 1, dtype=np.int64)
+    if len(lengths):
+        np.cumsum(lengths, out=off[1:])
+    return off
+
+
 cpdef columns_to_arrays(data):
     """Python entry to convert a ``{column: value-list}`` dict into the harmonized numpy
     arrays (dropping all-None columns, applying the per-key dtypes) used to build a

@@ -50,6 +50,7 @@ from pyrosm.exceptions import (
     ExtractDownloadError,
     ExtractNotFoundError,
 )
+from pyrosm.utils import _file_identity
 from pyrosm.utils.download import (
     _FETCH_ERRORS,
     _TIMEOUT,
@@ -639,12 +640,6 @@ def _choose(target, candidates, strategy):
     return cover
 
 
-def _identity(path):
-    """A file's device, inode, size and modification time, to notice it changing."""
-    st = os.stat(path)
-    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
-
-
 def _sha256(path):
     """The SHA-256 hex digest of a file."""
     digest = hashlib.sha256()
@@ -666,10 +661,10 @@ def _provenance(path):
     from pyrosm.pbf_export import read_header_block
 
     for _ in range(3):
-        before = _identity(path)
+        before = _file_identity(path)
         stamp = read_header_block(str(path)).osmosis_replication_timestamp
         digest = _sha256(path)
-        if _identity(path) == before:
+        if _file_identity(path) == before:
             snapshot = datetime.fromtimestamp(stamp, timezone.utc) if stamp else None
             return digest, snapshot
     raise OSError("'%s' kept changing while it was read." % path)
@@ -838,14 +833,14 @@ def _write_with_provenance(
     ``sha256`` and ``snapshot``; returns the file's path and ``{path: (sha256, snapshot)}``.
     """
     for _ in range(3):
-        before = [_identity(s.path) for s in sources]
+        before = [_file_identity(s.path) for s in sources]
         path = _write_area_file(
             area, sources, crop, output_path, directory, workers, progress
         )
-        written = _identity(path)
+        written = _file_identity(path)
         provenance = {p: _provenance(p) for p in {path, *(s.path for s in sources)}}
-        unchanged = [_identity(s.path) for s in sources] == before
-        if unchanged and _identity(path) == written:
+        unchanged = [_file_identity(s.path) for s in sources] == before
+        if unchanged and _file_identity(path) == written:
             for s in sources:
                 s.sha256, s.snapshot = provenance[s.path]
             return path, provenance

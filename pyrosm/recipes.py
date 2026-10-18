@@ -865,7 +865,8 @@ def _reusable(work, previous, fingerprint, files):
     """Whether ``previous``, a stage's entry in the previous record, has ``fingerprint`` and
     lists ``files`` as its outputs, each in place with the SHA-256 it records. Notes each
     output's identity, taken before it is hashed, in ``work["reused"]``."""
-    from pyrosm.data.extract_index import _identity, _sha256
+    from pyrosm.data.extract_index import _sha256
+    from pyrosm.utils import _file_identity
 
     old = _nested_get(previous, "outputs")
     if (
@@ -879,7 +880,7 @@ def _reusable(work, previous, fingerprint, files):
         path = work["root"] / name
         if not path.is_file():
             return False
-        identities[name] = _identity(path)
+        identities[name] = _file_identity(path)
         if _sha256(path) != sha256:
             return False
     work["reused"].update(identities)
@@ -905,7 +906,8 @@ def _stage_entry(work, previous, inputs, files, run, reusable=True):
 
 def _run(path, out_dir, invocation, force=False):
     from pyrosm import OSM
-    from pyrosm.data.extract_index import _identity, _sha256
+    from pyrosm.data.extract_index import _sha256
+    from pyrosm.utils import _file_identity
 
     recipe = validate(path)
     root = _out_root(recipe, out_dir)
@@ -917,7 +919,7 @@ def _run(path, out_dir, invocation, force=False):
         staging = tempfile.mkdtemp(prefix=".pyrosm-staging-", dir=root)
         try:
             sources = _input_sources(recipe)
-            identities = [_identity(source["file"]) for source in sources]
+            identities = [_file_identity(source["file"]) for source in sources]
             record = {
                 "pyrosm_recipe_provenance": 1,
                 "versions": _versions(),
@@ -985,10 +987,10 @@ def _run(path, out_dir, invocation, force=False):
             record["outputs"] = {}
             for entry in entries:
                 record["outputs"].update(entry["outputs"])
-            if [_identity(source["file"]) for source in sources] != identities:
+            if [_file_identity(source["file"]) for source in sources] != identities:
                 raise OSError("an input file changed while the recipe ran")
             for name, identity in work["reused"].items():
-                if _identity(root / name) != identity:
+                if _file_identity(root / name) != identity:
                     raise OSError("%s, reused, changed while the recipe ran" % name)
             record["written_at"] = datetime.now(timezone.utc).isoformat()
             written = [n for n, status in work["status"].items() if status == "written"]

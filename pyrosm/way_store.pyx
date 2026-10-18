@@ -4,6 +4,8 @@ demand."""
 import numpy as np
 from libc.stdint cimport int32_t, int64_t
 
+from pyrosm._arrays import _offsets_from_lengths
+
 # The keys every way record has; a tag keyed like one of them replaces its value.
 _RECORD_KEYS = frozenset({"id", "version", "timestamp", "visible", "nodes"})
 # Iterating a store builds this many records at a time.
@@ -42,13 +44,6 @@ def _map_strings(dict string_ids, list table, list strings, used):
             table.append(string)
         mapping[i] = j
     return mapping
-
-
-def _offsets(counts):
-    """CSR offsets of rows with ``counts`` entries each."""
-    offsets = np.zeros(len(counts) + 1, dtype=np.int64)
-    np.cumsum(counts, out=offsets[1:])
-    return offsets
 
 
 cdef class WayStore:
@@ -217,10 +212,10 @@ cdef class WayStoreBuilder:
             _joined(parts, "timestamp", np.int64),
             _joined(parts, "visible", bool),
             _joined(parts, "refs", np.int64),
-            _offsets(_joined(parts, "ref_counts", np.int64)),
+            _offsets_from_lengths(_joined(parts, "ref_counts", np.int64)),
             _joined(parts, "keys", np.int32),
             _joined(parts, "vals", np.int32),
-            _offsets(_joined(parts, "tag_counts", np.int64)),
+            _offsets_from_lengths(_joined(parts, "tag_counts", np.int64)),
             self._strings,
             self._string_ids,
         )
@@ -365,7 +360,7 @@ cdef class NodeTagsBuilder:
         keys, vals = pairs[0::2], pairs[1::2]
         if keep is not None:
             rows = np.flatnonzero(keep)
-            tag_rows = _range_indices(_offsets(counts)[rows], counts[rows])
+            tag_rows = _range_indices(_offsets_from_lengths(counts)[rows], counts[rows])
             keys, vals, counts = keys[tag_rows], vals[tag_rows], counts[rows]
         tagged = np.flatnonzero(counts > 0)
         mapping = _map_strings(
@@ -387,7 +382,7 @@ cdef class NodeTagsBuilder:
             _joined(parts, "rows", np.int64),
             _joined(parts, "keys", np.int32),
             _joined(parts, "vals", np.int32),
-            _offsets(_joined(parts, "counts", np.int64)),
+            _offsets_from_lengths(_joined(parts, "counts", np.int64)),
             self._strings,
             self._string_ids,
             self._n_nodes,
