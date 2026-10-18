@@ -2,8 +2,9 @@
 
 The threaded decode stores each element's tags as ids of strings, not as a dict. An
 :class:`ElementStore` gathers those columns from the shards for the candidate ways, and
-:func:`kept_ways` selects the ways a read outputs; :meth:`ElementStore.way_columns` gives
-the column dict the rest of the collect step reads.
+:func:`kept_ways` selects the ways a read outputs (the value filter in C, see
+:func:`keep_mask`); :meth:`ElementStore.way_columns` gives the column dict the rest of the
+collect step reads.
 """
 
 import numpy as np
@@ -136,17 +137,89 @@ class ElementStore:
         }
 
 
-def kept_ways(store, exclude_ids, keep, in_box):
+def _filter_entries(data_filter):
+    """The entries of a dict value filter for :func:`pyrosm.way_columns.value_filter`, or
+    ``None`` for a filter it does not cover (a compiled filter, an unknown value type, a
+    string UTF-8 cannot encode)."""
+    if not isinstance(data_filter, dict):
+        return None
+    try:
+        return _encoded_entries(data_filter)
+    except UnicodeEncodeError:
+        return None  # a string no PBF holds, such as a lone surrogate
+
+
+def _encoded_entries(data_filter):
+    """The entries of :func:`_filter_entries` for a dict filter, its strings encoded; raises
+    ``UnicodeEncodeError`` for a string UTF-8 cannot encode."""
+    from pyrosm.config.osm_filters import _CLOSED, AccessRule, MultiValue
+
+    entries = []
+    for key, values in data_filter.items():
+        if isinstance(values, AccessRule):
+            entries.append(
+                (
+                    wc.FILTER_ACCESS,
+                    [k.encode("utf-8") for k in values.keys],
+                    [v.encode("utf-8") for v in _CLOSED],
+                )
+            )
+            continue
+        if values is True or (isinstance(values, list) and values == [True]):
+            entries.append((wc.FILTER_ANY, [key.encode("utf-8")], []))
+            continue
+        if not isinstance(values, (list, tuple, set, frozenset)):
+            return None
+        strings = [v.encode("utf-8") for v in values if isinstance(v, str)]
+        kind = wc.FILTER_MULTI if isinstance(values, MultiValue) else wc.FILTER_VALUES
+        entries.append((kind, [key.encode("utf-8")], strings))
+    return entries
+
+
+def keep_mask(store, filter_spec):
+    """Whether each way of ``store`` passes the value filter ``filter_spec`` (see
+    :func:`~pyrosm.engine.collect._keep_fn`). The C filter decides the ways it can; the
+    others (``wc.CHECK``) go through the Python filter on their tag dicts."""
+    from pyrosm.engine.collect import _keep_fn
+
+    osm_keys, data_filter, filter_type = filter_spec
+    n = len(store)
+    if data_filter is None:
+        return np.ones(n, dtype=bool)
+    keep = _keep_fn(filter_spec)
+    entries = _filter_entries(data_filter)
+    if entries is None:
+        return np.fromiter((keep(store.tags(w)) for w in range(n)), dtype=bool, count=n)
+    valid, _ = wc.string_columns(store.str_off, store.str_data, [])
+    decided = wc.value_filter(
+        store.pairs_off,
+        store.pair_key,
+        store.pair_val,
+        store.str_off,
+        store.str_data,
+        valid.view(np.uint8),
+        np.arange(n, dtype=np.int64),
+        [k.encode("utf-8") for k in osm_keys],
+        entries,
+        filter_type == "keep",
+    )
+    mask = decided == wc.KEEP
+    for w in np.flatnonzero(decided == wc.CHECK):
+        mask[w] = keep(store.tags(w))
+    return mask
+
+
+def kept_ways(store, exclude_ids, filter_spec, in_box):
     """The ways of ``store`` a read outputs, as
-    :func:`~pyrosm.engine.collect._filter_way_columns` selects them: those whose tags pass
-    ``keep``, with a node in ``in_box`` (the ids of the nodes in the bounding box, or
-    None), and not in ``exclude_ids``. ``None`` when none is left."""
+    :func:`~pyrosm.engine.collect._filter_way_columns` selects them: those passing the value
+    filter ``filter_spec`` (see :func:`keep_mask`), with a node in ``in_box`` (the ids of the
+    nodes in the bounding box, or None), and not in ``exclude_ids``. ``None`` when none is
+    left."""
     from pyrosm.int64_hash import Int64Set
 
     if store is None:
         return None
-    n = len(store)
-    mask = np.fromiter((keep(store.tags(w)) for w in range(n)), dtype=bool, count=n)
+    mask = keep_mask(store, filter_spec)
     if in_box is not None:
         mask &= wc.with_node_in(store.refs_off, store.refs, Int64Set(in_box))
     if len(exclude_ids):

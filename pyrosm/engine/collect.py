@@ -282,6 +282,8 @@ def _keep_fn(filter_spec):
             tag, osm_keys, data_filter, filter_type
         )
 
+    # The element store of a threaded read applies ``filter_spec`` to its string ids itself.
+    keep.filter_spec = filter_spec
     return keep
 
 
@@ -294,7 +296,7 @@ def _collect_kept_ways(shard_paths, exclude_ids, keep, in_box=None):
         from pyrosm.engine.ways import ElementStore, kept_ways
 
         store = ElementStore.from_shards(shard_paths)
-        kept = kept_ways(store, exclude_ids, keep, in_box)
+        kept = kept_ways(store, exclude_ids, keep.filter_spec, in_box)
         return None if kept is None else kept.way_columns()
     return _filter_way_columns(
         _read_way_columns(shard_paths), exclude_ids, keep, in_box
