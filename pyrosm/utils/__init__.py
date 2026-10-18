@@ -213,13 +213,24 @@ def warn_future(message):
     warnings.warn(message, FutureWarning, stacklevel=_stacklevel_outside_pyrosm())
 
 
+# The messages ``warn_future_once`` has shown in this process.
+_future_warnings_shown = set()
+_future_warnings_lock = threading.Lock()
+
+
+def warn_future_once(message):
+    """``warn_future(message)`` the first time in a process; a warning turned into an error
+    raises at every call."""
+    with _future_warnings_lock:
+        if message not in _future_warnings_shown:
+            warn_future(message)
+            _future_warnings_shown.add(message)
+
+
 _DEFAULT_WORKERS_WARNING = (
     "In pyrosm 1.0, reads, crops and merges will run in parallel by default. Pass "
     "workers=1 to keep running them on one core."
 )
-# Whether ``_DEFAULT_WORKERS_WARNING`` was shown in this process.
-_default_workers_warned = False
-_default_workers_lock = threading.Lock()
 
 
 def _file_identity(file):
@@ -233,13 +244,9 @@ def default_workers(workers):
     """``workers``, or 1 when it is not given (None). The first time in a process that
     the default is used, warns that it changes in pyrosm 1.0; a warning turned into an
     error raises at every such call."""
-    global _default_workers_warned
     if workers is not None:
         return workers
-    with _default_workers_lock:
-        if not _default_workers_warned:
-            warn_future(_DEFAULT_WORKERS_WARNING)
-            _default_workers_warned = True
+    warn_future_once(_DEFAULT_WORKERS_WARNING)
     return 1
 
 

@@ -77,12 +77,15 @@ def fresh_cache(_result_cache):
 
 
 @pytest.fixture(autouse=True)
-def _default_workers_warned(monkeypatch):
-    """The warning that the default of ``workers`` changes in pyrosm 1.0, shown once per
-    process, counts as shown, so no test sees it unless it resets this."""
+def _future_warnings_shown(monkeypatch):
+    """The warnings shown once per process -- that the default of ``workers`` changes in
+    pyrosm 1.0, and that the processes backend is deprecated -- count as shown, so no test
+    sees them unless it removes them from this set."""
     import pyrosm.utils
+    from pyrosm.engine.pool import _PROCESSES_BACKEND_WARNING
 
-    monkeypatch.setattr(pyrosm.utils, "_default_workers_warned", True)
+    shown = {pyrosm.utils._DEFAULT_WORKERS_WARNING, _PROCESSES_BACKEND_WARNING}
+    monkeypatch.setattr(pyrosm.utils, "_future_warnings_shown", shown)
 
 
 @pytest.fixture(autouse=True)

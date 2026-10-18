@@ -104,10 +104,11 @@ class OSM:
         The out-of-core backend reads on a single core by default. To decode in
         parallel pass `workers="auto"` (or an explicit `workers=N`); see below. A
         parallel read runs on threads and needs no `if __name__ == "__main__":`
-        guard. With the environment variable `PYROSM_DECODE_BACKEND=processes` it
-        runs in worker processes instead; those start with `spawn` on macOS and
-        Windows, which re-imports the program's entry point, so a parallel read then
-        must run under the guard::
+        guard. With the environment variable `PYROSM_DECODE_BACKEND=processes`
+        (deprecated: it warns, and it will be removed in a future release) it runs
+        in worker processes instead; those start with `spawn` on macOS and Windows,
+        which re-imports the program's entry point, so a parallel read then must
+        run under the guard::
 
             if __name__ == "__main__":
                 osm = OSM(fp, engine="out_of_core", workers="auto")

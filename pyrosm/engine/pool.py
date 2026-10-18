@@ -21,7 +21,7 @@ from pyrosm.engine.decode import (
     _decode_batch,
     _decode_batch_threads,
 )
-from pyrosm.utils import default_workers
+from pyrosm.utils import default_workers, warn_future_once
 from pyrosm.utils.progress import reporting
 
 logger = logging.getLogger(__name__)
@@ -302,15 +302,25 @@ def _decode_all(
     return [path for paths in results for path in paths], pool_ok
 
 
+_PROCESSES_BACKEND_WARNING = (
+    "PYROSM_DECODE_BACKEND=processes is deprecated and will be removed in a future release "
+    "of pyrosm; reads, crops and merges run on threads by default. If you need the worker "
+    "processes, please tell us why in an issue: https://github.com/pyrosm/pyrosm/issues"
+)
+
+
 def _decode_backend():
     """How a decode runs: ``"threads"`` (GIL-free, no ``__main__`` guard needed; the
-    default) or ``"processes"``, from the ``PYROSM_DECODE_BACKEND`` environment variable.
+    default) or ``"processes"`` (deprecated: warns once per process), from the
+    ``PYROSM_DECODE_BACKEND`` environment variable.
     """
     backend = os.environ.get("PYROSM_DECODE_BACKEND", "threads").lower()
     if backend not in ("threads", "processes"):
         raise ValueError(
             "PYROSM_DECODE_BACKEND should be 'threads' or 'processes', got %r" % backend
         )
+    if backend == "processes":
+        warn_future_once(_PROCESSES_BACKEND_WARNING)
     return backend
 
 
