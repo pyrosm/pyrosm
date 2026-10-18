@@ -102,18 +102,19 @@ class OSM:
         it.
 
         The out-of-core backend reads on a single core by default. To decode in
-        parallel pass `workers="auto"` (or an explicit `workers=N`); see below. The
-        worker processes start with `spawn` on macOS and Windows, which re-imports
-        the program's entry point, so a parallel `OSM(...)` read must run under an
-        `if __name__ == "__main__":` guard::
+        parallel pass `workers="auto"` (or an explicit `workers=N`); see below. A
+        parallel read runs on threads and needs no `if __name__ == "__main__":`
+        guard. With the environment variable `PYROSM_DECODE_BACKEND=processes` it
+        runs in worker processes instead; those start with `spawn` on macOS and
+        Windows, which re-imports the program's entry point, so a parallel read then
+        must run under the guard::
 
             if __name__ == "__main__":
                 osm = OSM(fp, engine="out_of_core", workers="auto")
                 buildings = osm.get_buildings()
 
-        Without the guard a parallel read still completes -- it falls back to a
-        single process and warns -- but it is not parallel. On Linux (`fork`) no
-        guard is needed, and the default single-core read needs no guard anywhere.
+        Without the guard such a read still completes -- it falls back to a single
+        process and warns -- but it is not parallel.
 
         History reads -- an `.osh.pbf` file, or any feature call with a
         `timestamp` -- are served by the in-memory reader with either engine:
@@ -130,15 +131,17 @@ class OSM:
         way's topology from this column.
 
     workers : int | str (default: None)
-        Number of worker processes the `'out_of_core'` engine uses to decode the
-        file. By default (`None`) the engine reads on a single core; in pyrosm 1.0
-        reads run in parallel by default, so pass `workers=1` to keep one. Pass
+        Number of threads the `'out_of_core'` engine uses to decode the file. By
+        default (`None`) the engine reads on a single core; in pyrosm 1.0 reads run
+        in parallel by default, so pass `workers=1` to keep one. Pass
         `workers="auto"` to let pyrosm choose the count automatically -- a single
-        core for small files; for larger files the CPU cores less two, up to eight --
-        or `workers=N` for an explicit count (a count above the available CPU cores is
-        reduced to the core count, with a warning). Parallel reads need the
-        `if __name__ == "__main__":` guard on macOS/Windows. Has no effect on the
-        `'in_memory'` engine.
+        core for files below about 70 MB; for larger files the CPU cores less two, at
+        most one per data blob -- or `workers=N` for an explicit count (a count above
+        the available CPU cores is
+        reduced to the core count, with a warning). With
+        `PYROSM_DECODE_BACKEND=processes` they are worker processes, at most eight
+        with `"auto"`, and a parallel read needs the `if __name__ == "__main__":`
+        guard on macOS/Windows. Has no effect on the `'in_memory'` engine.
 
     progress : bool | callable | None (default: None)
         `None` follows `pyrosm.enable_logging(progress=...)`, which is `True`
@@ -1294,12 +1297,13 @@ class OSM:
             written; when ``False`` no relations are written.
 
         workers : int
-            Number of worker processes for the CPU-heavy per-block work. ``1``
-            (by default, ``None``) runs sequentially; in pyrosm 1.0 the crop runs in
-            parallel by default. ``>1`` uses a multiprocessing pool and
-            produces a byte-identical output. When the worker processes cannot run
-            (on macOS and Windows: a script without an ``if __name__ == "__main__":``
-            guard, or one read from stdin), the crop runs in one process and warns.
+            Number of threads for the CPU-heavy per-block work. ``1`` (by default,
+            ``None``) runs sequentially; in pyrosm 1.0 the crop runs in parallel by
+            default. ``>1`` produces a byte-identical output. With
+            ``PYROSM_DECODE_BACKEND=processes`` they are worker processes; when those
+            cannot run (on macOS and Windows: a script without an
+            ``if __name__ == "__main__":`` guard, or one read from stdin), the crop runs
+            in one process and warns.
 
         compact : bool
             When ``False`` (default) each output block keeps its source block's

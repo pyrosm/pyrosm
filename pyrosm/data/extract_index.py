@@ -936,14 +936,15 @@ def get_data_by_area(
         ``must_cover`` outside it are cropped away.
 
     workers : int
-        Number of worker processes that crop (and merge) the downloaded file. ``1`` (by
-        default, ``None``) runs in one process; in pyrosm 1.0 they run in parallel by
-        default. More workers are used only for a file with at least
-        ``2 * workers`` data blocks, and the written file is the same for every value. With
-        ``crop=False`` and a single extract nothing is cropped, so it has no effect. On macOS
-        and Windows each worker process starts by importing the script, so a script that
-        passes ``workers > 1`` needs the ``if __name__ == "__main__":`` guard; without it, or
-        for a script read from stdin, the work runs in one process with a warning.
+        Number of threads that crop (and merge) the downloaded file. ``1`` (by default,
+        ``None``) runs sequentially; in pyrosm 1.0 they run in parallel by default. More
+        workers are used only for a file with at least ``2 * workers`` data blocks, and the
+        written file is the same for every value. With ``crop=False`` and a single extract
+        nothing is cropped, so it has no effect. With ``PYROSM_DECODE_BACKEND=processes``
+        they are worker processes; on macOS and Windows each starts by importing the
+        script, so a script that passes ``workers > 1`` then needs the
+        ``if __name__ == "__main__":`` guard; without it, or for a script read from stdin,
+        the work runs in one process with a warning.
 
     progress : bool | callable | None
         ``None`` (default) follows :func:`pyrosm.enable_logging`, which is ``True`` unless
