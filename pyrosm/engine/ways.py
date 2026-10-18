@@ -845,11 +845,12 @@ def _node_tag_columns(store, tags_as_columns):
     for w in np.flatnonzero(special):
         other, values = {}, {}
         for k, v in store.tags(w).items():
-            if k in column_set:
-                values[k] = v
-                present[column_keys.index(k)] = True
+            key = "id_tag" if k == "id" else k
+            if key in column_set:
+                values[key] = v
+                present[column_keys.index(key)] = True
             else:
-                other[k] = v
+                other[key] = v
         rows[w] = (values, dumps(other) if other else None)
     names = [k for c, k in enumerate(column_keys) if present[c]]
     position = {k: i for i, k in enumerate(names)}

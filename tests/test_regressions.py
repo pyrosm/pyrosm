@@ -2877,3 +2877,40 @@ def test_relation_id_tag_does_not_overwrite_the_relation_id(
     gdf = OSM(path, engine=engine, workers=1).get_buildings(extra_attributes=["id_tag"])
     assert gdf["id"].tolist() == [100] and gdf["id"].dtype == np.int64
     assert gdf["id_tag"].tolist() == ["B-7"]
+
+
+@pytest.mark.parametrize(
+    "engine, backend",
+    [("in_memory", None), ("out_of_core", "threads"), ("out_of_core", "processes")],
+    ids=["in_memory", "threads", "processes"],
+)
+def test_node_id_tag_does_not_overwrite_the_node_id(
+    tmp_path, monkeypatch, fresh_cache, engine, backend
+):
+    """A node's tag keyed ``id`` is surfaced as ``id_tag``, as a way's is: requesting
+    ``id`` as a column keeps the node ids, ``id_tag`` is a column when requested and
+    a key of the JSON ``tags`` otherwise."""
+    import json
+
+    import numpy as np
+    import pandas as pd
+
+    osmium = pytest.importorskip("osmium")
+    from osmium.osm.mutable import Node
+    from pyrosm import OSM
+
+    path = str(tmp_path / "node_id_tag.osm.pbf")
+    with osmium.SimpleWriter(path) as writer:
+        writer.add_node(
+            Node(id=100, location=(25, 60), tags={"amenity": "cafe", "id": "stray"})
+        )
+        writer.add_node(Node(id=101, location=(25.001, 60), tags={"amenity": "cafe"}))
+    if backend is not None:
+        monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    osm = OSM(path, engine=engine, workers=1)
+
+    gdf = osm.get_pois(custom_filter={"amenity": True}, extra_attributes=["id", "id_tag"])
+    assert gdf["id"].tolist() == [100, 101] and gdf["id"].dtype == np.int64
+    assert gdf["id_tag"][0] == "stray" and pd.isna(gdf["id_tag"][1])
+    gdf = osm.get_pois(custom_filter={"amenity": True})
+    assert json.loads(gdf["tags"][0]) == {"id_tag": "stray"}
