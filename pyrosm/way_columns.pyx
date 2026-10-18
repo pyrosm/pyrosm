@@ -5,11 +5,12 @@ A way store (:class:`~pyrosm.engine.ways.ElementStore`) holds the candidate ways
 as flat arrays: ``ids``, the node refs (``refs`` with ``refs_off``), the metadata, and the
 tags as ids into one string buffer (``pair_key`` / ``pair_val`` with ``pairs_off``, the
 strings in ``str_data`` at ``str_off``). The functions here select ways, by the value filter
-of a read and by a bounding box, find the tag columns the ways have, and build those columns
-and the JSON ``tags`` column as Arrow string buffers, releasing the GIL for the work.
+of a read and by a bounding box, find the tag columns the ways have, and build a chunk of the
+ways as the columns of a result: those columns and the JSON ``tags`` column as Arrow string
+buffers, and the geometries as WKB. They release the GIL for the work.
 
-The rules are those of the reader's Python path (``engine.collect`` and
-``data_filter.pyx``). A way the value filter here does not cover -- a string that is not
+The rules are those of the reader's Python path (``engine.collect``, ``data_filter.pyx``
+and ``geometry.pyx``). A way the value filter here does not cover -- a string that is not
 valid UTF-8, a value ``str.strip`` may change beyond ASCII -- is left to that path
 ("check"), and so are the tag columns of a "special" way (see ``special_ways``).
 """
@@ -17,12 +18,15 @@ valid UTF-8, a value ``str.strip`` may change beyond ASCII -- is left to that pa
 import numpy as np
 
 from cpython.pyport cimport PY_SSIZE_T_MAX
-from libc.stdint cimport int32_t, int64_t, uint8_t, uint32_t, uint64_t, uintptr_t
+from libc.stdint cimport (
+    int32_t, int64_t, uint8_t, uint32_t, uint64_t, uintptr_t, UINT32_MAX
+)
 from libc.string cimport memcmp, memcpy
 from libc.stdlib cimport free, malloc
 
-from pyrosm._pointers cimport _int64_ptr, _uint8_ptr
-from pyrosm.int64_hash cimport Int64Set
+from pyrosm._pointers cimport _double_ptr, _int64_ptr, _uint8_ptr
+from pyrosm.int64_hash cimport Int64Map, Int64Set
+from pyrosm.node_lookup cimport NodeLocations
 
 cdef enum:
     # the kinds of a value-filter entry (see ``value_filter``)
@@ -34,6 +38,9 @@ cdef enum:
     C_DROP = 0
     C_KEEP = 1
     C_CHECK = 2
+    # the geometry types of a chunk, as bits of ``build_chunk``'s ``types``
+    C_LINESTRING = 1
+    C_POLYGON = 2
     # a string's column as a key, when it is not a column index
     C_LEFTOVER = -1
     C_SPECIAL = -2
@@ -44,6 +51,8 @@ FILTER_ACCESS = C_FILTER_ACCESS
 FILTER_ANY = C_FILTER_ANY
 KEEP = C_KEEP
 CHECK = C_CHECK
+LINESTRING = C_LINESTRING
+POLYGON = C_POLYGON
 
 
 def _contiguous(a, dtype):
@@ -795,6 +804,18 @@ cdef struct _Chunk:
     const int64_t* visible
     Py_ssize_t n_out
     bint json_version, json_timestamp, json_visible
+    const int64_t* refs_off
+    const int64_t* refs
+    const int64_t* node_row            # per ref of the chunk's rows in order: store row or -1
+    const int64_t* node_start          # per row: its first entry in node_row
+    const double* lon
+    const double* lat
+    bint network                       # lines only
+    int area_col, highway_col, barrier_col, route_col   # output positions, or -1
+    uint8_t* kind                      # per row: 0 (no geometry), LINESTRING or POLYGON
+    int64_t* n_points
+    uint8_t* close                     # per row: the ring repeats its first point
+    uint8_t* all_valid                 # per row: every node has valid coordinates
 
 
 cdef list _point_at_tag_arrays(_Chunk* ch, rows, pairs_off, pair_key, pair_val, str_off,
@@ -1068,3 +1089,389 @@ cdef tuple _json_column(const _Chunk* ch, kept):
                 comma = True
             out[length] = c'}'
     return offsets, data[:size], (lengths > 0).astype(np.uint8)
+
+
+# --- geometries -----------------------------------------------------------------------
+
+
+# The ring orientation of GEOS's ``Orientation::isCCW``, which shapely's
+# ``orient_polygons`` uses. Its ``orientationIndex`` (the sign of a 2x2 determinant) is
+# decided here only when GEOS's double-precision filter is certain of the sign; otherwise
+# 2 is returned and the caller asks GEOS.
+cdef int _orientation_index(double ax, double ay, double bx, double by, double cx,
+                            double cy) noexcept nogil:
+    """The orientation of ``c`` to the segment ``a``-``b``: 1 counter-clockwise, -1
+    clockwise, 0 collinear, 2 when double precision cannot tell."""
+    # det = (a - c) x (b - c). When its two products have opposite signs (or one is 0) the
+    # sign of their difference is exact; otherwise it is trusted only when it is larger
+    # than 1e-15 times their sum (the bound GEOS uses), else undecided.
+    cdef double detsum
+    cdef double detleft = (ax - cx) * (by - cy)
+    cdef double detright = (ay - cy) * (bx - cx)
+    cdef double det = detleft - detright
+    if detleft > 0.0:
+        if detright <= 0.0:
+            return (det > 0.0) - (det < 0.0)
+        detsum = detleft + detright
+    elif detleft < 0.0:
+        if detright >= 0.0:
+            return (det > 0.0) - (det < 0.0)
+        detsum = -detleft - detright
+    else:
+        return (det > 0.0) - (det < 0.0)
+    if det >= 1e-15 * detsum or -det >= 1e-15 * detsum:
+        return (det > 0.0) - (det < 0.0)
+    return 2
+
+
+cdef int _is_ccw(const double* xy, Py_ssize_t n_points) noexcept nogil:
+    """``Orientation::isCCW`` of the closed ring of ``n_points`` points ``xy`` (x, y
+    pairs): 1 counter-clockwise, 0 not, 2 when double precision cannot tell."""
+    cdef Py_ssize_t n = n_points - 1, i, hi = 0, low_i, down_hi
+    cdef double prev_y, py, hx, hy, lx = 0, ly = 0
+    cdef int index
+    if n < 3:
+        return 0
+    # The highest point ``hi`` (the first of a run of points at that height, reached going
+    # up), with the point before it, ``(lx, ly)``.
+    hx = xy[0]
+    hy = xy[1]
+    prev_y = hy
+    for i in range(1, n + 1):
+        py = xy[2 * i + 1]
+        if py > prev_y and py >= hy:
+            hx = xy[2 * i]
+            hy = py
+            hi = i
+            lx = xy[2 * i - 2]
+            ly = xy[2 * i - 1]
+        prev_y = py
+    if hi == 0:
+        return 0
+    # ``low_i``: the first point after the high run that is lower; ``down_hi``: the last
+    # point of the high run (where the ring starts down again).
+    low_i = hi
+    while True:
+        low_i = (low_i + 1) % n
+        if low_i == hi or xy[2 * low_i + 1] != hy:
+            break
+    down_hi = low_i - 1 if low_i > 0 else n - 1
+    # A single high point: the ring's turn at it gives the orientation (degenerate,
+    # repeated points: not counter-clockwise). A flat top: the direction along it does.
+    if hx == xy[2 * down_hi] and hy == xy[2 * down_hi + 1]:
+        if ((lx == hx and ly == hy)
+                or (xy[2 * low_i] == hx and xy[2 * low_i + 1] == hy)
+                or (lx == xy[2 * low_i] and ly == xy[2 * low_i + 1])):
+            return 0
+        index = _orientation_index(lx, ly, hx, hy, xy[2 * low_i], xy[2 * low_i + 1])
+        if index == 2:
+            return 2
+        return 1 if index == 1 else 0
+    return 1 if xy[2 * down_hi] - hx < 0 else 0
+
+
+cdef inline bint _valid_node(const _Chunk* ch, int64_t row) noexcept nogil:
+    """Whether the node store row ``row`` (-1: a node not in the store) has coordinates
+    within lon -180..180 and lat -90..90."""
+    cdef double x, y
+    if row < 0:
+        return False
+    x = ch.lon[row]
+    y = ch.lat[row]
+    return x <= 180.0 and x >= -180.0 and y <= 90.0 and y >= -90.0
+
+
+cdef inline Py_ssize_t _col_value(const _Chunk* ch, Py_ssize_t w, int out_col) noexcept nogil:
+    """The last pair of way ``w`` whose key routes to output column ``out_col`` (a tag dict
+    keeps the last value of a key), or -1."""
+    cdef Py_ssize_t p, found = -1
+    cdef int c
+    for p in range(ch.pairs_off[w], ch.pairs_off[w + 1]):
+        c = ch.column[ch.pair_key[p]]
+        if c >= 0 and ch.out_column[c] == out_col:
+            found = p
+    return found
+
+
+cdef inline bint _value_is(const _Chunk* ch, Py_ssize_t p, const char* text) noexcept nogil:
+    """Whether the value of pair ``p`` is ``text``."""
+    cdef int64_t v = ch.pair_val[p]
+    return _equals(ch.str_data + ch.str_off[v], ch.str_off[v + 1] - ch.str_off[v], text)
+
+
+cdef void _measure_geometry(const _Chunk* ch, Py_ssize_t i) noexcept nogil:
+    """The geometry of row ``i`` as geometry.pyx builds it: its kind, its number of points,
+    whether the ring repeats its first point and whether all its nodes are valid."""
+    cdef Py_ssize_t w = ch.rows[i], j, n, k = 0, p, first = -1, last = -1
+    cdef const int64_t* nrow = ch.node_row + ch.node_start[i]
+    cdef int64_t r0 = ch.refs_off[w]
+    cdef bint is_area = False, linear, all_valid = True
+    n = ch.refs_off[w + 1] - r0
+    ch.kind[i] = 0
+    ch.close[i] = 0
+    ch.n_points[i] = 0
+    ch.all_valid[i] = 0
+    if n == 0:
+        return
+    # The valid nodes: how many (``k``), the first and the last.
+    for j in range(n):
+        if _valid_node(ch, nrow[j]):
+            if first < 0:
+                first = j
+            last = j
+            k += 1
+        else:
+            all_valid = False
+    ch.all_valid[i] = all_valid
+    # A closed way is an area unless ``area=no``, or (without ``area=yes``) it has a
+    # ``highway``, ``barrier`` or ``route`` tag; a network's ways are lines.
+    if not ch.network and ch.refs[r0] == ch.refs[r0 + n - 1]:
+        p = _col_value(ch, w, ch.area_col) if ch.area_col >= 0 else -1
+        if p >= 0 and _value_is(ch, p, "yes"):
+            is_area = True
+        elif p >= 0 and _value_is(ch, p, "no"):
+            is_area = False
+        else:
+            linear = ((ch.highway_col >= 0 and _col_value(ch, w, ch.highway_col) >= 0)
+                      or (ch.barrier_col >= 0 and _col_value(ch, w, ch.barrier_col) >= 0)
+                      or (ch.route_col >= 0 and _col_value(ch, w, ch.route_col) >= 0))
+            is_area = not linear
+    # An area with every node valid and 4 or more of them is a polygon of all its nodes;
+    # otherwise of its valid nodes when there are 3 or more, closed by repeating the first
+    # when there are only 3 or the first and last differ. A line needs 2 valid nodes.
+    if is_area:
+        if all_valid and n >= 4:
+            ch.kind[i] = C_POLYGON
+            ch.n_points[i] = n
+        elif k > 2:
+            ch.kind[i] = C_POLYGON
+            ch.n_points[i] = k
+            if k == 3 or (ch.lon[nrow[first]] != ch.lon[nrow[last]]
+                          or ch.lat[nrow[first]] != ch.lat[nrow[last]]):
+                ch.close[i] = 1
+                ch.n_points[i] = k + 1
+        return
+    if k >= 2:
+        ch.kind[i] = C_LINESTRING
+        ch.n_points[i] = k
+
+
+cdef inline void _put_u32(uint8_t* out, uint32_t v) noexcept nogil:
+    """Write ``v`` in the machine's byte order."""
+    memcpy(out, &v, 4)
+
+
+cdef inline uint8_t _host_order() noexcept nogil:
+    """WKB's byte order marker of this machine (1 little-endian, 0 big-endian): the
+    geometries are written in its order, as ``shapely.to_wkb`` writes them."""
+    cdef uint32_t one = 1
+    return (<uint8_t*>&one)[0]
+
+
+cdef Py_ssize_t _write_wkb(const _Chunk* ch, Py_ssize_t i, uint8_t* out,
+                           double* xy) noexcept nogil:
+    """Write row ``i``'s geometry as 2D WKB in the machine's byte order, and its points to
+    ``xy``; a polygon's ring counter-clockwise. Returns the bytes written, or -1 (nothing
+    written to ``out``) when the ring's orientation needs GEOS."""
+    cdef Py_ssize_t w = ch.rows[i], j, k = 0, header, n_points = ch.n_points[i]
+    cdef const int64_t* nrow = ch.node_row + ch.node_start[i]
+    cdef Py_ssize_t n = ch.refs_off[w + 1] - ch.refs_off[w]
+    cdef int ccw
+    cdef double tx, ty
+    for j in range(n):
+        if ch.all_valid[i] or _valid_node(ch, nrow[j]):
+            xy[2 * k] = ch.lon[nrow[j]]
+            xy[2 * k + 1] = ch.lat[nrow[j]]
+            k += 1
+    if ch.close[i]:
+        xy[2 * k] = xy[0]
+        xy[2 * k + 1] = xy[1]
+    # WKB: a byte-order byte, the geometry type as uint32 (2 LineString, 3 Polygon), for a
+    # polygon its number of rings (1), the number of points, then x and y of each point
+    # as doubles.
+    if ch.kind[i] == C_POLYGON:
+        ccw = _is_ccw(xy, n_points)
+        if ccw == 2:
+            return -1
+        # A ring that is not counter-clockwise is reversed in place.
+        if ccw == 0:
+            for j in range(n_points // 2):
+                tx = xy[2 * j]
+                ty = xy[2 * j + 1]
+                xy[2 * j] = xy[2 * (n_points - 1 - j)]
+                xy[2 * j + 1] = xy[2 * (n_points - 1 - j) + 1]
+                xy[2 * (n_points - 1 - j)] = tx
+                xy[2 * (n_points - 1 - j) + 1] = ty
+        out[0] = _host_order()
+        _put_u32(out + 1, 3)
+        _put_u32(out + 5, 1)
+        _put_u32(out + 9, <uint32_t>n_points)
+        header = 13
+    else:
+        out[0] = _host_order()
+        _put_u32(out + 1, 2)
+        _put_u32(out + 5, <uint32_t>n_points)
+        header = 9
+    memcpy(out + header, xy, 16 * n_points)
+    return header + 16 * n_points
+
+
+cdef inline Py_ssize_t _wkb_size(const _Chunk* ch, Py_ssize_t i) noexcept nogil:
+    """The WKB size of row ``i``'s geometry (see ``_write_wkb``)."""
+    return (13 if ch.kind[i] == C_POLYGON else 9) + 16 * ch.n_points[i]
+
+
+def build_chunk(rows, refs_off, refs, pairs_off, pair_key, pair_val, str_off, str_data,
+                valid, column, out_column, Py_ssize_t n_out, special, version, timestamp,
+                visible, NodeLocations nodes not None, bint network, int area_col,
+                int highway_col, int barrier_col, int route_col, bint json,
+                bint json_version, bint json_timestamp, bint json_visible):
+    """Build the ways ``rows`` of a store as the columns of a result chunk.
+
+    The tag arguments are those of :func:`tag_columns`. ``nodes`` holds the coordinates of
+    the ways' nodes; ``network`` builds lines only; the ``*_col`` arguments are the output
+    positions of the tag columns the area rule of closed ways reads (-1 when not output).
+
+    Returns a dict: ``kept`` (the positions in ``rows`` that have a geometry, the chunk's
+    rows), ``wkb_off`` and ``wkb`` (their geometries), ``types`` (bits of
+    C_LINESTRING and C_POLYGON), ``bounds``, ``coords`` and ``coords_off`` (each geometry's
+    points), ``check`` (rows whose ring orientation needs GEOS; their WKB is left
+    unwritten), ``columns`` and ``json`` (those of :func:`tag_columns` for the rows
+    ``kept``)."""
+    cdef _Chunk ch
+    arrays = _point_at_tag_arrays(&ch, rows, pairs_off, pair_key, pair_val, str_off,
+                                  str_data, valid, column, out_column, n_out, special,
+                                  version, timestamp, visible, json_version,
+                                  json_timestamp, json_visible)
+    refs_off = _contiguous(refs_off, np.int64)
+    refs = _contiguous(refs, np.int64)
+    _check_offsets(refs_off, refs.shape[0])
+    if refs_off.shape[0] != pairs_off.shape[0]:
+        raise ValueError("refs_off and pairs_off must have one entry per way and one more")
+    lon = np.asarray(nodes._lon)
+    lat = np.asarray(nodes._lat)
+    if len(nodes._ids) > min(lon.shape[0], lat.shape[0]):
+        raise ValueError("the node store must have coordinates for each of its ids")
+    cdef Py_ssize_t n = ch.n, i, j, w, total = 0, length
+    cdef const int64_t* r = ch.rows
+    cdef int64_t* ro = _int64_ptr(refs_off)
+    cdef int64_t* rf = _int64_ptr(refs)
+    cdef bint too_long = False
+    # 1. Each ref of the rows, in order, as its node store row (-1 when the store lacks
+    # it): ``node_row``, row ``i``'s refs starting at ``node_start[i]``.
+    node_start = np.empty(n + 1, dtype=np.int64)
+    cdef int64_t* ns = _int64_ptr(node_start)
+    with nogil:
+        for i in range(n):
+            ns[i] = total
+            length = ro[r[i] + 1] - ro[r[i]]
+            if length > PY_SSIZE_T_MAX // <Py_ssize_t>sizeof(int64_t) - total:
+                too_long = True
+                break
+            total += length
+        ns[n] = total
+    if too_long:
+        raise OverflowError("the rows hold more node refs than an array can")
+    node_row = np.empty(max(total, 1), dtype=np.int64)
+    cdef int64_t* nr = _int64_ptr(node_row)
+    cdef Int64Map index = nodes._id2idx
+    with nogil:
+        for i in range(n):
+            w = r[i]
+            for j in range(ro[w], ro[w + 1]):
+                nr[ns[i] + j - ro[w]] = index.get(rf[j], -1)
+    kind = np.zeros(n, dtype=np.uint8)
+    n_points = np.zeros(n, dtype=np.int64)
+    close = np.zeros(n, dtype=np.uint8)
+    all_valid = np.zeros(n, dtype=np.uint8)
+    ch.refs_off = ro
+    ch.refs = rf
+    ch.node_row = nr
+    ch.node_start = ns
+    ch.lon = _double_ptr(lon) if lon.shape[0] else NULL
+    ch.lat = _double_ptr(lat) if lat.shape[0] else NULL
+    ch.network = network
+    ch.area_col = area_col
+    ch.highway_col = highway_col
+    ch.barrier_col = barrier_col
+    ch.route_col = route_col
+    ch.kind = _uint8_ptr(kind)
+    ch.n_points = _int64_ptr(n_points)
+    ch.close = _uint8_ptr(close)
+    ch.all_valid = _uint8_ptr(all_valid)
+
+    # 2. Each row's geometry kind and number of points, so that the output arrays can be
+    # allocated at their sizes.
+    cdef Py_ssize_t n_kept = 0, wkb_bytes = 0, points = 0, size
+    with nogil:
+        for i in range(n):
+            _measure_geometry(&ch, i)
+            if not ch.kind[i]:
+                continue
+            size = _wkb_size(&ch, i)
+            if (ch.n_points[i] > UINT32_MAX
+                    or ch.n_points[i] > PY_SSIZE_T_MAX // 16 - points
+                    or size > PY_SSIZE_T_MAX - wkb_bytes):
+                too_long = True
+                break
+            n_kept += 1
+            points += ch.n_points[i]
+            wkb_bytes += size
+    if too_long:
+        raise OverflowError("the geometries hold more points than their arrays can")
+    kept = np.empty(n_kept, dtype=np.int64)
+    wkb_off = np.zeros(n_kept + 1, dtype=np.int64)
+    wkb = np.zeros(max(wkb_bytes, 1), dtype=np.uint8)
+    coords = np.empty((max(points, 1), 2), dtype=np.float64)
+    coords_off = np.zeros(n_kept + 1, dtype=np.int64)
+    check = np.zeros(n_kept, dtype=np.uint8)
+    cdef int64_t* kp = _int64_ptr(kept)
+    cdef int64_t* wo = _int64_ptr(wkb_off)
+    cdef uint8_t* wb = _uint8_ptr(wkb)
+    cdef double* xy = _double_ptr(coords)
+    cdef int64_t* co = _int64_ptr(coords_off)
+    cdef uint8_t* ck = _uint8_ptr(check)
+    cdef Py_ssize_t written, at = 0, wat = 0, pat = 0
+    cdef int types = 0
+    cdef double minx = 0, miny = 0, maxx = 0, maxy = 0, x, y
+    cdef bint first = True
+    # 3. The WKB, points and bounds of each row with a geometry; a ring whose orientation
+    # needs GEOS keeps a zero-filled WKB of its size, marked in ``check``.
+    with nogil:
+        for i in range(n):
+            if not ch.kind[i]:
+                continue
+            written = _write_wkb(&ch, i, wb + wat, xy + 2 * pat)
+            if written < 0:
+                ck[at] = 1
+                written = _wkb_size(&ch, i)
+            types |= ch.kind[i]
+            for j in range(ch.n_points[i]):
+                x = xy[2 * (pat + j)]
+                y = xy[2 * (pat + j) + 1]
+                if first:
+                    minx = maxx = x
+                    miny = maxy = y
+                    first = False
+                minx = min(minx, x)
+                maxx = max(maxx, x)
+                miny = min(miny, y)
+                maxy = max(maxy, y)
+            kp[at] = i
+            wat += written
+            pat += ch.n_points[i]
+            at += 1
+            wo[at] = wat
+            co[at] = pat
+    return {
+        "kept": kept,
+        "wkb_off": wkb_off,
+        "wkb": wkb[:wkb_bytes],
+        "types": types,
+        "bounds": (minx, miny, maxx, maxy),
+        "coords": coords[:points],
+        "coords_off": coords_off,
+        "check": np.flatnonzero(check),
+        "columns": _tag_columns(&ch, kept),
+        "json": _json_column(&ch, kept) if json else None,
+    }

@@ -1037,9 +1037,20 @@ def test_engine_thread_map_bounds_the_items_in_flight():
     assert out == list(range(20))
 
 
-# Ways for the tag columns of a store: the area and linear tags of closed ways, JSON
-# escaping, special ways (an ``id`` key, a key twice, a value that is not UTF-8, a
-# metadata name as a key, many keys with one twice), and negative metadata.
+# Ways for the tag columns and the chunks of a store: ring orientation (clockwise, flat,
+# and collinear points that double precision cannot orient), the area and linear tags of
+# closed ways, missing and invalid nodes, the ring closing rule, JSON escaping, special
+# ways (an ``id`` key, a key twice, a value that is not UTF-8, a metadata name as a key,
+# many keys with one twice), and negative metadata.
+_NODES = {
+    1: (0.0, 0.0),
+    2: (0.0, 1.0),
+    3: (1.0, 1.0),
+    4: (1.0, 0.0),
+    5: (0.0, 2.0),
+    6: (2.0, 2.0),
+    50: (10.0, 95.0),
+}
 _BUILDING = [(b"building", b"yes")]
 _METADATA = ("version", "timestamp", "visible")
 _ESCAPED = 'Tie "A"\n\t\x01\x7f\\/\r\b\x0cä€\U0001f600'.encode()
@@ -1058,6 +1069,13 @@ _CRAFTED_WAYS = [
     (19, [1, 2, 3, 1], [(b"k%d" % i, b"v") for i in range(20)]),
     (20, [1, 2, 3, 1], [(b"k%d" % i, b"v") for i in range(20)] + [(b"k3", b"x")]),
     (-7, [1, 2, 3], [(b"highway", b"path"), (b"surface", b"gravel")]),
+    (7, [1, 2, 99, 3, 1], _BUILDING),
+    (8, [1, 2, 98, 99, 1], _BUILDING),
+    (9, [1, 50, 2], [(b"barrier", b"fence")]),
+    (10, [1, 99], _BUILDING),
+    (11, [], _BUILDING),
+    (16, [1, 2, 5, 1], _BUILDING),
+    (17, [1, 3, 6, 1], _BUILDING),
 ]
 
 
@@ -1162,6 +1180,68 @@ def test_way_columns_special_ways_and_column_presence():
             wc.column_presence(
                 store.pairs_off, store.pair_key, column, np.array(rows), n_columns
             )
+
+
+def _crafted_nodes():
+    """The coordinate store of ``_NODES``."""
+    from pyrosm.node_lookup import NodeLocations
+
+    ids = np.array(sorted(_NODES), dtype=np.int64)
+    return NodeLocations(
+        {
+            "id": ids,
+            "lon": np.array([_NODES[i][0] for i in ids]),
+            "lat": np.array([_NODES[i][1] for i in ids]),
+        }
+    )
+
+
+@pytest.mark.parametrize("keep_other_tags", [True, False])
+def test_engine_way_geometries_match_python_path(keep_other_tags):
+    # The geometries of a chunk of a store's ways built without the GIL (a ring that
+    # double precision cannot orient oriented by GEOS) are those the Python path builds
+    # for the same ways' tag dicts, and the chunk's tag columns and JSON are those of
+    # tag_lists for its ways; a chunk needs a node store.
+    from pyrosm.engine import ways
+    from pyrosm.engine.assemble import _assemble_chunk
+    from pyrosm.engine.collect import _way_column_keys
+
+    nodes = _crafted_nodes()
+    store = _way_store(_CRAFTED_WAYS)
+    tags_as_columns = ["building", "highway", "area", "name", "id_tag", "barrier"]
+    _, tag_cols = _way_column_keys(tags_as_columns, True)
+    ctx = ways.ChunkContext(
+        store, tags_as_columns, True, keep_other_tags, set(tag_cols) | {"tags"}, nodes
+    )
+    chunk, rows = ways._build_chunk(ctx, np.arange(len(store)))
+    gdf = _assemble_chunk(
+        nodes,
+        store.way_columns(None if keep_other_tags else set(tags_as_columns)),
+        None,
+        None,
+        tags_as_columns,
+        True,
+        keep_other_tags=keep_other_tags,
+    )
+    assert store.id[rows].tolist() == gdf["id"].tolist()
+    assert store.id[rows[chunk["check"]]].tolist() == [17]
+    wkb, off = chunk["wkb"], chunk["wkb_off"].tolist()
+    geometries = shapely.from_wkb([wkb[a:b].tobytes() for a, b in zip(off, off[1:])])
+    assert shapely.equals_exact(geometries, gdf.geometry.values, tolerance=0).all()
+    # The first two ways alone (no special way, no ring for GEOS) give the same WKB.
+    head, head_rows = ways._build_chunk(ctx, np.arange(2))
+    assert head_rows.tolist() == [0, 1] and len(head["check"]) == 0
+    assert head["wkb"].tobytes() == wkb[: off[2]].tobytes()
+    ctx.node_coordinates = None
+    with pytest.raises(TypeError):
+        ways._build_chunk(ctx, np.arange(2))
+    columns, json = ways.tag_lists(store, tags_as_columns, True, keep_other_tags)
+    for name, array in zip(ctx.out_names, chunk["tag_arrays"]):
+        assert array.to_pylist() == columns[name][rows].tolist(), name
+    if keep_other_tags:
+        assert chunk["json_array"].to_pylist() == json[rows].tolist()
+    else:
+        assert chunk["json_array"] is None
 
 
 def test_way_columns_tag_columns_check_their_arrays():
