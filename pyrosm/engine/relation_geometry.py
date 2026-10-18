@@ -260,7 +260,7 @@ def relation_records(relations, relation_ways, node_coordinates, keep_metadata):
             record["changeset"] = relations["changeset"][i]
             record["timestamp"] = relations["timestamp"][i]
         for k, v in tags[i].items():
-            record[k] = v
+            record["id_tag" if k == "id" else k] = v
         record["members"] = members_to_list(relations["members"][i])
         records.append(record)
     return records

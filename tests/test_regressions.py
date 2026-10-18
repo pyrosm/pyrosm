@@ -2841,3 +2841,39 @@ def test_area_rule_reads_tags_that_are_not_columns(
     }
     assert "area" not in gdf.columns
     assert json.loads(gdf.loc[2, "tags"])["area"] == "no"
+
+
+@pytest.mark.parametrize(
+    "engine, backend",
+    [("in_memory", None), ("out_of_core", "threads"), ("out_of_core", "processes")],
+    ids=["in_memory", "threads", "processes"],
+)
+def test_relation_id_tag_does_not_overwrite_the_relation_id(
+    tmp_path, monkeypatch, fresh_cache, engine, backend
+):
+    """A relation's tag keyed ``id`` is surfaced as ``id_tag``, as a way's is, and the
+    relation keeps its id."""
+    import numpy as np
+
+    osmium = pytest.importorskip("osmium")
+    from osmium.osm.mutable import Node, Relation, Way
+    from pyrosm import OSM
+
+    path = str(tmp_path / "relation_id_tag.osm.pbf")
+    with osmium.SimpleWriter(path) as writer:
+        for k, (dx, dy) in enumerate([(0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)]):
+            writer.add_node(Node(id=k + 1, location=(25 + dx, 60 + dy)))
+        writer.add_way(Way(id=10, nodes=[1, 2, 3, 4, 1], tags={}))
+        writer.add_relation(
+            Relation(
+                id=100,
+                members=[("w", 10, "outer")],
+                tags={"type": "multipolygon", "building": "yes", "id": "B-7"},
+            )
+        )
+    if backend is not None:
+        monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+
+    gdf = OSM(path, engine=engine, workers=1).get_buildings(extra_attributes=["id_tag"])
+    assert gdf["id"].tolist() == [100] and gdf["id"].dtype == np.int64
+    assert gdf["id_tag"].tolist() == ["B-7"]
