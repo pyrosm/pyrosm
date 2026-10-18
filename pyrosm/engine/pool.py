@@ -52,6 +52,11 @@ def read_threads():
     return max(1, _READ_THREADS.get())
 
 
+def in_threaded_read():
+    """Whether a threaded read is running in this thread."""
+    return _READ_THREADS.get() > 0
+
+
 class _PoolStartError(Exception):
     """The pool could not start: an ``OSError`` from creating the executor, or an ``OSError``
     or ``RuntimeError`` from submitting a task (which starts a worker process or thread).

@@ -109,7 +109,31 @@ cdef get_way_coordinates_for_polygon(node_coordinate_lookup, way_elements):
     return features
 
 
-cdef create_linear_ring(coordinates):
+cpdef valid_coordinates(rows, lon, lat):
+    """Whether each gathered node (its store row ``rows``, -1 when absent) has coordinates
+    in range, as ``is_valid_coordinate_pair`` checks one pair."""
+    return ((rows >= 0)
+            & (lon <= 180.0) & (lon >= -180.0)
+            & (lat <= 90.0) & (lat >= -90.0))
+
+
+cpdef ring_polygon(coords):
+    """The polygon of the closed ring ``coords``, fixed with ``buffer(0)`` when invalid, or
+    ``None`` when GEOS cannot build it."""
+    ring = create_linear_ring(coords)
+    if ring is None:
+        return None
+    try:
+        polygon = polygons(ring)
+        if not polygon.is_valid:
+            polygon = polygon.buffer(0)
+    except GEOSException:
+        return None
+    return polygon
+
+
+cpdef create_linear_ring(coordinates):
+    """The ring of ``coordinates``, or ``None`` when there are too few of them."""
     try:
         return linearrings(coordinates)
     # pygeos 0.7.1 throws GEOSException
@@ -181,10 +205,10 @@ cdef _line_components(merged_lines):
     return []
 
 
-cdef _polygonal_only(geometry):
-    # Reduce an even-odd overlay result to a Polygon/MultiPolygon, dropping any
-    # non-areal artifacts (stray lines/points from coincident boundaries). Returns
-    # None when no polygonal area remains.
+cpdef _polygonal_only(geometry):
+    """Reduce an even-odd overlay result to a Polygon/MultiPolygon, dropping any non-areal
+    artifacts (stray lines/points from coincident boundaries); ``None`` when no polygonal
+    area remains."""
     if geometry is None or geometry.is_empty:
         return None
     geom_type = geometry.geom_type
@@ -219,31 +243,25 @@ cdef _even_odd_overlay(list ring_polygons):
 
 
 cdef _assemble_multipolygon(member_lines):
-    # OSM multipolygon assembly by geometry, not member role (#21):
-    #   1. line_merge all member ways into maximal lines and keep the closed rings
-    #      (open/incomplete rings are dropped, not force-closed with a spurious edge);
-    #   2. one simple polygon per ring;
-    #   3. even-odd overlay (symmetric_difference of the rings, in pairs): a point is
-    #      inside iff it is covered by an odd number of rings. This yields outers, holes
-    #      and islands-in-holes independent of roles and matches osmium for valid data.
+    """The multipolygon of ``member_lines``, assembled by geometry, not member role (#21):
+
+    1. line_merge all member ways into maximal lines and keep the closed rings
+       (open/incomplete rings are dropped, not force-closed with a spurious edge);
+    2. one simple polygon per ring;
+    3. even-odd overlay (symmetric_difference of the rings, in pairs): a point is
+       inside iff it is covered by an odd number of rings. This yields outers, holes
+       and islands-in-holes independent of roles and matches osmium for valid data.
+    """
     merged_lines = line_merge(multilinestrings(member_lines))
     ring_polygons = []
     for line in _line_components(merged_lines):
         coords = get_coordinates(line)
         if not _is_closed_ring(coords):
             continue
-        ring = create_linear_ring(coords)
-        if ring is None:
+        polygon = ring_polygon(coords)
+        if polygon is None or polygon.is_empty:
             continue
-        try:
-            ring_polygon = polygons(ring)
-            if not ring_polygon.is_valid:
-                ring_polygon = ring_polygon.buffer(0)
-        except GEOSException:
-            continue
-        if ring_polygon.is_empty:
-            continue
-        ring_polygons.append(ring_polygon)
+        ring_polygons.append(polygon)
 
     if len(ring_polygons) == 0:
         return None
@@ -436,9 +454,7 @@ cdef tuple _way_node_arrays(way_elements, NodeLocations nc):
         nonempty.append(i)
     flat_nodes = np.asarray(flat_list, dtype=np.int64)
     rows, lon, lat = nc.gather(flat_nodes)
-    valid = ((rows >= 0)
-             & (lon <= 180.0) & (lon >= -180.0)
-             & (lat <= 90.0) & (lat >= -90.0))
+    valid = valid_coordinates(rows, lon, lat)
     return nonempty, flat_nodes, np.asarray(offsets, dtype=np.int64), rows, lon, lat, valid
 
 
@@ -560,13 +576,12 @@ cdef _single_area_geometry(nodes, node_coordinates, area_value, bint has_linear_
 
 
 cdef _create_area_geometries_vectorized(node_coordinates, way_elements):
-    # Vectorised area path: build the closed-area Polygons with a single batched
-    # shapely.polygons(linearrings(...)) call, and the lines (open ways, closed ways
-    # tagged linear) with a single shapely.linestrings call, instead of one call per
-    # way. A way takes a batched path only when every node is present with valid
-    # coordinates and it has enough of them (4 for a ring, 2 for a line). Every other
-    # way (ways with dropped nodes, too-short rings) falls back to the per-way
-    # builder.
+    """The geometries of ``way_elements``: the closed-area Polygons built with a single
+    batched ``shapely.polygons(linearrings(...))`` call, and the lines (open ways, closed
+    ways tagged linear) with a single ``shapely.linestrings`` call, instead of one call per
+    way. A way takes a batched path only when every node is present with valid coordinates
+    and it has enough of them (4 for a ring, 2 for a line). Every other way (ways with
+    dropped nodes, too-short rings) falls back to the per-way builder."""
     cdef NodeLocations nc = node_coordinates
     cdef int n = len(way_elements['id'])
     cdef int i, w, W, poly_i
@@ -610,9 +625,7 @@ cdef _create_area_geometries_vectorized(node_coordinates, way_elements):
 
         # Vectorised coordinate gather + validity (mirrors is_valid_coordinate_pair).
         idx, lon, lat = nc.gather(flat_nodes)
-        valid = ((idx >= 0)
-                 & (lon <= 180.0) & (lon >= -180.0)
-                 & (lat <= 90.0) & (lat >= -90.0))
+        valid = valid_coordinates(idx, lon, lat)
         valid_count = np.add.reduceat(valid.astype(np.int64), offsets[:-1])
 
         vectorizable = is_area & (valid_count == way_lengths) & (way_lengths >= 4)

@@ -1370,6 +1370,155 @@ def test_engine_network_frame_matches_python_path(monkeypatch):
     assert frame.to_arrow().column("name").type == pa.null()
 
 
+@pytest.mark.parametrize("fallback", [False, True])
+def test_engine_batched_relations_match_per_relation(helsinki_pbf, tmp_path, fallback):
+    # The relation records built by vectorized calls on two threads equal those built
+    # relation by relation, also when a vectorized overlay or ring build raises and is
+    # repeated relation by relation.
+    import types
+
+    import shapely as real_shapely
+    from shapely import GEOSException
+    from pyrosm import relations
+    from pyrosm.engine import pool, relation_geometry
+    from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
+    from pyrosm.engine.collect import _collect_layer
+    from pyrosm.engine.pool import _decode_all
+
+    blobs, _ = _data_blob_spans(_index_blobs(helsinki_pbf))
+    shards, _ = _decode_all(helsinki_pbf, blobs, 1, str(tmp_path), None, False)
+    collected = _collect_layer(shards, [], True, (None, None, "keep"))
+    _, _, rels, relation_ways, nodes = collected
+    ref = relations.relation_records(rels, relation_ways, nodes, True)
+    if fallback:
+
+        def raising(function):
+            def call(*args, **kwargs):
+                if isinstance(args[0], np.ndarray) and len(args[0]) > 1:
+                    raise GEOSException("vectorized")
+                return function(*args, **kwargs)
+
+            return call
+
+        proxy = types.SimpleNamespace(**vars(real_shapely))
+        proxy.symmetric_difference = raising(real_shapely.symmetric_difference)
+        proxy.linearrings = raising(real_shapely.linearrings)
+        relation_geometry.shapely = proxy
+    token = pool._READ_THREADS.set(2)
+    try:
+        mine = relation_geometry.relation_records(rels, relation_ways, nodes, True)
+    finally:
+        pool._READ_THREADS.reset(token)
+        relation_geometry.shapely = real_shapely
+    assert len(ref) > 100 and len(mine) == len(ref)
+    for a, b in zip(mine, ref):
+        assert list(a) == list(b)
+        for key in b:
+            if key == "geometry":
+                assert shapely.to_wkb(a[key]) == shapely.to_wkb(b[key]), b["id"]
+            else:
+                assert type(a[key]) is type(b[key]) and a[key] == b[key], (b["id"], key)
+
+
+def _crafted_relations(members):
+    """Relations of ``members`` (lists of way ids), tagged as multipolygons."""
+    relations = {
+        "id": np.arange(1, len(members) + 1, dtype=np.int64),
+        "members": np.empty(len(members), dtype=object),
+        "tags": np.empty(len(members), dtype=object),
+        "version": np.ones(len(members), dtype=np.int64),
+        "timestamp": np.ones(len(members), dtype=np.int64),
+        "changeset": np.ones(len(members), dtype=np.int64),
+    }
+    for i, ids in enumerate(members):
+        relations["members"][i] = {
+            "member_id": np.array(ids, dtype=np.int64),
+            "member_type": np.array([b"way"] * len(ids), dtype=object),
+            "member_role": np.array([b"outer"] * len(ids), dtype=object),
+        }
+        relations["tags"][i] = {"type": "multipolygon", "natural": "water"}
+    return relations
+
+
+def test_engine_batched_relations_edge_cases(monkeypatch):
+    # Relations without members, without member lines, without closed rings and whose
+    # overlay raises give the records of the per-relation code; merged member lines
+    # without a LineString part give no rings.
+    from shapely import GEOSException
+    from pyrosm import geometry, relations
+    from pyrosm.engine import relation_geometry
+
+    nodes = _crafted_nodes()
+    way_nodes = {
+        10: [1, 2, 3, 4, 1],
+        11: [1, 99],
+        12: [1, 2, 3],
+        13: [1, 2, 3, 1],
+        14: [1, 2, 6, 4, 1],
+        15: [],
+        16: [1, 3, 2, 4, 1],
+    }
+    ways = {"id": np.array(sorted(way_nodes), dtype=np.int64)}
+    ways["nodes"] = np.empty(len(way_nodes), dtype=object)
+    ways["nodes"][:] = [np.array(way_nodes[w], dtype=np.int64) for w in ways["id"]]
+    rels = _crafted_relations([[], [11], [12], [10, 13], [14, 13], [10]])
+    real = shapely.symmetric_difference
+    raising = shapely.polygons([_NODES[n] for n in way_nodes[14]])
+
+    def failing(a, b, **kwargs):
+        # An overlay with way 14's ring raises.
+        if isinstance(a, np.ndarray):
+            return np.array([failing(x, y) for x, y in zip(a, b)], dtype=object)
+        if shapely.equals(a, raising) or shapely.equals(b, raising):
+            raise GEOSException("overlay")
+        return real(a, b, **kwargs)
+
+    monkeypatch.setattr(geometry, "symmetric_difference", failing, raising=False)
+    monkeypatch.setattr(relation_geometry.shapely, "symmetric_difference", failing)
+    ref = relations.relation_records(rels, ways, nodes, True)
+    mine = relation_geometry.relation_records(rels, ways, nodes, True)
+    # Only the relations with a closed ring are built, and the fifth's overlay raised.
+    assert [int(r["id"]) for r in ref] == [4, 6]
+    assert [r["id"] for r in mine] == [r["id"] for r in ref]
+    for a, b in zip(mine, ref):
+        assert shapely.to_wkb(a["geometry"]) == shapely.to_wkb(b["geometry"])
+    # Each kind on its own: no members, no member nodes, no member lines, no closed ring,
+    # a self-crossing ring.
+    for members in ([[]], [[15]], [[11]], [[12]], [[16]]):
+        one = _crafted_relations(members)
+        ref = relations.relation_records(one, ways, nodes, True)
+        mine = relation_geometry.relation_records(one, ways, nodes, True)
+        assert [shapely.to_wkb(r["geometry"]) for r in mine] == [
+            shapely.to_wkb(r["geometry"]) for r in ref
+        ]
+    owner, rings = relation_geometry._rings(
+        np.array([0, 1]), np.array([shapely.GeometryCollection(), shapely.Point(0, 0)])
+    )
+    assert len(owner) == len(rings) == 0
+    # An area GEOS reports invalid (here: the overlay of ways 10 and 13) is fixed as the
+    # per-relation code fixes it.
+    target = shapely.symmetric_difference(
+        *(shapely.Polygon([_NODES[n] for n in way_nodes[w]]) for w in (10, 13))
+    )
+    real_valid = shapely.is_valid
+
+    def valid(g, **kwargs):
+        if isinstance(g, np.ndarray):
+            return np.array([valid(x) for x in g], dtype=bool)
+        return bool(real_valid(g)) and not shapely.equals(g, target)
+
+    monkeypatch.setattr(shapely, "is_valid", valid)
+    monkeypatch.setattr(geometry, "is_valid", valid, raising=False)
+    monkeypatch.setattr(relations, "is_valid", valid, raising=False)
+    one = _crafted_relations([[10, 13]])
+    ref = relations.relation_records(one, ways, nodes, True)
+    mine = relation_geometry.relation_records(one, ways, nodes, True)
+    assert len(ref) == 1
+    assert [shapely.to_wkb(r["geometry"]) for r in mine] == [
+        shapely.to_wkb(r["geometry"]) for r in ref
+    ]
+
+
 def test_engine_binary_array_splits_past_32_bit_offsets(monkeypatch):
     # The geometries of a chunk go into several Arrow arrays when their bytes exceed what
     # 32-bit offsets reach.
