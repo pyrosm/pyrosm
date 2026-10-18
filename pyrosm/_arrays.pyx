@@ -112,7 +112,7 @@ def _offsets_from_lengths(lengths):
 cpdef columns_to_arrays(data):
     """Python entry to convert a ``{column: value-list}`` dict into the harmonized numpy
     arrays (dropping all-None columns, applying the per-key dtypes) used to build a
-    GeoDataFrame -- the same conversion ``way_records_to_arrays`` runs, exposed so an
+    GeoDataFrame -- the conversion the in-memory reader runs on its records, exposed so an
     alternative reader can feed pre-split columns directly instead of rebuilding per-element
     records first."""
     return convert_to_arrays_and_drop_empty(data)
@@ -148,16 +148,6 @@ cpdef concatenate_dicts_of_arrays(dict_list_of_arrays):
                                       f"got {array.shape[0]}."
 
     return result_arrays
-
-cpdef way_records_to_arrays(records, tags_to_separate_as_arrays):
-    """Convert way/relation records (dicts whose tags have been exploded onto the record)
-    into the harmonized dict-of-arrays used to build a GeoDataFrame -- splitting the OSM
-    keys in ``tags_to_separate_as_arrays`` into their own columns and the rest into the
-    JSON ``tags`` column. Python entry point reusing the same conversion the in-memory
-    reader uses, so an alternative reader can produce byte-identical columns."""
-    return convert_to_arrays_and_drop_empty(
-        convert_way_records_to_lists(records, tags_to_separate_as_arrays)
-    )
 
 cdef char** to_cstring_array(list str_list):
     """

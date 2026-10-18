@@ -582,7 +582,7 @@ def test_command(tmp_path, offline, capsys, monkeypatch):
     def unavailable(*args):
         raise ExtractDownloadError("no extract could be downloaded")
 
-    monkeypatch.setattr(recipes, "_run", unavailable)
+    monkeypatch.setattr(recipes, "_run_recipe", unavailable)
     assert recipes.main(argv) == 1
     assert capsys.readouterr().err == "pyrosm: no extract could be downloaded\n"
     with pytest.raises(SystemExit) as exit_info:

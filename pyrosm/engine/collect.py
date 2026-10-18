@@ -421,7 +421,7 @@ def _ways_arrays(
     ``way_elements`` dict (all occurring tag columns + the JSON ``tags`` column + metadata)
     pyrosm's assembly expects, matching the in-memory reader column for column.
 
-    Routing mirrors ``explode_way_tags`` + ``way_records_to_arrays`` directly on the columns:
+    Routing mirrors the in-memory reader's ``convert_way_records_to_lists`` on the columns:
     the requested ``tags_as_columns`` become their own columns; every other tag -- and the
     metadata fields not promoted to a column (``version``/``timestamp`` without
     ``keep_metadata``, ``visible`` unless requested) -- goes into the JSON ``tags`` column in
@@ -451,8 +451,8 @@ def _ways_arrays(
     visible_col = "visible" in column_set
 
     # One pass over the tag dicts: fill the requested tag columns (None where absent) and --
-    # only when the leftover JSON is kept -- the ``tags`` column, replicating explode_way_tags
-    # + way_records_to_arrays field ordering. ``other is None`` is the skip-leftovers sentinel.
+    # only when the leftover JSON is kept -- the ``tags`` column, in the field order of
+    # ``convert_way_records_to_lists``. ``other is None`` is the skip-leftovers sentinel.
     col_lists = {k: [None] * n for k in tag_cols}
     leftover = [None] * n
     has_leftover = False
