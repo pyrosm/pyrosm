@@ -1072,13 +1072,15 @@ _CRAFTED_WAYS = [
     ids=["all ways", "requested tags with metadata", "no leftovers", "untagged"],
 )
 def test_engine_store_tag_columns_match_the_python_path(
-    ways, tags_as_columns, keep_metadata, keep_other_tags
+    ways, tags_as_columns, keep_metadata, keep_other_tags, monkeypatch
 ):
     # The tag columns a store's ways give, found in C (special ways by their tag dicts),
-    # are those the Python path finds in the ways' tag dicts, and the tag columns and JSON
-    # values built in C are those it routes the tag dicts to.
+    # are those the Python path finds in the ways' tag dicts, the tag columns and JSON
+    # values built in C are those it routes the tag dicts to, and so are the way arrays
+    # built from the store (tag dicts without pyarrow).
     from pyrosm.engine import collect
     from pyrosm.engine.ways import result_tag_columns, tag_lists
+    from pyrosm.utils import _compat
 
     store = _way_store(_CRAFTED_WAYS[ways])
     keys = None if keep_other_tags else set(tags_as_columns)
@@ -1104,6 +1106,20 @@ def test_engine_store_tag_columns_match_the_python_path(
     columns, json = tag_lists(store, tags_as_columns, keep_metadata, keep_other_tags)
     assert {k: v.tolist() for k, v in columns.items()} == col_lists
     assert json.tolist() == leftover
+    for columns, has_pyarrow in ((None, True), (ref, True), (ref, False)):
+        monkeypatch.setattr(_compat, "HAS_PYARROW", has_pyarrow)
+        expected, got = (
+            collect._ways_arrays(
+                cols, tags_as_columns, keep_metadata, keep_other_tags, columns=columns
+            )
+            for cols in (by_dicts, store)
+        )
+        assert list(got) == list(expected)
+        for key in expected:
+            assert got[key].dtype == expected[key].dtype, key
+            assert [np.asarray(v).tolist() for v in got[key]] == [
+                np.asarray(v).tolist() for v in expected[key]
+            ], key
 
 
 def test_way_columns_special_ways_and_column_presence():

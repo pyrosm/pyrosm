@@ -27,7 +27,9 @@ from pyrosm.engine.ways import (
     node_record_blocks,
     relation_ways,
     result_tag_columns,
+    tag_lists,
 )
+from pyrosm.utils import _compat
 
 # Relation.MemberType -> the byte labels pyrosm's relation assembly expects.
 _MEMBER_TYPE = {0: b"node", 1: b"way", 2: b"relation"}
@@ -542,19 +544,35 @@ def _ways_arrays(
     version_col = "version" in column_set
     timestamp_col = "timestamp" in column_set
     visible_col = "visible" in column_set
-    if isinstance(cols, ElementStore):
+    # ``tag_lists`` builds Arrow arrays; without pyarrow the store goes through tag dicts.
+    if isinstance(cols, ElementStore) and not _compat.HAS_PYARROW:
         cols = cols.way_columns(None if keep_other_tags else set(tags_as_columns))
-    col_lists, leftover, has_leftover = _route_tags(
-        cols["tags"],
-        cols["version"],
-        cols["timestamp"],
-        cols["visible"],
-        tag_cols,
-        keep_other_tags,
-        not version_col,
-        not timestamp_col,
-        not visible_col,
-    )
+    if isinstance(cols, ElementStore):
+        # The tag columns and the JSON come from the store's string buffers.
+        store = cols
+        col_lists, leftover = tag_lists(
+            store, tags_as_columns, keep_metadata, keep_other_tags
+        )
+        has_leftover = any(value is not None for value in leftover)
+        cols = {
+            "id": store.id,
+            "nodes": store.node_lists(),
+            "version": store.version,
+            "timestamp": store.timestamp,
+            "visible": store.visible.astype(bool),
+        }
+    else:
+        col_lists, leftover, has_leftover = _route_tags(
+            cols["tags"],
+            cols["version"],
+            cols["timestamp"],
+            cols["visible"],
+            tag_cols,
+            keep_other_tags,
+            not version_col,
+            not timestamp_col,
+            not visible_col,
+        )
     ids, nodes = cols["id"], cols["nodes"]
     version, timestamp, visible = cols["version"], cols["timestamp"], cols["visible"]
     n = len(ids)
