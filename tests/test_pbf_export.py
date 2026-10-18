@@ -1792,10 +1792,12 @@ def test_threaded_merge_writes_the_sequential_bytes(tmp_path):
     assert (way_refs[10], way_refs[11], way_refs[13]) == ([1, 5], [1], [2, 3])
 
 
-def test_concurrent_crops_keep_their_own_region(helsinki_pbf, tmp_path):
-    """Crops run at the same time in one process (each with its own pool) write what they
-    write alone."""
+def test_concurrent_crops_keep_their_own_region(helsinki_pbf, tmp_path, monkeypatch):
+    """Crops run at the same time in one process, each on its own thread pool (with either
+    decode backend), write what they write alone."""
     from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", "threads")
 
     from shapely.geometry import box
 
