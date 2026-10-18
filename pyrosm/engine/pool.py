@@ -1,5 +1,6 @@
 """Worker-count resolution and parallel-decode orchestration for decoding blobs."""
 
+import contextvars
 import logging
 import multiprocessing
 import os
@@ -7,6 +8,7 @@ import shutil
 import tempfile
 import threading
 import warnings
+from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from functools import partial
@@ -37,6 +39,50 @@ _PROGRESS_INTERVAL = 0.2
 # In a worker process of a pool: the counter its tasks add their decoded bytes to, shared
 # with the process that runs the pool (None without progress). Set by `_init_counter`.
 _COUNTER = None
+
+# The threads the threaded read running in this thread uses for its steps after the
+# decode, 0 outside a threaded read (set for the read by :func:`_decode_and_run`). Each
+# thread has its own value.
+_READ_THREADS = contextvars.ContextVar("pyrosm_read_threads", default=0)
+
+
+def read_threads():
+    """The threads the threaded read running in this thread uses for its steps after the
+    decode (1 outside a threaded read)."""
+    return max(1, _READ_THREADS.get())
+
+
+class _PoolStartError(Exception):
+    """The pool could not start: an ``OSError`` from creating the executor, or an ``OSError``
+    or ``RuntimeError`` from submitting a task (which starts a worker process or thread).
+    """
+
+
+def _ordered_map(executor, func, items, window):
+    """Yield ``func(item)`` for each of ``items`` in order, run by ``executor`` with at most
+    ``window`` items in flight."""
+    pending = deque()
+    for item in items:
+        if len(pending) >= window:
+            yield pending.popleft().result()
+        try:
+            pending.append(executor.submit(func, item))
+        except (OSError, RuntimeError) as err:
+            raise _PoolStartError(err) from err
+    while pending:
+        yield pending.popleft().result()
+
+
+def thread_map(function, items):
+    """Yield ``function(item)`` for each of ``items`` in order, run on the threads of the
+    threaded read running in this thread (see :func:`read_threads`)."""
+    items = list(items)
+    threads = read_threads()
+    if threads <= 1 or len(items) <= 1:
+        yield from map(function, items)
+        return
+    with ThreadPoolExecutor(threads) as pool:
+        yield from _ordered_map(pool, function, items, 2 * threads)
 
 
 def _auto_workers(filepath, n_blobs):
@@ -357,7 +403,14 @@ def _decode_and_run(
                     spill_all_ways,
                 )
                 fields["pool"] = pool_ok
-            with timed(logger, "collect"):
-                return run(shard_paths, report)
+            token = None
+            if _decode_backend() == "threads":
+                token = _READ_THREADS.set(workers)
+            try:
+                with timed(logger, "collect"):
+                    return run(shard_paths, report)
+            finally:
+                if token is not None:
+                    _READ_THREADS.reset(token)
         finally:
             shutil.rmtree(shard_dir, ignore_errors=True)

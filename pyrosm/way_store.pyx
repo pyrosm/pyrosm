@@ -362,6 +362,14 @@ cdef class NodeTagsBuilder:
             rows = np.flatnonzero(keep)
             tag_rows = _range_indices(_offsets_from_lengths(counts)[rows], counts[rows])
             keys, vals, counts = keys[tag_rows], vals[tag_rows], counts[rows]
+        self.add_pairs(counts, keys, vals, strings)
+
+    def add_pairs(self, counts, keys, vals, list strings):
+        """Add the tags of nodes that have ``counts`` tags each, node after node:
+        ``keys`` and ``vals`` are the ids of their ``strings``."""
+        counts = np.asarray(counts, dtype=np.int64)
+        keys = np.asarray(keys, dtype=np.int64)
+        vals = np.asarray(vals, dtype=np.int64)
         tagged = np.flatnonzero(counts > 0)
         mapping = _map_strings(
             self._string_ids, self._strings, strings,

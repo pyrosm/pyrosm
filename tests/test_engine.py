@@ -908,6 +908,134 @@ def test_way_columns_string_columns_and_value_filter_check_their_input():
             wc.value_filter(**dict(good, **{name: value}), **args)
 
 
+# A polygon inside the bundled Helsinki extract, for reads with a polygon bounding box.
+_TRIANGLE = shapely.Polygon([(24.936, 60.165), (24.952, 60.166), (24.944, 60.178)])
+
+
+def _assert_identical(mine, ref):
+    """``mine`` and ``ref`` are the same frame: columns, dtypes, values and geometries."""
+    import pandas as pd
+
+    assert list(mine.columns) == list(ref.columns)
+    for col in ref.columns:
+        if col == "geometry":
+            a, b = mine[col].to_numpy(), ref[col].to_numpy()
+            assert shapely.to_wkb(a).tolist() == shapely.to_wkb(b).tolist()
+        else:
+            pd.testing.assert_series_equal(
+                mine[col], ref[col], check_exact=True, check_dtype=True
+            )
+
+
+@pytest.mark.parametrize(
+    "read, kwargs",
+    [
+        (get_network, {"network_type": "driving", "nodes": True}),
+        (
+            get_network,
+            {"network_type": "driving", "nodes": True, "bounding_box": _TRIANGLE},
+        ),
+        (
+            get_network,
+            {"network_type": "walking", "nodes": True, "keep_metadata": False},
+        ),
+        (get_landuse, {"bounding_box": [24.940, 60.168, 24.948, 60.174]}),
+        (get_buildings, {}),
+    ],
+    ids=[
+        "driving nodes",
+        "driving nodes polygon",
+        "walking nodes",
+        "landuse box",
+        "buildings",
+    ],
+)
+def test_engine_threaded_node_records_and_relation_ways_match_processes(
+    repacked_pbf, tmp_path, monkeypatch, read, kwargs
+):
+    # A threaded read gathers the network's node records (nodes=True) and the relations'
+    # member ways on threads, here in batches of 2 blocks and over shards of 50 kB; it
+    # gives the frames of the worker processes' read.
+    from pyrosm.engine import cache, decode
+
+    monkeypatch.setattr(decode, "_THREAD_BATCH", 2)
+    monkeypatch.setattr(decode, "_SHARD_TARGET_BYTES", 50_000)
+    frames = {}
+    for backend, workers in (("processes", 1), ("threads", 3)):
+        monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+        folder = tmp_path / backend
+        folder.mkdir()
+        monkeypatch.setattr(cache, "cache_dir", lambda: folder)
+        result = read(repacked_pbf, workers=workers, **kwargs)
+        frames[backend] = result if isinstance(result, tuple) else (result,)
+    for mine, ref in zip(frames["threads"], frames["processes"]):
+        assert len(ref) > 0
+        _assert_identical(mine, ref)
+
+
+def test_engine_node_coordinates_match_node_lookup(tmp_path):
+    # The coordinates gathered from threaded shards are those _node_lookup gathers from
+    # spilled shards: ids ascending, the last shard holding an id winning, absent ids left
+    # out; shards whose ids do not ascend are sorted.
+    from pyrosm.engine.collect import _node_lookup
+    from pyrosm.engine.decode import _Shard
+    from pyrosm.engine.ways import node_coordinates
+
+    parts = [
+        {"node_id": [5, 1, 9], "node_lon": [5.0, 1.0, 9.0], "node_lat": [50.0, 10.0, 90.0]},
+        {"node_id": [], "node_lon": [], "node_lat": []},
+        {"node_id": [1, 7], "node_lon": [1.5, 7.0], "node_lat": [15.0, 70.0]},
+    ]
+    shards, paths = [], []
+    for i, part in enumerate(parts):
+        arrays = {
+            "node_id": np.array(part["node_id"], dtype=np.int64),
+            "node_lon": np.array(part["node_lon"]),
+            "node_lat": np.array(part["node_lat"]),
+        }
+        shards.append(_Shard.write(tmp_path / ("s%d.bin" % i), arrays, {}))
+        paths.append(tmp_path / ("s%d.npz" % i))
+        np.savez(paths[-1], **arrays)
+    refs = [np.array([9, 7, 1, 42, 1], dtype=np.int64)]
+    query = np.array([1, 5, 7, 9, 42], dtype=np.int64)
+    mine = node_coordinates(shards, refs).gather(query)
+    ref = _node_lookup(paths, np.unique(np.concatenate(refs))).gather(query)
+    for a, b in zip(mine, ref):
+        np.testing.assert_array_equal(a, b)
+    assert len(node_coordinates([shards[1]], refs)) == 0
+    assert len(node_coordinates(shards, [])) == 0
+
+
+def test_engine_thread_map_bounds_the_items_in_flight():
+    # thread_map yields in order and submits at most two items per thread ahead of the one
+    # it waits for: while item 0 is held, no more than four items have started.
+    import time
+
+    release = threading.Event()
+    started, out = [], []
+
+    def work(i):
+        started.append(i)
+        if i == 0:
+            release.wait(10)
+        return i
+
+    def consume():
+        token = pool._READ_THREADS.set(2)
+        try:
+            out.extend(pool.thread_map(work, range(20)))
+        finally:
+            pool._READ_THREADS.reset(token)
+
+    consumer = threading.Thread(target=consume)
+    consumer.start()
+    time.sleep(0.2)
+    assert len(started) <= 4
+    release.set()
+    consumer.join(10)
+    assert out == list(range(20))
+
+
 def test_engine_cut_off_file_raises_the_same_error(test_pbf, tmp_path, monkeypatch):
     # A file cut off in its last blob raises the same error with either backend.
     from pathlib import Path

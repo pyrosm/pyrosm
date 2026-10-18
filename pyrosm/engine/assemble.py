@@ -5,11 +5,12 @@ tag and geometry pipeline, so the output matches the in-memory reader column-for
 import numpy as np
 
 from pyrosm.engine.bounding_box import _in_box_nodes
+from pyrosm.engine.decode import _is_threaded
 from pyrosm.engine.collect import (
     _ways_arrays,
     _collect_layer,
     _collect_kept_ways,
-    _node_lookup,
+    _coordinates,
     _gather_node_records,
     _needed_node_ids,
 )
@@ -129,13 +130,16 @@ def _network_ways(
     kept = _collect_kept_ways(shard_paths, np.empty(0, np.int64), keep, in_box)
     if kept is None:
         return None
-    needed = _needed_node_ids(kept, None)
     if segments:
         node_coordinates = _gather_node_records(
-            filepath, needed, keep_metadata, progress
+            filepath,
+            _needed_node_ids(kept, None),
+            keep_metadata,
+            progress,
+            threaded=_is_threaded(shard_paths),
         )
     else:
-        node_coordinates = _node_lookup(shard_paths, needed)
+        node_coordinates = _coordinates(shard_paths, kept, None)
     return _ways_arrays(kept, tags_as_columns, keep_metadata), node_coordinates
 
 
