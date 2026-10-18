@@ -1111,19 +1111,23 @@ def test_engine_store_tag_columns_match_the_python_path(
         store, tags_as_columns, keep_metadata, keep_other_tags
     ) == ref
     column_keys, tag_cols = collect._way_column_keys(tags_as_columns, keep_metadata)
+    metadata = (store.version, store.timestamp, store.visible)
+    flags = [keep_other_tags and k not in column_keys for k in _METADATA]
     by_dicts = store.way_columns(keys)
     col_lists, leftover, _ = collect._route_tags(
-        by_dicts["tags"],
-        store.version,
-        store.timestamp,
-        store.visible,
-        tag_cols,
-        keep_other_tags,
-        *(keep_other_tags and k not in column_keys for k in _METADATA),
+        by_dicts["tags"], *metadata, tag_cols, keep_other_tags, *flags
     )
     columns, json = tag_lists(store, tags_as_columns, keep_metadata, keep_other_tags)
     assert {k: v.tolist() for k, v in columns.items()} == col_lists
     assert json.tolist() == leftover
+    if keys is not None:
+        # The process decode's tag dicts also hold the geometry tag keys: those that are not
+        # output columns are dropped.
+        from pyrosm.engine.readers import _GEOMETRY_TAG_KEYS
+
+        decoded = store.way_columns(keys | set(_GEOMETRY_TAG_KEYS))["tags"]
+        routed = collect._route_tags(decoded, *metadata, tag_cols, keep_other_tags, *flags)
+        assert routed[:2] == (col_lists, leftover)
     for columns, has_pyarrow in ((None, True), (ref, True), (ref, False)):
         monkeypatch.setattr(_compat, "HAS_PYARROW", has_pyarrow)
         expected, got = (
