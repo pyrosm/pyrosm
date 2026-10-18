@@ -122,12 +122,15 @@ class ElementStore:
             "utf-8", "replace"
         )
 
-    def tags(self, w):
-        """The tag dict of way ``w`` as the Python path builds it."""
-        return {
-            self.string(self.pair_key[p]): self.string(self.pair_val[p])
-            for p in range(self.pairs_off[w], self.pairs_off[w + 1])
-        }
+    def tags(self, w, keys=None):
+        """The tag dict of way ``w`` as the Python path builds it, with only the keys
+        ``keys`` when given."""
+        tags = {}
+        for p in range(self.pairs_off[w], self.pairs_off[w + 1]):
+            key = self.string(self.pair_key[p])
+            if keys is None or key in keys:
+                tags[key] = self.string(self.pair_val[p])
+        return tags
 
     def node_lists(self):
         """Each way's node refs, as an object array of arrays."""
@@ -135,10 +138,11 @@ class ElementStore:
         nodes[:] = np.split(self.refs, self.refs_off[1:-1])
         return nodes
 
-    def way_columns(self):
-        """The ways as :func:`~pyrosm.engine.collect._read_way_columns` gives them."""
+    def way_columns(self, keys=None):
+        """The ways as :func:`~pyrosm.engine.collect._read_way_columns` gives them, with
+        only the tag keys ``keys`` when given."""
         tags = np.empty(len(self), dtype=object)
-        tags[:] = [self.tags(w) for w in range(len(self))]
+        tags[:] = [self.tags(w, keys) for w in range(len(self))]
         return {
             "id": self.id,
             "nodes": self.node_lists(),
@@ -219,6 +223,56 @@ def keep_mask(store, filter_spec):
     for w in np.flatnonzero(decided == wc.CHECK):
         mask[w] = keep(store.tags(w))
     return mask
+
+
+def _string_columns(store, keys):
+    """``(valid, column, special)`` for the tag columns ``keys`` of ``store``: whether each
+    string is valid UTF-8 and the column it names as a key (see
+    :func:`pyrosm.way_columns.string_columns`), and the special elements, whose tags only
+    their tag dicts give (see :func:`pyrosm.way_columns.special_ways`)."""
+    valid, column = wc.string_columns(
+        store.str_off, store.str_data, [k.encode("utf-8") for k in keys]
+    )
+    special = wc.special_ways(
+        store.pairs_off,
+        store.pair_key,
+        store.pair_val,
+        store.str_off,
+        store.str_data,
+        valid,
+        column,
+    )
+    return valid, column, special
+
+
+def result_tag_columns(store, tags_as_columns, keep_metadata, keep_other_tags):
+    """The tag columns of all the ways of ``store``, as
+    :func:`~pyrosm.engine.collect._result_tag_columns` gives them."""
+    from pyrosm.engine.collect import _way_column_keys
+
+    column_keys, tag_cols = _way_column_keys(tags_as_columns, keep_metadata)
+    tag_col_set = set(tag_cols)
+    _, column, special = _string_columns(store, tag_cols)
+    present, leftover = wc.column_presence(
+        store.pairs_off,
+        store.pair_key,
+        column,
+        np.flatnonzero(~special),
+        len(tag_cols),
+    )
+    columns = {tag_cols[i] for i in np.flatnonzero(present)}
+    leftover = leftover or not {"version", "timestamp", "visible"}.issubset(column_keys)
+    requested = None if keep_other_tags else set(tags_as_columns)
+    for w in np.flatnonzero(special):
+        keys = set(store.tags(w, requested))
+        if "id" in keys:
+            keys.discard("id")
+            keys.add("id_tag")
+        columns |= keys & tag_col_set
+        leftover = leftover or not keys <= tag_col_set
+    if keep_other_tags and leftover and len(store) > 0:
+        columns.add("tags")
+    return columns
 
 
 def kept_ways(store, exclude_ids, filter_spec, in_box):

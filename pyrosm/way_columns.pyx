@@ -269,6 +269,120 @@ def string_columns(str_off, str_data, columns):
     return valid.view(bool), column
 
 
+cdef inline bint _same_string(const int64_t* so, const uint8_t* sd, int64_t a,
+                              int64_t b) noexcept nogil:
+    return a == b or (so[a + 1] - so[a] == so[b + 1] - so[b]
+                      and memcmp(sd + so[a], sd + so[b], so[a + 1] - so[a]) == 0)
+
+
+cdef int _repeats_key(const int64_t* pk, Py_ssize_t p0, Py_ssize_t p1, const int64_t* so,
+                      const uint8_t* sd, int64_t* table, Py_ssize_t size) noexcept nogil:
+    """Whether a key of the pairs ``p0:p1`` occurs twice: by pairs for a few keys, else in
+    the hash ``table`` of ``size`` slots (a power of two, at least twice the pairs)."""
+    cdef Py_ssize_t p, q, slot
+    cdef int64_t a
+    if p1 - p0 <= 16:
+        for p in range(p0, p1):
+            for q in range(p0, p):
+                if _same_string(so, sd, pk[p], pk[q]):
+                    return 1
+        return 0
+    for slot in range(size):
+        table[slot] = -1
+    for p in range(p0, p1):
+        a = pk[p]
+        slot = _hash(sd + so[a], so[a + 1] - so[a]) & (size - 1)
+        while table[slot] >= 0:
+            if _same_string(so, sd, table[slot], a):
+                return 1
+            slot = (slot + 1) & (size - 1)
+        table[slot] = a
+    return 0
+
+
+def special_ways(pairs_off, pair_key, pair_val, str_off, str_data, valid, column):
+    """Whether each way is special: a key that is a metadata name, a key that occurs twice,
+    or a key or value that is not valid UTF-8 (see ``string_columns``)."""
+    pairs_off = _contiguous(pairs_off, np.int64)
+    pair_key = _contiguous(pair_key, np.int64)
+    pair_val = _contiguous(pair_val, np.int64)
+    str_off = _contiguous(str_off, np.int64)
+    str_data = _contiguous(str_data, np.uint8)
+    valid = _contiguous(valid, np.uint8)
+    column = _contiguous(column, np.int32)
+    _check_store(pairs_off, pair_key, pair_val, str_off, str_data, np.empty(0, np.int64))
+    if valid.shape[0] != str_off.shape[0] - 1 or column.shape[0] != str_off.shape[0] - 1:
+        raise ValueError("valid and column must have one entry per string")
+    cdef Py_ssize_t n = pairs_off.shape[0] - 1, i, p, most = 0, size = 16
+    cdef int64_t* po = _int64_ptr(pairs_off)
+    cdef int64_t* pk = _int64_ptr(pair_key)
+    cdef int64_t* pv = _int64_ptr(pair_val)
+    cdef int64_t* so = _int64_ptr(str_off)
+    cdef uint8_t* sd = _uint8_ptr(str_data)
+    cdef uint8_t* ok = _uint8_ptr(valid)
+    cdef int32_t* col = <int32_t*><uintptr_t>column.ctypes.data
+    for i in range(n):
+        most = max(most, po[i + 1] - po[i])
+    while size < 2 * most:
+        size *= 2
+    table = np.empty(size, dtype=np.int64)
+    cdef int64_t* t = _int64_ptr(table)
+    special = np.zeros(n, dtype=np.uint8)
+    cdef uint8_t* sp = _uint8_ptr(special)
+    cdef int64_t a
+    cdef Py_ssize_t slots
+    with nogil:
+        # A way is special when a key is a metadata name or a string is not valid UTF-8,
+        # else when a key repeats (``t`` is the scratch table of ``_repeats_key``).
+        for i in range(n):
+            for p in range(po[i], po[i + 1]):
+                a = pk[p]
+                if col[a] == C_SPECIAL or not ok[a] or not ok[pv[p]]:
+                    sp[i] = 1
+                    break
+            if sp[i]:
+                continue
+            slots = 16
+            while slots < 2 * (po[i + 1] - po[i]):
+                slots *= 2
+            sp[i] = _repeats_key(pk, po[i], po[i + 1], so, sd, t, slots)
+    return special.view(bool)
+
+
+def column_presence(pairs_off, pair_key, column, rows, Py_ssize_t n_columns):
+    """For the ways ``rows``: which of the ``n_columns`` columns a key routes to, and whether
+    a key routes to no column (a leftover tag). Returns ``(present, leftover)``."""
+    pairs_off = _contiguous(pairs_off, np.int64)
+    pair_key = _contiguous(pair_key, np.int64)
+    column = _contiguous(column, np.int32)
+    rows = _contiguous(rows, np.int64)
+    _check_offsets(pairs_off, pair_key.shape[0])
+    if rows.shape[0] and (rows.min() < 0 or rows.max() >= pairs_off.shape[0] - 1):
+        raise ValueError("rows must be ways of the store")
+    if pair_key.shape[0] and (pair_key.min() < 0 or pair_key.max() >= column.shape[0]):
+        raise ValueError("pair ids must be strings of the store")
+    if column.shape[0] and column.max() >= n_columns:
+        raise ValueError("a column index must be below n_columns")
+    present = np.zeros(max(n_columns, 1), dtype=np.uint8)
+    cdef uint8_t* pr = _uint8_ptr(present)
+    cdef int64_t* po = _int64_ptr(pairs_off)
+    cdef int64_t* pk = _int64_ptr(pair_key)
+    cdef int32_t* col = <int32_t*><uintptr_t>column.ctypes.data
+    cdef int64_t* r = _int64_ptr(rows)
+    cdef Py_ssize_t n = rows.shape[0], i, p
+    cdef int c
+    cdef bint leftover = False
+    with nogil:
+        for i in range(n):
+            for p in range(po[r[i]], po[r[i] + 1]):
+                c = col[pk[p]]
+                if c >= 0:
+                    pr[c] = 1
+                else:
+                    leftover = True
+    return present[:n_columns].view(bool), leftover
+
+
 # --- the value filter -----------------------------------------------------------------
 
 

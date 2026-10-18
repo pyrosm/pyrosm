@@ -21,7 +21,13 @@ from pyrosm.engine.decode import (
     _shard_tags,
 )
 from pyrosm.engine.bounding_box import _in_box_nodes
-from pyrosm.engine.ways import node_coordinates, node_record_blocks, relation_ways
+from pyrosm.engine.ways import (
+    ElementStore,
+    node_coordinates,
+    node_record_blocks,
+    relation_ways,
+    result_tag_columns,
+)
 
 # Relation.MemberType -> the byte labels pyrosm's relation assembly expects.
 _MEMBER_TYPE = {0: b"node", 1: b"way", 2: b"relation"}
@@ -73,13 +79,15 @@ def _read_way_columns(shard_paths):
 
 
 def _num_ways(cols):
-    """Number of standalone ways in a way-column dict."""
-    return len(cols["id"])
+    """Number of standalone ways in a way-column dict or an :class:`ElementStore`."""
+    return len(cols) if isinstance(cols, ElementStore) else len(cols["id"])
 
 
 def _slice_way_columns(cols, start, stop):
     """A row slice ``[start:stop]`` of every column -- the chunking the GeoParquet streamer
     uses in place of slicing a list of records."""
+    if isinstance(cols, ElementStore):
+        return cols.take(np.arange(start, min(stop, len(cols))))
     return {k: v[start:stop] for k, v in cols.items()}
 
 
@@ -325,8 +333,7 @@ def _collect_kept_ways(shard_paths, exclude_ids, keep, in_box=None):
         from pyrosm.engine.ways import ElementStore, kept_ways
 
         store = ElementStore.from_shards(shard_paths)
-        kept = kept_ways(store, exclude_ids, keep.filter_spec, in_box)
-        return None if kept is None else kept.way_columns()
+        return kept_ways(store, exclude_ids, keep.filter_spec, in_box)
     return _filter_way_columns(
         _read_way_columns(shard_paths), exclude_ids, keep, in_box
     )
@@ -485,6 +492,8 @@ def _ways_arrays(
     the JSON ``tags`` column. ``columns``, when given, are the tag columns of the whole
     result (:func:`_result_tag_columns`): one these ways lack is added as Nones, so every
     chunk of the result carries the same columns."""
+    if isinstance(cols, ElementStore):
+        cols = cols.way_columns(None if keep_other_tags else set(tags_as_columns))
     ids, nodes, tags = cols["id"], cols["nodes"], cols["tags"]
     version, timestamp, visible = cols["version"], cols["timestamp"], cols["visible"]
     n = len(ids)
@@ -545,6 +554,8 @@ def _result_tag_columns(kept, tags_as_columns, keep_metadata, keep_other_tags=Tr
     """The tag columns :func:`_ways_arrays` gives all the ``kept`` ways together: the
     requested tags that occur in any of them (a tag keyed ``id`` as ``id_tag``) and, when
     any way has leftover tags or metadata, the JSON ``tags`` column."""
+    if isinstance(kept, ElementStore):
+        return result_tag_columns(kept, tags_as_columns, keep_metadata, keep_other_tags)
     column_keys, tag_cols = _way_column_keys(tags_as_columns, keep_metadata)
     tag_col_set = set(tag_cols)
     tags = kept["tags"]
@@ -567,7 +578,9 @@ def _result_tag_columns(kept, tags_as_columns, keep_metadata, keep_other_tags=Tr
 def _node_refs(kept, relation_ways):
     """The node-ref arrays of the kept ways and of the relation member ways."""
     refs = []
-    if kept is not None:
+    if isinstance(kept, ElementStore):
+        refs.append(kept.refs)
+    elif kept is not None:
         refs.extend(kept["nodes"])
     if relation_ways is not None:
         refs.extend(relation_ways["nodes"])
