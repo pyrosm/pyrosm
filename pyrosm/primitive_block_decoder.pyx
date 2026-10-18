@@ -93,12 +93,12 @@ cdef Py_ssize_t _fill_packed_delta(const unsigned char* buf, Py_ssize_t start,
                                    Py_ssize_t end, int64_t[::1] out, Py_ssize_t at,
                                    int64_t running) nogil:
     """Like ``_fill_packed`` for a delta-coded ``sint`` field: write the running
-    cumulative sum, which starts from ``running``, into ``out[at:]`` and return how many
-    were written, or -1."""
+    cumulative sum, which starts from ``running`` and wraps around as numpy's int64
+    arithmetic does, into ``out[at:]`` and return how many were written, or -1."""
     cdef Py_ssize_t pos = start
     cdef Py_ssize_t i = at
     while pos < end:
-        running += _zig_zag_decode(_read_varint(buf, &pos, end))
+        running = _wrapping_add(running, _zig_zag_decode(_read_varint(buf, &pos, end)))
         out[i] = running
         i += 1
     if pos != end:

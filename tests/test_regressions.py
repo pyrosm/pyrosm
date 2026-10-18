@@ -2596,6 +2596,28 @@ def test_block_decoder_joins_split_packed_runs():
     assert nodes["timestamp"].tolist() == [10, 11, 12]
 
 
+def test_block_decoder_wraps_delta_sums_around():
+    """Way refs and relation member ids whose deltas sum past the int64 range wrap around
+    as numpy's int64 arithmetic does (a signed overflow is undefined in C)."""
+    import numpy as np
+
+    from pyrosm.primitive_block_decoder import decode_primitive_block
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    deltas = [2**62, 2**62, -5]
+    block = PrimitiveBlock()
+    block.stringtable.s.append(b"")
+    block.primitivegroup.add().ways.add(id=1, refs=deltas)
+    block.primitivegroup.add().relations.add(
+        id=2, memids=deltas, types=[1, 1, 1], roles_sid=[0, 0, 0]
+    )
+    data = np.frombuffer(block.SerializeToString(), dtype=np.uint8)
+    _, _, _, ways, relations = decode_primitive_block(data, True)
+    expected = [2**62, -(2**63), 2**63 - 5]
+    assert ways["refs"].tolist() == expected
+    assert relations["memids"].tolist() == expected
+
+
 @pytest.mark.parametrize("alias", ["same path", "hard link"])
 def test_crop_refuses_to_overwrite_its_source(tmp_path, alias):
     """crop_pbf and OSM.to_pbf refuse an output path that is their source, under the same
