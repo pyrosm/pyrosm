@@ -25,6 +25,7 @@ from pyrosm.engine.ways import (
     ElementStore,
     node_coordinates,
     node_record_blocks,
+    node_features,
     relation_ways,
     result_tag_columns,
     tag_lists,
@@ -97,7 +98,12 @@ def _collect_node_features(shard_paths, tags_as_columns, keep_metadata, keep):
     """Read the spilled node features back, refine them by the exact value filter ``keep``
     and explode their tags into the same columns the in-memory reader builds (``id`` /
     ``lon`` / ``lat`` / ``visible`` + metadata when ``keep_metadata``, plus the layer tag
-    columns and a JSON ``tags`` column). ``None`` if no node passes."""
+    columns and a JSON ``tags`` column). ``None`` if no node passes. The node features of
+    a threaded decode come from their string ids (see :func:`ways.node_features`)."""
+    if _is_threaded(shard_paths):
+        return node_features(
+            shard_paths, tags_as_columns, keep_metadata, keep.filter_spec
+        )
     ids, lon, lat, tags, meta = [], [], [], [], []
     for path in shard_paths:
         z = _open_shard(path)
@@ -115,22 +121,40 @@ def _collect_node_features(shard_paths, tags_as_columns, keep_metadata, keep):
     mask = np.fromiter((keep(t) for t in tag_array), dtype=bool, count=len(tag_array))
     if not mask.any():
         return None
-    meta = np.concatenate(meta)[mask]
+    node_arrays = _node_arrays(
+        np.concatenate(ids)[mask],
+        np.concatenate(lon)[mask],
+        np.concatenate(lat)[mask],
+        np.concatenate(meta)[mask],
+        keep_metadata,
+    )
+    return _explode_node_tags(node_arrays, tag_array[mask], tags_as_columns)
+
+
+def _node_arrays(ids, lon, lat, meta, keep_metadata):
+    """The columns of node features that are not tags, ``meta`` holding each node's
+    version, timestamp, changeset and visible. ``tags`` holds its place after ``lat``.
+    """
     node_arrays = {
-        "id": np.concatenate(ids)[mask],
-        "lon": np.concatenate(lon)[mask],
-        "lat": np.concatenate(lat)[mask],
-        "tags": tag_array[mask],
+        "id": ids,
+        "lon": lon,
+        "lat": lat,
+        "tags": None,
         "visible": meta[:, 3].astype(bool),
     }
     if keep_metadata:
         node_arrays["version"] = meta[:, 0]
         node_arrays["timestamp"] = meta[:, 1]
         node_arrays["changeset"] = meta[:, 2]
-    # Mirror get_osm_nodes: the exploded tag columns are merged in, and their JSON 'tags'
-    # column replaces the nodes' tag dicts (None for each node when none had leftovers).
-    exploded = explode_node_tag_array(node_arrays["tags"], list(tags_as_columns))
-    node_arrays["tags"] = exploded.pop("tags", [None] * len(node_arrays["id"]))
+    return node_arrays
+
+
+def _explode_node_tags(node_arrays, tags, tags_as_columns):
+    """``node_arrays`` with the tag columns of the nodes' tag dicts ``tags`` merged in, as
+    ``get_osm_nodes`` merges them: their JSON ``tags`` column takes the place of ``tags``
+    (None for each node when none had other tags)."""
+    exploded = explode_node_tag_array(tags, list(tags_as_columns))
+    node_arrays["tags"] = exploded.pop("tags", [None] * len(tags))
     node_arrays.update(exploded)
     return node_arrays
 

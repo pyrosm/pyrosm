@@ -1519,6 +1519,46 @@ def test_engine_batched_relations_edge_cases(monkeypatch):
     ]
 
 
+def test_engine_node_tag_columns_match_explode():
+    # The node features' tag columns and JSON built from string ids are those
+    # explode_node_tag_array builds from their tag dicts, special nodes included.
+    from pyrosm.engine.ways import _node_tag_columns, python_columns
+    from pyrosm.tagparser import explode_node_tag_array
+
+    store = _way_store(_CRAFTED_WAYS)
+    columns = ["building", "name", "highway", "area", "lon", "k3", "absent"]
+    tags = [store.tags(w) for w in range(len(store))]
+    mine = python_columns(_node_tag_columns(store, columns))
+    assert mine == explode_node_tag_array(tags, columns)
+
+
+def test_engine_node_table_left_to_python_path():
+    # The node table is left to the Python path when a tag column took a non-tag column's
+    # name or the tags are not an Arrow array (dicts, or a None for each node when no node
+    # has other tags), and is None when no point is in the box.
+    import pyarrow as pa
+
+    from pyrosm.engine.ways import node_table
+
+    nodes = {
+        "id": np.array([1, 2], dtype=np.int64),
+        "lon": np.array([24.9, 25.0]),
+        "lat": np.array([60.1, 60.2]),
+        "tags": pa.array(['{"a":"b"}', None], type=pa.large_string()),
+        "visible": np.array([True, False]),
+        "name": ["x", None],
+    }
+    table = node_table(nodes, None)
+    assert table.column_names == list(nodes) + ["geometry", "osm_type"]
+    for name in ("lon", "geometry", "osm_type"):
+        assert node_table({**nodes, name: ["1", "2"]}, None) is False
+    dicts = np.empty(2, dtype=object)
+    dicts[:] = [{"a": "b"}, {}]
+    for tags in (dicts, [None, None]):
+        assert node_table({**nodes, "tags": tags}, None) is False
+    assert node_table(nodes, [0.0, 0.0, 1.0, 1.0]) is None
+
+
 def test_engine_binary_array_splits_past_32_bit_offsets(monkeypatch):
     # The geometries of a chunk go into several Arrow arrays when their bytes exceed what
     # 32-bit offsets reach.
