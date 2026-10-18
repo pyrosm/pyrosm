@@ -1036,6 +1036,100 @@ def test_engine_thread_map_bounds_the_items_in_flight():
     assert out == list(range(20))
 
 
+# Ways for the tag columns of a store: the area and linear tags of closed ways, JSON
+# escaping, and special ways (an ``id`` key, a key twice, a value that is not UTF-8, a
+# metadata name as a key, many keys with one twice).
+_BUILDING = [(b"building", b"yes")]
+_ESCAPED = 'Tie "A"\n\t\x01\x7f\\/\r\b\x0cä\U0001f600'.encode()
+_CRAFTED_WAYS = [
+    (1, [1, 2, 3, 4, 1], _BUILDING),
+    (2, [1, 4, 3, 2, 1], _BUILDING + [(b"source", b"survey")]),
+    (3, [1, 2, 3], [(b"highway", b"footway"), (b"name", _ESCAPED), (b"note", _ESCAPED)]),
+    (4, [1, 2, 3, 1], [(b"highway", b"footway")]),
+    (5, [1, 2, 3, 1], [(b"highway", b"pedestrian"), (b"area", b"yes")]),
+    (6, [1, 2, 3, 4, 1], [(b"area", b"no"), (b"building", b"roof")]),
+    (12, [1, 2, 3, 1], [(b"id", b"5"), (b"building", b"yes")]),
+    (13, [1, 2, 3, 1], [(b"building", b"yes"), (b"building", b"no")]),
+    (14, [1, 2, 3, 1], [(b"name", b"\xff\xfe"), (b"building", b"yes")]),
+    (15, [1, 2, 3, 1], [(b"version", b"7"), (b"building", b"yes")]),
+    (18, [1, 2, 3, 4, 1], []),
+    (19, [1, 2, 3, 1], [(b"k%d" % i, b"v") for i in range(20)]),
+    (20, [1, 2, 3, 1], [(b"k%d" % i, b"v") for i in range(20)] + [(b"k3", b"x")]),
+]
+
+
+@pytest.mark.parametrize(
+    "ways, tags_as_columns, keep_metadata, keep_other_tags",
+    [
+        (slice(None), ["building", "highway", "name", "area", "id", "id_tag"], False, True),
+        (slice(None), ["building", "source", "id_tag"], True, False),
+        (slice(0, 6), ["building", "highway", "name", "area", "source", "note"], True, True),
+        (slice(10, 11), ["building"], True, True),
+    ],
+    ids=["all ways", "requested tags with metadata", "no leftovers", "untagged"],
+)
+def test_engine_store_tag_columns_match_the_python_path(
+    ways, tags_as_columns, keep_metadata, keep_other_tags
+):
+    # The tag columns a store's ways give, found in C (special ways by their tag dicts),
+    # are those the Python path finds in the ways' tag dicts.
+    from pyrosm.engine import collect
+    from pyrosm.engine.ways import result_tag_columns
+
+    store = _way_store(_CRAFTED_WAYS[ways])
+    keys = None if keep_other_tags else set(tags_as_columns)
+    ref = collect._result_tag_columns(
+        store.way_columns(keys), tags_as_columns, keep_metadata, keep_other_tags
+    )
+    mine = result_tag_columns(store, tags_as_columns, keep_metadata, keep_other_tags)
+    assert mine == ref
+    assert collect._result_tag_columns(
+        store, tags_as_columns, keep_metadata, keep_other_tags
+    ) == ref
+
+
+def test_way_columns_special_ways_and_column_presence():
+    # The special ways of a store and the columns its ways' keys route to; arrays that do
+    # not fit together raise.
+    from pyrosm import way_columns as wc
+
+    store = _way_store(_CRAFTED_WAYS)
+    valid, column = wc.string_columns(store.str_off, store.str_data, [b"building"])
+    special = wc.special_ways(
+        store.pairs_off,
+        store.pair_key,
+        store.pair_val,
+        store.str_off,
+        store.str_data,
+        valid,
+        column,
+    )
+    assert store.id[special].tolist() == [12, 13, 14, 15, 20]
+    present, leftover = wc.column_presence(
+        store.pairs_off, store.pair_key, column, np.array([0, 3]), 1
+    )
+    assert present.tolist() == [True] and leftover
+    present, leftover = wc.column_presence(
+        store.pairs_off, store.pair_key, column, np.array([0]), 1
+    )
+    assert present.tolist() == [True] and not leftover
+    with pytest.raises(ValueError, match="one entry per string"):
+        wc.special_ways(
+            store.pairs_off,
+            store.pair_key,
+            store.pair_val,
+            store.str_off,
+            store.str_data,
+            valid[:-1],
+            column,
+        )
+    for rows, n_columns, match in (([99], 1, "ways of the store"), ([0], 0, "below")):
+        with pytest.raises(ValueError, match=match):
+            wc.column_presence(
+                store.pairs_off, store.pair_key, column, np.array(rows), n_columns
+            )
+
+
 def test_engine_cut_off_file_raises_the_same_error(test_pbf, tmp_path, monkeypatch):
     # A file cut off in its last blob raises the same error with either backend.
     from pathlib import Path
