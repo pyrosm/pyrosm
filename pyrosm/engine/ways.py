@@ -5,12 +5,16 @@ The threaded decode stores each element's tags as ids of strings, not as a dict.
 :func:`kept_ways` selects the ways a read outputs (the value filter in C, see
 :func:`keep_mask`); :func:`tag_lists` builds their tag columns and JSON ``tags`` column
 in C, and :func:`chunk_tables` the chunks of a result, with the geometries, on the read's
-threads (:func:`network_frame` the edges of a network). The module also gathers the node
-coordinates, the relation member ways and the network's node records on the read's
-threads.
+threads (:func:`network_frame` the edges of a network); :func:`node_features` and
+:func:`node_table` give the point features from their string ids. The module also gathers
+the node coordinates, the relation member ways and the network's node records on the
+read's threads.
 """
 
+import sys
+
 import numpy as np
+from rapidjson import dumps
 
 from pyrosm import way_columns as wc
 from pyrosm._arrays import _offsets_from_lengths
@@ -676,14 +680,16 @@ def _chunks(ctx, starts, chunk_size):
 
 
 class ArrowFrame:
-    """A result held as an Arrow table (the network edges a threaded read builds), with
-    the bounds and the geometry type names of its geometries. Written with :meth:`write`
-    as ``GeoDataFrame.to_parquet`` writes the frame it holds."""
+    """A result held as an Arrow table (the network edges or the point features a threaded
+    read builds), with the bounds and the geometry type names of its geometries. Written
+    with :meth:`write` as ``GeoDataFrame.to_parquet`` writes the frame it holds; ``index``
+    is that of ``geopandas.io.arrow._geopandas_to_arrow``."""
 
-    def __init__(self, table, bounds, types):
+    def __init__(self, table, bounds, types, index=None):
         self.table = table
         self.bounds = bounds
         self.types = types
+        self.index = index
 
     def schema(self):
         """The schema ``_geopandas_to_arrow`` gives the frame: that of one row holding each
@@ -707,11 +713,13 @@ class ArrowFrame:
             shapely.from_wkb(head["geometry"].to_numpy()), crs="epsg:4326"
         )
         head = gpd.GeoDataFrame(head, geometry="geometry", crs="epsg:4326")
-        schema = _geopandas_to_arrow(head).schema
+        schema = _geopandas_to_arrow(head, index=self.index).schema
         metadata = dict(schema.metadata)
-        # The head's RangeIndex stands for that of the frame, which has all the rows.
+        # The head's RangeIndex, if listed, stands for that of the frame, which has all
+        # the rows.
         frame = json.loads(metadata[b"pandas"])
-        frame["index_columns"][0]["stop"] = self.table.num_rows
+        for index in frame["index_columns"]:
+            index["stop"] = self.table.num_rows
         metadata[b"pandas"] = json.dumps(frame).encode("utf-8")
         geo = json.loads(metadata[b"geo"])
         column = geo["columns"]["geometry"]
@@ -772,6 +780,232 @@ def network_frame(ctx, chunk_size):
             if types & bit
         ],
     )
+
+
+def _node_store(shard_paths):
+    """The node features of a threaded decode's shards: an :class:`ElementStore` of their
+    ids, tags and metadata (without node refs), with their ``lon``, ``lat`` and metadata
+    rows (version, timestamp, changeset, visible). ``None`` when no shard holds one."""
+    joined = _joined_shards(
+        shard_paths,
+        "nfeat_id",
+        (
+            "nfeat_id",
+            "nfeat_lon",
+            "nfeat_lat",
+            "nfeat_meta",
+            "nfeat_pairs_off",
+            "nfeat_pair_key",
+            "nfeat_pair_val",
+            "str_off",
+            "str_data",
+        ),
+    )
+    if joined is None:
+        return None
+    ids, meta = joined["nfeat_id"], joined["nfeat_meta"]
+    store = ElementStore(
+        id=ids,
+        refs_off=np.zeros(len(ids) + 1, dtype=np.int64),
+        refs=np.empty(0, np.int64),
+        version=meta[:, 0],
+        timestamp=meta[:, 1],
+        visible=meta[:, 3],
+        pairs_off=joined["nfeat_pairs_off"],
+        pair_key=joined["nfeat_pair_key"],
+        pair_val=joined["nfeat_pair_val"],
+        str_off=joined["str_off"],
+        str_data=joined["str_data"],
+    )
+    return store, joined["nfeat_lon"], joined["nfeat_lat"], meta
+
+
+def _node_tag_columns(store, tags_as_columns):
+    """The tag columns and JSON ``tags`` column of the nodes of ``store`` as
+    ``tagparser.explode_node_tag_array`` builds them from their tag dicts -- the requested
+    columns some node has, in order, then ``tags`` when some node has other tags -- as
+    Arrow string arrays."""
+    column_keys = list(dict.fromkeys(tags_as_columns))
+    column_set = set(column_keys)
+    n = len(store)
+    valid, column, special = _string_columns(store, column_keys)
+    present, _ = wc.column_presence(
+        store.pairs_off,
+        store.pair_key,
+        column,
+        np.flatnonzero(~special),
+        len(column_keys),
+    )
+    present = present.copy()
+    rows = {}
+    for w in np.flatnonzero(special):
+        other, values = {}, {}
+        for k, v in store.tags(w).items():
+            if k in column_set:
+                values[k] = v
+                present[column_keys.index(k)] = True
+            else:
+                other[k] = v
+        rows[w] = (values, dumps(other) if other else None)
+    names = [k for c, k in enumerate(column_keys) if present[c]]
+    position = {k: i for i, k in enumerate(names)}
+    built = wc.tag_columns(
+        np.arange(n, dtype=np.int64),
+        store.pairs_off,
+        store.pair_key,
+        store.pair_val,
+        store.str_off,
+        store.str_data,
+        valid=valid,
+        column=column,
+        out_column=np.array([position.get(k, -1) for k in column_keys], dtype=np.int32),
+        n_out=len(names),
+        special=special,
+        version=store.version,
+        timestamp=store.timestamp,
+        visible=store.visible,
+        json=True,
+        json_version=False,
+        json_timestamp=False,
+        json_visible=False,
+    )
+    columns = [_string_array(*arrays) for arrays in built["columns"]]
+    json = _string_array(*built["json"])
+    if rows:
+        positions = np.array(sorted(rows), dtype=np.int64)
+        columns = [
+            _replace(
+                array, positions, [rows[w][0].get(name) for w in positions.tolist()]
+            )
+            for array, name in zip(columns, names)
+        ]
+        json = _replace(json, positions, [rows[w][1] for w in positions.tolist()])
+    data = dict(zip(names, columns))
+    if json.null_count < len(json):
+        data["tags"] = json
+    return data
+
+
+def python_columns(node_arrays):
+    """``node_arrays`` with its Arrow columns as lists, as the Python path builds them."""
+    import pyarrow as pa
+
+    return {
+        k: (v.to_pylist() if isinstance(v, pa.Array) else v)
+        for k, v in node_arrays.items()
+    }
+
+
+def node_features(shard_paths, tags_as_columns, keep_metadata, filter_spec):
+    """The node features of a threaded decode, as
+    :func:`~pyrosm.engine.collect._collect_node_features` gives them (the tag columns as
+    Arrow arrays when pyarrow is available and some node has other tags; see
+    :func:`python_columns`), or ``None``."""
+    from pyrosm.engine.collect import _explode_node_tags, _node_arrays
+    from pyrosm.utils import _compat
+
+    found = _node_store(shard_paths)
+    if found is None:
+        return None
+    store, lon, lat, meta = found
+    mask = keep_mask(store, filter_spec)
+    if not mask.any():
+        return None
+    rows = np.flatnonzero(mask)
+    store = store.take(rows)
+    node_arrays = _node_arrays(
+        store.id, lon[rows], lat[rows], meta[rows], keep_metadata
+    )
+    if _compat.HAS_PYARROW:
+        data = _node_tag_columns(store, tags_as_columns)
+        if "tags" in data:
+            node_arrays.update(data)
+            return node_arrays
+    tags = np.empty(len(store), dtype=object)
+    tags[:] = [store.tags(w) for w in range(len(store))]
+    return _explode_node_tags(node_arrays, tags, tags_as_columns)
+
+
+# The node columns that are not tags, with their dtypes.
+_NODE_FIELDS = {
+    "id": np.int64,
+    "lon": np.float64,
+    "lat": np.float64,
+    "visible": np.bool_,
+    "version": np.int64,
+    "timestamp": np.int64,
+    "changeset": np.int64,
+}
+
+
+def node_table(node_arrays, bounding_box, keep_other_tags=True):
+    """The point features ``node_arrays`` (from :func:`node_features`) as the Arrow table,
+    with its metadata, that the Python path's node chunk gives (without the JSON ``tags``
+    column when not ``keep_other_tags``), or ``None`` when no point is in
+    ``bounding_box``. ``False`` when the Python path must build it: a tag column took a
+    non-tag column's name (also ``geometry`` or ``osm_type``), or the ``tags`` column is not
+    an Arrow array (no node has tags outside the columns, or pyarrow built none)."""
+    import pyarrow as pa
+    import shapely
+
+    if not keep_other_tags:
+        node_arrays = {k: v for k, v in node_arrays.items() if k != "tags"}
+    for key, dtype in _NODE_FIELDS.items():
+        values = node_arrays.get(key)
+        if values is not None and not (
+            isinstance(values, np.ndarray) and values.dtype == dtype
+        ):
+            return False
+    tags = node_arrays.get("tags")
+    if tags is not None and not isinstance(tags, (pa.Array, pa.ChunkedArray)):
+        return False
+    if "geometry" in node_arrays or "osm_type" in node_arrays:
+        return False
+    names, arrays = [], []
+    for key, values in node_arrays.items():
+        names.append(key)
+        if isinstance(values, (pa.Array, pa.ChunkedArray)):
+            arrays.append(values)
+        elif isinstance(values, np.ndarray):
+            arrays.append(pa.array(values))
+        else:
+            arrays.append(pa.array(values, type=pa.large_string()))
+    n = len(node_arrays["id"])
+    # Each point's WKB: the byte order (1 = little-endian), the type (1 = Point), x, y.
+    points = np.empty(
+        n, dtype=[("order", "u1"), ("type", "=u4"), ("x", "=f8"), ("y", "=f8")]
+    )
+    points["order"] = 1 if sys.byteorder == "little" else 0
+    points["type"] = 1
+    points["x"] = node_arrays["lon"]
+    points["y"] = node_arrays["lat"]
+    size = points.dtype.itemsize
+    names += ["geometry", "osm_type"]
+    arrays.append(
+        _binary_array(
+            np.arange(0, size * n + 1, size, dtype=np.int64), points.view(np.uint8)
+        )
+    )
+    arrays.append(_constant_strings("node", n))
+    table = pa.Table.from_arrays(arrays, names=names)
+    if bounding_box is not None:
+        area = (
+            shapely.box(*bounding_box)
+            if isinstance(bounding_box, list)
+            else bounding_box
+        )
+        table = _in_area(table, area)[0]
+        if table is None:
+            return None
+    lon = table.column("lon").to_numpy()
+    lat = table.column("lat").to_numpy()
+    frame = ArrowFrame(
+        table,
+        (lon.min(), lat.min(), lon.max(), lat.max()),
+        ["Point"],
+        index=False,
+    )
+    return frame.to_arrow()
 
 
 def kept_ways(store, exclude_ids, filter_spec, in_box):

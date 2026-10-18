@@ -17,7 +17,14 @@ from pyrosm.engine.collect import (
     _slice_way_columns,
 )
 from pyrosm.engine.assemble import _assemble_chunk
-from pyrosm.engine.ways import ChunkContext, ElementStore, chunk_tables
+from pyrosm.engine.decode import _is_threaded
+from pyrosm.engine.ways import (
+    ChunkContext,
+    ElementStore,
+    chunk_tables,
+    node_table,
+    python_columns,
+)
 
 # Assemble and write this many ways per chunk, so the output frame is never fully
 # materialised.
@@ -139,7 +146,12 @@ def _stream_layer_to_parquet(
         # are needed before any way is written: assemble them now and set them aside.
         node_path = relation_path = None
         if node_features is not None:
-            node_path = set_aside(to_table(nodes=node_features), "nodes")
+            table = False
+            if _is_threaded(shard_paths):
+                table = node_table(node_features, bounding_box, keep_other_tags)
+            if table is False:
+                table = to_table(nodes=python_columns(node_features))
+            node_path = set_aside(table, "nodes")
         if relations is not None:
             relation_path = set_aside(
                 to_table(relations=relations, relation_ways=relation_ways), "relations"
