@@ -1635,12 +1635,14 @@ def test_engine_stream_parquet_chunk_table_branches(
     pytest.importorskip("pyarrow")
     import tempfile
     import shutil
+    import pyarrow.parquet as pq
     from pyrosm.config import Conf
     from pyrosm.data_manager import parse_custom_filter
     from pyrosm.engine import geoparquet
     from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
     from pyrosm.engine.pool import _decode_all
     from pyrosm.engine.collect import _collect_layer
+    from pyrosm.engine.ways import ElementStore
 
     data_filter, osm_keys = parse_custom_filter({"building": [True]})
     filter_spec = (osm_keys, data_filter, "keep")
@@ -1672,7 +1674,15 @@ def test_engine_stream_parquet_chunk_table_branches(
         # relations only (no standalone ways): way loop skipped, relation chunk written.
         assert write((None, None, relations, relation_ways, nc)) is not None
         # ways only (no relations): relation branch skipped.
-        assert write((None, kept, None, None, nc)) is not None
+        whole = write((None, kept, None, None, nc))
+        assert whole is not None
+        # the way columns of a process decode, in two chunks, write the rows of one chunk.
+        columns = kept.way_columns() if isinstance(kept, ElementStore) else kept
+        half = len(columns["id"]) // 2 + 1
+        in_two = write((None, columns, None, None, nc), "in_two.parquet", half)
+        assert pq.ParquetFile(whole).metadata.num_row_groups == 1
+        assert pq.ParquetFile(in_two).metadata.num_row_groups == 2
+        _assert_full_parity(gpd.read_parquet(in_two), gpd.read_parquet(whole))
         # a way referencing an absent node assembles empty -> no parts -> None.
         absent_nodes = np.empty(1, dtype=object)
         absent_nodes[0] = np.array([10**18], np.int64)
