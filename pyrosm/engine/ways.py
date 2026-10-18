@@ -94,6 +94,7 @@ class ElementStore:
         self.str_off = str_off
         self.str_data = str_data
         self.string_info = {} if string_info is None else string_info
+        self._area_by_tags = None
 
     def __len__(self):
         return len(self.id)
@@ -126,6 +127,19 @@ class ElementStore:
             str_data=self.str_data,
             string_info=self.string_info,
         )
+
+    def area_by_tags(self):
+        """Whether the tags of each way make it an area when it is closed (see
+        :func:`pyrosm.way_columns.area_by_tags`), found once per store."""
+        if self._area_by_tags is None:
+            self._area_by_tags = wc.area_by_tags(
+                self.pairs_off,
+                self.pair_key,
+                self.pair_val,
+                self.str_off,
+                self.str_data,
+            )
+        return self._area_by_tags
 
     def string(self, i):
         """String ``i`` as the Python path decodes it."""
@@ -342,14 +356,8 @@ class ChunkContext:
         self.valid, self.column, self.special = _string_columns(store, self.tag_cols)
         self.requested = None if keep_other_tags else set(tags_as_columns)
         self.node_coordinates = node_coordinates
-
-    def rule_columns(self):
-        """The output positions of the tag columns the area rule of closed ways reads
-        (``area``, ``highway``, ``barrier``, ``route``), -1 when not output."""
-        return [
-            self.out_names.index(k) if k in self.out_names else -1
-            for k in ("area", "highway", "barrier", "route")
-        ]
+        # Whether each way's tags make it an area when closed; a network's ways are lines.
+        self.area_by_tags = None if network else store.area_by_tags()
 
     def special_rows(self, ways):
         """The tag columns (``{column: list}``) and JSON values of the ways ``ways`` of the
@@ -521,7 +529,6 @@ def _build_chunk(ctx, rows):
     (``tag_arrays``, ``json_array``). Returns ``(chunk, kept_rows)``."""
     store = ctx.store
     rows = np.asarray(rows, dtype=np.int64)
-    area, highway, barrier, route = ctx.rule_columns()
     special = ctx.special[rows]
     chunk = wc.build_chunk(
         rows,
@@ -542,10 +549,7 @@ def _build_chunk(ctx, rows):
         visible=store.visible,
         nodes=ctx.node_coordinates,
         network=ctx.network,
-        area_col=area,
-        highway_col=highway,
-        barrier_col=barrier,
-        route_col=route,
+        area_by_tags=ctx.area_by_tags,
         json=ctx.json,
         json_version=ctx.json_version,
         json_timestamp=ctx.json_timestamp,

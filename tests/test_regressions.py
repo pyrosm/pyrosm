@@ -2788,3 +2788,56 @@ def test_reads_decoding_at_the_same_time_keep_their_own_settings(fresh_cache, mo
             frame.drop(columns="geometry"), expected.drop(columns="geometry")
         )
         assert (frame.geometry.to_wkb() == expected.geometry.to_wkb()).all()
+
+
+@pytest.mark.parametrize(
+    "engine, backend, chunk_size",
+    [
+        ("in_memory", None, None),
+        ("out_of_core", "threads", None),
+        ("out_of_core", "threads", 1),
+        ("out_of_core", "processes", None),
+    ],
+    ids=["in_memory", "threads", "threads_chunks_in_c", "processes"],
+)
+def test_area_rule_reads_tags_that_are_not_columns(
+    tmp_path, monkeypatch, fresh_cache, engine, backend, chunk_size
+):
+    """The ``area``, ``highway``, ``barrier`` and ``route`` tags decide whether a closed way
+    is a Polygon also when they are not columns of the read: a building tagged
+    ``area=no`` or ``barrier`` is a LineString, ``area=yes`` keeps a building with a
+    ``highway`` tag a Polygon. The tags stay in the JSON ``tags`` column."""
+    import json
+
+    osmium = pytest.importorskip("osmium")
+    from osmium.osm.mutable import Node, Way
+    from pyrosm import OSM
+    from pyrosm.engine import geoparquet
+
+    ways = {
+        1: ({"building": "yes"}, "Polygon"),
+        2: ({"building": "yes", "area": "no"}, "LineString"),
+        3: ({"building": "yes", "barrier": "wall"}, "LineString"),
+        4: ({"building": "yes", "highway": "pedestrian", "area": "yes"}, "Polygon"),
+        5: ({"building": "yes", "route": "ferry", "area": "unknown"}, "LineString"),
+    }
+    path = str(tmp_path / "closed_ways.osm.pbf")
+    with osmium.SimpleWriter(path) as writer:
+        for w in ways:
+            corners = [(0, 0), (0.001, 0), (0.001, 0.001), (0, 0.001)]
+            for k, (dx, dy) in enumerate(corners):
+                writer.add_node(Node(id=10 * w + k, location=(25 + w / 100 + dx, 60 + dy)))
+        for w, (tags, _) in ways.items():
+            nodes = [10 * w + k for k in range(4)]
+            writer.add_way(Way(id=w, nodes=nodes + nodes[:1], tags=tags))
+    if backend is not None:
+        monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    if chunk_size is not None:
+        monkeypatch.setattr(geoparquet, "_OUTPUT_CHUNK_SIZE", chunk_size)
+
+    gdf = OSM(path, engine=engine, workers=1).get_buildings().set_index("id")
+    assert {w: gdf.geometry[w].geom_type for w in ways} == {
+        w: expected for w, (_, expected) in ways.items()
+    }
+    assert "area" not in gdf.columns
+    assert json.loads(gdf.loc[2, "tags"])["area"] == "no"

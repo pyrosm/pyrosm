@@ -1111,7 +1111,10 @@ def test_engine_store_tag_columns_match_the_python_path(
         store, tags_as_columns, keep_metadata, keep_other_tags
     ) == ref
     column_keys, tag_cols = collect._way_column_keys(tags_as_columns, keep_metadata)
-    by_dicts = store.way_columns(keys)
+    # Without other tags the process decode's tag dicts also hold the geometry tag keys.
+    from pyrosm.engine.readers import _GEOMETRY_TAG_KEYS
+
+    by_dicts = store.way_columns(None if keys is None else keys | set(_GEOMETRY_TAG_KEYS))
     col_lists, leftover, _ = collect._route_tags(
         by_dicts["tags"],
         store.version,
