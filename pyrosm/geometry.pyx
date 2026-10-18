@@ -132,41 +132,30 @@ cpdef ring_polygon(coords):
     return polygon
 
 
+cdef _geometry_or_none(constructor, coordinates):
+    """``constructor(coordinates)`` (``shapely.linearrings`` or ``shapely.linestrings``), or
+    ``None`` when the coordinates are too few for the geometry. Coordinates of the wrong
+    shape raise."""
+    try:
+        return constructor(coordinates)
+    except GEOSException as e:
+        if "Invalid number of points" in str(e) or "point array must contain" in str(e):
+            return None
+        raise
+    except ValueError as e:
+        if "not have enough dimensions" in str(e):
+            raise
+        return None
+
+
 cpdef create_linear_ring(coordinates):
     """The ring of ``coordinates``, or ``None`` when there are too few of them."""
-    try:
-        return linearrings(coordinates)
-    # pygeos 0.7.1 throws GEOSException
-    except GEOSException as e:
-        if "Invalid number of points" in str(e):
-            return None
-        elif "point array must contain" in str(e):
-            return None
-        raise e
-    # pygeos 0.8.0 throws ValueError
-    except ValueError as e:
-        if "Provide at least 4 coordinates" in str(e):
-            return None
-    except Exception as e:
-        raise e
+    return _geometry_or_none(linearrings, coordinates)
 
 
 cdef create_linestring(coordinates):
-    try:
-        return linestrings(coordinates)
-    except GEOSException as e:
-        if "Invalid number of points" in str(e):
-            return None
-        elif "point array must contain" in str(e):
-            return None
-        raise e
-    except ValueError as e:
-        if "Provide at least 2 coordinates" in str(e):
-            return None
-        if "not have enough dimensions" in str(e):
-            raise e
-    except Exception as e:
-        raise e
+    """The line of ``coordinates``, or ``None`` when there are too few of them."""
+    return _geometry_or_none(linestrings, coordinates)
 
 
 cdef _create_point_geometries(xarray, yarray):

@@ -860,41 +860,15 @@ def decode_primitive_block(const unsigned char[::1] data, bint keep_metadata=Tru
     return string_table, header, nodes, ways, relations
 
 
-cdef int _check_fields(const unsigned char* buf, Py_ssize_t start,
-                       Py_ssize_t end) except -1:
-    """Raise unless ``buf[start:end]`` is a run of well-formed fields."""
-    cdef Py_ssize_t pos = start
-    cdef int field, wire
-    while pos < end:
-        _read_tag(buf, &pos, end, &field, &wire)
-        _skip_field(buf, &pos, end, wire)
-    return _check_end(pos, end)
-
-
 cdef int64_t _element_id(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
                          bint is_signed) except? -1:
-    """The id of the plain node, way or relation stored in ``buf[start:end]``, zig-zag
-    decoded when ``is_signed`` (a node's): the last one, as protobuf and the decoder read
-    it, or 0, the proto2 default, when it has none. Raises unless the element and its
-    ``Info`` are well-formed fields; the three number the id and ``Info`` alike."""
-    cdef Py_ssize_t pos = start, f_start
-    cdef int field, wire
-    cdef uint64_t value = 0, length
-    while pos < end:
-        _read_tag(buf, &pos, end, &field, &wire)
-        if field == NODE_ID and wire == WIRE_VARINT:
-            value = _read_varint(buf, &pos, end)
-        elif field == NODE_INFO and wire == WIRE_LENGTH:
-            length = _read_varint(buf, &pos, end)
-            f_start = pos
-            pos = _field_end(pos, length, end)
-            if pos > end:
-                break
-            _check_fields(buf, f_start, pos)
-        else:
-            _skip_field(buf, &pos, end, wire)
-    _check_end(pos, end)
-    return _zig_zag_decode(value) if is_signed else <int64_t>value
+    """The id of the plain node, way or relation stored in ``buf[start:end]`` (see
+    `_read_element_id`), zig-zag decoded when ``is_signed`` (a node's). Raises unless the
+    element and its ``Info`` are well-formed fields."""
+    cdef int64_t element_id = 0
+    if _read_element_id(buf, start, end, is_signed, &element_id) != 0:
+        _corrupt("a field or a number does not fit in the data that holds it")
+    return element_id
 
 
 cdef inline bint _is_element(int field, int wire) nogil:
@@ -1881,9 +1855,10 @@ def check_batch_starts(starts, Py_ssize_t size):
     """Raise ``ValueError`` unless the block offsets ``starts`` of a batch rise from 0 or
     more to at most ``size``, the length of the batch's buffer."""
     starts = np.asarray(starts)
+    cdef Py_ssize_t n = len(starts)
     # Compared, not subtracted: a difference of int64 offsets can overflow.
-    if (len(starts) == 0 or (starts < 0).any() or (starts > size).any()
-            or (starts[1:] < starts[:-1]).any()):
+    if (n == 0 or (starts < 0).any() or (starts > size).any()
+            or (starts[1:] < starts[: n - 1]).any()):
         raise ValueError("starts must rise from 0 to at most the buffer's length")
 
 
