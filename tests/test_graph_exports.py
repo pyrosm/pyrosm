@@ -1,4 +1,5 @@
 import sys
+import warnings
 import pytest
 from shapely.geometry import box
 from pyrosm import get_data
@@ -722,7 +723,12 @@ def test_pandarm_connectivity():
     x = restaurants["lon"]
     y = restaurants["lat"]
 
-    g = to_pandarm(nodes, edges, retain_all=False, simplify=False)
+    # The network takes the nodes' CRS, so pandarm does not warn that none was given
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        g = to_pandarm(nodes, edges, retain_all=False, simplify=False)
+    assert not [w for w in caught if "CRS" in str(w.message)]
+    assert g.nodes_df.crs == nodes.crs
 
     assert isinstance(g.nodes_df, pd.DataFrame)
     assert isinstance(g.edges_df, pd.DataFrame)

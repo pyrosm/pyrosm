@@ -1,6 +1,7 @@
 import email.utils
 import urllib.request
 import io
+import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError
@@ -49,14 +50,13 @@ def test_timestamp_datetime():
 def test_future_timestamp():
     from pyrosm.utils import get_unix_time
 
-    # Test that future time cannot be passed
+    # Test that future time cannot be passed, and that the check uses no deprecated call
+    # (it used pandas' Timestamp.utcnow)
     t = "2100-01-01 12:00"
-    try:
-        unix_time = get_unix_time(t, osh_file=True)
-    except ValueError:
-        pass
-    except Exception as e:
-        raise e
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(ValueError, match="cannot be in the future"):
+            get_unix_time(t, osh_file=True)
 
 
 def test_timestamp_older_than_OSM_history():
@@ -64,12 +64,8 @@ def test_timestamp_older_than_OSM_history():
 
     # Test that older time than OSM history cannot be passed
     t = "2000-01-01 12:00"
-    try:
-        unix_time = get_unix_time(t, osh_file=True)
-    except ValueError:
-        pass
-    except Exception as e:
-        raise e
+    with pytest.raises(ValueError, match="first changeset"):
+        get_unix_time(t, osh_file=True)
 
 
 def test_API_with_timestamp(helsinki_history_pbf):

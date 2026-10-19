@@ -344,6 +344,12 @@ def unix_time_to_datetime(unix_time):
 
 
 def get_unix_time(timestamp, osh_file):
+    """``timestamp`` (a UNIX time in seconds, or anything ``pd.to_datetime`` parses, read as
+    UTC) as a UNIX time in seconds, for selecting versions from a history file.
+
+    Raises ``ValueError`` when ``osh_file`` is false, or when the time is in the future or
+    before the first OSM changeset (2005-04-09 19:54:13 UTC).
+    """
     if not osh_file:
         raise ValueError(
             "The input file does not seem to be OSH.PBF -file. "
@@ -360,7 +366,7 @@ def get_unix_time(timestamp, osh_file):
         unix_time = datetime_to_unix_time(unix_time_to_datetime(timestamp))
 
     # If the time is in the future raise exception
-    if unix_time > datetime_to_unix_time(pd.Timestamp.utcnow()):
+    if unix_time > datetime_to_unix_time(pd.Timestamp.now("UTC")):
         raise ValueError(f"timestamp cannot be in the future. Got: {timestamp}.")
 
     # If the time is older than the first changeset in OSM (2005-04-09 19:54:13), raise exception
