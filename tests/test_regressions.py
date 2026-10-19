@@ -1759,8 +1759,9 @@ def test_network_filters_match_multi_value_tags():
 def test_network_filters_match_osmnx_way_filters():
     """#369 — the values each network type excludes, as OSMnx's way filters exclude
     them. OSMnx writes its exclusions as unanchored regular expressions, so its "motor"
-    stands for the motor/motorway/motorway_link values written out here. The access
-    tags are the exception: they follow OSM's access hierarchy."""
+    stands for the motor/motorway/motorway_link values written out here. The exceptions:
+    the access tags follow OSM's access hierarchy, and driving also excludes busway,
+    ladder and trail."""
     from pyrosm.config.osm_filters import get_osm_filter
 
     lifecycle = {
@@ -1779,15 +1780,18 @@ def test_network_filters_match_osmnx_way_filters():
     drive_highway = lifecycle | {
         "bridleway",
         "bus_guideway",
+        "busway",
         "corridor",
         "cycleway",
         "elevator",
         "escalator",
         "footway",
+        "ladder",
         "path",
         "pedestrian",
         "steps",
         "track",
+        "trail",
     }
     expected = {
         "driving": {
@@ -3160,3 +3164,18 @@ def test_custom_filter_narrows_the_layer_readers(engine):
     with_amenity = sample.get_buildings(custom_filter={"amenity": True})
     assert len(with_amenity) == 26
     assert with_amenity["building"].notna().all()
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_driving_network_leaves_out_ways_cars_cannot_use(engine):
+    """``get_network("driving")`` leaves out ``highway=trail`` ways, which cars cannot use;
+    the walking network keeps them. The driving filter followed OSMnx's ``drive``, which
+    does not exclude trails: 426 of the 1,926 driving edges of the Helsinki sample were
+    trails."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), engine=engine, workers=1)
+    driving = osm.get_network(network_type="driving")
+    walking = osm.get_network(network_type="walking")
+    assert "trail" not in set(driving["highway"])
+    assert "trail" in set(walking["highway"])
