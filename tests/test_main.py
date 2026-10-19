@@ -90,6 +90,8 @@ def test_default_workers_warning_as_an_error_raises_at_every_default_call(
             with pytest.raises(FutureWarning, match="In pyrosm 1.0"):
                 pyrosm.utils.default_workers(None, helsinki_pbf)
         assert pyrosm.utils.default_workers(2, helsinki_pbf) == 2
+        # a file that cannot be read counts as no data, so the default does not warn
+        assert pyrosm.utils.default_workers(None, "missing.osm.pbf") == 1
 
 
 def test_processes_backend_warns_once_that_it_is_deprecated(monkeypatch):
