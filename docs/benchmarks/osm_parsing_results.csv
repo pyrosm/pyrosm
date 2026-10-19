@@ -6,7 +6,7 @@ buildings,Kamppi,quackosm (no columns),9.99,291.0,682.0,ok
 buildings,Kamppi,pyosmium,0.58,90.0,682.0,ok
 buildings,Kamppi,osmium-tool,0.68,663.5,638.0,ok
 buildings,Helsinki region,pyrosm (in-memory),2.41,1039.9,187418.0,ok
-buildings,Helsinki region,pyrosm (out-of-core),2.41,560.6,187418.0,ok
+buildings,Helsinki region,pyrosm (out-of-core),1.94,593.8,187418.0,ok
 buildings,Helsinki region,quackosm (with columns),18.48,4597.1,187452.0,ok
 buildings,Helsinki region,quackosm (no columns),12.71,1054.7,187452.0,ok
 buildings,Helsinki region,pyosmium,13.79,3142.8,187452.0,ok
@@ -38,7 +38,7 @@ roads,Kamppi,quackosm (no columns),10.02,291.1,4794.0,ok
 roads,Kamppi,pyosmium,0.66,119.2,4854.0,ok
 roads,Kamppi,osmium-tool,0.8,1149.1,4800.0,ok
 roads,Helsinki region,pyrosm (in-memory),2.58,1131.7,305327.0,ok
-roads,Helsinki region,pyrosm (out-of-core),2.47,646.0,305327.0,ok
+roads,Helsinki region,pyrosm (out-of-core),2.06,641.2,305327.0,ok
 roads,Helsinki region,quackosm (with columns),57.5,12153.0,305060.0,ok
 roads,Helsinki region,quackosm (no columns),13.01,1044.3,305060.0,ok
 roads,Helsinki region,pyosmium,62.24,10144.0,308683.0,ok
@@ -66,7 +66,7 @@ roads,Spain,quackosm (with columns),,148696.0,,OOM/crash (exit -9)
 roads,Spain,quackosm (no columns),101.06,22058.0,5788516.0,ok
 buildings (geometry + key),Kamppi,pyrosm (out-of-core),0.82,126.2,684.0,ok
 buildings (geometry + key),Kamppi,quackosm,10.35,295.2,682.0,ok
-buildings (geometry + key),Helsinki region,pyrosm (out-of-core),2.12,499.9,187418.0,ok
+buildings (geometry + key),Helsinki region,pyrosm (out-of-core),1.67,528.1,187418.0,ok
 buildings (geometry + key),Helsinki region,quackosm,13.29,1043.8,187452.0,ok
 buildings (geometry + key),New York City,pyrosm (out-of-core),3.52,1869.4,1602538.0,ok
 buildings (geometry + key),New York City,quackosm,21.4,3374.1,1602652.0,ok
