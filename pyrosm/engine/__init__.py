@@ -11,8 +11,8 @@ The public ``get_*`` readers re-exported here mirror the in-memory reader's outp
 column-for-column.
 
 The engine reads on a single core by default. Pass ``workers="auto"`` to choose the count
-automatically (a single core for files below about 70 MB; for larger files the CPU cores
-less two, at most one per data blob), or ``workers=N`` for an explicit count (reduced to
+automatically (a single core for files below about 20 MB; for larger files the CPU cores
+less two, at most 4 below about 70 MB and at most one per data blob), or ``workers=N`` for an explicit count (reduced to
 the CPU-core count, with a warning, if it exceeds it). The workers are threads, so a
 parallel read needs no ``if __name__ == "__main__":`` guard. With
 ``PYROSM_DECODE_BACKEND=processes`` (deprecated: it warns, and it will be removed in a

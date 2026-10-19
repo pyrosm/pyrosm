@@ -26,8 +26,11 @@ from pyrosm.utils.progress import reporting
 
 logger = logging.getLogger(__name__)
 
-# ``workers="auto"`` decodes in parallel only for files at or above this size.
-_PARALLEL_MIN_FILE_BYTES = 70_000_000  # ~70 MB
+# ``workers="auto"`` decodes in parallel only for files at or above this size, on at most
+# ``_AUTO_FEW_WORKERS`` threads below ``_AUTO_ALL_CORES_BYTES``.
+_PARALLEL_MIN_FILE_BYTES = 20_000_000  # ~20 MB
+_AUTO_ALL_CORES_BYTES = 70_000_000  # ~70 MB
+_AUTO_FEW_WORKERS = 4
 # ``workers="auto"`` leaves this many CPU cores free, and uses at most ``_AUTO_MAX_WORKERS``
 # worker processes.
 _AUTO_SPARE_CORES = 2
@@ -93,18 +96,21 @@ def thread_map(function, items, window=None):
 
 def auto_is_parallel(nbytes):
     """Whether ``workers="auto"`` decodes ``nbytes`` bytes of source data in parallel: from
-    about 70 MB up."""
+    about 20 MB up."""
     return nbytes >= _PARALLEL_MIN_FILE_BYTES
 
 
 def auto_worker_count(nbytes, n_blobs):
     """Worker count for ``workers="auto"`` on ``nbytes`` bytes of source data in ``n_blobs``
-    data blobs: a single core below ~70 MB, otherwise the CPU cores less two, at least 1, at
-    most 8 worker processes (threads are not capped) and at most the number of data blobs.
+    data blobs: a single core below ~20 MB, otherwise the CPU cores less two, at most 4 below
+    ~70 MB, at least 1, at most 8 worker processes (threads are not capped from ~70 MB) and
+    at most the number of data blobs.
     """
     if not auto_is_parallel(nbytes):
         return 1
     n_cores = (os.cpu_count() or 1) - _AUTO_SPARE_CORES
+    if nbytes < _AUTO_ALL_CORES_BYTES:
+        n_cores = min(n_cores, _AUTO_FEW_WORKERS)
     if _decode_backend() == "processes":
         n_cores = min(n_cores, _AUTO_MAX_WORKERS)
     return max(1, min(n_cores, n_blobs))

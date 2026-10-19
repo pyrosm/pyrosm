@@ -3022,6 +3022,8 @@ def test_osm_workers_reach_the_reader_without_a_warning(
     "size, cores, blobs, backend, expected",
     [
         ("small", 10, 10_000, "threads", 1),
+        ("medium", 10, 10_000, "threads", 4),
+        ("medium", 4, 10_000, "threads", 2),
         ("big", 10, 10_000, "threads", 8),
         ("big", 16, 10_000, "processes", 8),
         ("big", 16, 10_000, "threads", 14),
@@ -3032,15 +3034,20 @@ def test_osm_workers_reach_the_reader_without_a_warning(
 )
 def test_auto_workers(tmp_path, monkeypatch, size, cores, blobs, backend, expected):
     # "auto" reads small files on a single core; above the size threshold it uses the CPU
-    # cores less two, at least 1, at most 8 worker processes and at most the data-blob count.
+    # cores less two, at most 4 for medium files, at least 1, at most 8 worker processes and
+    # at most the data-blob count.
     import os
 
     monkeypatch.setattr(pool.os, "cpu_count", lambda: cores)
     monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
     fp = tmp_path / "file.osm.pbf"
     fp.touch()
-    offset = -1 if size == "small" else 1
-    os.truncate(fp, pool._PARALLEL_MIN_FILE_BYTES + offset)
+    sizes = {
+        "small": pool._PARALLEL_MIN_FILE_BYTES - 1,
+        "medium": pool._PARALLEL_MIN_FILE_BYTES,
+        "big": pool._AUTO_ALL_CORES_BYTES,
+    }
+    os.truncate(fp, sizes[size])
     assert pool._auto_workers(str(fp), blobs) == expected
 
 
