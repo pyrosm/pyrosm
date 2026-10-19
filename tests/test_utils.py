@@ -64,12 +64,8 @@ def test_timestamp_older_than_OSM_history():
 
     # Test that older time than OSM history cannot be passed
     t = "2000-01-01 12:00"
-    try:
-        unix_time = get_unix_time(t, osh_file=True)
-    except ValueError:
-        pass
-    except Exception as e:
-        raise e
+    with pytest.raises(ValueError, match="first changeset"):
+        get_unix_time(t, osh_file=True)
 
 
 def test_API_with_timestamp(helsinki_history_pbf):
