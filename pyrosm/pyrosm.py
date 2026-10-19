@@ -1709,10 +1709,12 @@ class OSM:
             that keeps the full geometry. A chain is not merged across a change of
             ``maxspeed`` or ``highway``, so each edge keeps one speed limit and one road
             class. Edge ``length`` (and, for pandana and pandarm graphs, the
-            ``pandana_weights``) is summed along the chain and the merged geometry runs
-            from ``u`` to ``v``; any other additive column, such as a travel time, is
-            summed only when listed in ``simplify_kwargs["length_cols"]``, so compute it
-            after the export or list it there. See
+            ``pandana_weights``) is summed along the chain, and so is a ``travel_time``
+            column, as in OSMnx; the merged geometry runs from ``u`` to ``v``. Any other
+            column that differs along the chain becomes a list, unless
+            ``simplify_kwargs["edge_attr_aggs"]`` aggregates it (e.g.
+            ``{"travel_time_s": sum}``, as OSMnx's ``edge_attr_aggs``) or
+            ``simplify_kwargs["length_cols"]`` lists it to be summed. See
             ``pyrosm.graph_simplify.simplify_graph`` for details. If False, every segment
             of every way is its own edge.
 
@@ -1721,7 +1723,7 @@ class OSM:
             when ``simplify=True``, e.g. ``edge_attrs_differ`` (the columns whose change
             stops a merge; ``None`` merges across every change, as OSMnx does by
             default), ``node_attrs_include`` (keep the listed nodes as endpoints),
-            ``remove_rings``, ``track_merged`` or ``length_cols``.
+            ``remove_rings``, ``track_merged``, ``length_cols`` or ``edge_attr_aggs``.
         """
         graph_type = validate_graph_type(graph_type)
 

@@ -201,6 +201,49 @@ def test_attribute_merge_mixed_vs_uniform():
     assert pd.isna(row["name"])
 
 
+@pytest.mark.parametrize(
+    "edge_attr_aggs, expected",
+    [
+        (None, {"travel_time": 60.0, "cost": [1.0, 2.0, 3.0]}),
+        ({"cost": sum}, {"cost": 6.0, "travel_time": [10.0, 20.0, 30.0]}),
+        ({"speed": max, "travel_time": sum}, {"speed": 50, "travel_time": 60.0}),
+        ({"stops": sum, "length": sum}, {"stops": 6, "travel_time": [10.0, 20.0, 30.0]}),
+    ],
+)
+def test_edge_attr_aggs_aggregate_merged_columns(edge_attr_aggs, expected):
+    """``edge_attr_aggs`` aggregates a column along a merged chain, as in OSMnx: the
+    function gets the list of the segments' values. By default ``travel_time`` is summed;
+    ``length`` is always summed (``length_cols``)."""
+    from pyrosm.graph_simplify import simplify_graph
+
+    nodes = GeoDataFrame(
+        {"id": [1, 2, 3, 4], "geometry": [Point(i, 0) for i in range(4)]},
+        crs="epsg:4326",
+    )
+    edges = GeoDataFrame(
+        {
+            "u": [1, 2, 3],
+            "v": [2, 3, 4],
+            "length": [1.0, 1.0, 1.0],
+            "travel_time": [10.0, 20.0, 30.0],
+            "cost": [1.0, 2.0, 3.0],
+            "speed": [30, 50, 40],
+            "stops": [1, 2, 3],
+            "geometry": [LineString([(i, 0), (i + 1, 0)]) for i in range(3)],
+        },
+        crs="epsg:4326",
+    )
+    _, se = simplify_graph(nodes, edges, edge_attrs_differ=None, edge_attr_aggs=edge_attr_aggs)
+    row = se.iloc[0]
+    assert row["length"] == pytest.approx(3.0)
+    for col, value in expected.items():
+        assert row[col] == value, col
+        assert isinstance(row[col], float) == isinstance(value, float), col
+    for bad in (["cost"], {"length": max}, {"u": sum}):
+        with pytest.raises(ValueError, match="edge_attr_aggs"):
+            simplify_graph(nodes, edges, edge_attr_aggs=bad)
+
+
 def test_parallel_edges_stay_separate():
     """Two distinct parallel edges between the same endpoints must not be merged."""
     from pyrosm.graph_simplify import simplify_graph

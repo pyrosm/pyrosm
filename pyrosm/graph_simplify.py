@@ -316,6 +316,7 @@ def simplify_graph(
     node_attrs_include=None,
     remove_rings=True,
     track_merged=False,
+    edge_attr_aggs=None,
 ):
     """Topologically simplify pyrosm's *directed* graph-export edges.
 
@@ -329,6 +330,13 @@ def simplify_graph(
     ``edge_attrs_differ``; a missing value next to a set one counts as a change), so each
     simplified edge has one speed limit and one road class; ``edge_attrs_differ=None``
     merges across them as OSMnx does by default.
+
+    A simplified edge sums the ``length_cols`` of its segments. Other columns keep one
+    value when it is the same along the chain, else become a list of the segments' values;
+    ``edge_attr_aggs`` aggregates a column instead, as in OSMnx: a dict of column ->
+    function, called with the list of the segments' values (e.g. ``{"travel_time_s": sum,
+    "maxspeed_kmh": max}``). By default (``None``) ``travel_time`` is summed, as OSMnx
+    does.
 
     Where two or more edges run between the same two consecutive nodes of a chain
     (typically duplicate OSM ways drawn over one street), only the first is kept, as in
@@ -385,7 +393,41 @@ def simplify_graph(
         node_attrs_include=node_attrs_include,
         remove_rings=remove_rings,
         track_merged=track_merged,
+        edge_attr_aggs=edge_attr_aggs,
     )
+
+
+def _edge_aggregations(edge_attr_aggs, length_cols, structural):
+    """The aggregation function of each column ``edge_attr_aggs`` names (a dict of column
+    -> function, as in OSMnx), other than the ``length_cols``, which are always summed;
+    ``None`` sums ``travel_time``, as OSMnx does. Raises ``ValueError`` for anything but
+    such a dict, for one of the ``structural`` columns (the endpoints, the geometry and
+    ``merged_edges``, which the simplification sets), or for a function other than ``sum`` on one of the
+    ``length_cols``."""
+    if edge_attr_aggs is None:
+        edge_attr_aggs = {"travel_time": sum}
+    if not isinstance(edge_attr_aggs, dict) or not all(
+        callable(func) for func in edge_attr_aggs.values()
+    ):
+        raise ValueError(
+            "'edge_attr_aggs' should be a dict of column -> aggregation function, "
+            f"e.g. {{'travel_time': sum}}. Got {edge_attr_aggs!r}."
+        )
+    fixed = [c for c in structural if c in edge_attr_aggs]
+    if fixed:
+        raise ValueError(
+            f"{fixed} are set by the simplification, so 'edge_attr_aggs' cannot "
+            "aggregate them."
+        )
+    clash = [
+        c for c in length_cols if c in edge_attr_aggs and edge_attr_aggs[c] is not sum
+    ]
+    if clash:
+        raise ValueError(
+            f"{clash} are always summed along a merged edge ('length_cols'), so "
+            "'edge_attr_aggs' can only give them sum."
+        )
+    return {c: func for c, func in edge_attr_aggs.items() if c not in length_cols}
 
 
 class _TableEdges:
@@ -587,6 +629,7 @@ def _simplify_rows(
     node_attrs_include=None,
     remove_rings=True,
     track_merged=False,
+    edge_attr_aggs=None,
 ):
     """:func:`simplify_graph` of the directed edges ``rows``/``swapped`` of the edges that
     ``edges`` reads (a :class:`_TableEdges` or :class:`_WayEdges`), with the nodes that
@@ -596,6 +639,10 @@ def _simplify_rows(
     :func:`pyrosm.graph_export.directed_rows` gives them. Every column is read through the
     row numbers, so the directed edges are never copied into a table; only the simplified
     edges are."""
+    structural = (from_id_col, to_id_col, edges.geometry_name)
+    if track_merged:
+        structural += ("merged_edges",)
+    aggregations = _edge_aggregations(edge_attr_aggs, tuple(length_cols), structural)
     m = len(rows)
     if m == 0:
         return nodes.table(), edges.rows(rows)
@@ -705,6 +752,19 @@ def _simplify_rows(
         if col in edges.columns:
             vals = edges.floats(col)[seg_rows]
             out[col] = np.bincount(seg_chain, weights=vals, minlength=n_chains)
+    # Aggregated columns: a float column summed by bincount, any other by calling the
+    # function with each chain's list of values.
+    for col, func in aggregations.items():
+        if col not in edges.columns:
+            continue
+        values = np.asarray(edges.take(col, seg_rows))
+        if func is sum and values.dtype.kind == "f":
+            out[col] = np.bincount(seg_chain, weights=values, minlength=n_chains)
+        else:
+            per_chain = np.split(values, chain_ptr[1:-1])
+            out[col] = pd.Series(
+                [func(chunk.tolist()) for chunk in per_chain], index=out.index
+            )
 
     # Other columns: scalar if uniform within a chain, else a list (object dtype).
     # A chain is "mixed" iff two adjacent consumed segments of it disagree on the column:
@@ -713,7 +773,9 @@ def _simplify_rows(
     merge_cols = [
         c
         for c in edges.columns
-        if c not in (from_id_col, to_id_col, geom_col) + tuple(length_cols)
+        if c not in (from_id_col, to_id_col, geom_col)
+        and c not in length_cols
+        and c not in aggregations
     ]
     inner = seg_chain[1:] == seg_chain[:-1]
     for col in merge_cols:
