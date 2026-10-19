@@ -3160,3 +3160,7 @@ def test_custom_filter_narrows_the_layer_readers(engine):
     with_amenity = sample.get_buildings(custom_filter={"amenity": True})
     assert len(with_amenity) == 26
     assert with_amenity["building"].notna().all()
+
+    # an empty filter keeps the whole layer
+    assert len(region.get_boundaries(custom_filter={})) == 248
+    assert len(sample.get_buildings(custom_filter={})) == len(sample.get_buildings())
