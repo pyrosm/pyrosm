@@ -244,6 +244,45 @@ def test_edge_attr_aggs_aggregate_merged_columns(edge_attr_aggs, expected):
             simplify_graph(nodes, edges, edge_attr_aggs=bad)
 
 
+def test_numeric_column_made_into_lists_warns():
+    """A numeric column that differs along a merged edge and is not aggregated becomes a
+    list, with a warning naming it and ``edge_attr_aggs``; pyrosm's id and metadata
+    columns and aggregated columns do not warn."""
+    import warnings
+
+    from pyrosm.graph_simplify import simplify_graph
+
+    nodes = GeoDataFrame(
+        {"id": [1, 2, 3, 4], "geometry": [Point(i, 0) for i in range(4)]},
+        crs="epsg:4326",
+    )
+    edges = GeoDataFrame(
+        {
+            "u": [1, 2, 3],
+            "v": [2, 3, 4],
+            "length": [1.0, 1.0, 1.0],
+            "cost": [1.0, 2.0, 3.0],
+            "toll": pd.array([pd.NA, 2, 3], dtype="Int64"),
+            "id": [10, 11, 12],
+            "osmid": [10, 11, 12],
+            "timestamp": [100, 200, 300],
+            "geometry": [LineString([(i, 0), (i + 1, 0)]) for i in range(3)],
+        },
+        crs="epsg:4326",
+    )
+    with pytest.warns(UserWarning, match=r"'cost' in 1 of 1 edges, 'toll' in 1 of 1.*'cost'"):
+        _, se = simplify_graph(nodes, edges, edge_attrs_differ=None)
+    assert se.iloc[0]["cost"] == [1.0, 2.0, 3.0]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        simplify_graph(
+            nodes,
+            edges,
+            edge_attrs_differ=None,
+            edge_attr_aggs={"cost": sum, "toll": max},
+        )
+
+
 def test_parallel_edges_stay_separate():
     """Two distinct parallel edges between the same endpoints must not be merged."""
     from pyrosm.graph_simplify import simplify_graph

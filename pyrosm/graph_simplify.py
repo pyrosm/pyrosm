@@ -20,6 +20,8 @@ described in:
     https://doi.org/10.1111/tgis.70037
 """
 
+import warnings
+
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -394,6 +396,37 @@ def simplify_graph(
         remove_rings=remove_rings,
         track_merged=track_merged,
         edge_attr_aggs=edge_attr_aggs,
+    )
+
+
+# Numeric columns of pyrosm's network readers whose values are expected to become lists
+# along a merged edge, as in OSMnx: the OSM ids (``osmid`` in OSMnx-compatible edges) and
+# the metadata.
+_READER_NUMERIC_COLUMNS = ("id", "osmid", "timestamp", "version", "changeset", "uid")
+
+
+def _is_numeric_column(edges, col):
+    """Whether the column ``col`` of ``edges`` holds numbers (not booleans), by its dtype."""
+    dtype = edges.take(col, np.arange(0)).dtype
+    return pd.api.types.is_numeric_dtype(dtype) and not pd.api.types.is_bool_dtype(
+        dtype
+    )
+
+
+def _warn_listed_numbers(listed, n_chains):
+    """Warn that the numeric columns of ``listed`` (``(column, number of edges)`` pairs)
+    became lists along merged edges, and how to aggregate them instead."""
+    from pyrosm.utils import _stacklevel_outside_pyrosm
+
+    where = ", ".join("%r in %d of %d edges" % (c, n, n_chains) for c, n in listed)
+    example = "{%s}" % ", ".join("%r: sum" % c for c, _ in listed)
+    warnings.warn(
+        "Simplifying the graph made lists of the numeric values that differ along a "
+        "merged edge: %s. To aggregate them, give edge_attr_aggs=%s (or another "
+        "function; in to_graph through simplify_kwargs), or do not simplify, to keep "
+        "every segment." % (where, example),
+        UserWarning,
+        stacklevel=_stacklevel_outside_pyrosm(),
     )
 
 
@@ -778,11 +811,14 @@ def _simplify_rows(
         and c not in aggregations
     ]
     inner = seg_chain[1:] == seg_chain[:-1]
+    listed = []
     for col in merge_cols:
         differ = _differs_from_next(edges, col, seg_rows, inner)
         if not differ.any():
             continue
         mixed_ids = np.unique(seg_chain[1:][differ])
+        if col not in _READER_NUMERIC_COLUMNS and _is_numeric_column(edges, col):
+            listed.append((col, len(mixed_ids)))
         starts = chain_ptr[mixed_ids]
         sizes = chain_ptr[mixed_ids + 1] - starts
         # The positions of the mixed chains' segments, chain after chain.
@@ -795,6 +831,8 @@ def _simplify_rows(
             colvals[k] = values[at : at + size].tolist()
             at += size
         out[col] = pd.Series(colvals, index=out.index, dtype=object)
+    if listed:
+        _warn_listed_numbers(listed, n_chains)
 
     if track_merged:
         merged_pairs = []
