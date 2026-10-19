@@ -68,22 +68,22 @@ def validate_custom_filter(custom_filter):
     return custom_filter
 
 
-def ensure_filter_key(custom_filter, key):
-    """Add a default feature key to a filter as an OR term, regardless of its form.
+def require_layer_key(custom_filter, key, values=True):
+    """``custom_filter`` narrowed to one layer: every OR-group of the filter without a
+    positive condition on ``key`` also requires ``key`` to exist (``values=True``) or to have
+    one of ``values``, so each element kept belongs to the layer; a group with one keeps its
+    own values of ``key``. A dict that tests only ``key`` is returned as it is; another dict
+    becomes a ``CompiledFilter`` (see :meth:`CompiledFilter.and_require`). Never mutates the
+    input."""
+    from pyrosm.filter_compiler import CompiledFilter, _dict_to_groups
 
-    Mirrors the dict injection feature modules do (``custom_filter[key] = [True]``), but
-    also handles an advanced (compiled) filter via :meth:`CompiledFilter.or_require`. Never
-    mutates the input: a copy is returned only when the key has to be added.
-    """
-    from pyrosm.filter_compiler import CompiledFilter
-
-    if isinstance(custom_filter, CompiledFilter):
-        return custom_filter.or_require(key)
-    if key in custom_filter:
-        return custom_filter
-    updated = dict(custom_filter)
-    updated[key] = [True]
-    return updated
+    if isinstance(custom_filter, dict):
+        if not custom_filter:
+            return {key: [True] if values is True else list(values)}
+        if all(k == key for k in custom_filter):
+            return custom_filter
+        custom_filter = CompiledFilter(_dict_to_groups(custom_filter))
+    return custom_filter.and_require(key, values)
 
 
 def validate_osm_keys(osm_keys):

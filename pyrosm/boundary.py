@@ -1,6 +1,6 @@
 from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
-from pyrosm.utils import validate_custom_filter, ensure_filter_key, warn_empty_result
+from pyrosm.utils import validate_custom_filter, require_layer_key, warn_empty_result
 
 
 def get_boundary_data(
@@ -16,6 +16,10 @@ def get_boundary_data(
     relation_member_ways=None,
     complete_relations=False,
 ):
+    """The boundaries of ``boundary_type`` (``"all"`` for any) as a GeoDataFrame, read from the
+    in-memory reader's parsed arrays; ``custom_filter`` narrows them (a filter on ``boundary``
+    itself chooses the boundary values in place of ``boundary_type``), and ``name`` keeps the
+    boundaries whose name contains that text. Returns ``None`` when nothing matches."""
     if boundary_type == "all":
         boundary_type = True
     else:
@@ -26,9 +30,9 @@ def get_boundary_data(
         custom_filter = {"boundary": boundary_type}
 
     # Validate / normalize the filter (normalizes True -> [True]; compiles advanced forms),
-    # then ensure the "boundary" key is present (an OR term) so boundaries are always included.
+    # then narrow it to the boundaries of boundary_type.
     custom_filter = validate_custom_filter(custom_filter)
-    custom_filter = ensure_filter_key(custom_filter, "boundary")
+    custom_filter = require_layer_key(custom_filter, "boundary", boundary_type)
 
     # Call signature for fetching buildings
     nodes, ways, relation_ways, relations = get_osm_data(

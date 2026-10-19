@@ -1,6 +1,6 @@
 from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
-from pyrosm.utils import validate_custom_filter, ensure_filter_key, warn_empty_result
+from pyrosm.utils import validate_custom_filter, require_layer_key, warn_empty_result
 
 
 def get_landuse_data(
@@ -15,14 +15,16 @@ def get_landuse_data(
     relation_member_ways=None,
     complete_relations=False,
 ):
+    """The landuse features as a GeoDataFrame, read from the in-memory reader's parsed arrays;
+    ``custom_filter`` narrows them. Returns ``None`` when nothing matches."""
     # If custom_filter has not been defined, initialize with default
     if custom_filter is None:
         custom_filter = {"landuse": [True]}
     else:
-        # Check that the custom filter is in correct format, then ensure the "landuse"
-        # key is present (an OR term) so landuse elements are always included.
+        # Check that the custom filter is in correct format, then narrow it to the
+        # "landuse" layer, so every element kept is one of the landuse elements.
         custom_filter = validate_custom_filter(custom_filter)
-        custom_filter = ensure_filter_key(custom_filter, "landuse")
+        custom_filter = require_layer_key(custom_filter, "landuse")
 
     # Call signature for fetching buildings
     nodes, ways, relation_ways, relations = get_osm_data(

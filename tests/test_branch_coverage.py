@@ -29,18 +29,15 @@ def helsinki_region_pbf():
 
 
 def test_get_natural_custom_filter_without_natural_key(helsinki_pbf):
-    """A custom_filter lacking the 'natural' key gets natural=[True] injected, so
-    the result still contains the full set of natural features (natural.py)."""
+    """A custom_filter lacking the 'natural' key is narrowed to natural features, so the
+    result holds the natural features that match it (natural.py)."""
     osm = OSM(helsinki_pbf, engine="in_memory")
     default = osm.get_natural()
-    via_filter = osm.get_natural(custom_filter={"wetland": ["bog", "marsh"]})
+    via_filter = osm.get_natural(custom_filter={"water": True})
     assert isinstance(via_filter, GeoDataFrame)
-    assert "natural" in via_filter.columns
-    # The injected natural=[True] dominates, so the filtered call returns the
-    # same set of natural features as the default call.
-    assert len(via_filter) == len(default)
-    assert len(via_filter) > 100
-    assert "coastline" in set(via_filter["natural"].dropna())
+    expected = default.loc[default["water"].notna(), "id"]
+    assert sorted(via_filter["id"]) == sorted(expected) and len(expected) == 1
+    assert via_filter["natural"].notna().all()
 
 
 # --- boundary.py --------------------------------------------------------------

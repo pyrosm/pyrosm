@@ -143,14 +143,23 @@ def test_positive_keys_exclude_negative_conditions():
     assert sorted(f.keys()) == ["bicycle", "highway"]
 
 
-def test_or_require_appends_only_when_absent():
-    f = compile_custom_filter('["amenity"="cafe"]')
-    augmented = f.or_require("building")
-    assert "building" in augmented.keys()
-    assert augmented.matches({"building": "yes"})  # OR term
-    assert augmented.matches({"amenity": "cafe"})
-    # no-op when the key is already referenced
-    assert f.or_require("amenity") is f
+def test_and_require_narrows_the_groups_without_the_key():
+    f = compile_custom_filter(['["amenity"="cafe"]', '["building"="retail"]'])
+    narrowed = f.and_require("building")
+    assert narrowed.matches({"amenity": "cafe", "building": "yes"})
+    assert not narrowed.matches({"amenity": "cafe"})  # the cafe group now needs a building
+    assert narrowed.matches({"building": "retail"})  # the group testing building is kept
+    typed = compile_custom_filter('["admin_level"="10"]').and_require(
+        "boundary", ["administrative"]
+    )
+    assert typed.matches({"admin_level": "10", "boundary": "administrative"})
+    assert not typed.matches({"admin_level": "10", "boundary": "public_transport"})
+    # a negative condition on the key does not make an element part of the layer
+    negated = compile_custom_filter('["amenity"="cafe"]["building"!="house"]')
+    narrowed = negated.and_require("building")
+    assert negated.matches({"amenity": "cafe"})
+    assert not narrowed.matches({"amenity": "cafe"})
+    assert narrowed.matches({"amenity": "cafe", "building": "yes"})
 
 
 @pytest.mark.parametrize(
@@ -330,7 +339,7 @@ def test_network_filter_type_matrix(helsinki_pbf):
 
 
 def test_buildings_layer_injection_parity(helsinki_pbf):
-    # the layer key is OR-injected for advanced filters exactly as for dicts: building OR amenity.
+    # an advanced filter is narrowed to the layer exactly as a dict: building AND amenity.
     advanced = OSM(helsinki_pbf, engine="in_memory").get_buildings(custom_filter='["amenity"="restaurant"]')
     plain = OSM(helsinki_pbf, engine="in_memory").get_buildings(custom_filter={"amenity": ["restaurant"]})
     assert ids(advanced) == ids(plain)
@@ -398,7 +407,7 @@ def test_engine_get_network_resolves_default_filter_type(helsinki_pbf):
 
 
 def test_engine_parity_landuse_injection(helsinki_pbf):
-    # advanced filter on a layer that OR-injects its key (landuse): engine matches in-memory.
+    # advanced filter on a layer narrowed by its key (landuse): engine matches in-memory.
     advanced = '["landuse"~"residential|forest"]'
     in_memory = OSM(helsinki_pbf, engine="in_memory").get_landuse(custom_filter=advanced)
     engine = OSM(helsinki_pbf, engine="out_of_core", workers=1).get_landuse(

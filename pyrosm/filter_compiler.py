@@ -122,16 +122,22 @@ class CompiledFilter:
             )
         )
 
-    def or_require(self, key):
-        """Return a filter that also keeps elements carrying ``key`` (an extra OR-group).
-
-        Mirrors how the feature modules inject a default layer key (e.g. ``building``) into a
-        dict filter: the group is appended only when ``key`` is not already referenced.
-        """
-        if key in self.keys():
-            return self
-        extra_group = (Condition(key, "exists"),)
-        return CompiledFilter(self.groups + (extra_group,))
+    def and_require(self, key, values=True):
+        """The filter with every AND-group that has no positive condition on ``key`` (one an
+        element can only meet by carrying ``key``) also requiring it: that ``key`` exists
+        (``values=True``) or has one of ``values`` (a list of strings). A group with such a
+        condition keeps its own conditions on ``key``."""
+        if values is True:
+            required = [Condition(key, "exists")]
+        else:
+            required = [Condition(key, "eq", value) for value in values]
+        groups = []
+        for group in self.groups:
+            if any(c.key == key and c.is_positive for c in group):
+                groups.append(group)
+            else:
+                groups.extend(group + (condition,) for condition in required)
+        return CompiledFilter(tuple(groups))
 
 
 def _read_quoted(text):

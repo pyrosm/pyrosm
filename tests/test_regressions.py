@@ -3140,3 +3140,23 @@ def test_cache_takes_the_bare_name_of_a_downloaded_file(tmp_path, monkeypatch, f
     assert OSM.clear_cache("sample-latest.osm.pbf") == 1
     assert OSM.clear_cache("local.osm.pbf") == 1
     assert OSM.list_cache() == []
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_custom_filter_narrows_the_layer_readers(engine):
+    """A ``custom_filter`` without the layer key keeps only elements of the layer:
+    ``get_boundaries`` the boundaries of ``boundary_type`` that match it, ``get_buildings``
+    the buildings that match it. The layer key was added as an OR term, so the filter widened
+    the result instead (all ``boundary=*`` features plus everything with ``admin_level=10``)."""
+    from pyrosm import OSM, get_data
+
+    region = OSM(get_data("helsinki_region_pbf"), engine=engine, workers=1)
+    level10 = region.get_boundaries(custom_filter={"admin_level": ["10"]})
+    assert len(level10) == 109
+    assert set(level10["boundary"]) == {"administrative"}
+    assert set(level10["admin_level"]) == {"10"}
+
+    sample = OSM(get_data("helsinki_pbf"), engine=engine, workers=1)
+    with_amenity = sample.get_buildings(custom_filter={"amenity": True})
+    assert len(with_amenity) == 26
+    assert with_amenity["building"].notna().all()

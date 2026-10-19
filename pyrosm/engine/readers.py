@@ -229,15 +229,16 @@ def _resolve_tags_as_columns(base_tags, extra_attributes, tags_to_keep):
     return tags_as_columns
 
 
-def _ensure_layer_key(custom_filter, key):
-    """A ``None`` ``custom_filter`` becomes ``{key: [True]}``; otherwise the layer key is
-    ensured present (an OR term) -- mirroring the in-memory ``get_<layer>_data`` default merge.
-    Handles both a plain dict and an advanced (compiled) filter."""
-    from pyrosm.utils import validate_custom_filter, ensure_filter_key
+def _require_layer_key(custom_filter, key):
+    """A ``None`` ``custom_filter`` becomes ``{key: [True]}``; otherwise it is narrowed to
+    the layer of ``key`` (see :func:`pyrosm.utils.require_layer_key`), as the in-memory
+    ``get_<layer>_data`` readers do. Handles both a plain dict and an advanced filter.
+    """
+    from pyrosm.utils import validate_custom_filter, require_layer_key
 
     if custom_filter is None:
         return {key: [True]}
-    return ensure_filter_key(validate_custom_filter(custom_filter), key)
+    return require_layer_key(validate_custom_filter(custom_filter), key)
 
 
 def get_buildings(
@@ -263,7 +264,7 @@ def get_buildings(
 
     return _get_layer(
         filepath,
-        _ensure_layer_key(custom_filter, "building"),
+        _require_layer_key(custom_filter, "building"),
         "keep",
         _resolve_tags_as_columns(Conf.tags.building, extra_attributes, tags_to_keep),
         workers,
@@ -298,7 +299,7 @@ def get_landuse(
 
     return _get_layer(
         filepath,
-        _ensure_layer_key(custom_filter, "landuse"),
+        _require_layer_key(custom_filter, "landuse"),
         "keep",
         _resolve_tags_as_columns(Conf.tags.landuse, extra_attributes, tags_to_keep),
         workers,
@@ -333,7 +334,7 @@ def get_natural(
 
     return _get_layer(
         filepath,
-        _ensure_layer_key(custom_filter, "natural"),
+        _require_layer_key(custom_filter, "natural"),
         "keep",
         _resolve_tags_as_columns(Conf.tags.natural, extra_attributes, tags_to_keep),
         workers,
@@ -415,7 +416,7 @@ def get_boundaries(
     from pyrosm.utils import (
         validate_custom_filter,
         validate_boundary_type,
-        ensure_filter_key,
+        require_layer_key,
     )
 
     boundary_type = validate_boundary_type(boundary_type)
@@ -428,10 +429,10 @@ def get_boundaries(
     value = True if boundary_type == "all" else [boundary_type]
     if custom_filter is None:
         custom_filter = {"boundary": value}
-    # Validate / normalize (normalizes True -> [True]; compiles advanced forms), then ensure
-    # the "boundary" key is present (an OR term) so boundaries are always included.
+    # Validate / normalize (normalizes True -> [True]; compiles advanced forms), then narrow
+    # the filter to the boundaries of boundary_type.
     custom_filter = validate_custom_filter(custom_filter)
-    custom_filter = ensure_filter_key(custom_filter, "boundary")
+    custom_filter = require_layer_key(custom_filter, "boundary", value)
     gdf = _get_layer(
         filepath,
         custom_filter,

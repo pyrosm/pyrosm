@@ -867,7 +867,9 @@ class OSM:
             Name of the administrative area that will be searched for.
 
         custom_filter : dict (optional)
-            Additional filter for what kind of boundary to parse.
+            Additional filter for what kind of boundary to parse: it narrows the boundaries
+            of ``boundary_type``, e.g. ``{"admin_level": ["10"]}``. A filter on ``boundary``
+            itself chooses the boundary values in place of ``boundary_type``.
 
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
