@@ -118,20 +118,24 @@ def driving_filter(include_service_roads=False):
     Filters out un-drivable ways, ways closed to cars (motorcar, motor_vehicle, vehicle
     and access tags, see AccessRule), and service roads. With 'include_service_roads'
     service roads are kept except those providing parking, private or emergency access,
-    following OSMnx's 'drive_service'.
+    following OSMnx's 'drive_service'. Unlike OSMnx, it also filters out busways, ladders
+    and trails, which cars cannot use.
     """
     excluded_highway = _ALWAYS_EXCLUDED_HIGHWAY + [
         "bridleway",
         "bus_guideway",
+        "busway",
         "corridor",
         "cycleway",
         "elevator",
         "escalator",
         "footway",
+        "ladder",
         "path",
         "pedestrian",
         "steps",
         "track",
+        "trail",
     ]
     excluded_service = ["emergency_access", "parking", "parking_aisle", "private"]
 

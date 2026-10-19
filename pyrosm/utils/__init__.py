@@ -68,22 +68,22 @@ def validate_custom_filter(custom_filter):
     return custom_filter
 
 
-def ensure_filter_key(custom_filter, key):
-    """Add a default feature key to a filter as an OR term, regardless of its form.
+def require_layer_key(custom_filter, key, values=True):
+    """``custom_filter`` narrowed to one layer: every OR-group of the filter without a
+    positive condition on ``key`` also requires ``key`` to exist (``values=True``) or to have
+    one of ``values``, so each element kept belongs to the layer; a group with one keeps its
+    own values of ``key``. A dict that tests only ``key`` is returned as it is; another dict
+    becomes a ``CompiledFilter`` (see :meth:`CompiledFilter.and_require`). Never mutates the
+    input."""
+    from pyrosm.filter_compiler import CompiledFilter, _dict_to_groups
 
-    Mirrors the dict injection feature modules do (``custom_filter[key] = [True]``), but
-    also handles an advanced (compiled) filter via :meth:`CompiledFilter.or_require`. Never
-    mutates the input: a copy is returned only when the key has to be added.
-    """
-    from pyrosm.filter_compiler import CompiledFilter
-
-    if isinstance(custom_filter, CompiledFilter):
-        return custom_filter.or_require(key)
-    if key in custom_filter:
-        return custom_filter
-    updated = dict(custom_filter)
-    updated[key] = [True]
-    return updated
+    if isinstance(custom_filter, dict):
+        if not custom_filter:
+            return {key: [True] if values is True else list(values)}
+        if all(k == key for k in custom_filter):
+            return custom_filter
+        custom_filter = CompiledFilter(_dict_to_groups(custom_filter))
+    return custom_filter.and_require(key, values)
 
 
 def validate_osm_keys(osm_keys):
@@ -245,8 +245,8 @@ def warn_future_once(message):
 
 
 _DEFAULT_WORKERS_WARNING = (
-    "In pyrosm 1.0, reads, crops and merges will run in parallel by default. Pass "
-    "workers=1 to keep running them on one core."
+    "In pyrosm 1.0, reads, crops and merges of this much data will run in parallel by "
+    "default. Pass workers=1 to keep running them on one core."
 )
 
 
@@ -257,14 +257,28 @@ def _file_identity(file):
     return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
 
 
-def default_workers(workers):
-    """``workers``, or 1 when it is not given (None). The first time in a process that
-    the default is used, warns that it changes in pyrosm 1.0; a warning turned into an
-    error raises at every such call."""
+def default_workers(workers, sources):
+    """``workers``, or 1 when it is not given (None). The first time in a process that the
+    default is used for ``sources`` (a source file's path, or a list of them) large enough
+    together for ``workers="auto"`` to run in parallel, warns that the default changes in
+    pyrosm 1.0; smaller files stay on one thread with that default too, so they do not
+    warn. A warning turned into an error raises at every such call."""
     if workers is not None:
         return workers
-    warn_future_once(_DEFAULT_WORKERS_WARNING)
+    from pyrosm.engine.pool import auto_is_parallel
+
+    paths = [sources] if isinstance(sources, (str, os.PathLike)) else sources
+    if auto_is_parallel(sum(_file_size(path) for path in paths)):
+        warn_future_once(_DEFAULT_WORKERS_WARNING)
     return 1
+
+
+def _file_size(path):
+    """The size of the file at ``path`` in bytes, 0 when it cannot be read."""
+    try:
+        return os.stat(path).st_size
+    except OSError:
+        return 0
 
 
 def validate_workers(workers):
