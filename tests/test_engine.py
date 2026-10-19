@@ -2995,12 +2995,14 @@ def test_osm_workers_validation(test_pbf):
 def test_osm_workers_reach_the_reader_without_a_warning(
     test_pbf, monkeypatch, workers, passed
 ):
-    """The engine reader gets "auto" when no count is given and a given count or "auto"
-    unchanged, and no read warns about the CPU cores. Worker processes run in this
-    process."""
+    """The engine reader gets "auto" when no count is given (one with the processes
+    backend) and a given count or "auto" unchanged, and no read warns about the CPU
+    cores. Worker processes run in this process."""
     import warnings as _warnings
     import pyrosm.engine.readers as readers_mod
 
+    if workers is None and pool._decode_backend() == "processes":
+        passed = 1
     monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor())
     monkeypatch.setattr(pool, "_available_cores", lambda: 4)
     captured = []
