@@ -136,10 +136,10 @@ class OSM:
         default (`None`) the engine reads on a single core; in pyrosm 1.0 reads run
         in parallel by default, so pass `workers=1` to keep one. Pass
         `workers="auto"` to let pyrosm choose the count automatically -- a single
-        core for files below about 20 MB; for larger files the CPU cores less two, at
-        most 4 below about 70 MB and at most one per data blob -- or `workers=N` for an explicit count (a count above
-        the available CPU cores is
-        reduced to the core count, with a warning). With
+        core for files below about 20 MB; for larger files the CPU cores this process
+        may use less two, at most 4 below about 70 MB and at most one per data blob --
+        or `workers=N` for an explicit count (a count above the cores this process may
+        use is reduced to that count, with a warning). With
         `PYROSM_DECODE_BACKEND=processes` they are worker processes, at most eight
         with `"auto"`, and a parallel read needs the `if __name__ == "__main__":`
         guard on macOS/Windows. Has no effect on the `'in_memory'` engine.
