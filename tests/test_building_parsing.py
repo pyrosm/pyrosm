@@ -240,8 +240,12 @@ def test_passing_custom_filter_without_element_key(test_pbf):
     from geopandas import GeoDataFrame
 
     osm = OSM(filepath=test_pbf)
-    gdf = osm.get_buildings(custom_filter={"start_date": True})
+    default = osm.get_buildings()
+    gdf = osm.get_buildings(custom_filter={"name": True})
     assert isinstance(gdf, GeoDataFrame)
+    # narrowed to the buildings that carry the key
+    expected = default.loc[default["name"].notna(), "id"]
+    assert sorted(gdf["id"]) == sorted(expected) and len(expected) == 4
 
 
 def test_adding_extra_attribute(helsinki_pbf):

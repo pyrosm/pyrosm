@@ -1759,8 +1759,9 @@ def test_network_filters_match_multi_value_tags():
 def test_network_filters_match_osmnx_way_filters():
     """#369 — the values each network type excludes, as OSMnx's way filters exclude
     them. OSMnx writes its exclusions as unanchored regular expressions, so its "motor"
-    stands for the motor/motorway/motorway_link values written out here. The access
-    tags are the exception: they follow OSM's access hierarchy."""
+    stands for the motor/motorway/motorway_link values written out here. The exceptions:
+    the access tags follow OSM's access hierarchy, and driving also excludes busway,
+    ladder and trail."""
     from pyrosm.config.osm_filters import get_osm_filter
 
     lifecycle = {
@@ -1779,15 +1780,18 @@ def test_network_filters_match_osmnx_way_filters():
     drive_highway = lifecycle | {
         "bridleway",
         "bus_guideway",
+        "busway",
         "corridor",
         "cycleway",
         "elevator",
         "escalator",
         "footway",
+        "ladder",
         "path",
         "pedestrian",
         "steps",
         "track",
+        "trail",
     }
     expected = {
         "driving": {
@@ -3111,3 +3115,111 @@ def test_filters_read_the_id_tag_as_id_tag(
         )
         lean = lean.set_index("id")["id_tag"]
         assert lean[100] == "n" and pd.isna(lean[101])
+
+
+def test_cache_takes_the_bare_name_of_a_downloaded_file(tmp_path, monkeypatch, fresh_cache):
+    """``OSM.list_cache`` and ``OSM.clear_cache`` take the bare name of a file in the
+    download directory, as ``OSM.clear_downloads`` does, and still take the bare name of a
+    local file read from the working directory, also after that file is deleted. The name
+    was read only as a path in the working directory, so a downloaded file's name matched no
+    cached layer and nothing was cleared."""
+    import shutil
+
+    import pyrosm.utils.download as dl
+    from pyrosm import OSM, get_data
+
+    downloads = tmp_path / "downloads"
+    work = tmp_path / "work"
+    downloads.mkdir()
+    work.mkdir()
+    monkeypatch.setattr(dl, "download_dir", lambda: downloads)
+    monkeypatch.chdir(work)
+    shutil.copy(get_data("test_pbf"), downloads / "sample-latest.osm.pbf")
+    shutil.copy(get_data("test_pbf"), work / "local.osm.pbf")
+    OSM(str(downloads / "sample-latest.osm.pbf"), engine="out_of_core").get_buildings()
+    OSM("local.osm.pbf", engine="out_of_core").get_buildings()
+    (work / "local.osm.pbf").unlink()
+
+    assert len(OSM.list_cache("sample-latest.osm.pbf")) == 1
+    assert OSM.clear_cache("sample-latest.osm.pbf") == 1
+    assert OSM.clear_cache("local.osm.pbf") == 1
+    assert OSM.list_cache() == []
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_custom_filter_narrows_the_layer_readers(engine):
+    """A ``custom_filter`` without the layer key keeps only elements of the layer:
+    ``get_boundaries`` the boundaries of ``boundary_type`` that match it, ``get_buildings``
+    the buildings that match it. The layer key was added as an OR term, so the filter widened
+    the result instead (all ``boundary=*`` features plus everything with ``admin_level=10``)."""
+    from pyrosm import OSM, get_data
+
+    region = OSM(get_data("helsinki_region_pbf"), engine=engine, workers=1)
+    level10 = region.get_boundaries(custom_filter={"admin_level": ["10"]})
+    assert len(level10) == 109
+    assert set(level10["boundary"]) == {"administrative"}
+    assert set(level10["admin_level"]) == {"10"}
+
+    sample = OSM(get_data("helsinki_pbf"), engine=engine, workers=1)
+    with_amenity = sample.get_buildings(custom_filter={"amenity": True})
+    assert len(with_amenity) == 26
+    assert with_amenity["building"].notna().all()
+
+    # an empty filter keeps the whole layer
+    assert len(region.get_boundaries(custom_filter={})) == 248
+    assert len(sample.get_buildings(custom_filter={})) == len(sample.get_buildings())
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_driving_network_leaves_out_ways_cars_cannot_use(engine):
+    """``get_network("driving")`` leaves out ``highway=trail`` ways, which cars cannot use;
+    the walking network keeps them. The driving filter followed OSMnx's ``drive``, which
+    does not exclude trails: 426 of the 1,926 driving edges of the Helsinki sample were
+    trails."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), engine=engine, workers=1)
+    driving = osm.get_network(network_type="driving")
+    walking = osm.get_network(network_type="walking")
+    assert "trail" not in set(driving["highway"])
+    assert "trail" in set(walking["highway"])
+
+
+@pytest.mark.parametrize("run", ["crop", "merge"])
+def test_crop_and_merge_take_auto_workers(run, tmp_path, monkeypatch):
+    """``workers="auto"`` chooses a worker count for crops and merges as it does for
+    out-of-core reads, and writes the same file as ``workers=1``; an unknown value raises
+    ``ValueError``. ``"auto"`` was compared with ``1`` and raised ``TypeError``."""
+    import os
+
+    import pyrosm.engine.pool as pool
+    import pyrosm.pbf_export as pbf_export
+    from pyrosm import get_data, merge_pbf
+    from pyrosm.pbf_export import crop_pbf
+
+    opened = []
+
+    class RecordingPool(pbf_export._ThreadPool):
+        def __init__(self, workers, initargs):
+            opened.append(workers)
+            super().__init__(workers, initargs)
+
+    monkeypatch.setattr(pbf_export, "_ThreadPool", RecordingPool)
+    monkeypatch.delenv("PYROSM_DECODE_BACKEND", raising=False)
+
+    fp = get_data("helsinki_pbf")
+    box = [24.9375, 60.1631, 24.9466, 60.1691]
+    runs = {
+        "crop": lambda out, **kw: crop_pbf(fp, str(out), box, **kw),
+        "merge": lambda out, **kw: merge_pbf([fp], str(out), box, **kw),
+    }
+    expected = Path(runs[run](tmp_path / "one.osm.pbf", workers=1)).read_bytes()
+    assert Path(runs[run](tmp_path / "auto.osm.pbf", workers="auto")).read_bytes() == expected
+    assert opened == []  # the sample is too small for "auto" to go parallel
+    # As if the file were large, on 4 cores: "auto" takes 2 threads for the 4 data blocks
+    monkeypatch.setattr(pool, "_PARALLEL_MIN_FILE_BYTES", 1)
+    monkeypatch.setattr(os, "cpu_count", lambda: 4)
+    assert Path(runs[run](tmp_path / "par.osm.pbf", workers="auto")).read_bytes() == expected
+    assert opened == [2]
+    with pytest.raises(ValueError, match="'workers' should be"):
+        runs[run](tmp_path / "bad.osm.pbf", workers="many")

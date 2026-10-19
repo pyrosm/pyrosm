@@ -867,7 +867,9 @@ class OSM:
             Name of the administrative area that will be searched for.
 
         custom_filter : dict (optional)
-            Additional filter for what kind of boundary to parse.
+            Additional filter for what kind of boundary to parse: it narrows the boundaries
+            of ``boundary_type``, e.g. ``{"admin_level": ["10"]}``. A filter on ``boundary``
+            itself chooses the boundary values in place of ``boundary_type``.
 
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
@@ -1298,10 +1300,11 @@ class OSM:
             When ``True`` (default) relations referencing a kept node or way are
             written; when ``False`` no relations are written.
 
-        workers : int
+        workers : int | str
             Number of threads for the CPU-heavy per-block work. ``1`` (by default,
             ``None``) runs sequentially; in pyrosm 1.0 the crop runs in parallel by
-            default. ``>1`` produces a byte-identical output. With
+            default. ``"auto"`` chooses the count as an out-of-core read does for a file
+            of this size. ``>1`` produces a byte-identical output. With
             ``PYROSM_DECODE_BACKEND=processes`` they are worker processes; when those
             cannot run (on macOS and Windows: a script without an
             ``if __name__ == "__main__":`` guard, or one read from stdin), the crop runs
@@ -1706,10 +1709,12 @@ class OSM:
             that keeps the full geometry. A chain is not merged across a change of
             ``maxspeed`` or ``highway``, so each edge keeps one speed limit and one road
             class. Edge ``length`` (and, for pandana and pandarm graphs, the
-            ``pandana_weights``) is summed along the chain and the merged geometry runs
-            from ``u`` to ``v``; any other additive column, such as a travel time, is
-            summed only when listed in ``simplify_kwargs["length_cols"]``, so compute it
-            after the export or list it there. See
+            ``pandana_weights``) is summed along the chain, and so is a ``travel_time``
+            column, as in OSMnx; the merged geometry runs from ``u`` to ``v``. Any other
+            column that differs along the chain becomes a list, unless
+            ``simplify_kwargs["edge_attr_aggs"]`` aggregates it (e.g.
+            ``{"travel_time_s": sum}``, as OSMnx's ``edge_attr_aggs``) or
+            ``simplify_kwargs["length_cols"]`` lists it to be summed. See
             ``pyrosm.graph_simplify.simplify_graph`` for details. If False, every segment
             of every way is its own edge.
 
@@ -1718,7 +1723,7 @@ class OSM:
             when ``simplify=True``, e.g. ``edge_attrs_differ`` (the columns whose change
             stops a merge; ``None`` merges across every change, as OSMnx does by
             default), ``node_attrs_include`` (keep the listed nodes as endpoints),
-            ``remove_rings``, ``track_merged`` or ``length_cols``.
+            ``remove_rings``, ``track_merged``, ``length_cols`` or ``edge_attr_aggs``.
         """
         graph_type = validate_graph_type(graph_type)
 
@@ -1792,6 +1797,8 @@ class OSM:
         ----------
 
         filepath : str | os.PathLike (optional)
+            A source PBF's path. A bare file name names both the file of that name in the
+            working directory and the one ``get_data`` downloaded.
             When given, only the cached layers for that source PBF are listed; when ``None``
             (default) every cached file is listed.
 
@@ -1827,6 +1834,8 @@ class OSM:
         ----------
 
         filepath : str | os.PathLike (optional)
+            A source PBF's path. A bare file name names both the file of that name in the
+            working directory and the one ``get_data`` downloaded.
             When given, only the cached layers for that source PBF are removed; when ``None``
             (default) the whole cache is cleared.
 

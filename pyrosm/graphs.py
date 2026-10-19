@@ -277,7 +277,7 @@ def _tables(
     (:func:`directed_rows`), and only the simplified edges become rows of a new table.
     ``simplify_kwargs`` are the optional parameters of :func:`simplify_graph`
     (``edge_attrs_differ``, ``node_attrs_include``, ``remove_rings``, ``track_merged``,
-    ``length_cols``). ``nodes`` and ``edges`` may also be the readers of a network read
+    ``length_cols``, ``edge_attr_aggs``). ``nodes`` and ``edges`` may also be the readers of a network read
     for graph export (see :func:`pyrosm.engine.readers.graph_network`), always
     simplified, with the given ``network_type`` and the default id columns."""
     step("directing the edges")

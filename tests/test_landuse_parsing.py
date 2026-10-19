@@ -74,8 +74,9 @@ def test_passing_custom_filter_without_element_key(test_pbf):
     from geopandas import GeoDataFrame
 
     osm = OSM(filepath=test_pbf)
-    gdf = osm.get_landuse(custom_filter={"leisure": True})
-    assert isinstance(gdf, GeoDataFrame)
+    assert isinstance(osm.get_landuse(), GeoDataFrame)
+    # narrowed to landuse that carries the key; none in this file does
+    assert osm.get_landuse(custom_filter={"leisure": True}) is None
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
