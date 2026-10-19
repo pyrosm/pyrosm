@@ -244,12 +244,6 @@ def warn_future_once(message):
             _future_warnings_shown.add(message)
 
 
-_DEFAULT_WORKERS_WARNING = (
-    "In pyrosm 1.0, reads, crops and merges of this much data will run in parallel by "
-    "default. Pass workers=1 to keep running them on one core."
-)
-
-
 def _file_identity(file):
     """A file's device, inode, size and modification time, to notice it changing:
     ``file`` an open file (of what it opened) or a path."""
@@ -257,28 +251,14 @@ def _file_identity(file):
     return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
 
 
-def default_workers(workers, sources):
-    """``workers``, or 1 when it is not given (None). The first time in a process that the
-    default is used for ``sources`` (a source file's path, or a list of them) large enough
-    together for ``workers="auto"`` to run in parallel, warns that the default changes in
-    pyrosm 1.0; smaller files stay on one thread with that default too, so they do not
-    warn. A warning turned into an error raises at every such call."""
+def default_workers(workers):
+    """``workers``, or when it is not given (None) ``"auto"`` on threads and 1 with the
+    deprecated ``PYROSM_DECODE_BACKEND=processes``."""
     if workers is not None:
         return workers
-    from pyrosm.engine.pool import auto_is_parallel
+    from pyrosm.engine.pool import _decode_backend
 
-    paths = [sources] if isinstance(sources, (str, os.PathLike)) else sources
-    if auto_is_parallel(sum(_file_size(path) for path in paths)):
-        warn_future_once(_DEFAULT_WORKERS_WARNING)
-    return 1
-
-
-def _file_size(path):
-    """The size of the file at ``path`` in bytes, 0 when it cannot be read."""
-    try:
-        return os.stat(path).st_size
-    except OSError:
-        return 0
+    return "auto" if _decode_backend() == "threads" else 1
 
 
 def validate_workers(workers):

@@ -935,14 +935,15 @@ def get_data_by_area(
         is reprojected to lon/lat. The crop still follows ``area``, so parts of
         ``must_cover`` outside it are cropped away.
 
-    workers : int
-        Number of threads that crop (and merge) the downloaded file. ``1`` (by default,
-        ``None``) runs sequentially; in pyrosm 1.0 they run in parallel by default. More
-        workers are used only for a file with at least ``2 * workers`` data blocks, and the
-        written file is the same for every value. With ``crop=False`` and a single extract
-        nothing is cropped, so it has no effect. With ``PYROSM_DECODE_BACKEND=processes``
-        they are worker processes; on macOS and Windows each starts by importing the
-        script, so a script that passes ``workers > 1`` then needs the
+    workers : int | str
+        Number of threads that crop (and merge) the downloaded file. By default (``None``,
+        as ``"auto"``) the count is chosen as an out-of-core read does for the file's size;
+        ``1`` runs sequentially. More workers are used only for a file with at least
+        ``2 * workers`` data blocks, and the written file is the same for every value. With
+        ``crop=False`` and a single extract nothing is cropped, so it has no effect. With
+        ``PYROSM_DECODE_BACKEND=processes`` they are worker processes, one by default; on
+        macOS and Windows each starts by importing the script, so a script that passes
+        ``workers="auto"`` or ``workers > 1`` then needs the
         ``if __name__ == "__main__":`` guard; without it, or for a script read from stdin,
         the work runs in one process with a warning.
 
@@ -966,7 +967,7 @@ def get_data_by_area(
     ValueError
         If the area is empty, or has no width or no height, or ``must_cover`` is empty, or
         ``crop`` is a string other than ``"polygon"``, or ``crop="polygon"`` and the area is
-        not a (Multi)Polygon, or ``workers`` is not an integer of at least 1.
+        not a (Multi)Polygon, or ``workers`` is neither an integer of at least 1 nor ``"auto"``.
     pyrosm.exceptions.ExtractNotFoundError
         If no extract (or set of extracts) contains the whole area, or ``must_cover`` when
         given (a ``ValueError`` subclass).
@@ -982,13 +983,15 @@ def get_data_by_area(
         )
     if isinstance(crop, str) and crop != "polygon":
         raise ValueError('crop must be True, False or "polygon"; got %r.' % (crop,))
-    if workers is not None and (
+    if isinstance(workers, str) and workers.lower() == "auto":
+        workers = "auto"
+    elif workers is not None and (
         isinstance(workers, bool)
         or not isinstance(workers, numbers.Integral)
         or workers < 1
     ):
         raise ValueError(
-            "workers must be an integer of at least 1; got %r." % (workers,)
+            'workers must be an integer of at least 1 or "auto"; got %r.' % (workers,)
         )
     geom = _area_geometry(area)
     if crop == "polygon" and geom.geom_type not in ("Polygon", "MultiPolygon"):

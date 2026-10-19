@@ -2990,14 +2990,14 @@ def test_osm_workers_validation(test_pbf):
 
 
 @pytest.mark.parametrize(
-    "workers, passed", [(None, 1), (1, 1), (2, 2), ("auto", "auto")]
+    "workers, passed", [(None, "auto"), (1, 1), (2, 2), ("auto", "auto")]
 )
 def test_osm_workers_reach_the_reader_without_a_warning(
     test_pbf, monkeypatch, workers, passed
 ):
-    """The engine reader gets workers=1 when no count is given and a given count or
-    "auto" unchanged, and no read warns about the CPU cores. Worker processes run in
-    this process."""
+    """The engine reader gets "auto" when no count is given and a given count or "auto"
+    unchanged, and no read warns about the CPU cores. Worker processes run in this
+    process."""
     import warnings as _warnings
     import pyrosm.engine.readers as readers_mod
 

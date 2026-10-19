@@ -428,7 +428,7 @@ def _decode_and_run(
             data_blobs, header_bytes = _data_blob_spans(_index_blobs(filepath))
             fields["blobs"] = len(data_blobs)
         total = header_bytes + sum(span for _, _, span in data_blobs)
-        workers = default_workers(workers, filepath)
+        workers = default_workers(workers)
         if isinstance(workers, str) and workers.lower() == "auto":
             workers = _auto_workers(filepath, len(data_blobs))
         else:

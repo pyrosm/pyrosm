@@ -3187,9 +3187,9 @@ def test_driving_network_leaves_out_ways_cars_cannot_use(engine):
 
 @pytest.mark.parametrize("run", ["crop", "merge"])
 def test_crop_and_merge_take_auto_workers(run, tmp_path, monkeypatch):
-    """``workers="auto"`` chooses a worker count for crops and merges as it does for
-    out-of-core reads, and writes the same file as ``workers=1``; an unknown value raises
-    ``ValueError``. ``"auto"`` was compared with ``1`` and raised ``TypeError``."""
+    """``workers="auto"``, the default, chooses a worker count for crops and merges as it
+    does for out-of-core reads, and writes the same file as ``workers=1``; an unknown value
+    raises ``ValueError``. ``"auto"`` was compared with ``1`` and raised ``TypeError``."""
     import pyrosm.engine.pool as pool
     import pyrosm.pbf_export as pbf_export
     from pyrosm import get_data, merge_pbf
@@ -3218,7 +3218,8 @@ def test_crop_and_merge_take_auto_workers(run, tmp_path, monkeypatch):
     monkeypatch.setattr(pool, "_PARALLEL_MIN_FILE_BYTES", 1)
     monkeypatch.setattr(pool, "_available_cores", lambda: 4)
     assert Path(runs[run](tmp_path / "par.osm.pbf", workers="auto")).read_bytes() == expected
-    assert opened == [2]
+    assert Path(runs[run](tmp_path / "default.osm.pbf")).read_bytes() == expected
+    assert opened == [2, 2]
     with pytest.raises(ValueError, match="'workers' should be"):
         runs[run](tmp_path / "bad.osm.pbf", workers="many")
 
