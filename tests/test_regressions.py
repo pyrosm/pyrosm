@@ -3165,6 +3165,10 @@ def test_custom_filter_narrows_the_layer_readers(engine):
     assert len(with_amenity) == 26
     assert with_amenity["building"].notna().all()
 
+    # an empty filter keeps the whole layer
+    assert len(region.get_boundaries(custom_filter={})) == 248
+    assert len(sample.get_buildings(custom_filter={})) == len(sample.get_buildings())
+
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
 def test_driving_network_leaves_out_ways_cars_cannot_use(engine):
