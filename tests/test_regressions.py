@@ -3111,3 +3111,32 @@ def test_filters_read_the_id_tag_as_id_tag(
         )
         lean = lean.set_index("id")["id_tag"]
         assert lean[100] == "n" and pd.isna(lean[101])
+
+
+def test_cache_takes_the_bare_name_of_a_downloaded_file(tmp_path, monkeypatch, fresh_cache):
+    """``OSM.list_cache`` and ``OSM.clear_cache`` take the bare name of a file in the
+    download directory, as ``OSM.clear_downloads`` does, and still take the bare name of a
+    local file read from the working directory, also after that file is deleted. The name
+    was read only as a path in the working directory, so a downloaded file's name matched no
+    cached layer and nothing was cleared."""
+    import shutil
+
+    import pyrosm.utils.download as dl
+    from pyrosm import OSM, get_data
+
+    downloads = tmp_path / "downloads"
+    work = tmp_path / "work"
+    downloads.mkdir()
+    work.mkdir()
+    monkeypatch.setattr(dl, "download_dir", lambda: downloads)
+    monkeypatch.chdir(work)
+    shutil.copy(get_data("test_pbf"), downloads / "sample-latest.osm.pbf")
+    shutil.copy(get_data("test_pbf"), work / "local.osm.pbf")
+    OSM(str(downloads / "sample-latest.osm.pbf"), engine="out_of_core").get_buildings()
+    OSM("local.osm.pbf", engine="out_of_core").get_buildings()
+    (work / "local.osm.pbf").unlink()
+
+    assert len(OSM.list_cache("sample-latest.osm.pbf")) == 1
+    assert OSM.clear_cache("sample-latest.osm.pbf") == 1
+    assert OSM.clear_cache("local.osm.pbf") == 1
+    assert OSM.list_cache() == []

@@ -1792,6 +1792,8 @@ class OSM:
         ----------
 
         filepath : str | os.PathLike (optional)
+            A source PBF's path. A bare file name names both the file of that name in the
+            working directory and the one ``get_data`` downloaded.
             When given, only the cached layers for that source PBF are listed; when ``None``
             (default) every cached file is listed.
 
@@ -1827,6 +1829,8 @@ class OSM:
         ----------
 
         filepath : str | os.PathLike (optional)
+            A source PBF's path. A bare file name names both the file of that name in the
+            working directory and the one ``get_data`` downloaded.
             When given, only the cached layers for that source PBF are removed; when ``None``
             (default) the whole cache is cleared.
 

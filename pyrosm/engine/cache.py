@@ -52,6 +52,19 @@ def _source_digest(filepath):
     return hashlib.sha1(str(Path(filepath).resolve()).encode("utf-8")).hexdigest()[:16]
 
 
+def _source_digests(filepath):
+    """The source digests that ``filepath`` names: that of its own path, and for a bare file
+    name also that of the file of that name in ``get_data``'s download directory, which
+    :meth:`pyrosm.OSM.clear_downloads` reads a bare name as."""
+    path = Path(filepath)
+    paths = [path]
+    if path.parent == Path("."):
+        from pyrosm.utils.download import download_dir
+
+        paths.append(download_dir() / path.name)
+    return sorted({_source_digest(p) for p in paths})
+
+
 def result_path(filepath, key_params):
     """Deterministic per-layer result-cache path, keyed on the source file (path + modification
     time + size) and the read's parameters (the filter, tag columns, metadata/bbox/element-kind
@@ -75,27 +88,35 @@ def result_path(filepath, key_params):
 
 def list_files(filepath=None):
     """List the cached layer GeoParquet files. With no ``filepath`` every cached file is listed;
-    with a ``filepath`` only the cached layers for that source PBF. Returns a sorted list of
-    string paths."""
+    with a ``filepath`` only the cached layers for that source PBF, where a bare file name also
+    names the downloaded file of that name (see :func:`_source_digests`). Returns a sorted list
+    of string paths."""
     directory = cache_dir()
     if filepath is None:
-        pattern = "*.parquet"
+        patterns = ["*.parquet"]
     else:
-        pattern = "result_%s_*.parquet" % _source_digest(filepath)
-    return sorted(str(p) for p in directory.glob(pattern) if p.is_file())
+        patterns = ["result_%s_*.parquet" % d for d in _source_digests(filepath)]
+    return sorted(
+        str(p) for pattern in patterns for p in directory.glob(pattern) if p.is_file()
+    )
 
 
 def clear(filepath=None):
     """Remove out-of-core result-cache files. With no ``filepath`` the whole cache directory is
-    emptied; with a ``filepath`` only the cached layers for that source PBF are removed. Returns
-    the number of files removed."""
+    emptied; with a ``filepath`` only the cached layers for that source PBF are removed, where a
+    bare file name also names the downloaded file of that name (see :func:`_source_digests`).
+    Returns the number of files removed."""
     directory = cache_dir()
-    pattern = "*" if filepath is None else "result_%s_*" % _source_digest(filepath)
+    if filepath is None:
+        patterns = ["*"]
+    else:
+        patterns = ["result_%s_*" % d for d in _source_digests(filepath)]
     removed = 0
-    for entry in directory.glob(pattern):
-        if entry.is_file():
-            entry.unlink()
-            removed += 1
+    for pattern in patterns:
+        for entry in directory.glob(pattern):
+            if entry.is_file():
+                entry.unlink()
+                removed += 1
     return removed
 
 
