@@ -3223,3 +3223,41 @@ def test_crop_and_merge_take_auto_workers(run, tmp_path, monkeypatch):
     assert opened == [2]
     with pytest.raises(ValueError, match="'workers' should be"):
         runs[run](tmp_path / "bad.osm.pbf", workers="many")
+
+
+def test_geocode_retries_a_cut_off_reply(monkeypatch):
+    """A geocoding reply cut off part way (``IncompleteRead``) is fetched again, as downloads
+    are. It raised the bare ``http.client.IncompleteRead``."""
+    import http.client
+    import json
+
+    import pyrosm
+
+    payload = json.dumps(
+        [{"display_name": "Somewhere", "boundingbox": ["50.79", "50.81", "-0.15", "-0.13"]}]
+    ).encode()
+    calls = []
+
+    class Reply:
+        def __init__(self, cut):
+            self.cut = cut
+
+        def read(self):
+            if self.cut:
+                raise http.client.IncompleteRead(payload[:10], len(payload) - 10)
+            return payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, context=None):
+        calls.append(request)
+        return Reply(cut=len(calls) == 1)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    area = pyrosm.geocode("Somewhere")
+    assert len(calls) == 2
+    assert area.bounds == pytest.approx((-0.15, 50.79, -0.13, 50.81))

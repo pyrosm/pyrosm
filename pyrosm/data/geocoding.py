@@ -20,12 +20,11 @@ import logging
 import os
 import re
 import urllib.parse
-from urllib.error import URLError
 
 from shapely.geometry import box, shape
 
 from pyrosm._log import log_event
-from pyrosm.utils.download import open_url
+from pyrosm.utils.download import _FETCH_ERRORS, _retry, open_url
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +76,14 @@ def geocode(query, polygon=True, base_url=_NOMINATIM_URL, user_agent=None):
     )
     url = "%s/search?%s" % (base_url.rstrip("/"), params)
     headers = {"User-Agent": user_agent} if user_agent else None
-    try:
+
+    def fetch():
         with open_url(url, headers=headers) as response:
-            results = json.loads(response.read())
-    except URLError as e:
+            return response.read()
+
+    try:
+        results = json.loads(_retry(fetch))
+    except _FETCH_ERRORS as e:
         raise ValueError(
             "Could not reach the geocoding service at %s: %s" % (base_url, e)
         )
