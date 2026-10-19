@@ -1,7 +1,7 @@
 Changelog
 =========
 
-v0.23.0 (Oct 19, 2026)
+v0.23.0 (Oct 18, 2026)
 ----------------------
 
 This release runs out-of-core reads, crops and merges on threads instead of worker processes, so parallel reads need no ``if __name__ == "__main__":`` guard, and builds their results in C on those threads: on Finland (737 MB), ``get_network("driving")`` takes 4.1 s on 8 threads, against 19.8 s in one process with 0.22.0. The worker-process backend (``PYROSM_DECODE_BACKEND=processes``) is deprecated. Several fixes change results: a missing ``visible`` flag reads as ``True`` (every node and way of a file that is not a history file had ``visible=False``) and relations have a ``visible`` value; closed ways are lines or polygons by all their tags, also those that are not columns; a node's or relation's tag keyed ``id`` comes out as ``id_tag`` instead of replacing its id; and filters read that tag as ``id_tag`` in every reader, while the filter key ``id`` raises a ``ValueError``. Out-of-core results cached by earlier versions are read again.
