@@ -184,17 +184,21 @@ cpdef _create_nxgraph(nodes,
 
     return graph
 
-cdef _build_routing_network(Network, nodes, edges, from_id_col, to_id_col, weight_cols):
+cdef _build_routing_network(Network, nodes, edges, from_id_col, to_id_col, weight_cols,
+                            crs=None):
     """
-    Builds a pandana/pandarm Network from directed edges and nodes.
+    Builds a pandana/pandarm Network from directed edges and nodes, passing ``crs`` (the
+    CRS of the node coordinates, which only pandarm takes) when it is given.
     NOTE: Assumes that the input edges GeoDataFrame is directed.
     """
+    options = {} if crs is None else {"crs": crs}
     return Network(node_x=nodes["x"],
                    node_y=nodes["y"],
                    edge_from=edges[from_id_col],
                    edge_to=edges[to_id_col],
                    edge_weights=edges[weight_cols],
-                   twoway=False)
+                   twoway=False,
+                   **options)
 
 
 cpdef _create_pdgraph(nodes,
@@ -224,7 +228,8 @@ cpdef _create_pandarm_graph(nodes,
         raise ImportError("'pandarm' needs to be installed "
                           "in order to export the network for it.")
     from pandarm import Network
-    return _build_routing_network(Network, nodes, edges, from_id_col, to_id_col, weight_cols)
+    return _build_routing_network(Network, nodes, edges, from_id_col, to_id_col, weight_cols,
+                                  crs=getattr(nodes, "crs", None))
 
 
 cdef _oneway_masks(edges, direction, direction_suffix):
