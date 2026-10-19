@@ -72,17 +72,16 @@ def _get_layer(
 
     Returns an in-memory GeoDataFrame, or -- when ``output`` is a path -- streams the layer
     to a chunked GeoParquet there and returns the path (needs the optional ``pyarrow``).
-    ``workers`` defaults to a single core; pass ``workers=N`` for N threads or
-    ``workers="auto"`` to choose automatically by file size (with
-    ``PYROSM_DECODE_BACKEND=processes`` they are processes, and on macOS/Windows a parallel
-    read must then run under an ``if __name__ == "__main__":`` guard) -- see the package
-    docstring. ``progress`` (``None``, ``True``,
-    ``False`` or a callable) shows the read as for ``OSM(..., progress=...)``; a cached read has nothing
-    to show. ``keep_node_info`` keeps each way's ``nodes`` column (a list of node ids), as
+    ``workers`` defaults to ``"auto"``, a thread count chosen by file size; pass
+    ``workers=N`` for N threads (with ``PYROSM_DECODE_BACKEND=processes`` they are
+    processes, one by default, and on macOS/Windows a parallel read must then run under an
+    ``if __name__ == "__main__":`` guard) -- see the package docstring. ``progress``
+    (``None``, ``True``, ``False`` or a callable) shows the read as for
+    ``OSM(..., progress=...)``; a cached read has nothing to show. ``keep_node_info`` keeps each way's ``nodes`` column (a list of node ids), as
     ``OSM(..., keep_node_info=True)`` does.
     """
     validate_progress(progress)
-    workers = default_workers(workers, filepath)
+    workers = default_workers(workers)
     if output is not None:
         _compat.require_pyarrow()
     if custom_filter is None:
@@ -649,7 +648,7 @@ def get_network(
     from pyrosm.graphs import record_network_type
 
     validate_progress(progress)
-    workers = default_workers(workers, filepath)
+    workers = default_workers(workers)
     tags_as_columns, filter_spec = _network_spec(
         network_type, extra_attributes, custom_filter, filter_type, tags_to_keep
     )
@@ -814,7 +813,7 @@ def graph_network(
     :func:`~pyrosm.engine.assemble._assemble_graph_network`), or ``(None, None)`` when no
     edge is read. The parameters are those of :func:`get_network`; nothing is cached."""
     validate_progress(progress)
-    workers = default_workers(workers, filepath)
+    workers = default_workers(workers)
     tags_as_columns, filter_spec = _network_spec(
         network_type, extra_attributes, custom_filter, filter_type, tags_to_keep
     )

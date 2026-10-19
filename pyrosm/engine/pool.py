@@ -94,6 +94,18 @@ def thread_map(function, items, window=None):
         yield from _ordered_map(pool, function, items, window or 2 * threads)
 
 
+def _available_cores():
+    """The CPU cores this process may run on: ``os.process_cpu_count()`` on Python 3.13+,
+    else the cores of its CPU affinity where the platform reports one (Linux), else
+    ``os.cpu_count()``; at least 1. A job or container limited to some of a machine's cores
+    (a Slurm job, ``taskset``, ``docker --cpuset-cpus``) counts only those."""
+    if hasattr(os, "process_cpu_count"):
+        return os.process_cpu_count() or 1
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0)) or 1
+    return os.cpu_count() or 1
+
+
 def auto_is_parallel(nbytes):
     """Whether ``workers="auto"`` decodes ``nbytes`` bytes of source data in parallel: from
     about 20 MB up."""
@@ -102,13 +114,14 @@ def auto_is_parallel(nbytes):
 
 def auto_worker_count(nbytes, n_blobs):
     """Worker count for ``workers="auto"`` on ``nbytes`` bytes of source data in ``n_blobs``
-    data blobs: a single core below ~20 MB, otherwise the CPU cores less two, at most 4 below
-    ~70 MB, at least 1, at most 8 worker processes (threads are not capped from ~70 MB) and
-    at most the number of data blobs.
+    data blobs: a single core below ~20 MB, otherwise the CPU cores this process may use
+    (:func:`_available_cores`) less two, at most 4 below ~70 MB, at least 1, at most 8
+    worker processes (threads are not capped from ~70 MB) and at most the number of data
+    blobs.
     """
     if not auto_is_parallel(nbytes):
         return 1
-    n_cores = (os.cpu_count() or 1) - _AUTO_SPARE_CORES
+    n_cores = _available_cores() - _AUTO_SPARE_CORES
     if nbytes < _AUTO_ALL_CORES_BYTES:
         n_cores = min(n_cores, _AUTO_FEW_WORKERS)
     if _decode_backend() == "processes":
@@ -123,13 +136,13 @@ def _auto_workers(filepath, n_blobs):
 
 
 def _cap_workers(workers):
-    """Cap an explicit worker count at the host's CPU-core count, warning when it exceeds
-    them."""
-    n_cores = os.cpu_count() or 1
+    """Cap an explicit worker count at the CPU cores this process may use
+    (:func:`_available_cores`), warning when it exceeds them."""
+    n_cores = _available_cores()
     if workers > n_cores:
         warnings.warn(
-            f"workers={workers} exceeds the {n_cores} CPU cores available on this "
-            f"machine; reading with {n_cores} workers instead.",
+            f"workers={workers} exceeds the {n_cores} CPU cores available to this "
+            f"process; reading with {n_cores} workers instead.",
             UserWarning,
             stacklevel=2,
         )
@@ -415,7 +428,7 @@ def _decode_and_run(
             data_blobs, header_bytes = _data_blob_spans(_index_blobs(filepath))
             fields["blobs"] = len(data_blobs)
         total = header_bytes + sum(span for _, _, span in data_blobs)
-        workers = default_workers(workers, filepath)
+        workers = default_workers(workers)
         if isinstance(workers, str) and workers.lower() == "auto":
             workers = _auto_workers(filepath, len(data_blobs))
         else:

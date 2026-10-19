@@ -286,7 +286,7 @@ def test_engine_parallel_decode_matches_serial(read, helsinki_pbf, monkeypatch):
     from pyrosm.utils import _compat
 
     monkeypatch.setattr(_compat, "HAS_PYARROW", False)
-    monkeypatch.setattr(pool.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(pool, "_available_cores", lambda: 8)
     monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor())
 
     fn = {"buildings": get_buildings, "pois": get_pois, "network": get_network}[read]
@@ -2990,19 +2990,21 @@ def test_osm_workers_validation(test_pbf):
 
 
 @pytest.mark.parametrize(
-    "workers, passed", [(None, 1), (1, 1), (2, 2), ("auto", "auto")]
+    "workers, passed", [(None, "auto"), (1, 1), (2, 2), ("auto", "auto")]
 )
 def test_osm_workers_reach_the_reader_without_a_warning(
     test_pbf, monkeypatch, workers, passed
 ):
-    """The engine reader gets workers=1 when no count is given and a given count or
-    "auto" unchanged, and no read warns about the CPU cores. Worker processes run in
-    this process."""
+    """The engine reader gets "auto" when no count is given (one with the processes
+    backend) and a given count or "auto" unchanged, and no read warns about the CPU
+    cores. Worker processes run in this process."""
     import warnings as _warnings
     import pyrosm.engine.readers as readers_mod
 
+    if workers is None and pool._decode_backend() == "processes":
+        passed = 1
     monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor())
-    monkeypatch.setattr(pool.os, "cpu_count", lambda: 4)
+    monkeypatch.setattr(pool, "_available_cores", lambda: 4)
     captured = []
     real = readers_mod._decode_and_run
 
@@ -3038,7 +3040,7 @@ def test_auto_workers(tmp_path, monkeypatch, size, cores, blobs, backend, expect
     # at most the data-blob count.
     import os
 
-    monkeypatch.setattr(pool.os, "cpu_count", lambda: cores)
+    monkeypatch.setattr(pool, "_available_cores", lambda: cores)
     monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
     fp = tmp_path / "file.osm.pbf"
     fp.touch()
@@ -3081,7 +3083,7 @@ def test_cap_workers_reduces_above_cpu_count(monkeypatch):
     # below the core count pass through unchanged and silently.
     import warnings as _warnings
 
-    monkeypatch.setattr(pool.os, "cpu_count", lambda: 4)
+    monkeypatch.setattr(pool, "_available_cores", lambda: 4)
     with pytest.warns(UserWarning, match="exceeds the 4 CPU cores"):
         assert pool._cap_workers(10) == 4
     with _warnings.catch_warnings():
@@ -3093,7 +3095,7 @@ def test_cap_workers_reduces_above_cpu_count(monkeypatch):
 def test_osm_out_of_core_excess_workers_capped(helsinki_pbf, monkeypatch, fresh_cache):
     # An explicit worker count above the CPU-core count is reduced to the core count, with a
     # warning; the read still matches the in-memory reader.
-    monkeypatch.setattr(pool.os, "cpu_count", lambda: 2)
+    monkeypatch.setattr(pool, "_available_cores", lambda: 2)
     monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor())
     captured = []
     real = pool._decode_all
