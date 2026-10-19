@@ -22,9 +22,10 @@ script then needs the guard, and without it falls back to a single process with 
 processes setting is deprecated: it warns, and it will be removed in a future release. If you
 need it, please tell us why in an [issue](https://github.com/pyrosm/pyrosm/issues).
 
-Since pyrosm 0.22.0, a read, crop or merge that leaves `workers` unset warns once per Python
-session that pyrosm 1.0 will run it in parallel by default; pass `workers=1` to stay on a single
-core and silence the warning.
+A read or crop of a file of about 70 MB or more, or a merge of files that together are that large,
+warns once per Python session when it leaves `workers` unset: pyrosm 1.0 will run it in parallel
+by default. Pass `workers=1` to stay on a single core and silence the warning. Less data stays on
+one core with that default too, so it does not warn.
 
 Other ways to lower memory use: read only the area you need with a `bounding_box` (or crop the
 file first with `to_pbf()`), keep fewer tag columns with `tags_to_keep=[...]` on the feature

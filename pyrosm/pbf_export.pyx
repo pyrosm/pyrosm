@@ -1840,7 +1840,7 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     crop makes two or more).
     """
     validate_progress(progress)
-    workers = default_workers(workers)
+    workers = default_workers(workers, source_path)
     region = _region(bounding_box, polygon)
     bounds = region[0]
     _refuse_input_as_output(output_path, [source_path])
@@ -3564,7 +3564,7 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     if not sources:
         raise ValueError("merge_pbf() needs at least one input file.")
     validate_progress(progress)
-    workers = default_workers(workers)
+    workers = default_workers(workers, sources)
     name = Path(sources[0]).name if len(sources) == 1 else "%d files" % len(sources)
     with reporting(
         progress, "Merging %s" % name, delay=2.0, leave=False, timed=True

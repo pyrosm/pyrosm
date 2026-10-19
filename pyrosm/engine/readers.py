@@ -82,7 +82,7 @@ def _get_layer(
     ``OSM(..., keep_node_info=True)`` does.
     """
     validate_progress(progress)
-    workers = default_workers(workers)
+    workers = default_workers(workers, filepath)
     if output is not None:
         _compat.require_pyarrow()
     if custom_filter is None:
@@ -649,7 +649,7 @@ def get_network(
     from pyrosm.graphs import record_network_type
 
     validate_progress(progress)
-    workers = default_workers(workers)
+    workers = default_workers(workers, filepath)
     tags_as_columns, filter_spec = _network_spec(
         network_type, extra_attributes, custom_filter, filter_type, tags_to_keep
     )
@@ -814,7 +814,7 @@ def graph_network(
     :func:`~pyrosm.engine.assemble._assemble_graph_network`), or ``(None, None)`` when no
     edge is read. The parameters are those of :func:`get_network`; nothing is cached."""
     validate_progress(progress)
-    workers = default_workers(workers)
+    workers = default_workers(workers, filepath)
     tags_as_columns, filter_spec = _network_spec(
         network_type, extra_attributes, custom_filter, filter_type, tags_to_keep
     )

@@ -91,11 +91,17 @@ def thread_map(function, items, window=None):
         yield from _ordered_map(pool, function, items, window or 2 * threads)
 
 
+def auto_is_parallel(nbytes):
+    """Whether ``workers="auto"`` decodes ``nbytes`` bytes of source data in parallel: from
+    about 70 MB up."""
+    return nbytes >= _PARALLEL_MIN_FILE_BYTES
+
+
 def _auto_workers(filepath, n_blobs):
     """Worker count for ``workers="auto"``: a single core for files below ~70 MB, otherwise
     the CPU cores less two, at least 1, at most 8 worker processes (threads are not capped)
     and at most the number of data blobs."""
-    if Path(filepath).stat().st_size < _PARALLEL_MIN_FILE_BYTES:
+    if not auto_is_parallel(Path(filepath).stat().st_size):
         return 1
     n_cores = (os.cpu_count() or 1) - _AUTO_SPARE_CORES
     if _decode_backend() == "processes":
@@ -396,7 +402,7 @@ def _decode_and_run(
             data_blobs, header_bytes = _data_blob_spans(_index_blobs(filepath))
             fields["blobs"] = len(data_blobs)
         total = header_bytes + sum(span for _, _, span in data_blobs)
-        workers = default_workers(workers)
+        workers = default_workers(workers, filepath)
         if isinstance(workers, str) and workers.lower() == "auto":
             workers = _auto_workers(filepath, len(data_blobs))
         else:
