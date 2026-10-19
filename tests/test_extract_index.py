@@ -737,6 +737,7 @@ def test_get_data_by_area_accepts_area_forms(monkeypatch, area):
         (box(*HELSINKI), {"workers": 0}, "workers must be an integer"),
         (box(*HELSINKI), {"workers": 1.5}, "workers must be an integer"),
         (box(*HELSINKI), {"workers": True}, "workers must be an integer"),
+        (box(*HELSINKI), {"workers": "many"}, "workers must be an integer"),
     ],
 )
 def test_get_data_by_area_rejects_bad_options(area, options, message):
@@ -1040,14 +1041,14 @@ def test_get_data_by_area_crops_to_the_polygon(
 
         monkeypatch.setattr(pyrosm.pbf_export, name, spy)
     got = pyrosm.get_data_by_area(
-        area, crop="polygon", directory=tmp_path, strategy=strategy, workers=2
+        area, crop="polygon", directory=tmp_path, strategy=strategy, workers="Auto"
     )
     one = pyrosm.get_data_by_area(
         area, crop="polygon", directory=tmp_path / "one", strategy=strategy
     )
     used = "crop_pbf" if strategy == "single" else "merge_pbf"
-    # The default (None) is resolved to one process by the crop or merge.
-    assert workers == [(used, 2), (used, None)]
+    # "auto" in any case is accepted; the default (None) is resolved by the crop or merge.
+    assert workers == [(used, "auto"), (used, None)]
     # The file is the same whatever the number of workers.
     assert Path(got).read_bytes() == Path(one).read_bytes()
     assert len(got.sources) == (1 if strategy == "single" else 2)

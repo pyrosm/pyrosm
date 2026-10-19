@@ -1820,9 +1820,8 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     Returns the output path. When ``workers > 1`` and the file has enough blocks
     to amortize pool startup (>= ``2 * workers`` OSMData blocks), the parallel
     path is used; otherwise the (faster, for small files) sequential path runs.
-    ``workers`` is 1 by default (``None``); in pyrosm 1.0 crops run in parallel by
-    default. ``workers="auto"`` chooses the count as an out-of-core read does for a file
-    of this size.
+    By default (``workers=None``, as ``"auto"``) the count is chosen as an out-of-core read
+    does for a file of this size (one process with ``PYROSM_DECODE_BACKEND=processes``).
 
     When ``compact`` is True each output block's string table is pruned to only the
     strings its kept elements reference (smaller output, slightly slower); when
@@ -1841,7 +1840,7 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     crop makes two or more).
     """
     validate_progress(progress)
-    workers = default_workers(validate_workers(workers), source_path)
+    workers = default_workers(validate_workers(workers))
     region = _region(bounding_box, polygon)
     bounds = region[0]
     _refuse_input_as_output(output_path, [source_path])
@@ -3524,11 +3523,11 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
 
     workers : int | str
         Number of threads for selecting the elements inside ``bounding_box`` or
-        ``polygon``. ``1`` (by default, ``None``) runs sequentially; in pyrosm 1.0
-        merges run in parallel by default. ``"auto"`` chooses the count as an
-        out-of-core read does for the inputs' total size. The merged file is written sequentially
-        either way. With ``PYROSM_DECODE_BACKEND=processes`` they are worker
-        processes; when those cannot run (on macOS and Windows: a script without an
+        ``polygon``. By default (``None``, as ``"auto"``) the count is chosen as an
+        out-of-core read does for the inputs' total size; ``1`` runs sequentially. The
+        merged file is written sequentially either way. With
+        ``PYROSM_DECODE_BACKEND=processes`` they are worker processes, one by default;
+        when those cannot run (on macOS and Windows: a script without an
         ``if __name__ == "__main__":`` guard, or one read from stdin), the merge runs
         in one process and warns.
 
@@ -3574,7 +3573,7 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     if not sources:
         raise ValueError("merge_pbf() needs at least one input file.")
     validate_progress(progress)
-    workers = default_workers(validate_workers(workers), sources)
+    workers = default_workers(validate_workers(workers))
     name = Path(sources[0]).name if len(sources) == 1 else "%d files" % len(sources)
     with reporting(
         progress, "Merging %s" % name, delay=2.0, leave=False, timed=True

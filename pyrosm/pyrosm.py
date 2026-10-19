@@ -101,14 +101,14 @@ class OSM:
         whole file into memory once and serves every read of the `OSM` object from
         it.
 
-        The out-of-core backend reads on a single core by default. To decode in
-        parallel pass `workers="auto"` (or an explicit `workers=N`); see below. A
-        parallel read runs on threads and needs no `if __name__ == "__main__":`
-        guard. With the environment variable `PYROSM_DECODE_BACKEND=processes`
-        (deprecated: it warns, and it will be removed in a future release) it runs
-        in worker processes instead; those start with `spawn` on macOS and Windows,
-        which re-imports the program's entry point, so a parallel read then must
-        run under the guard::
+        The out-of-core backend chooses by the file's size how many threads decode
+        it (`workers="auto"`, the default; see below). A parallel read runs on
+        threads and needs no `if __name__ == "__main__":` guard. With the
+        environment variable `PYROSM_DECODE_BACKEND=processes` (deprecated: it warns,
+        and it will be removed in a future release) it runs on one core by default
+        and in worker processes for `workers="auto"` or `workers=N`; those start with
+        `spawn` on macOS and Windows, which re-imports the program's entry point, so
+        a parallel read then must run under the guard::
 
             if __name__ == "__main__":
                 osm = OSM(fp, engine="out_of_core", workers="auto")
@@ -133,16 +133,15 @@ class OSM:
 
     workers : int | str (default: None)
         Number of threads the `'out_of_core'` engine uses to decode the file. By
-        default (`None`) the engine reads on a single core; in pyrosm 1.0 reads run
-        in parallel by default, so pass `workers=1` to keep one. Pass
-        `workers="auto"` to let pyrosm choose the count automatically -- a single
-        core for files below about 70 MB; for larger files the CPU cores less two, at
-        most one per data blob -- or `workers=N` for an explicit count (a count above
-        the available CPU cores is
-        reduced to the core count, with a warning). With
-        `PYROSM_DECODE_BACKEND=processes` they are worker processes, at most eight
-        with `"auto"`, and a parallel read needs the `if __name__ == "__main__":`
-        guard on macOS/Windows. Has no effect on the `'in_memory'` engine.
+        default (`None`, as `"auto"`) pyrosm chooses the count: a single core for
+        files below about 20 MB; for larger files the CPU cores this process may use
+        less two, at most 4 below about 70 MB and at most one per data blob. Pass
+        `workers=N` for an explicit count, e.g. `workers=1` for one core (a count
+        above the cores this process may use is reduced to that count, with a
+        warning). With `PYROSM_DECODE_BACKEND=processes` they are worker processes,
+        one by default and at most eight with `"auto"`, and a parallel read needs the
+        `if __name__ == "__main__":` guard on macOS/Windows. Has no effect on the
+        `'in_memory'` engine.
 
     progress : bool | callable | None (default: None)
         `None` follows `pyrosm.enable_logging(progress=...)`, which is `True`
@@ -1301,14 +1300,13 @@ class OSM:
             written; when ``False`` no relations are written.
 
         workers : int | str
-            Number of threads for the CPU-heavy per-block work. ``1`` (by default,
-            ``None``) runs sequentially; in pyrosm 1.0 the crop runs in parallel by
-            default. ``"auto"`` chooses the count as an out-of-core read does for a file
-            of this size. ``>1`` produces a byte-identical output. With
-            ``PYROSM_DECODE_BACKEND=processes`` they are worker processes; when those
-            cannot run (on macOS and Windows: a script without an
-            ``if __name__ == "__main__":`` guard, or one read from stdin), the crop runs
-            in one process and warns.
+            Number of threads for the CPU-heavy per-block work. By default (``None``,
+            as ``"auto"``) the count is chosen as an out-of-core read does for a file of
+            this size; ``1`` runs sequentially. Every count produces a byte-identical
+            output. With ``PYROSM_DECODE_BACKEND=processes`` they are worker processes,
+            one by default; when those cannot run (on macOS and Windows: a script
+            without an ``if __name__ == "__main__":`` guard, or one read from stdin), the
+            crop runs in one process and warns.
 
         compact : bool
             When ``False`` (default) each output block keeps its source block's

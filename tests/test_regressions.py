@@ -3187,11 +3187,9 @@ def test_driving_network_leaves_out_ways_cars_cannot_use(engine):
 
 @pytest.mark.parametrize("run", ["crop", "merge"])
 def test_crop_and_merge_take_auto_workers(run, tmp_path, monkeypatch):
-    """``workers="auto"`` chooses a worker count for crops and merges as it does for
-    out-of-core reads, and writes the same file as ``workers=1``; an unknown value raises
-    ``ValueError``. ``"auto"`` was compared with ``1`` and raised ``TypeError``."""
-    import os
-
+    """``workers="auto"``, the default, chooses a worker count for crops and merges as it
+    does for out-of-core reads, and writes the same file as ``workers=1``; an unknown value
+    raises ``ValueError``. ``"auto"`` was compared with ``1`` and raised ``TypeError``."""
     import pyrosm.engine.pool as pool
     import pyrosm.pbf_export as pbf_export
     from pyrosm import get_data, merge_pbf
@@ -3218,8 +3216,69 @@ def test_crop_and_merge_take_auto_workers(run, tmp_path, monkeypatch):
     assert opened == []  # the sample is too small for "auto" to go parallel
     # As if the file were large, on 4 cores: "auto" takes 2 threads for the 4 data blocks
     monkeypatch.setattr(pool, "_PARALLEL_MIN_FILE_BYTES", 1)
-    monkeypatch.setattr(os, "cpu_count", lambda: 4)
+    monkeypatch.setattr(pool, "_available_cores", lambda: 4)
     assert Path(runs[run](tmp_path / "par.osm.pbf", workers="auto")).read_bytes() == expected
-    assert opened == [2]
+    assert Path(runs[run](tmp_path / "default.osm.pbf")).read_bytes() == expected
+    assert opened == [2, 2]
     with pytest.raises(ValueError, match="'workers' should be"):
         runs[run](tmp_path / "bad.osm.pbf", workers="many")
+
+
+def test_geocode_retries_a_cut_off_reply(monkeypatch):
+    """A geocoding reply cut off part way (``IncompleteRead``) is fetched again, as downloads
+    are. It raised the bare ``http.client.IncompleteRead``."""
+    import http.client
+    import json
+
+    import pyrosm
+
+    payload = json.dumps(
+        [{"display_name": "Somewhere", "boundingbox": ["50.79", "50.81", "-0.15", "-0.13"]}]
+    ).encode()
+    calls = []
+
+    class Reply:
+        def __init__(self, cut):
+            self.cut = cut
+
+        def read(self):
+            if self.cut:
+                raise http.client.IncompleteRead(payload[:10], len(payload) - 10)
+            return payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, context=None):
+        calls.append(request)
+        return Reply(cut=len(calls) == 1)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    area = pyrosm.geocode("Somewhere")
+    assert len(calls) == 2
+    assert area.bounds == pytest.approx((-0.15, 50.79, -0.13, 50.81))
+
+
+@pytest.mark.parametrize(
+    "functions, expected",
+    [
+        ({"process_cpu_count": lambda: 3, "cpu_count": lambda: 64}, 3),
+        ({"sched_getaffinity": lambda pid: {0, 1}, "cpu_count": lambda: 64}, 2),
+        ({"cpu_count": lambda: 6}, 6),
+        ({"process_cpu_count": lambda: None, "cpu_count": lambda: None}, 1),
+    ],
+    ids=["process_cpu_count", "affinity", "cpu_count", "unknown"],
+)
+def test_auto_workers_count_the_cores_the_process_may_use(monkeypatch, functions, expected):
+    """``workers="auto"`` counts the CPU cores this process may run on (Python 3.13's
+    ``os.process_cpu_count``, else its CPU affinity), not every core of the machine. It used
+    ``os.cpu_count()``, so a job limited to 4 cores of a 64-core node got 62 threads."""
+    import types
+
+    import pyrosm.engine.pool as pool
+
+    monkeypatch.setattr(pool, "os", types.SimpleNamespace(**functions))
+    assert pool._available_cores() == expected

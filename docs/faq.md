@@ -10,22 +10,19 @@ here, search the [issue tracker](https://github.com/pyrosm/pyrosm/issues) or ope
 Pyrosm reads with its **out-of-core engine** by default, which decodes the file in a single streaming pass with bounded peak memory, spilling intermediate data to disk instead of holding the whole file at once, so large files covering e.g. whole countries can be read as they are:
 
 ```python
-osm = OSM("country.osm.pbf", workers="auto")
+osm = OSM("country.osm.pbf")
 buildings = osm.get_buildings()
 ```
 
-To decode in parallel pass `workers="auto"` (or `workers=N`). Reads, crops and merges run in
-parallel on threads, so a script needs no `if __name__ == "__main__":` guard. Setting the
+Reads, crops and merges choose how many threads to use by the size of the data
+(`workers="auto"`, the default): one for less than about 20 MB, more for larger files. Pass
+`workers=N` for a fixed count, for example `workers=1` to stay on one core when several pyrosm
+jobs already run side by side. The threads need no `if __name__ == "__main__":` guard. Setting the
 environment variable `PYROSM_DECODE_BACKEND=processes` switches to worker processes, as earlier
-versions used; on macOS and Windows those re-import the entry point, so a parallel read from a
-script then needs the guard, and without it falls back to a single process with a warning. The
+versions used; with it the default is one process, and on macOS and Windows a parallel read from
+a script needs the guard, and without it falls back to a single process with a warning. The
 processes setting is deprecated: it warns, and it will be removed in a future release. If you
 need it, please tell us why in an [issue](https://github.com/pyrosm/pyrosm/issues).
-
-A read or crop of a file of about 70 MB or more, or a merge of files that together are that large,
-warns once per Python session when it leaves `workers` unset: pyrosm 1.0 will run it in parallel
-by default. Pass `workers=1` to stay on a single core and silence the warning. Less data stays on
-one core with that default too, so it does not warn.
 
 Other ways to lower memory use: read only the area you need with a `bounding_box` (or crop the
 file first with `to_pbf()`), keep fewer tag columns with `tags_to_keep=[...]` on the feature

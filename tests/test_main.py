@@ -32,66 +32,23 @@ def test_lazy_public_api():
         pyrosm.does_not_exist
 
 
-@pytest.mark.parametrize("run", ["read", "crop", "merge"])
-def test_default_workers_warns_once_that_it_changes_in_1_0(
-    run, helsinki_pbf, tmp_path, monkeypatch
-):
-    """A read, crop or merge of a file large enough for ``workers="auto"`` to run in
-    parallel that leaves ``workers`` unset warns once per process, at the caller's line,
-    that pyrosm 1.0 runs it in parallel by default; one that passes ``workers``, or reads a
-    smaller file, does not warn. A read served from the result cache warns too."""
+@pytest.mark.parametrize(
+    "workers, backend, expected",
+    [(None, "threads", "auto"), (None, "processes", 1), (3, "threads", 3)],
+)
+def test_default_workers_is_auto_on_threads(monkeypatch, workers, backend, expected):
+    """Reads, crops and merges that leave ``workers`` unset run with ``"auto"`` on threads
+    and on one core with the processes backend, without a warning; a given count is kept.
+    """
     import warnings
 
-    import pyrosm.engine.pool as pool
-    import pyrosm.utils
-    from pyrosm import OSM, merge_pbf
-    from pyrosm.pbf_export import crop_pbf
-
-    out, box = str(tmp_path / "out.osm.pbf"), [24.9424, 60.1701, 24.9461, 60.1731]
-    runs = {
-        "read": lambda **kw: OSM(helsinki_pbf, **kw).get_pois(),
-        "crop": lambda **kw: crop_pbf(helsinki_pbf, out, box, **kw),
-        "merge": lambda **kw: merge_pbf([helsinki_pbf], out, **kw),
-    }
-    line = runs[run].__code__.co_firstlineno
-    pyrosm.utils._future_warnings_shown.discard(pyrosm.utils._DEFAULT_WORKERS_WARNING)
-
-    def future_warnings(**options):
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            runs[run](**options)
-        return [w for w in caught if issubclass(w.category, FutureWarning)]
-
-    assert future_warnings() == []  # the sample is too small for "auto" to go parallel
-    monkeypatch.setattr(pool, "_PARALLEL_MIN_FILE_BYTES", 1)
-    for options, expected in [({"workers": 1}, 0), ({}, 1), ({}, 0)]:
-        future = future_warnings(**options)
-        assert len(future) == expected
-        for w in future:
-            assert "In pyrosm 1.0" in str(w.message)
-            assert (w.filename, w.lineno) == (__file__, line)
-
-
-def test_default_workers_warning_as_an_error_raises_at_every_default_call(
-    helsinki_pbf, monkeypatch
-):
-    """With the warning turned into an error, each call that uses the default for a file
-    large enough for ``workers="auto"`` to run in parallel raises."""
-    import warnings
-
-    import pyrosm.engine.pool as pool
     import pyrosm.utils
 
-    monkeypatch.setattr(pool, "_PARALLEL_MIN_FILE_BYTES", 1)
-    pyrosm.utils._future_warnings_shown.discard(pyrosm.utils._DEFAULT_WORKERS_WARNING)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", FutureWarning)
-        for _ in range(2):
-            with pytest.raises(FutureWarning, match="In pyrosm 1.0"):
-                pyrosm.utils.default_workers(None, helsinki_pbf)
-        assert pyrosm.utils.default_workers(2, helsinki_pbf) == 2
-        # a file that cannot be read counts as no data, so the default does not warn
-        assert pyrosm.utils.default_workers(None, "missing.osm.pbf") == 1
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert pyrosm.utils.default_workers(workers) == expected
+    assert caught == []
 
 
 def test_processes_backend_warns_once_that_it_is_deprecated(monkeypatch):
