@@ -1300,10 +1300,11 @@ class OSM:
             When ``True`` (default) relations referencing a kept node or way are
             written; when ``False`` no relations are written.
 
-        workers : int
+        workers : int | str
             Number of threads for the CPU-heavy per-block work. ``1`` (by default,
             ``None``) runs sequentially; in pyrosm 1.0 the crop runs in parallel by
-            default. ``>1`` produces a byte-identical output. With
+            default. ``"auto"`` chooses the count as an out-of-core read does for a file
+            of this size. ``>1`` produces a byte-identical output. With
             ``PYROSM_DECODE_BACKEND=processes`` they are worker processes; when those
             cannot run (on macOS and Windows: a script without an
             ``if __name__ == "__main__":`` guard, or one read from stdin), the crop runs

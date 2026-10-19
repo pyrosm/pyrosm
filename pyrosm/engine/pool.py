@@ -97,16 +97,23 @@ def auto_is_parallel(nbytes):
     return nbytes >= _PARALLEL_MIN_FILE_BYTES
 
 
-def _auto_workers(filepath, n_blobs):
-    """Worker count for ``workers="auto"``: a single core for files below ~70 MB, otherwise
-    the CPU cores less two, at least 1, at most 8 worker processes (threads are not capped)
-    and at most the number of data blobs."""
-    if not auto_is_parallel(Path(filepath).stat().st_size):
+def auto_worker_count(nbytes, n_blobs):
+    """Worker count for ``workers="auto"`` on ``nbytes`` bytes of source data in ``n_blobs``
+    data blobs: a single core below ~70 MB, otherwise the CPU cores less two, at least 1, at
+    most 8 worker processes (threads are not capped) and at most the number of data blobs.
+    """
+    if not auto_is_parallel(nbytes):
         return 1
     n_cores = (os.cpu_count() or 1) - _AUTO_SPARE_CORES
     if _decode_backend() == "processes":
         n_cores = min(n_cores, _AUTO_MAX_WORKERS)
     return max(1, min(n_cores, n_blobs))
+
+
+def _auto_workers(filepath, n_blobs):
+    """Worker count for ``workers="auto"`` on the file ``filepath`` (see
+    :func:`auto_worker_count`)."""
+    return auto_worker_count(Path(filepath).stat().st_size, n_blobs)
 
 
 def _cap_workers(workers):

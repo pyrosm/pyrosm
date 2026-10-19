@@ -3179,3 +3179,43 @@ def test_driving_network_leaves_out_ways_cars_cannot_use(engine):
     walking = osm.get_network(network_type="walking")
     assert "trail" not in set(driving["highway"])
     assert "trail" in set(walking["highway"])
+
+
+@pytest.mark.parametrize("run", ["crop", "merge"])
+def test_crop_and_merge_take_auto_workers(run, tmp_path, monkeypatch):
+    """``workers="auto"`` chooses a worker count for crops and merges as it does for
+    out-of-core reads, and writes the same file as ``workers=1``; an unknown value raises
+    ``ValueError``. ``"auto"`` was compared with ``1`` and raised ``TypeError``."""
+    import os
+
+    import pyrosm.engine.pool as pool
+    import pyrosm.pbf_export as pbf_export
+    from pyrosm import get_data, merge_pbf
+    from pyrosm.pbf_export import crop_pbf
+
+    opened = []
+
+    class RecordingPool(pbf_export._ThreadPool):
+        def __init__(self, workers, initargs):
+            opened.append(workers)
+            super().__init__(workers, initargs)
+
+    monkeypatch.setattr(pbf_export, "_ThreadPool", RecordingPool)
+    monkeypatch.delenv("PYROSM_DECODE_BACKEND", raising=False)
+
+    fp = get_data("helsinki_pbf")
+    box = [24.9375, 60.1631, 24.9466, 60.1691]
+    runs = {
+        "crop": lambda out, **kw: crop_pbf(fp, str(out), box, **kw),
+        "merge": lambda out, **kw: merge_pbf([fp], str(out), box, **kw),
+    }
+    expected = Path(runs[run](tmp_path / "one.osm.pbf", workers=1)).read_bytes()
+    assert Path(runs[run](tmp_path / "auto.osm.pbf", workers="auto")).read_bytes() == expected
+    assert opened == []  # the sample is too small for "auto" to go parallel
+    # As if the file were large, on 4 cores: "auto" takes 2 threads for the 4 data blocks
+    monkeypatch.setattr(pool, "_PARALLEL_MIN_FILE_BYTES", 1)
+    monkeypatch.setattr(os, "cpu_count", lambda: 4)
+    assert Path(runs[run](tmp_path / "par.osm.pbf", workers="auto")).read_bytes() == expected
+    assert opened == [2]
+    with pytest.raises(ValueError, match="'workers' should be"):
+        runs[run](tmp_path / "bad.osm.pbf", workers="many")

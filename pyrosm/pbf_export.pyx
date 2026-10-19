@@ -65,7 +65,7 @@ from pyrosm.engine.blobs import (
 from pyrosm._arrays import _offsets_from_lengths
 from pyrosm.engine.pool import _PoolStartError, _ordered_map
 from pyrosm.int64_hash cimport Int64Set, SortedInt64Set, _set_has, kh_i64set_t
-from pyrosm.utils import _file_identity, default_workers
+from pyrosm.utils import _file_identity, default_workers, validate_workers
 from pyrosm.utils.progress import reporting, validate_progress
 from pyrosm.zlib_blob import zlib_compress
 from pyrosm.primitive_block_decoder import (
@@ -1821,7 +1821,8 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     to amortize pool startup (>= ``2 * workers`` OSMData blocks), the parallel
     path is used; otherwise the (faster, for small files) sequential path runs.
     ``workers`` is 1 by default (``None``); in pyrosm 1.0 crops run in parallel by
-    default.
+    default. ``workers="auto"`` chooses the count as an out-of-core read does for a file
+    of this size.
 
     When ``compact`` is True each output block's string table is pruned to only the
     strings its kept elements reference (smaller output, slightly slower); when
@@ -1840,7 +1841,7 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     crop makes two or more).
     """
     validate_progress(progress)
-    workers = default_workers(workers, source_path)
+    workers = default_workers(validate_workers(workers), source_path)
     region = _region(bounding_box, polygon)
     bounds = region[0]
     _refuse_input_as_output(output_path, [source_path])
@@ -2409,12 +2410,20 @@ def _merge_select(sources, region, keep_relations, progress, pool):
 cdef _open_pool(workers, sources, region, compact):
     """A worker pool, or None to run sequentially.
 
-    Sequential when ``workers <= 1`` or the files have fewer than ``2 * workers``
-    OSMData blocks in total.
+    ``workers="auto"`` takes the count an out-of-core read takes for the same amount of
+    data (see :func:`pyrosm.engine.pool.auto_worker_count`). Sequential when
+    ``workers <= 1`` or the files have fewer than ``2 * workers`` OSMData blocks in total.
     """
-    if workers is None or workers <= 1:
+    if workers is None or (workers != "auto" and workers <= 1):
         return None
-    if sum([_count_data_blocks(p) for p in sources]) < 2 * int(workers):
+    n_blocks = sum([_count_data_blocks(p) for p in sources])
+    if workers == "auto":
+        from pyrosm.engine.pool import auto_worker_count
+
+        workers = auto_worker_count(sum([os.path.getsize(p) for p in sources]), n_blocks)
+        if workers <= 1:
+            return None
+    if n_blocks < 2 * int(workers):
         return None
     from pyrosm.engine.pool import _decode_backend
 
@@ -3513,10 +3522,11 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
         ``polygon``, those referencing a kept node or way); when ``False`` none
         are written.
 
-    workers : int
+    workers : int | str
         Number of threads for selecting the elements inside ``bounding_box`` or
         ``polygon``. ``1`` (by default, ``None``) runs sequentially; in pyrosm 1.0
-        merges run in parallel by default. The merged file is written sequentially
+        merges run in parallel by default. ``"auto"`` chooses the count as an
+        out-of-core read does for the inputs' total size. The merged file is written sequentially
         either way. With ``PYROSM_DECODE_BACKEND=processes`` they are worker
         processes; when those cannot run (on macOS and Windows: a script without an
         ``if __name__ == "__main__":`` guard, or one read from stdin), the merge runs
@@ -3564,7 +3574,7 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     if not sources:
         raise ValueError("merge_pbf() needs at least one input file.")
     validate_progress(progress)
-    workers = default_workers(workers, sources)
+    workers = default_workers(validate_workers(workers), sources)
     name = Path(sources[0]).name if len(sources) == 1 else "%d files" % len(sources)
     with reporting(
         progress, "Merging %s" % name, delay=2.0, leave=False, timed=True
