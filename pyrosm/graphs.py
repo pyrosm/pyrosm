@@ -129,25 +129,11 @@ def _direction_rules(
     mode-specific suffix (``"bicycle"`` for cycling) and whether every edge is two-way. A
     missing direction column is added to ``edges`` as empty, with a warning."""
     allowed_network_types = Conf._possible_network_filters
-
-    # Validate nodes and edges
-    validate_node_gdf(nodes)
-    validate_edge_gdf(edges)
-
-    for col in [from_id_col, to_id_col]:
-        if col not in edges.columns:
-            raise ValueError(
-                "Required column '{col}' does not exist in edges.".format(col=col)
-            )
+    _validate_frames(nodes, edges, from_id_col, to_id_col, node_id_col)
 
     direction, direction_suffix = _direction_column(direction, edges.columns)
     if direction not in edges.columns:
         edges[direction] = None
-
-    if node_id_col not in nodes.columns:
-        raise ValueError(
-            "Required column '{col}' does not exist in nodes.".format(col=node_id_col)
-        )
 
     # The network type given, else the one recorded on the edges or nodes
     if network_type is not None:
@@ -219,6 +205,22 @@ def _segment_rows(edges, direction, force_bidirectional, network_type):
     return directed_rows(
         edges.ways, direction, direction_suffix, both_ways, edges.way_of
     )
+
+
+def _validate_frames(nodes, edges, from_id_col, to_id_col, node_id_col):
+    """Raise ``ValueError`` unless ``nodes`` and ``edges`` are GeoDataFrames with the
+    node id column and the end node columns of a graph."""
+    validate_node_gdf(nodes)
+    validate_edge_gdf(edges)
+    for col in [from_id_col, to_id_col]:
+        if col not in edges.columns:
+            raise ValueError(
+                "Required column '{col}' does not exist in edges.".format(col=col)
+            )
+    if node_id_col not in nodes.columns:
+        raise ValueError(
+            "Required column '{col}' does not exist in nodes.".format(col=node_id_col)
+        )
 
 
 def _edges_between(nodes, edges, from_id_col, to_id_col, node_id_col):
@@ -310,6 +312,7 @@ def _tables(
     simplified, with the given ``network_type`` and the default id columns."""
     step("directing the edges")
     if not isinstance(edges, _WayEdges):
+        _validate_frames(nodes, edges, from_id_col, to_id_col, node_id_col)
         edges = _edges_between(nodes, edges, from_id_col, to_id_col, node_id_col)
     if isinstance(edges, _WayEdges):
         rows, swapped = _segment_rows(
