@@ -26,15 +26,14 @@ from pyrosm.pbf_export import write_pbf_from_records
 from pyrosm.utils import _stacklevel_outside_pyrosm
 from pyrosm.way_store import NodeTags
 
-# Columns that are structural attributes / pyrosm-computed, never OSM tags.
-_NON_TAG_COLS = {
+# Frame columns that hold an element's fields, not its tags.
+_FIELD_COLS = {
     "id",
     "osm_type",
     "version",
     "timestamp",
     "changeset",
     "visible",
-    "length",
     "tags",
     "nodes",
     "members",
@@ -42,6 +41,14 @@ _NON_TAG_COLS = {
     "lat",
     "geometry",
 }
+# Numeric columns get_network computes: the end node ids of a segment and its length in
+# metres. A text column of one of these names holds the OSM tag of that name.
+_NETWORK_COLS = ("u", "v", "length")
+# The fields of a way record, next to its tags.
+_RECORD_FIELDS = {"id", "version", "timestamp", "visible", "nodes", "tags"}
+# Element fields the readers put into a JSON ``tags`` dict when they are not columns.
+# Their values are not text, unlike those of a tag of the same name.
+_DICT_FIELDS = {"version", "timestamp", "visible", "members"}
 
 
 # ---------------------------------------------------------------------------
@@ -68,63 +75,88 @@ def _tag_str(value):
     return str(value)
 
 
+def _column_name(col):
+    return col if isinstance(col, str) else str(col)
+
+
 def _tag_key(col):
-    """Coerce a column/tag name to an OSM tag key, or None to skip it.
+    """The OSM tag key of a column or tag name, or None to skip it: ``id_tag``, the
+    name the readers give a tag keyed ``id``, is ``id`` again.
 
     OSM tag keys are non-empty strings; arbitrary GeoDataFrame columns can be
     non-string or empty, which would corrupt the string-table / keys_vals output.
     """
-    key = col if isinstance(col, str) else str(col)
+    key = _column_name(col)
+    if key == "id_tag":
+        return "id"
     return key if key != "" else None
 
 
-def _row_tags(row, geom_col):
-    """Tags for a GeoDataFrame row: non-structural columns + the JSON tags column."""
-    tags = {}
-    for col, val in row.items():
-        if col == geom_col or col in _NON_TAG_COLS:
-            continue
-        if _is_missing(val):
-            continue
-        key = _tag_key(col)
-        if key is None or key in _NON_TAG_COLS:
-            continue
-        tags[key] = _tag_str(val)
-    extra = row.get("tags")
+def _frame_tag_columns(gdf):
+    """The columns of ``gdf`` that hold tags: all but its geometry, the element fields
+    and the columns get_network computes (numeric ``u``, ``v`` and ``length``)."""
+    computed = {
+        col
+        for col in _NETWORK_COLS
+        if col in gdf.columns and pd.api.types.is_numeric_dtype(gdf[col])
+    }
+    return [
+        col
+        for col in gdf.columns
+        if col != gdf.geometry.name
+        and _column_name(col) not in _FIELD_COLS
+        and _column_name(col) not in computed
+        and _tag_key(col) is not None
+    ]
+
+
+def _add_dict_tags(tags, extra, columns=()):
+    """Add the tags of the JSON ``tags`` dict (or string) ``extra`` to ``tags``, keeping
+    the values ``tags`` already has and leaving out the keys of the tag ``columns``."""
     if isinstance(extra, str):
         try:
             extra = json.loads(extra)
         except (ValueError, TypeError):
-            extra = None
+            return tags
     if isinstance(extra, dict):
         for k, v in extra.items():
             key = _tag_key(k)
-            if key is None or key in _NON_TAG_COLS or key in tags or _is_missing(v):
+            if (
+                key is None
+                or (_column_name(k) in _DICT_FIELDS and not isinstance(v, str))
+                or key in tags
+                or key in columns
+                or _is_missing(v)
+            ):
                 continue
             tags[key] = _tag_str(v)
     return tags
+
+
+def _row_tags(row, tag_cols):
+    """Tags for a GeoDataFrame row: its values in the tag columns ``tag_cols`` (see
+    :func:`_frame_tag_columns`) and its JSON ``tags``. A missing value removes the tag
+    of its column, also when the JSON holds it."""
+    tags, columns = {}, set()
+    for col in tag_cols:
+        key = _tag_key(col)
+        columns.add(key)
+        val = row[col]
+        if not _is_missing(val):
+            tags[key] = _tag_str(val)
+    return _add_dict_tags(tags, row.get("tags"), columns)
 
 
 def _record_tags(record):
-    """Tags for a cached way record: its tag columns + any leftover tags dict."""
+    """Tags for a cached way record: its keys other than the record's fields, and any
+    leftover tags dict."""
     tags = {}
     for col, val in record.items():
-        if col in _NON_TAG_COLS:
-            continue
-        if _is_missing(val):
-            continue
         key = _tag_key(col)
-        if key is None or key in _NON_TAG_COLS:
+        if key is None or _column_name(col) in _RECORD_FIELDS or _is_missing(val):
             continue
         tags[key] = _tag_str(val)
-    extra = record.get("tags")
-    if isinstance(extra, dict):
-        for k, v in extra.items():
-            key = _tag_key(k)
-            if key is None or key in _NON_TAG_COLS or key in tags or _is_missing(v):
-                continue
-            tags[key] = _tag_str(v)
-    return tags
+    return _add_dict_tags(tags, record.get("tags"))
 
 
 # The tags pyrosm's readers detect features by, with the reader that finds them and the
@@ -193,19 +225,19 @@ class _LostTags:
     once each for the warning of ``write_pbf`` (see :meth:`warn`)."""
 
     def __init__(self):
-        self.by_reader = {}  # reader -> [element count, tags the elements lose]
-        self.by_tag = {}  # feature tag -> element count, for frames without a note
+        self.by_reader = {}  # reader -> [elements, tags the elements lose]
+        self.by_tag = {}  # feature tag -> elements, for frames without a note
 
-    def check(self, note, otype, original, written):
-        """Count an element of type ``otype`` if its ``written`` tags no longer match the
+    def check(self, note, element, original, written):
+        """Count ``element`` (its type and id) if its ``written`` tags no longer match the
         filter of the ``note`` its frame carries (see :func:`_read_note`) while its
         ``original`` tags do, or, without a note, lose a tag of :data:`_FEATURE_TAGS` that
         its reader finds elements of this type by."""
         if note is not None:
             reader, read_filter = note
             if read_filter.matches(original) and not read_filter.matches(written):
-                entry = self.by_reader.setdefault(reader, [0, set()])
-                entry[0] += 1
+                entry = self.by_reader.setdefault(reader, [set(), set()])
+                entry[0].add(element)
                 entry[1].update(
                     key
                     for key in read_filter.positive_keys
@@ -213,13 +245,14 @@ class _LostTags:
                 )
             return
         for tag, (_, types) in _FEATURE_TAGS.items():
-            if otype in types and tag in original and tag not in written:
-                self.by_tag[tag] = self.by_tag.get(tag, 0) + 1
+            if element[0] in types and tag in original and tag not in written:
+                self.by_tag.setdefault(tag, set()).add(element)
 
     def warn(self):
         """Warn once, at the user's call, about the elements counted."""
         parts = []
-        for reader, (count, keys) in self.by_reader.items():
+        for reader, (elements, keys) in self.by_reader.items():
+            count = len(elements)
             quoted = _text_list(f"'{key}'" for key in sorted(keys))
             verb = "tag is" if len(keys) == 1 else "tags are"
             cause = f"their {quoted} {verb} not in the frame"
@@ -230,7 +263,10 @@ class _LostTags:
             )
         if self.by_tag:
             phrases = []
-            counts = sorted(self.by_tag.items(), key=lambda item: -item[1])
+            counts = sorted(
+                ((tag, len(elements)) for tag, elements in self.by_tag.items()),
+                key=lambda item: -item[1],
+            )
             for tag, count in counts:
                 if phrases:
                     subject = str(count)
@@ -252,41 +288,83 @@ class _LostTags:
             )
 
 
-def _warn_lost_tags(edits, plan, way_by_id, poi_tags, relations):
-    """Warn about the edited elements whose written tags lose what their read selected them
-    by (see :class:`_LostTags`), comparing each with its tags in the source: a way's
-    record, a tagged node's ``poi_tags`` (an untagged node has none to lose) or a
-    relation's tags. Elements the ``plan`` removes are not written, so not checked."""
-    written = {
-        "node": edits.node_tags,
-        "way": edits.way_tags,
-        "relation": edits.rel_tags,
-    }
-    removed = {
-        "node": plan.removed_nodes,
-        "way": plan.removed_ways,
-        "relation": plan.removed_rels,
-    }
-    rel_position = None
-    lost = _LostTags()
-    for (otype, oid), note in edits.notes.items():
-        tags = written[otype][oid]
-        if tags is None or oid in removed[otype]:
-            continue
+class _SourceTags:
+    """The tags of an element in the source, as the writer extracts a row's: a way's
+    record, a tagged node's ``poi_tags`` (an untagged node has none) or a relation's
+    tags."""
+
+    def __init__(self, way_by_id, poi_tags, relations):
+        self._way_by_id = way_by_id
+        self._poi_tags = poi_tags
+        self._relations = relations
+        self._rel_position = None
+
+    def __call__(self, otype, oid):
         if otype == "way":
-            original = _record_tags(way_by_id[oid])
+            return _record_tags(self._way_by_id[oid])
+        if otype == "node":
+            source = self._poi_tags.get(oid)
         else:
-            if otype == "node":
-                source = poi_tags.get(oid)
-            else:
-                if rel_position is None:
-                    rel_position = {int(r): i for i, r in enumerate(relations["id"])}
-                source = relations["tags"][rel_position[oid]]
-            original = (
-                _record_tags({"tags": source}) if isinstance(source, dict) else {}
-            )
-        lost.check(note, otype, original, tags)
+            if self._rel_position is None:
+                ids = self._relations["id"]
+                self._rel_position = {int(r): i for i, r in enumerate(ids)}
+            source = self._relations["tags"][self._rel_position[oid]]
+        return _add_dict_tags({}, source)
+
+
+def _written_and_removed(edits, plan):
+    """Per element type, the tags its edited elements are written with and the ids the
+    ``plan`` removes (those elements are not written)."""
+    return {
+        "node": (edits.node_tags, plan.removed_nodes),
+        "way": (edits.way_tags, plan.removed_ways),
+        "relation": (edits.rel_tags, plan.removed_rels),
+    }
+
+
+def _warn_lost_tags(edits, plan, source_tags):
+    """Warn about the edited elements whose written tags lose what a read selected them
+    by (see :class:`_LostTags`), comparing each with its tags in the source."""
+    by_type = _written_and_removed(edits, plan)
+    lost = _LostTags()
+    for (otype, oid), notes in edits.notes.items():
+        written, removed = by_type[otype]
+        tags = written[oid]
+        if tags is None or oid in removed:
+            continue
+        original = source_tags(otype, oid)
+        for note in [note for note in notes.values() if note is not None] or [None]:
+            lost.check(note, (otype, oid), original, tags)
     lost.warn()
+
+
+def _warn_partial_edits(edits, plan):
+    """Warn once about the tags changed in only some rows of an element in one frame,
+    which are written for the whole element (see :func:`_merged_tags`)."""
+    by_type = _written_and_removed(edits, plan)
+    partial = [p for p in edits.partial if p[1] not in by_type[p[0]][1]]
+    if not partial:
+        return
+    if len(partial) == 1:
+        otype, oid, key, changed, rows = partial[0]
+        message = (
+            f"'{key}' of {otype} {oid} was changed in {changed} of its {rows} rows; "
+            f"the change is written for the whole {otype}, as an OSM element has one "
+            "value per tag."
+        )
+    else:
+        shown = [
+            f"'{key}' of {otype} {oid} ({changed} of {rows} rows)"
+            for otype, oid, key, changed, rows in partial[:3]
+        ]
+        if len(partial) > 3:
+            shown.append(f"{len(partial) - 3} more")
+        message = (
+            f"{len(partial)} tags were changed in only some rows of an element; each "
+            "change is written for the whole element, as an OSM element has one value "
+            f"per tag: {_text_list(shown)}."
+        )
+    warnings.warn(message, UserWarning, stacklevel=_stacklevel_outside_pyrosm())
 
 
 # ---------------------------------------------------------------------------
@@ -360,10 +438,10 @@ def _row_refs(row):
 def _set_geometry_edit(mapping, oid, value, what):
     """Record a geometry edit, rejecting two conflicting edits of the same element.
 
-    Tag edits are last-wins (frames legitimately carry different tag columns for the
-    same element), but two different coordinates or member lists for one element are
-    a topology conflict with no safe resolution. This also catches the segment-level
-    edge frame from ``get_network(nodes=True)``, where each way spans several rows.
+    The tags of an element's rows are merged (see :func:`_merged_tags`), but two
+    different coordinates or member lists for one element are a topology conflict with
+    no safe resolution. This also catches the segment-level edge frame from
+    ``get_network(nodes=True)``, where each way spans several rows.
     """
     previous = mapping.get(oid)
     if previous is not None and previous != value:
@@ -382,8 +460,10 @@ class _Edits:
         self.node_tags, self.node_coords = {}, {}
         self.way_tags, self.way_refs = {}, {}
         self.rel_tags = {}
-        # (osm_type, id) -> the read note of the frame whose row the element's tags come from
+        # (osm_type, id) -> the read notes of the frames with a row of the element
         self.notes = {}
+        # (osm_type, id, key, rows changing it, rows of the element in that frame)
+        self.partial = []
         self.new_nodes = []  # (id, lon, lat, tags)
         self.new_ways = []  # (id, refs, tags)
         self.auto_rows = []  # (row id, geometry, tags, explicit id or None)
@@ -423,12 +503,87 @@ def _add_new_element(edits, oid, otype, geom, tags, refs, seen):
         edits.auto_rows.append((oid, geom, tags, oid))
 
 
-def _collect_edits(frames, way_by_id, node_coordinates, rel_ids, apply_geometry):
+def _add_row_tags(rows, element, frame, tags):
+    """Count a row of ``element`` in ``frame`` with ``tags`` (None when the frame has no
+    tag columns) in ``rows``: one ``[frame, tags, row count]`` entry per distinct tags.
+    """
+    entries = rows.setdefault(element, [])
+    for entry in entries:
+        if entry[0] == frame and entry[1] == tags:
+            entry[2] += 1
+            return
+    entries.append([frame, tags, 1])
+
+
+def _merged_tags(element, entries, frame_keys, source_tags, partial):
+    """The tags written for ``element`` from the ``entries`` of its rows (see
+    :func:`_add_row_tags`), or None when none of its frames has tag columns.
+
+    A tag gets the value its rows give it. A value that rows change or remove, compared
+    with the ``source_tags``, is written for the whole element, and noted in ``partial``
+    when other rows of that frame keep the old value; two different new values raise.
+    A row removes the tags of its frame's columns and the tags other rows of the element
+    in that frame have, when it lacks them; it says nothing about the other tags. A row
+    of a frame without tag columns keeps the element's own tags.
+    """
+    tagged = [tags for _, tags, _ in entries if tags is not None]
+    if not tagged:
+        return None
+    if len(tagged) == len(entries) and all(tags == tagged[0] for tags in tagged):
+        return tagged[0]
+    original = source_tags(*element)
+    given_keys = {}  # frame -> the keys its rows give a value or remove
+    frame_rows = {}
+    for frame, tags, count in entries:
+        if tags is not None:
+            given_keys.setdefault(frame, set(frame_keys[frame])).update(tags)
+        frame_rows[frame] = frame_rows.get(frame, 0) + count
+    rows = []  # (frame, tags, the keys the row gives a value or removes, row count)
+    for frame, tags, count in entries:
+        if tags is None:
+            rows.append((frame, original, set(original), count))
+        else:
+            rows.append((frame, tags, given_keys[frame], count))
+    merged = {}
+    for key in dict.fromkeys(k for _, _, keys, _ in rows for k in keys):
+        old = original.get(key)
+        given = [
+            (frame, tags.get(key), n) for frame, tags, keys, n in rows if key in keys
+        ]
+        new = {value for _, value, _ in given if value != old}
+        if len(new) > 1:
+            values = _text_list(
+                sorted("removed" if v is None else f"'{v}'" for v in new)
+            )
+            raise ValueError(
+                f"write_pbf: the rows of {element[0]} {element[1]} give '{key}' "
+                f"different new values ({values}). An OSM element has one value per "
+                "tag, so give its rows the same value."
+            )
+        value = new.pop() if new else old
+        if value is not None:
+            merged[key] = value
+        if value == old:
+            continue
+        changed = {}
+        for frame, given_value, n in given:
+            if given_value == value:
+                changed[frame] = changed.get(frame, 0) + n
+        for frame, n in changed.items():
+            if n < frame_rows[frame]:
+                partial.append((*element, key, n, frame_rows[frame]))
+    return merged
+
+
+def _collect_edits(
+    frames, way_by_id, node_coordinates, rel_ids, apply_geometry, source_tags
+):
     """Split frame rows into edits of existing elements and new elements.
 
     Existing elements are matched by ``osm_type`` + ``id``; their tags are taken from the
-    row, unless the frame has no tag columns, in which case they keep their own. Each
-    element's tags come with the read note of their frame (see :func:`_read_note`). With
+    row, unless the frame has no tag columns, in which case they keep their own. The
+    rows of an element are merged tag by tag (see :func:`_merged_tags`), and the read
+    notes of their frames are kept (see :func:`_read_note`). With
     ``apply_geometry`` a node row's ``Point`` also moves the
     node, a way row's ``nodes`` column also reshapes the way, and a row with a
     negative unmatched id is added under exactly that id (so a way can reference a
@@ -437,22 +592,21 @@ def _collect_edits(frames, way_by_id, node_coordinates, rel_ids, apply_geometry)
     """
     edits = _Edits()
     seen_new = set()
-    for gdf in frames:
+    rows = {}  # (osm_type, id) -> the entries of its rows (see _add_row_tags)
+    frame_keys = []  # per frame, the tag keys of its tag columns
+    for frame, gdf in enumerate(frames):
         geom_col = gdf.geometry.name
         note = _read_note(gdf)
-        has_tags = any(
-            col == "tags" or col not in _NON_TAG_COLS
-            for col in gdf.columns
-            if col != geom_col
-        )
+        tag_cols = _frame_tag_columns(gdf)
+        frame_keys.append({_tag_key(col) for col in tag_cols})
+        has_tags = bool(tag_cols) or ("tags" in gdf.columns and geom_col != "tags")
         for _, row in gdf.iterrows():
             otype = _normalize_osm_type(row.get("osm_type"))
             oid = _normalize_id(row.get("id"))
             geom = row[geom_col]
             if otype is None:
                 otype = _infer_osm_type(geom)
-            tags = _row_tags(row, geom_col)
-            edit = tags if has_tags else None
+            tags = _row_tags(row, tag_cols)
             refs = _row_refs(row) if apply_geometry else None
             matched = oid is not None and (
                 (otype == "way" and oid in way_by_id)
@@ -460,24 +614,32 @@ def _collect_edits(frames, way_by_id, node_coordinates, rel_ids, apply_geometry)
                 or (otype == "relation" and oid in rel_ids)
             )
             if matched:
-                edits.notes[(otype, oid)] = note
-            if oid is not None and otype == "way" and oid in way_by_id:
-                edits.way_tags[oid] = edit
-                if refs is not None:
+                _add_row_tags(rows, (otype, oid), frame, tags if has_tags else None)
+                edits.notes.setdefault((otype, oid), {})[frame] = note
+                if otype == "way" and refs is not None:
                     _set_geometry_edit(edits.way_refs, oid, refs, "member node ids")
-            elif oid is not None and otype == "node" and oid in node_coordinates:
-                edits.node_tags[oid] = edit
-                if apply_geometry and getattr(geom, "geom_type", None) == "Point":
+                elif (
+                    otype == "node"
+                    and apply_geometry
+                    and getattr(geom, "geom_type", None) == "Point"
+                ):
                     _check_lonlat(geom.x, geom.y, oid)
                     _set_geometry_edit(
                         edits.node_coords, oid, (geom.x, geom.y), "coordinates"
                     )
-            elif oid is not None and otype == "relation" and oid in rel_ids:
-                edits.rel_tags[oid] = edit
             elif apply_geometry and oid is not None and oid < 0:
                 _add_new_element(edits, oid, otype, geom, tags, refs, seen_new)
             else:
                 edits.auto_rows.append((oid, geom, tags, None))
+    written = {
+        "node": edits.node_tags,
+        "way": edits.way_tags,
+        "relation": edits.rel_tags,
+    }
+    for element, entries in rows.items():
+        written[element[0]][element[1]] = _merged_tags(
+            element, entries, frame_keys, source_tags, edits.partial
+        )
     return edits
 
 
@@ -1047,8 +1209,11 @@ def write_geodataframe_to_pbf(
     way_by_id = {w["id"]: w for w in way_records}
     rel_ids = set(int(i) for i in relations["id"]) if "id" in relations else set()
     poi_tags = _node_tag_records(nodes)
+    source_tags = _SourceTags(way_by_id, poi_tags, relations)
 
-    edits = _collect_edits(frames, way_by_id, node_coordinates, rel_ids, apply_geometry)
+    edits = _collect_edits(
+        frames, way_by_id, node_coordinates, rel_ids, apply_geometry, source_tags
+    )
     deletions = _parse_deletions(delete, node_coordinates, way_by_id, rel_ids)
     plan, new_ways = _build_plan(
         edits,
@@ -1059,7 +1224,8 @@ def write_geodataframe_to_pbf(
         on_orphan_node,
         on_deleted_member,
     )
-    _warn_lost_tags(edits, plan, way_by_id, poi_tags, relations)
+    _warn_partial_edits(edits, plan)
+    _warn_lost_tags(edits, plan, source_tags)
 
     keep_nodes = keep_ways = keep_rels = None
     if subset_only:

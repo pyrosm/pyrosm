@@ -1408,6 +1408,13 @@ class OSM:
         added as new elements synthesized from their geometry (with negative ids).
         A frame without tag columns (only ``id``, ``osm_type``, the geometry and other
         structural columns) changes no tags: the elements it matches keep their own.
+        The columns ``get_network`` computes (``u``, ``v`` and the numeric ``length``)
+        are not tags, and ``id_tag``, the column of a tag keyed ``id``, is written as
+        ``id``. An element in several rows, such as a way split into segments by
+        ``get_network(nodes=True)`` or an element in two frames, gets each tag from its
+        rows: a value changed or removed in only some of them is written for the whole
+        element (with a ``UserWarning`` when other rows of the same frame keep the old
+        value), and rows giving a tag different new values raise ``ValueError``.
         When elements lose the tag their read selected them by, e.g. buildings written
         without a ``building`` column, a ``UserWarning`` says how many and which reader
         will no longer find them in the written file.

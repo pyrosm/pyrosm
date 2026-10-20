@@ -3323,7 +3323,7 @@ def test_write_pbf_warns_when_elements_lose_the_tag_they_were_read_by(
     named = buildings[["id", "osm_type", "name", "geometry"]]
     delete = None
     if case == "only_name":
-        frame = named
+        frame = [named, named.copy()]  # an element in two frames is counted once
     elif case == "note_gone":
         frame = named.copy()
         frame.attrs.clear()
@@ -3358,3 +3358,138 @@ def test_write_pbf_warns_when_elements_lose_the_tag_they_were_read_by(
         assert len(lost) == 1 and expected in str(lost[0].message), lost
         assert lost[0].filename == __file__  # it points at the user's call
 
+
+
+@pytest.mark.parametrize(
+    "case", ["one_segment", "segment_cleared", "several_ways", "conflict", "layers"]
+)
+def test_write_pbf_merges_the_rows_of_an_element(case, tmp_path):
+    """``write_pbf`` wrote an element that is in several rows from its last row, so a
+    change in one segment of a way, or in the first of two layers holding an element,
+    was lost. A change in some rows is written for the whole element, with a warning
+    when other rows of the same frame keep the old value; different new values raise."""
+    import json
+    import warnings
+
+    import pandas as pd
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    out = str(tmp_path / "out.osm.pbf")
+    if case == "layers":
+        buildings, pois = osm.get_buildings(), osm.get_pois()
+        both = buildings.merge(pois[["osm_type", "id"]]).iloc[0]
+        element = (both["osm_type"], both["id"])
+        edited = (buildings["osm_type"] == element[0]) & (buildings["id"] == element[1])
+        buildings.loc[edited, "building"] = "edited"
+        ids = buildings[["id", "osm_type", "geometry"]]  # keeps the element's own tags
+        for frames in ([buildings, pois, ids], [ids, pois, buildings]):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                osm.write_pbf(frames, out, subset_only=True)
+            assert not [w for w in caught if "rows" in str(w.message)]
+            written = OSM(out).get_buildings().set_index(["osm_type", "id"])
+            assert written.loc[element, "building"] == "edited"
+        return
+    nodes, edges = osm.get_network("driving", nodes=True)
+    def tag_keys(tags):
+        return [key for key in json.loads(tags or "{}") if key != "visible"]
+
+    usable = edges["maxspeed"].notna() & edges["tags"].map(tag_keys).astype(bool)
+    segments = edges[usable].groupby("id").size()
+    way = segments[segments >= 3].index[0]
+    rows = edges.index[edges["id"] == way]
+    if case == "several_ways":
+        for other in segments[segments >= 3].index[:4]:
+            edges.loc[edges.index[edges["id"] == other][0], "maxspeed"] = "80"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            osm.write_pbf([nodes, edges], out)
+        message = str(caught[0].message)
+        assert len(caught) == 1 and message.startswith("4 tags were changed"), caught
+        assert message.endswith("rows) and 1 more.")
+        return
+    if case == "conflict":
+        edges.loc[rows[0], "maxspeed"], edges.loc[rows[1], "maxspeed"] = "80", "60"
+        with pytest.raises(ValueError, match="different new values"):
+            osm.write_pbf([nodes, edges], out)
+        return
+    if case == "one_segment":
+        edges.loc[rows[0], "maxspeed"] = "80"
+    else:  # removed from a column and from the JSON tags of one segment
+        edges.loc[rows[0], "maxspeed"] = None
+        other_tags = json.loads(edges.loc[rows[0], "tags"])
+        removed = tag_keys(edges.loc[rows[0], "tags"])[0]
+        del other_tags[removed]
+        edges.loc[rows[0], "tags"] = json.dumps(other_tags)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        osm.write_pbf([nodes, edges], out)
+    partial = [w for w in caught if "rows" in str(w.message)]
+    assert len(partial) == 1, partial
+    assert partial[0].filename == __file__  # it points at the user's call
+    written = OSM(out).get_network("driving").set_index("id").loc[way]
+    if case == "one_segment":
+        message = f"of way {way} was changed in 1 of its {len(rows)} rows"
+        assert message in str(partial[0].message)
+        assert written["maxspeed"] == "80"
+    else:
+        assert str(partial[0].message).startswith("2 tags were changed")
+        assert pd.isna(written["maxspeed"])
+        assert removed not in json.loads(written["tags"])
+
+
+@pytest.mark.parametrize("read", ["network", "network_segments", "length_column"])
+def test_write_pbf_writes_the_mapper_tags_not_pyrosm_columns(read, tmp_path):
+    """``write_pbf`` wrote a network's end node ids ``u`` and ``v`` as tags, dropped a
+    way's own ``length`` and ``members`` tags and wrote a tag keyed ``id`` as
+    ``id_tag``. It writes the way's tags as mapped, without the columns pyrosm
+    computes."""
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    osmium = pytest.importorskip("osmium")
+    tags = {
+        "highway": "residential",
+        "id": "W-9",
+        "length": "25",
+        "members": "1",
+        "u": "x",
+    }
+    nodes = {
+        "id": np.array([1, 2, 3], dtype=np.int64),
+        "lon": np.array([24.940, 24.941, 24.942]),
+        "lat": np.array([60.170, 60.171, 60.170]),
+        "version": np.ones(3, dtype=np.int64),
+        "timestamp": np.full(3, 1600000000, dtype=np.int64),
+        "changeset": np.zeros(3, dtype=np.int64),
+        "tags": [None, None, None],
+    }
+    way = {"id": 10, "refs": [1, 2, 3], "version": 1, "timestamp": 1600000000}
+    source = write_pbf_from_records(
+        nodes,
+        [dict(way, tags=tags)],
+        [],
+        str(tmp_path / "source.osm.pbf"),
+        (24.94, 60.17, 24.942, 60.171),
+    )
+    osm = OSM(source)
+    if read == "network":
+        frame = osm.get_network("all")
+    elif read == "network_segments":
+        frame = list(osm.get_network("all", nodes=True))
+    else:
+        frame = osm.get_data_by_custom_criteria(
+            {"highway": True}, tags_as_columns=["highway", "length", "u"]
+        )
+        assert frame[["length", "u"]].values.tolist() == [["25", "x"]]
+    out = str(tmp_path / "out.osm.pbf")
+    osm.write_pbf(frame, out)
+    written = {}
+    for element in osmium.FileProcessor(out):
+        if element.is_way():
+            written[element.id] = {t.k: t.v for t in element.tags}
+    assert written == {10: tags}
