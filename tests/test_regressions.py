@@ -3521,3 +3521,45 @@ def test_to_pbf_crops_to_the_polygon_with_the_objects_workers(tmp_path, monkeypa
     assert sorted(zip(cropped["osm_type"], cropped["id"])) == sorted(
         zip(read["osm_type"], read["id"])
     )
+
+
+def test_extracts_with_the_same_file_name_download_to_their_own_files(tmp_path):
+    """``get_data("usa/georgia")`` and ``get_data("europe/georgia")`` both saved
+    ``georgia-latest.osm.pbf``, so the second returned the first one's file, and the
+    Geofabrik downloads of ``get_data_by_bbox`` and ``get_data_by_area`` shared the name
+    too. A file name that several extracts have gets the extract's region in front."""
+    import io
+
+    from pyrosm import get_data
+    from pyrosm.data.geofabrik_index import extract_file_name
+
+    class Response(io.BytesIO):
+        status = 200
+
+        def __init__(self, url):
+            super().__init__(url.encode())
+            self.headers = {"Content-Length": str(len(url))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+
+    class Opener:
+        def open(self, request, timeout=None):
+            return Response(request.full_url)
+
+    paths = [
+        Path(get_data(name, directory=tmp_path, opener=Opener(), progress=False))
+        for name in ("usa/georgia", "europe/georgia")
+    ]
+    assert [p.name for p in paths] == [
+        "us-georgia-latest.osm.pbf",
+        "europe-georgia-latest.osm.pbf",
+    ]
+    urls = [p.read_bytes().decode() for p in paths]  # each file holds its own download
+    assert urls[0].endswith("download.geofabrik.de/north-america/us/georgia-latest.osm.pbf")
+    assert urls[1].endswith("download.geofabrik.de/europe/georgia-latest.osm.pbf")
+    finland = "https://download.geofabrik.de/europe/finland-latest.osm.pbf"
+    assert extract_file_name(finland) == "finland-latest.osm.pbf"

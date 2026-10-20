@@ -160,15 +160,15 @@ def test_get_data_by_geocoding_crop_default_names_by_place(monkeypatch):
         lambda url, filename, update, directory, progress: helsinki,
     )
     out = pyrosm.get_data_by_geocoding("Brighton and Hove, UK")
-    assert Path(out).name == "brighton-and-hove-uk.osm.pbf"
+    assert Path(out).name == "area_brighton-and-hove-uk.osm.pbf"
     assert Path(out).stat().st_size < Path(helsinki).stat().st_size
     assert pyrosm.OSM(out).get_buildings() is not None
 
 
 def test_slug_filename():
-    assert gc._slug_filename("Brighton and Hove, UK") == "brighton-and-hove-uk.osm.pbf"
-    assert gc._slug_filename("  Some, Place!!  ") == "some-place.osm.pbf"
-    assert gc._slug_filename("???") == "place.osm.pbf"
+    assert gc._slug_filename("Brighton and Hove, UK") == "area_brighton-and-hove-uk.osm.pbf"
+    assert gc._slug_filename("  Some, Place!!  ") == "area_some-place.osm.pbf"
+    assert gc._slug_filename("???") == "area_place.osm.pbf"
 
 
 @pytest.mark.live_download

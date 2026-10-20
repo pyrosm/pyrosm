@@ -6,12 +6,15 @@ of Geofabrik's ``index-v1.json`` (``geofabrik_index.geojson.gz``), a GeoJSON
 snapshot with ``scripts/update_extract_indexes.py``.
 """
 
+import collections
+import functools
 import gzip
 import json
 import logging
 import tempfile
 import warnings
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
 
 import geopandas as gpd
 import numpy as np
@@ -42,6 +45,31 @@ def _features_to_gdf(features):
             lambda u: u.get("pbf") if isinstance(u, dict) else None
         )
     return gdf
+
+
+@functools.lru_cache(maxsize=None)
+def _shared_file_names():
+    """The file names, in lower case, that several extracts of the vendored index have,
+    such as ``georgia-latest.osm.pbf`` of the US state and of the country."""
+    with gzip.open(_INDEX_PATH, "rt", encoding="utf-8") as f:
+        features = json.load(f)["features"]
+    counts = collections.Counter(
+        PurePosixPath(urlparse(url).path).name.lower()
+        for url in (feature["properties"].get("pbf") for feature in features)
+        if url
+    )
+    return frozenset(name for name, count in counts.items() if count > 1)
+
+
+def extract_file_name(url, name=None):
+    """The local file name of the extract at ``url``: ``name`` (by default the file name
+    of the URL), or, when other Geofabrik extracts have the same file name, the URL's
+    file name with its region in front (``us-georgia-latest.osm.pbf``,
+    ``europe-georgia-latest.osm.pbf``)."""
+    path = PurePosixPath(urlparse(url).path)
+    if path.name.lower() in _shared_file_names():
+        return "%s-%s" % (path.parent.name, path.name)
+    return name or path.name
 
 
 def _load_index(update=False):
@@ -161,7 +189,7 @@ def _download_optionally_crop(
     from pyrosm.utils.download import download as _download_file
 
     full_path = _download_file(
-        url, Path(url).name, update, directory, progress=progress
+        url, extract_file_name(url), update, directory, progress=progress
     )
     if not crop:
         return full_path

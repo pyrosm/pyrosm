@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from pyrosm.utils.download import download
+from pyrosm.data.geofabrik_index import extract_file_name
 from pyrosm.data.geofabrik import (
     Africa,
     Antarctica,
@@ -161,9 +162,13 @@ available = {
 def retrieve(
     data, update, directory, headers=None, timeout=60, opener=None, progress=None
 ):
+    """Download the dataset ``data`` (its ``url`` and file ``name``) into ``directory``
+    (see :func:`pyrosm.utils.download.download`), under its name, or under a name with
+    its region when other extracts have the same file name (see
+    :func:`pyrosm.data.geofabrik_index.extract_file_name`)."""
     return download(
         url=data["url"],
-        filename=data["name"],
+        filename=extract_file_name(data["url"], data["name"]),
         update=update,
         target_dir=directory,
         headers=headers,
