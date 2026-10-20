@@ -19,6 +19,7 @@ from pyrosm.utils import (
     validate_graph_type,
     validate_engine,
     validate_workers,
+    records_read,
     get_bounding_box,
     get_unix_time,
     warn_about_timestamp_not_set,
@@ -51,9 +52,51 @@ from pyrosm.graphs import (
 # Aliased so the module does not collide with the ``engine`` constructor
 # parameter / ``self.engine`` attribute of the same name.
 from pyrosm import engine as engine_backend
-from pyrosm.engine.readers import graph_network
+from pyrosm.engine.readers import (
+    _boundary_filter,
+    _poi_filter,
+    _require_layer_key,
+    graph_network,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _network_filter_type(custom_filter, filter_type):
+    """``(custom_filter, filter_type)`` of a ``get_network`` call, validated: with a filter,
+    ``filter_type`` defaults to ``"keep"`` for an advanced filter and ``"exclude"`` for a
+    plain dict; without one it is ``"exclude"`` (the network type's own filter applies).
+    """
+    if custom_filter is None:
+        return None, "exclude"
+    custom_filter = validate_custom_filter(custom_filter)
+    if filter_type is None:
+        return custom_filter, (
+            "keep" if isinstance(custom_filter, CompiledFilter) else "exclude"
+        )
+    if isinstance(filter_type, str) and filter_type.lower() in ("keep", "exclude"):
+        return custom_filter, filter_type.lower()
+    raise ValueError("'filter_type' -parameter should be either 'keep' or 'exclude'. ")
+
+
+def _network_read_filter(args):
+    """The filter a ``get_network`` call selects its ways by (see
+    :func:`pyrosm.utils.records_read`): its ``custom_filter`` when that keeps, otherwise
+    the ways with a ``highway`` tag."""
+    custom_filter, filter_type = _network_filter_type(
+        args["custom_filter"], args["filter_type"]
+    )
+    return custom_filter if filter_type == "keep" else {"highway": [True]}
+
+
+def _custom_read_filter(args):
+    """The filter a ``get_data_by_custom_criteria`` call selects its elements by (see
+    :func:`pyrosm.utils.records_read`): its ``custom_filter`` with ``filter_type="keep"``;
+    ``None`` for an exclude filter or a read of every element."""
+    custom_filter, filter_type = args["custom_filter"], args["filter_type"]
+    if custom_filter is None or filter_type.lower() != "keep":
+        return None
+    return validate_custom_filter(custom_filter)
 
 
 class OSM:
@@ -357,6 +400,7 @@ class OSM:
             warn_about_timestamp_not_set(unix_time)
 
     @logged("network_type", "nodes")
+    @records_read(_network_read_filter)
     def get_network(
         self,
         network_type="walking",
@@ -460,26 +504,9 @@ class OSM:
         `https://wiki.openstreetmap.org/wiki/Key:highway <https://wiki.openstreetmap.org/wiki/Key:highway>`__
         """
         # Resolve the custom filter and filter_type once, so the engine and in-memory paths
-        # agree. An advanced (regex/bracket) filter compiles to a CompiledFilter and defaults
-        # to 'keep' (Overpass union semantics); a plain-dict filter and the predefined
-        # network_type presets default to 'exclude'.
-        advanced_filter = False
-        if custom_filter is not None:
-            custom_filter = validate_custom_filter(custom_filter)
-            advanced_filter = isinstance(custom_filter, CompiledFilter)
-            if filter_type is None:
-                filter_type = "keep" if advanced_filter else "exclude"
-            elif isinstance(filter_type, str) and filter_type.lower() in (
-                "keep",
-                "exclude",
-            ):
-                filter_type = filter_type.lower()
-            else:
-                raise ValueError(
-                    "'filter_type' -parameter should be either 'keep' or 'exclude'. "
-                )
-        else:
-            filter_type = "exclude"
+        # agree.
+        custom_filter, filter_type = _network_filter_type(custom_filter, filter_type)
+        advanced_filter = isinstance(custom_filter, CompiledFilter)
 
         if self._use_engine(timestamp):
             result = self._read_engine(
@@ -549,6 +576,7 @@ class OSM:
         return record_network_type(edges, network_type)
 
     @logged()
+    @records_read(lambda args: _require_layer_key(args["custom_filter"], "building"))
     def get_buildings(
         self,
         custom_filter=None,
@@ -642,6 +670,7 @@ class OSM:
         return gdf
 
     @logged()
+    @records_read(lambda args: _require_layer_key(args["custom_filter"], "landuse"))
     def get_landuse(
         self,
         custom_filter=None,
@@ -737,6 +766,7 @@ class OSM:
         return gdf
 
     @logged()
+    @records_read(lambda args: _require_layer_key(args["custom_filter"], "natural"))
     def get_natural(
         self,
         custom_filter=None,
@@ -832,6 +862,11 @@ class OSM:
         return gdf
 
     @logged()
+    @records_read(
+        lambda args: _boundary_filter(
+            args["custom_filter"], validate_boundary_type(args["boundary_type"])
+        )
+    )
     def get_boundaries(
         self,
         boundary_type="administrative",
@@ -953,6 +988,7 @@ class OSM:
         return gdf
 
     @logged()
+    @records_read(lambda args: _poi_filter(args["custom_filter"]))
     def get_pois(
         self,
         custom_filter=None,
@@ -1042,12 +1078,7 @@ class OSM:
                 warn_empty_result("pois")
             return gdf
 
-        # If custom_filter has not been defined, initialize with default
-        if custom_filter is None:
-            custom_filter = {"amenity": True, "shop": True, "tourism": True}
-        else:
-            # Validate / compile the filter (also accepts advanced regex & bracket forms).
-            custom_filter = validate_custom_filter(custom_filter)
+        custom_filter = _poi_filter(custom_filter)
 
         self._read_pbf(timestamp)
 
@@ -1090,6 +1121,7 @@ class OSM:
         return gdf
 
     @logged()
+    @records_read(_custom_read_filter)
     def get_data_by_custom_criteria(
         self,
         custom_filter=None,
@@ -1370,11 +1402,15 @@ class OSM:
         GeoDataFrame.
 
         The whole cached dataset (all nodes/ways/relations read from the source)
-        is written. Each row of ``data`` updates the tags of the matching element
-        (by ``osm_type`` + ``id``); rows whose ``id`` is not in the source are
+        is written. The tag columns of a row (and its JSON ``tags``) are the tags written
+        for the matching element (by ``osm_type`` + ``id``), so a tag whose column is
+        left out of the frame is not written; rows whose ``id`` is not in the source are
         added as new elements synthesized from their geometry (with negative ids).
         A frame without tag columns (only ``id``, ``osm_type``, the geometry and other
         structural columns) changes no tags: the elements it matches keep their own.
+        When elements lose the tag their read selected them by, e.g. buildings written
+        without a ``building`` column, a ``UserWarning`` says how many and which reader
+        will no longer find them in the written file.
         Topology and coordinates come from the data pyrosm read, so the output is
         faithful and re-readable (e.g. by pyrosm, osmium, GDAL and r5py/R5).
 

@@ -110,6 +110,20 @@ class CompiledFilter:
         """Every referenced key, so callers can expose filter keys as result columns."""
         return sorted({condition.key for group in self.groups for condition in group})
 
+    def to_json(self):
+        """The filter as nested lists that JSON can hold (a frame's ``attrs`` must be JSON
+        for pandas to write them): a list per AND-group of ``[key, operator, value, flags]``
+        per condition."""
+        return [
+            [[c.key, c.operator, c.value, c.flags] for c in group]
+            for group in self.groups
+        ]
+
+    @classmethod
+    def from_json(cls, groups):
+        """The filter whose :meth:`to_json` is ``groups``."""
+        return cls(tuple(tuple(Condition(*c) for c in group) for group in groups))
+
     def renamed(self, old, new):
         """The filter with every condition on the key ``old`` reading the key ``new``."""
         return CompiledFilter(
@@ -340,6 +354,15 @@ def rename_filter_key(data_filter, osm_keys, old, new):
     else:
         osm_keys = [new if k == old else k for k in osm_keys]
     return data_filter, osm_keys
+
+
+def as_compiled_filter(custom_filter):
+    """``custom_filter`` (a plain dict filter or a :class:`CompiledFilter`) as a
+    :class:`CompiledFilter`, whose :meth:`~CompiledFilter.matches` tests an element's tags.
+    """
+    if isinstance(custom_filter, CompiledFilter):
+        return custom_filter
+    return CompiledFilter(_dict_to_groups(custom_filter))
 
 
 def compile_custom_filter(custom_filter):

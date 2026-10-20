@@ -1,6 +1,8 @@
 from shapely import ops
 from shapely.geometry import MultiLineString, Polygon, MultiPolygon, box
 from pyrosm.exceptions import PBFNotImplemented
+import functools
+import inspect
 import os
 from pathlib import Path
 import geopandas as gpd
@@ -84,6 +86,54 @@ def require_layer_key(custom_filter, key, values=True):
             return custom_filter
         custom_filter = CompiledFilter(_dict_to_groups(custom_filter))
     return custom_filter.and_require(key, values)
+
+
+def set_frame_attr(result, key, value):
+    """Set ``attrs[key]`` to ``value`` on the frame(s) of a read's ``result`` (a frame or a
+    tuple of frames); entries that are not frames (an empty read's ``None``) are left alone.
+    Returns ``result``."""
+    frames = result if isinstance(result, tuple) else (result,)
+    for frame in frames:
+        if isinstance(frame, pd.DataFrame):
+            frame.attrs[key] = value
+    return result
+
+
+def records_read(read_filter):
+    """Decorate an ``OSM`` reader so that the frame(s) it returns note, in
+    ``attrs["pyrosm_read"]``, the reader's name and the filter it selected their elements
+    by, as JSON (see :meth:`pyrosm.filter_compiler.CompiledFilter.to_json`). ``write_pbf``
+    uses the note to warn when written elements would no longer match. ``read_filter`` gets
+    the call's arguments by name and returns that filter, or ``None`` to note nothing. The
+    nodes of a ``(nodes, edges)`` pair note an empty filter: they are in the result for the
+    ways that use them, not for tags of their own.
+    """
+    from pyrosm.filter_compiler import as_compiled_filter
+
+    def decorate(method):
+        signature = inspect.signature(method)
+
+        @functools.wraps(method)
+        def wrapper(*args, **kwargs):
+            result = method(*args, **kwargs)
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            selected_by = read_filter(bound.arguments)
+            if selected_by is None:
+                return result
+            note = {
+                "reader": method.__name__,
+                "filter": as_compiled_filter(selected_by).to_json(),
+            }
+            if isinstance(result, tuple):
+                set_frame_attr(result[:-1], "pyrosm_read", dict(note, filter=[]))
+                set_frame_attr(result[-1], "pyrosm_read", note)
+                return result
+            return set_frame_attr(result, "pyrosm_read", note)
+
+        return wrapper
+
+    return decorate
 
 
 def validate_osm_keys(osm_keys):

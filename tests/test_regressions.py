@@ -3282,3 +3282,79 @@ def test_auto_workers_count_the_cores_the_process_may_use(monkeypatch, functions
 
     monkeypatch.setattr(pool, "os", types.SimpleNamespace(**functions))
     assert pool._available_cores() == expected
+
+
+@pytest.mark.parametrize(
+    "case, expected",
+    [
+        (
+            "only_name",
+            "486 elements would no longer be found by get_buildings(): their 'building' "
+            "tag is not in the frame",
+        ),
+        ("note_gone", "486 elements are written without their 'building' tag"),
+        ("building_kept", None),
+        ("value_changed", None),
+        ("network_nodes", None),
+        ("deleted", None),
+        (
+            "unreadable_note",
+            "1 element is written without its 'building' tag; get_buildings() will not "
+            "find it",
+        ),
+    ],
+)
+def test_write_pbf_warns_when_elements_lose_the_tag_they_were_read_by(
+    case, expected, tmp_path
+):
+    """#588: ``write_pbf`` writes the tags a frame carries and warns when elements lose the
+    tag their read selected them by: naming the reader while the frame notes its read, and
+    the tags pyrosm's readers detect features by once the note is gone (e.g. after a
+    merge). It gave no warning. A changed value is an edit, the nodes of a network are kept
+    for their ways and a deleted element is not written, so none of these warns."""
+    import json
+    import warnings
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    buildings = osm.get_buildings()
+    json.dumps(buildings.attrs)  # plain JSON, which pandas needs to write attrs to Parquet
+    named = buildings[["id", "osm_type", "name", "geometry"]]
+    delete = None
+    if case == "only_name":
+        frame = named
+    elif case == "note_gone":
+        frame = named.copy()
+        frame.attrs.clear()
+    elif case == "building_kept":
+        frame = buildings[["id", "osm_type", "name", "building", "geometry"]]
+    elif case == "value_changed":
+        yes = osm.get_buildings(custom_filter={"building": ["yes"]})
+        frame = yes[["id", "osm_type", "building", "geometry"]].iloc[:1].copy()
+        frame["building"] = "house"
+    elif case == "network_nodes":
+        nodes, _ = osm.get_network(nodes=True)
+        frame = nodes[["id", "geometry"]].assign(note="checked")
+    elif case == "deleted":
+        frame = named[named["osm_type"] == "way"].iloc[:1]
+        delete = [("way", int(frame["id"].iloc[0]))]
+    else:
+        frame = named.iloc[:1].copy()
+        frame.attrs["pyrosm_read"] = "unreadable"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        osm.write_pbf(
+            frame, str(tmp_path / "out.osm.pbf"), subset_only=True, delete=delete
+        )
+    lost = [
+        w
+        for w in caught
+        if "no longer be found" in str(w.message) or "written without" in str(w.message)
+    ]
+    if expected is None:
+        assert lost == []
+    else:
+        assert len(lost) == 1 and expected in str(lost[0].message), lost
+        assert lost[0].filename == __file__  # it points at the user's call
+
