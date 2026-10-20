@@ -93,9 +93,12 @@ def _network_read_filter(args):
 
 def _custom_read_filter(args):
     """The filter a ``get_data_by_custom_criteria`` call selects its elements by (see
-    :func:`pyrosm.utils.records_read`): its ``custom_filter`` with ``filter_type="keep"``;
+    :func:`pyrosm.utils.records_read`): its ``custom_filter`` with ``filter_type="keep"``,
+    or the keys of ``osm_keys_to_keep`` alone (see :func:`pyrosm.utils.keys_as_filter`);
     ``None`` for an exclude filter or a read of every element."""
-    custom_filter, filter_type = args["custom_filter"], args["filter_type"]
+    custom_filter, filter_type = keys_as_filter(
+        args["custom_filter"], args["osm_keys_to_keep"], args["filter_type"]
+    )
     if custom_filter is None or filter_type.lower() != "keep":
         return None
     return validate_custom_filter(custom_filter)

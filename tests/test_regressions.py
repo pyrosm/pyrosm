@@ -3690,6 +3690,8 @@ def test_osm_keys_to_keep_alone_keeps_the_elements_with_the_keys(engine):
                 osm_keys_to_keep="building", filter_type=filter_type
             )
             assert sorted(zip(*read[["osm_type", "id"]].values.T)) == buildings
+            # The read notes the key it selected by (see write_pbf's lost-tag warning).
+            assert "building" in str(read.attrs["pyrosm_read"]["filter"])
 
 
 @pytest.mark.parametrize("engine", ["out_of_core", "in_memory"])
