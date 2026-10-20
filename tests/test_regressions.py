@@ -3493,3 +3493,31 @@ def test_write_pbf_writes_the_mapper_tags_not_pyrosm_columns(read, tmp_path):
         if element.is_way():
             written[element.id] = {t.k: t.v for t in element.tags}
     assert written == {10: tags}
+
+
+def test_to_pbf_crops_to_the_polygon_with_the_objects_workers(tmp_path, monkeypatch):
+    """``OSM(bounding_box=polygon).to_pbf()`` cropped to the polygon's bounding
+    rectangle, so the file held features outside the polygon that reading with it
+    leaves out, and it ignored ``OSM(workers=...)``. It crops to the polygon with the
+    object's workers, and reading the file returns the features of the read."""
+    from shapely.geometry import Polygon
+
+    import pyrosm.pbf_export
+    from pyrosm import OSM, get_data
+
+    crop_pbf = pyrosm.pbf_export.crop_pbf
+    workers = []
+
+    def recording_crop(*args, **kwargs):
+        workers.append(kwargs["workers"])
+        return crop_pbf(*args, **kwargs)
+
+    monkeypatch.setattr(pyrosm.pbf_export, "crop_pbf", recording_crop)
+    triangle = Polygon([(24.935, 60.165), (24.945, 60.165), (24.935, 60.170)])
+    osm = OSM(get_data("helsinki_pbf"), bounding_box=triangle, workers=2)
+    read = osm.get_buildings()
+    cropped = OSM(osm.to_pbf(str(tmp_path / "triangle.osm.pbf"))).get_buildings()
+    assert workers == [2]
+    assert sorted(zip(cropped["osm_type"], cropped["id"])) == sorted(
+        zip(read["osm_type"], read["id"])
+    )

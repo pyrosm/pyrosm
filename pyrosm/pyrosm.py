@@ -1315,10 +1315,9 @@ class OSM:
         so geometries are not cut at the box edge. The crop streams the source
         file blob-by-blob and never loads it fully into memory.
 
-        A ``Polygon``/``MultiPolygon`` ``bounding_box`` is cropped by its envelope
-        (bounding rectangle), matching how ``OSM()`` itself filters by a polygon
-        bounding box, so a cropped-and-reread file matches reading the source with
-        the same ``bounding_box``.
+        A ``Polygon``/``MultiPolygon`` ``bounding_box`` crops to the polygon itself,
+        as ``OSM()`` reads by it, so reading the cropped file returns the features
+        that reading the source with the same ``bounding_box`` does.
 
         Parameters
         ----------
@@ -1332,9 +1331,10 @@ class OSM:
             written; when ``False`` no relations are written.
 
         workers : int | str
-            Number of threads for the CPU-heavy per-block work. By default (``None``,
-            as ``"auto"``) the count is chosen as an out-of-core read does for a file of
-            this size; ``1`` runs sequentially. Every count produces a byte-identical
+            Number of threads for the CPU-heavy per-block work. By default (``None``)
+            the ``workers`` of this ``OSM`` object; when that is not set either, the
+            count is chosen as an out-of-core read does for a file of this size (as
+            ``"auto"``); ``1`` runs sequentially. Every count produces a byte-identical
             output. With ``PYROSM_DECODE_BACKEND=processes`` they are worker processes,
             one by default; when those cannot run (on macOS and Windows: a script
             without an ``if __name__ == "__main__":`` guard, or one read from stdin), the
@@ -1374,15 +1374,18 @@ class OSM:
                 "object with `OSM(filepath, bounding_box=...)` before calling "
                 "`to_pbf()`."
             )
+        region = {"bounding_box": self.bounding_box}
+        if isinstance(self.bounding_box, (Polygon, MultiPolygon)):
+            region = {"polygon": self.bounding_box}
         return crop_pbf(
             self.filepath,
             output_path,
-            self.bounding_box,
             keep_relations=keep_relations,
-            workers=workers,
+            workers=self.workers if workers is None else workers,
             compact=compact,
             repack=repack,
             progress=self.progress,
+            **region,
         )
 
     def write_pbf(
