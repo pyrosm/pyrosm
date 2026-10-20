@@ -545,6 +545,22 @@ def get_data_by_custom_criteria(
     )
 
 
+def _network_filter_type(custom_filter, filter_type):
+    """``(custom_filter, filter_type)`` of a network read, validated: with a filter,
+    ``filter_type`` defaults to ``"keep"``, as in every other reader; without one it is
+    ``"exclude"`` (the network type's own filter applies)."""
+    from pyrosm.utils import validate_custom_filter
+
+    if custom_filter is None:
+        return None, "exclude"
+    custom_filter = validate_custom_filter(custom_filter)
+    if filter_type is None:
+        return custom_filter, "keep"
+    if isinstance(filter_type, str) and filter_type.lower() in ("keep", "exclude"):
+        return custom_filter, filter_type.lower()
+    raise ValueError("'filter_type' -parameter should be either 'keep' or 'exclude'.")
+
+
 def _network_filter(network_type):
     """Resolve a predefined ``network_type`` to its filter dict, mirroring
     ``OSM._get_network_filter``."""
@@ -725,7 +741,7 @@ def _network_spec(
     filter_spec)``, the filter ``(network_keys, data_filter, filter_type)`` with the keys
     whose ways are read."""
     from pyrosm.config import Conf
-    from pyrosm.utils import read_tag_columns, validate_custom_filter
+    from pyrosm.utils import read_tag_columns
     from pyrosm.filter_compiler import CompiledFilter
 
     # The network type drives the graph semantics even with a custom_filter, so it is
@@ -737,20 +753,8 @@ def _network_spec(
     network_keys = ["highway"]
     column_keys = ["highway"]
     if custom_filter is not None:
-        custom_filter = validate_custom_filter(custom_filter)
+        custom_filter, filter_type = _network_filter_type(custom_filter, filter_type)
         advanced_filter = isinstance(custom_filter, CompiledFilter)
-        # Advanced filters default to 'keep' (Overpass union); plain-dict filters to 'exclude'.
-        if filter_type is None:
-            filter_type = "keep" if advanced_filter else "exclude"
-        elif isinstance(filter_type, str) and filter_type.lower() in (
-            "keep",
-            "exclude",
-        ):
-            filter_type = filter_type.lower()
-        else:
-            raise ValueError(
-                "'filter_type' -parameter should be either 'keep' or 'exclude'."
-            )
         network_filter = custom_filter
         # The filter keys are columns too (e.g. 'bicycle', 'service').
         column_keys = custom_filter.keys()

@@ -59,29 +59,13 @@ from pyrosm.graphs import (
 from pyrosm import engine as engine_backend
 from pyrosm.engine.readers import (
     _boundary_filter,
+    _network_filter_type,
     _poi_filter,
     _require_layer_key,
     graph_network,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _network_filter_type(custom_filter, filter_type):
-    """``(custom_filter, filter_type)`` of a ``get_network`` call, validated: with a filter,
-    ``filter_type`` defaults to ``"keep"`` for an advanced filter and ``"exclude"`` for a
-    plain dict; without one it is ``"exclude"`` (the network type's own filter applies).
-    """
-    if custom_filter is None:
-        return None, "exclude"
-    custom_filter = validate_custom_filter(custom_filter)
-    if filter_type is None:
-        return custom_filter, (
-            "keep" if isinstance(custom_filter, CompiledFilter) else "exclude"
-        )
-    if isinstance(filter_type, str) and filter_type.lower() in ("keep", "exclude"):
-        return custom_filter, filter_type.lower()
-    raise ValueError("'filter_type' -parameter should be either 'keep' or 'exclude'. ")
 
 
 def _network_read_filter(args):
@@ -489,9 +473,10 @@ class OSM:
 
         filter_type : str (optional)
             Whether `custom_filter` should `'keep'` or `'exclude'` the matching ways. Only
-            consulted when `custom_filter` is given. When omitted it defaults to `'keep'` for
-            a regex/bracket (advanced) filter and `'exclude'` for a plain-dict filter; the
-            predefined `network_type` filters are always applied as `'exclude'`.
+            consulted when `custom_filter` is given. When omitted it defaults to `'keep'`,
+            as in every other reader and for every form of the filter (a plain dict, a
+            regex or a bracket filter); the predefined `network_type` filters are always
+            applied as `'exclude'`.
 
         timestamp: str | datetime | int
             If provided, the data from given moment of time will be returned. The time should be provided in UTC.

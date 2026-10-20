@@ -3785,3 +3785,25 @@ def test_readers_keep_the_key_they_select_by_as_a_column(engine):
         osm.get_data_by_custom_criteria(
             {"shop": True}, tags_as_columns=columns, tags_to_keep=columns
         )
+
+
+@pytest.mark.parametrize("engine", ["out_of_core", "in_memory"])
+def test_get_network_plain_dict_filter_keeps_its_matches(engine):
+    """``get_network(custom_filter={"highway": ["footway"]})`` returned every way but the
+    footways, while the same filter as a regular expression or a bracket filter, and a
+    plain dict in every other reader, keeps the matches. Every form keeps them;
+    ``filter_type="exclude"`` gives the other ways."""
+    import re
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"), engine=engine)
+    forms = (
+        {"highway": ["footway"]},
+        {"highway": [re.compile("^footway$")]},
+        '["highway"="footway"]',
+    )
+    ids = [sorted(osm.get_network(custom_filter=form)["id"]) for form in forms]
+    assert ids[0] == ids[1] == ids[2] and len(ids[0]) > 0
+    others = osm.get_network(custom_filter=forms[0], filter_type="exclude")
+    assert "footway" not in set(others["highway"]) and not set(others["id"]) & set(ids[0])
