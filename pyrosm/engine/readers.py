@@ -454,16 +454,12 @@ def get_boundaries(
         progress=progress,
         keep_node_info=keep_node_info,
     )
-    # Name post-filter (substring match), as OSM.get_boundaries does. The output= + name
-    # combination is rejected above, so reaching here means an in-memory frame.
+    # The name post-filter, as OSM.get_boundaries does. The output= + name combination is
+    # rejected above, so reaching here means an in-memory frame.
     if name is not None and gdf is not None:
-        if "name" not in gdf.columns:
-            raise ValueError(
-                "Could not filter by name from given area. "
-                "Any of the OSM elements did not have a name tag."
-            )
-        gdf = gdf.dropna(subset=["name"])
-        gdf = gdf.loc[gdf["name"].str.contains(name)].reset_index(drop=True).copy()
+        from pyrosm.boundary import boundaries_named
+
+        gdf = boundaries_named(gdf, name)
     return gdf
 
 
@@ -493,17 +489,22 @@ def get_data_by_custom_criteria(
     which element kinds are returned; ``extra_attributes`` adds further tag columns.
     ``keep_other_tags=False`` resolves only the requested tags (``tags_as_columns`` plus the
     filter keys) and drops the JSON ``tags`` column of leftovers, so the read does minimal
-    tag work. ``custom_filter=None`` reads every tagged element (``filter_type`` and
-    ``osm_keys_to_keep`` are then not used), with the default columns of every known
-    feature as tag columns. See :func:`_get_layer` for the other keyword arguments."""
+    tag work. ``custom_filter=None`` reads every tagged element (``filter_type`` is then
+    not used), with the default columns of every known feature as tag columns, or, with
+    ``osm_keys_to_keep``, every element with one of those keys. See :func:`_get_layer` for the other keyword arguments.
+    """
     from pyrosm.config import Conf
     from pyrosm.utils import (
+        keys_as_filter,
         validate_custom_filter,
         validate_osm_keys,
         validate_tags_as_columns,
     )
 
     validate_osm_keys(osm_keys_to_keep)
+    custom_filter, filter_type = keys_as_filter(
+        custom_filter, osm_keys_to_keep, filter_type
+    )
     keep_all = custom_filter is None
     if keep_all:
         # Every tagged element: there is nothing to keep or exclude by value, and the

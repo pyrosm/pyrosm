@@ -136,6 +136,16 @@ def records_read(read_filter):
     return decorate
 
 
+def keys_as_filter(custom_filter, osm_keys_to_keep, filter_type):
+    """``(custom_filter, filter_type)`` of a custom read: as given, or, with only
+    ``osm_keys_to_keep``, a filter keeping every element with one of its keys (there is
+    no value filter to exclude by, so ``filter_type`` is ``"keep"``)."""
+    if custom_filter is not None or osm_keys_to_keep is None:
+        return custom_filter, filter_type
+    keys = [osm_keys_to_keep] if isinstance(osm_keys_to_keep, str) else osm_keys_to_keep
+    return {key: True for key in keys}, "keep"
+
+
 def validate_osm_keys(osm_keys):
     """Raise ``ValueError`` unless ``osm_keys`` (``osm_keys_to_keep``) is None, a key or a
     list of keys, without the key ``id``."""

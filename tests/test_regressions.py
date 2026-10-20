@@ -3670,3 +3670,78 @@ def test_get_graph_with_tags_to_keep_builds_the_default_graph(
         "cycling": ["oneway", "oneway:bicycle", "junction"],
     }[network_type]
     assert direction_tags("oneway", "walking") == []  # every edge is two-way
+
+
+@pytest.mark.parametrize("engine", ["out_of_core", "in_memory"])
+def test_osm_keys_to_keep_alone_keeps_the_elements_with_the_keys(engine):
+    """``get_data_by_custom_criteria(osm_keys_to_keep=...)`` without a ``custom_filter``
+    returned every element of the file. The keys are the first level of filtering, so
+    only the elements with one of them are returned, whatever ``filter_type`` says."""
+    import warnings
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"), engine=engine)
+    buildings = sorted(zip(*osm.get_buildings()[["osm_type", "id"]].values.T))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for filter_type in ("keep", "exclude"):
+            read = osm.get_data_by_custom_criteria(
+                osm_keys_to_keep="building", filter_type=filter_type
+            )
+            assert sorted(zip(*read[["osm_type", "id"]].values.T)) == buildings
+
+
+@pytest.mark.parametrize("engine", ["out_of_core", "in_memory"])
+def test_get_boundaries_finds_the_name_as_plain_text(engine, tmp_path):
+    """``get_boundaries(name=...)`` matched the name as a case-sensitive regular
+    expression, so "Frankfurt (Oder)" was never found and "(" raised an error, and no
+    match gave an empty frame without a warning. The name is plain text, case is ignored,
+    and no match gives None with the usual warning."""
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    corners = [(0, 0), (0.01, 0), (0.01, 0.01), (0, 0.01)]
+    lon = [24.90 + x for x in (0, 0.02) for x, _ in corners]
+    lat = [60.10 + y for _ in (0, 0.02) for _, y in corners]
+    nodes = {
+        "id": np.arange(1, 9, dtype=np.int64),
+        "lon": np.array(lon),
+        "lat": np.array(lat),
+        "version": np.ones(8, dtype=np.int64),
+        "timestamp": np.full(8, 1600000000, dtype=np.int64),
+        "changeset": np.zeros(8, dtype=np.int64),
+        "tags": [None] * 8,
+    }
+    ways = [
+        {"id": 10 + i, "refs": refs, "version": 1, "timestamp": 1600000000, "tags": {}}
+        for i, refs in enumerate(([1, 2, 3, 4, 1], [5, 6, 7, 8, 5]))
+    ]
+    relations = [
+        {
+            "id": 20 + i,
+            "members": [("way", 10 + i, "outer")],
+            "version": 1,
+            "timestamp": 1600000000,
+            "changeset": 0,
+            "tags": {"type": "boundary", "boundary": "administrative", "name": name},
+        }
+        for i, name in enumerate(("Frankfurt (Oder)", "Kamppi"))
+    ]
+    path = write_pbf_from_records(
+        nodes,
+        ways,
+        relations,
+        str(tmp_path / "boundaries.osm.pbf"),
+        (24.9, 60.1, 24.93, 60.13),
+    )
+    osm = OSM(path, engine=engine)
+    assert osm.get_boundaries(name="frankfurt (oder)")["name"].tolist() == [
+        "Frankfurt (Oder)"
+    ]
+    assert osm.get_boundaries(name="(")["name"].tolist() == ["Frankfurt (Oder)"]
+    assert osm.get_boundaries(name="KAMP")["name"].tolist() == ["Kamppi"]
+    with pytest.warns(UserWarning, match="Could not find any boundaries"):
+        assert osm.get_boundaries(name="Helsinki") is None

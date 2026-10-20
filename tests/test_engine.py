@@ -2379,15 +2379,15 @@ def test_engine_boundaries_custom_filter_adds_boundary_key(helsinki_region_pbf):
     _assert_full_parity(mine, ref)
 
 
-def test_engine_boundaries_name_without_name_column_raises(helsinki_pbf, monkeypatch):
-    # name= on a result that has no 'name' column raises, as the in-memory reader does.
+def test_engine_boundaries_name_without_name_column_is_none(helsinki_pbf, monkeypatch):
+    # name= on a result that has no 'name' column finds nothing, as the in-memory
+    # reader does.
     from shapely.geometry import Point
     from pyrosm.engine import readers
 
     fake = gpd.GeoDataFrame({"id": [1]}, geometry=[Point(0, 0)])
     monkeypatch.setattr(readers, "_get_layer", lambda *a, **k: fake)
-    with pytest.raises(ValueError, match="Could not filter by name"):
-        readers.get_boundaries(helsinki_pbf, name="x")
+    assert readers.get_boundaries(helsinki_pbf, name="x") is None
 
 
 def test_engine_boundaries_name_with_output_raises(helsinki_pbf, tmp_path):

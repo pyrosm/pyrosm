@@ -9,6 +9,7 @@ from pyrosm.filter_compiler import CompiledFilter
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm.frames import create_nodes_gdf
 from pyrosm.utils import (
+    keys_as_filter,
     validate_custom_filter,
     validate_osm_keys,
     validate_tags_as_columns,
@@ -907,7 +908,9 @@ class OSM:
               - `"all"`
 
         name : str (optional)
-            Name of the administrative area that will be searched for.
+            Name of the administrative area that will be searched for: the boundaries
+            whose name contains this text, ignoring case (``"vuori"`` finds
+            ``"Punavuori"``), or None with a warning when no name does.
 
         custom_filter : dict (optional)
             Additional filter for what kind of boundary to parse: it narrows the boundaries
@@ -1156,12 +1159,14 @@ class OSM:
             key/value filtering (tagged nodes, ways, and relations); standalone
             ways with no tags are dropped. Reading everything is memory-heavy on
             large extracts, so prefer a pre-filtered PBF and/or a bounding box.
-            ``filter_type`` is ignored in this mode. A tag keyed ``id`` is filtered
+            ``filter_type`` is ignored in this mode. With ``osm_keys_to_keep``, the
+            elements with one of those keys are returned. A tag keyed ``id`` is filtered
             as ``id_tag``, the column it is returned in; ``id`` is the element's OSM id
             and not a filter key.
 
         osm_keys_to_keep : str | list
-            A filter to specify which OSM keys should be kept.
+            The keys an element must have one of to be returned: the first level of
+            filtering, before ``custom_filter``.
 
         filter_type : str
             "keep" | "exclude"
@@ -1206,6 +1211,10 @@ class OSM:
         # with no key/value filtering (issue #113). There is nothing to keep or exclude
         # by value then, so filter_type is ignored; it is pinned to a valid no-op so a
         # caller-supplied value cannot reject the request.
+        validate_osm_keys(osm_keys_to_keep)
+        custom_filter, filter_type = keys_as_filter(
+            custom_filter, osm_keys_to_keep, filter_type
+        )
         keep_all = custom_filter is None
         if keep_all:
             filter_type = "keep"

@@ -67,10 +67,11 @@ def test_get_boundaries_filter_by_name(helsinki_region_pbf):
     all_boundaries = osm.get_boundaries()
     assert "Kallio" in set(all_boundaries["name"].dropna())
 
+    # The name is found as text in any case, e.g. also in "Salmenkallio".
     only_kallio = osm.get_boundaries(name="Kallio")
     assert isinstance(only_kallio, GeoDataFrame)
-    assert len(only_kallio) >= 1
-    assert set(only_kallio["name"]) == {"Kallio"}
+    assert "Kallio" in set(only_kallio["name"])
+    assert all("kallio" in name.lower() for name in only_kallio["name"])
     assert len(only_kallio) < len(all_boundaries)
 
 
