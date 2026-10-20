@@ -290,6 +290,8 @@ class OSM:
         # Timestamp
         self._current_timestamp = None
         self._timestamp_changed = False
+        # The current time a history read without a timestamp uses, chosen once
+        self._implicit_now = None
 
         bbox = self.bounding_box
         if isinstance(bbox, list):
@@ -383,6 +385,10 @@ class OSM:
         return get_osm_filter(net_type)
 
     def _set_current_time(self, timestamp):
+        """Set the time a history read selects each element's version at: ``timestamp``,
+        or, for a history file read without one, the current UTC time chosen at the first
+        such read (with a warning). A changed time makes :meth:`_read_pbf` parse again.
+        """
         unix_time = None
         if timestamp is not None:
             unix_time = get_unix_time(timestamp, self._osh_file)
@@ -393,11 +399,13 @@ class OSM:
                 self._current_timestamp = unix_time
                 self._timestamp_changed = True
 
-        # In case OSH file is used but no timestamp is provided, use current UTC time
+        # In case OSH file is used but no timestamp is provided, use the current UTC
+        # time, chosen once for this object so that later reads reuse the parsed data
         elif self._osh_file:
-            unix_time = get_unix_time(pd.Timestamp.now(tz="UTC"), True)
-            self._set_current_time(unix_time)
-            warn_about_timestamp_not_set(unix_time)
+            if self._implicit_now is None:
+                self._implicit_now = get_unix_time(pd.Timestamp.now(tz="UTC"), True)
+                warn_about_timestamp_not_set(self._implicit_now)
+            self._set_current_time(self._implicit_now)
 
     @logged("network_type", "nodes")
     @records_read(_network_read_filter)
@@ -1178,7 +1186,8 @@ class OSM:
             columns and the rest are kept in a JSON ``tags`` column. ``False`` resolves only
             the requested tags (``tags_as_columns`` plus the filter keys) and drops the JSON
             ``tags`` column, so the read does minimal tag work. Only supported by the
-            out-of-core engine (``OSM(..., engine='out_of_core')``).
+            out-of-core engine (``OSM(..., engine='out_of_core')``), and not for history
+            reads (an ``.osh.pbf`` file or a ``timestamp``), which use the in-memory reader.
 
         timestamp: str | datetime | int
             If provided, the data from given moment of time will be returned. The time should be provided in UTC.
@@ -1230,6 +1239,11 @@ class OSM:
         # reader resolves every tag once and caches it for reuse across layers, so it cannot
         # honour the minimal-tags mode.
         if keep_other_tags is False:
+            if self.engine == "out_of_core":
+                raise ValueError(
+                    "keep_other_tags=False is not supported for history reads (an "
+                    ".osh.pbf file or a timestamp), which use the in-memory reader."
+                )
             raise ValueError(
                 "keep_other_tags=False is only supported by the out-of-core engine; "
                 "construct OSM(..., engine='out_of_core')."

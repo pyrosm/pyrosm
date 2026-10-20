@@ -424,10 +424,13 @@ def get_unix_time(timestamp, osh_file):
 
 
 def warn_about_timestamp_not_set(unix_time):
+    """Warn, at the user's call, that a history file is read at the current UTC time
+    ``unix_time`` because no timestamp was given."""
     warnings.warn(
         f"Reading OSH.PBF file without user-defined timestamp. Using the current UTC"
         f" time as timestamp: {unix_time_to_datetime(unix_time)}",
         UserWarning,
+        stacklevel=_stacklevel_outside_pyrosm(),
     )
 
 
