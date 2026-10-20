@@ -1738,8 +1738,9 @@ class OSM:
         osmnx_compatible : bool (default True)
             if True, modifies the edge and node-attribute naming to be compatible with OSMnx
             (allows utilizing all OSMnx functionalities): the node/edge id is renamed to
-            ``osmid``, node ``lat``/``lon`` to ``y``/``x``, and node ``tags`` are stored as a
-            JSON string. The node ``osmid`` is the key of the node in the graph and is not
+            ``osmid``, the nodes get ``x``/``y`` from their geometry, in the CRS of the
+            frames, in place of ``lon``/``lat``, and node ``tags`` are stored as a JSON
+            string. The node ``osmid`` is the key of the node in the graph and is not
             repeated as a node attribute.
             NOTE: Only applicable with "networkx" graph type.
 

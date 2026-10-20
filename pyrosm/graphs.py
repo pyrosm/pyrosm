@@ -221,6 +221,30 @@ def _segment_rows(edges, direction, force_bidirectional, network_type):
     )
 
 
+def _edges_between(nodes, edges, from_id_col, to_id_col, node_id_col):
+    """The rows of ``edges`` whose two end nodes are among ``nodes``: an edge to a node the
+    frame leaves out, e.g. after the nodes were cropped, cannot be in the graph."""
+    ids = nodes[node_id_col]
+    known = (edges[from_id_col].isin(ids) & edges[to_id_col].isin(ids)).to_numpy()
+    return edges if known.all() else edges[known]
+
+
+def _xy_from_geometry(nodes):
+    """``nodes`` with ``x`` and ``y`` from their geometry, in the CRS of the graph, in place
+    of the ``lon`` and ``lat`` degrees of the read and of any ``x`` and ``y`` they had.
+    """
+    nodes = nodes.drop(columns=["x", "y"], errors="ignore")
+    nodes = nodes.rename(columns={"lon": "x", "lat": "y"})
+    return nodes.assign(x=nodes.geometry.x.to_numpy(), y=nodes.geometry.y.to_numpy())
+
+
+def _routing_nodes(nodes, node_id_col):
+    """The nodes of a pandana or pandarm network: ``x`` and ``y`` from their geometry
+    and indexed by their id."""
+    nodes = nodes.set_index(node_id_col, drop=False).rename_axis([None])
+    return _xy_from_geometry(nodes)
+
+
 def graph_tables(
     nodes,
     edges,
@@ -236,7 +260,8 @@ def graph_tables(
 ):
     """The nodes and edges of a graph as GeoDataFrames, as the graph exporters build it: the
     edges directed (see :func:`get_directed_edges`), simplified when ``simplify`` and, unless
-    ``retain_all``, only the connected part kept. The parameters are those of
+    ``retain_all``, only the connected part kept. Edges with an end node that is not among
+    ``nodes`` are left out. The parameters are those of
     :func:`to_networkx`. The progress is shown as :func:`pyrosm.enable_logging` sets it, by
     step."""
     with _steps(
@@ -272,7 +297,9 @@ def _tables(
     simplify_kwargs,
     step,
 ):
-    """:func:`graph_tables`, reporting the start of each step to ``step(name)``.
+    """:func:`graph_tables`, reporting the start of each step to ``step(name)``. Edges whose
+    end nodes are not among ``nodes`` are left out (see :func:`_edges_between`), and the
+    edges returned are numbered from 0.
 
     With ``simplify``, the directed edges are row numbers of ``edges`` and a direction each
     (:func:`directed_rows`), and only the simplified edges become rows of a new table.
@@ -282,6 +309,8 @@ def _tables(
     for graph export (see :func:`pyrosm.engine.readers.graph_network`), always
     simplified, with the given ``network_type`` and the default id columns."""
     step("directing the edges")
+    if not isinstance(edges, _WayEdges):
+        edges = _edges_between(nodes, edges, from_id_col, to_id_col, node_id_col)
     if isinstance(edges, _WayEdges):
         rows, swapped = _segment_rows(
             edges, direction, force_bidirectional, network_type
@@ -331,7 +360,7 @@ def _tables(
         nodes, edges = get_connected_edges(
             nodes, edges, from_id_col, to_id_col, node_id_col
         )
-    return nodes, edges
+    return nodes, edges.reset_index(drop=True)
 
 
 def to_networkx(
@@ -402,8 +431,8 @@ def to_networkx(
     osmnx_compatible : bool (default True)
         if True, modifies the edge and node-attribute naming to be compatible with OSMnx
         (allows utilizing all OSMnx functionalities): the node/edge id is renamed to
-        ``osmid``, node ``lat``/``lon`` to ``y``/``x``, and node ``tags`` are stored as a
-        JSON string. The node ``osmid`` is the key of the node in the graph and is not
+        ``osmid``, the nodes get ``x``/``y`` from their geometry, in the CRS of the frames,
+        in place of ``lon``/``lat``, and node ``tags`` are stored as a JSON string. The node ``osmid`` is the key of the node in the graph and is not
         repeated as a node attribute. No ``key`` edge attribute is added; an edge column
         named ``key`` is renamed to ``key_tag``.
 
@@ -441,7 +470,7 @@ def to_networkx(
                 edges = edges.rename(columns={"key": "key_tag"})
 
             # Follow the naming convention of OSMnx
-            nodes = nodes.rename(columns={node_id_col: "osmid", "lat": "y", "lon": "x"})
+            nodes = _xy_from_geometry(nodes.rename(columns={node_id_col: "osmid"}))
             edges = edges.rename(columns={edge_id_col: "osmid"})
             node_id_col = "osmid"
 
@@ -573,6 +602,17 @@ def to_pandana(
     simplify=True,
     simplify_kwargs=None,
 ):
+    """
+    Creates a pandana Network from given OSM GeoDataFrames (deprecated: use
+    :func:`to_pandarm`). The edges are directed, simplified and kept as
+    :func:`to_igraph` does, whose parameters these are; ``weight_cols`` are the edge
+    columns used as impedances, summed over the edges a simplification merges. The
+    nodes are indexed by ``node_id_col`` at the ``x``/``y`` of their geometry.
+
+    Returns
+    -------
+    pandana.Network
+    """
     warn_future(
         "The pandana graph backend (graph_type='pandana', pyrosm.graphs.to_pandana) "
         "is deprecated because pandana is unmaintained and incompatible with NumPy 2 "
@@ -599,10 +639,7 @@ def to_pandana(
             step,
         )
 
-        nodes = nodes.rename(columns={"lat": "y", "lon": "x"})
-        nodes = nodes.set_index("id", drop=False)
-        nodes = nodes.rename_axis([None])
-
+        nodes = _routing_nodes(nodes, node_id_col)
         step("building the network")
         return _create_pdgraph(nodes, edges, from_id_col, to_id_col, weight_cols)
 
@@ -621,6 +658,17 @@ def to_pandarm(
     simplify=True,
     simplify_kwargs=None,
 ):
+    """
+    Creates a pandarm Network from given OSM GeoDataFrames. The edges are directed,
+    simplified and kept as :func:`to_igraph` does, whose parameters these are;
+    ``weight_cols`` are the edge columns used as impedances, summed over the edges a
+    simplification merges. The nodes are indexed by ``node_id_col`` at the ``x``/``y``
+    of their geometry, in the CRS of the frames, which is the network's ``crs``.
+
+    Returns
+    -------
+    pandarm.Network
+    """
     with _steps(
         "Building the pandarm network",
         _step_names(simplify, retain_all, "building the network"),
@@ -641,9 +689,6 @@ def to_pandarm(
             step,
         )
 
-        nodes = nodes.rename(columns={"lat": "y", "lon": "x"})
-        nodes = nodes.set_index("id", drop=False)
-        nodes = nodes.rename_axis([None])
-
+        nodes = _routing_nodes(nodes, node_id_col)
         step("building the network")
         return _create_pandarm_graph(nodes, edges, from_id_col, to_id_col, weight_cols)

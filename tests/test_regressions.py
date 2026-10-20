@@ -3563,3 +3563,52 @@ def test_extracts_with_the_same_file_name_download_to_their_own_files(tmp_path):
     assert urls[1].endswith("download.geofabrik.de/europe/georgia-latest.osm.pbf")
     finland = "https://download.geofabrik.de/europe/finland-latest.osm.pbf"
     assert extract_file_name(finland) == "finland-latest.osm.pbf"
+
+
+@pytest.mark.parametrize("graph_type", ["networkx", "igraph", "pandarm"])
+def test_graph_exports_hold_the_given_nodes_and_edges(graph_type):
+    """Graph exports went wrong for frames edited before the export. With nodes cropped
+    to an area, igraph gave edges another edge's attributes and pandarm failed; with
+    edges filtered (index gaps), pandarm got extra edges and wrong weights; projected
+    frames gave nodes lon/lat ``x``/``y`` in a projected graph; a node id column named
+    ``node_id`` gave igraph no edges and was ignored by pandarm. Each graph holds the
+    edges between the given nodes, in the frames' CRS."""
+    pytest.importorskip(graph_type)
+    from shapely.geometry import box
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    nodes, edges = osm.get_network("walking", nodes=True)
+    edges = edges[edges["highway"] != "footway"]  # leaves gaps in the index
+    lon, lat = nodes["lon"], nodes["lat"]
+    area = box(lon.quantile(0.25), lat.quantile(0.25), lon.median(), lat.median())
+    nodes = nodes[nodes.within(area)].rename(columns={"id": "node_id"})
+    nodes = nodes.assign(x=nodes["lon"], y=nodes["lat"])  # degrees, as lon/lat
+    nodes, edges = nodes.to_crs(3067), edges.to_crs(3067)
+    inside = edges["u"].isin(nodes["node_id"]) & edges["v"].isin(nodes["node_id"])
+    # A walking network is two-way: each edge between the given nodes, both ways.
+    count, length = 2 * int(inside.sum()), 2 * edges.loc[inside, "length"].sum()
+    graph = osm.to_graph(
+        nodes,
+        edges,
+        graph_type=graph_type,
+        node_id_col="node_id",
+        retain_all=True,
+        simplify=False,
+    )
+    x = dict(zip(nodes["node_id"], nodes.geometry.x))
+    if graph_type == "networkx":
+        assert graph.number_of_edges() == count
+        weights = [d["length"] for _, _, d in graph.edges(data=True)]
+        assert all(d["x"] == x[node] for node, d in graph.nodes(data=True))
+    elif graph_type == "igraph":
+        ids = graph.vs["node_id"]
+        assert graph.ecount() == count
+        assert all((ids[e.source], ids[e.target]) == (e["u"], e["v"]) for e in graph.es)
+        weights = graph.es["length"]
+    else:
+        assert len(graph.edges_df) == count
+        weights = graph.edges_df["length"]
+        assert (graph.nodes_df["x"] == graph.nodes_df.index.map(x)).all()
+    assert sum(weights) == pytest.approx(length)

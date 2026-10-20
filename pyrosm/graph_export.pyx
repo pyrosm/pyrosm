@@ -33,81 +33,30 @@ cpdef _create_igraph(nodes,
                      to_id_col,
                      node_id_col):
     """
-    Creates a iGraph from directed edges and nodes.
-    NOTE: Assumes that the input edges GeoDataFrame is directed.  
+    Creates a iGraph from directed edges and nodes. The vertices are the nodes in order,
+    with their columns as attributes and their position as ``node_id`` (unless a column
+    has that name); the edges carry their columns and the positions of their end nodes
+    as ``<from_id_col>_seq`` and ``<to_id_col>_seq``.
+    NOTE: Assumes that the input edges GeoDataFrame is directed and that its end nodes
+    are among the nodes.
     """
     if not HAS_IGRAPH:
         raise ImportError("'python-igraph' needs to be installed "
                           "in order to export the network for igraph.")
     import igraph
 
-    cdef long long i
-
-    nodes = nodes.copy()
-    edges = edges.copy()
-
-    from_id_int = from_id_col + "_seq"
-    to_id_int = to_id_col + "_seq"
-
-    edge_list = []
-
-    n_edges = len(edges)
-    n_nodes = len(nodes)
-
-    # Add columns for sequential ids
-    edges[from_id_int] = None
-    edges[to_id_int] = None
-
-    # Convert edges to dict
-    edges = edges.to_dict(orient="list")
-
-    # Node-ids needs to be sequential for igraph
     nodes = nodes.reset_index(drop=True)
-    nodes["node_id"] = nodes.index
-
-    # Prepare dictionary for fast lookups
-    node_dict = {k: v for k, v in zip(nodes[node_id_col].to_list(), nodes["node_id"].to_list())}
-
-    # Node attributes
-    node_attributes = nodes.to_dict(orient='list')
-
-    # Generate edge dictionary
-    for i in range(0, n_edges):
-
-        # Get nodeids for the edge
-        # ------------------------
-        # Note: In some cases the node for from/to_id might not exist
-        # on the "edge" of the network (e.g. if data has been cropped manually).
-        try:
-            from_node_id = edges[from_id_col][i]
-            from_seq_id = node_dict[from_node_id]
-        except KeyError:
-            continue
-        except Exception as e:
-            raise e
-
-        try:
-            to_node_id = edges[to_id_col][i]
-            to_seq_id = node_dict[to_node_id]
-        except KeyError:
-            continue
-        except Exception as e:
-            raise e
-
-        # Add sequential ids to edge_list
-        edge_list.append([from_seq_id, to_seq_id])
-
-        # Update the edge attributes
-        edges[from_id_int][i] = from_seq_id
-        edges[to_id_int][i] = to_seq_id
-
-    del node_dict
-
-    # Create directed graph
-    graph = igraph.Graph(n=n_nodes, directed=True, edges=edge_list,
-                         vertex_attrs=node_attributes,
-                         edge_attrs=edges)
-    return graph
+    if "node_id" not in nodes.columns:
+        nodes["node_id"] = nodes.index
+    position = {node: i for i, node in enumerate(nodes[node_id_col].to_list())}
+    source = [position[node] for node in edges[from_id_col].to_list()]
+    target = [position[node] for node in edges[to_id_col].to_list()]
+    edge_attributes = edges.to_dict(orient="list")
+    edge_attributes[from_id_col + "_seq"] = source
+    edge_attributes[to_id_col + "_seq"] = target
+    return igraph.Graph(n=len(nodes), directed=True, edges=list(zip(source, target)),
+                        vertex_attrs=nodes.to_dict(orient="list"),
+                        edge_attrs=edge_attributes)
 
 cdef list _records(frame):
     """The rows of ``frame`` as dicts of column name to value, with the columns where the
@@ -134,7 +83,8 @@ cpdef _create_nxgraph(nodes,
                       drop_node_id_attribute=False):
     """
     Creates a NetworkX graph from directed edges and nodes.
-    NOTE: Assumes that the input edges GeoDataFrame is directed.
+    NOTE: Assumes that the input edges GeoDataFrame is directed and that its end nodes
+    are among the nodes.
 
     With 'drop_node_id_attribute' the node id is used only as the key of the
     node and is not repeated as a node attribute.
@@ -155,12 +105,6 @@ cpdef _create_nxgraph(nodes,
     else:
         node_records = _records(nodes)
     node_attributes = zip(node_ids.to_list(), node_records)
-
-    # Leave out edges whose end node is not among the nodes (e.g. if data has been
-    # cropped manually). Rows are selected by position, as the index of the input
-    # frame may have gaps or duplicates (e.g. after filtering the edges).
-    known = edges[from_id_col].isin(node_ids) & edges[to_id_col].isin(node_ids)
-    edges = edges[known.to_numpy()]
 
     # Parallel edges between the same pair of nodes get the keys 0, 1, ... in their
     # order, otherwise they would replace each other in the MultiDiGraph.
