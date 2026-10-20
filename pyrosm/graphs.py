@@ -8,6 +8,7 @@ from pyrosm.graph_export import (
 )
 from pyrosm.graph_connectivity import get_connected_edges
 from pyrosm.graph_simplify import (
+    EDGE_ATTRS_DIFFER,
     _TableEdges,
     _TableNodes,
     _WayEdges,
@@ -156,13 +157,65 @@ def _direction_rules(
     return (direction, *_travel_rules(direction_suffix, net_type, force_bidirectional))
 
 
-def _direction_column(direction, columns):
-    """The column of ``direction`` and its mode-specific suffix: ``"oneway:bicycle"`` is
+def _split_direction(direction):
+    """``direction`` as its column and its mode-specific suffix: ``"oneway:bicycle"`` is
     the column ``oneway`` with the suffix ``bicycle``, whose column overrides it per edge.
-    Warns when ``columns`` lack the column, as every edge is then two-way."""
-    direction_suffix = None
+    """
     if ":" in direction:
-        direction, direction_suffix = direction.split(":", 1)
+        column, suffix = direction.split(":", 1)
+        return column, suffix
+    return direction, None
+
+
+def direction_tags(direction, network_type, force_bidirectional=False):
+    """The tags a graph of ``network_type`` reads its edges' directions from: the
+    ``direction`` tag (``oneway``), the form of it that the network honours (such as
+    ``oneway:bicycle`` for cycling) and ``junction`` (a roundabout is one-way); none when
+    every edge is two-way."""
+    column, suffix = _split_direction(direction)
+    suffix, both_ways = _travel_rules(suffix, network_type, force_bidirectional)
+    if both_ways:
+        return []
+    tags = [column, "junction"]
+    if suffix:
+        tags.insert(1, "%s:%s" % (column, suffix))
+    return tags
+
+
+# The columns of a network frame that are not tags, which it has whatever tags are read.
+_NETWORK_FIELDS = {
+    "id",
+    "osm_type",
+    "version",
+    "timestamp",
+    "changeset",
+    "visible",
+    "tags",
+    "nodes",
+    "geometry",
+    "length",
+    "u",
+    "v",
+}
+
+
+def graph_tags(direction, network_type, force_bidirectional, simplify, simplify_kwargs):
+    """The tags a graph of ``network_type`` is built from: those its edges' directions are
+    read from (see :func:`direction_tags`) and, when ``simplify``, the tags a simplified
+    edge has one value of (``edge_attrs_differ`` of ``simplify_kwargs``, by default
+    ``maxspeed`` and ``highway``; a column every network has is not a tag)."""
+    tags = direction_tags(direction, network_type, force_bidirectional)
+    if simplify:
+        differ = (simplify_kwargs or {}).get("edge_attrs_differ", EDGE_ATTRS_DIFFER)
+        tags += [t for t in differ or () if t not in tags and t not in _NETWORK_FIELDS]
+    return tags
+
+
+def _direction_column(direction, columns):
+    """The column of ``direction`` and its mode-specific suffix (see
+    :func:`_split_direction`). Warns when ``columns`` lack the column, as every edge is
+    then two-way."""
+    direction, direction_suffix = _split_direction(direction)
     if direction not in columns:
         warnings.warn(
             f"Column '{direction}' missing in the edges GeoDataFrame. "

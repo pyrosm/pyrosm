@@ -3642,3 +3642,31 @@ def test_history_read_without_timestamp_parses_once(monkeypatch):
     assert len(first) == len(second)
     with pytest.raises(ValueError, match="not supported for history reads"):
         osm.get_data_by_custom_criteria({"building": True}, keep_other_tags=False)
+
+
+@pytest.mark.parametrize(
+    "network_type, tags_to_keep, simplify",
+    [("driving", ["name"], True), ("cycling", ["name", "oneway"], False)],
+)
+def test_get_graph_with_tags_to_keep_builds_the_default_graph(
+    network_type, tags_to_keep, simplify
+):
+    """``get_graph(tags_to_keep=...)`` read only the listed tags, so a driving graph
+    without ``oneway`` was two-way everywhere, a cycling graph without
+    ``oneway:bicycle`` lost the one-way streets open to cycling both ways, and the
+    simplification merged edges across changes of ``maxspeed`` and ``highway``. The tags
+    the graph is built from are always read, so the graph is the default one."""
+    pytest.importorskip("networkx")
+    from pyrosm import OSM, get_data
+    from pyrosm.graphs import direction_tags
+
+    osm = OSM(get_data("helsinki_pbf"))
+    options = dict(graph_type="networkx", simplify=simplify, retain_all=True)
+    expected = osm.get_graph(network_type, **options)
+    graph = osm.get_graph(network_type, tags_to_keep=tags_to_keep, **options)
+    assert sorted(graph.edges()) == sorted(expected.edges())
+    assert direction_tags("oneway", network_type) == {
+        "driving": ["oneway", "junction"],
+        "cycling": ["oneway", "oneway:bicycle", "junction"],
+    }[network_type]
+    assert direction_tags("oneway", "walking") == []  # every edge is two-way

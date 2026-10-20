@@ -42,6 +42,7 @@ from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
 from pyrosm.graphs import (
+    graph_tags,
     record_network_type,
     to_networkx,
     to_igraph,
@@ -1597,7 +1598,11 @@ class OSM:
         ----------
 
         network_type, extra_attributes, custom_filter, filter_type, tags_to_keep, timestamp
-            As in :meth:`get_network`.
+            As in :meth:`get_network`. With ``tags_to_keep``, the tags the graph is built
+            from are read too: those of its edges' directions (``oneway`` and
+            ``junction``, and ``oneway:bicycle`` for cycling) and, with ``simplify``, the
+            ``edge_attrs_differ`` tags (by default ``maxspeed`` and ``highway``), so the
+            graph is the same and only carries fewer attributes.
 
         graph_type, direction, force_bidirectional, retain_all, osmnx_compatible, pandana_weights, simplify, simplify_kwargs
             As in :meth:`to_graph`.
@@ -1609,6 +1614,19 @@ class OSM:
         None when the network is empty.
         """
         validate_graph_type(graph_type)
+        if tags_to_keep is not None:
+            validate_tags_as_columns(tags_to_keep)
+            tags_to_keep = list(tags_to_keep) + [
+                tag
+                for tag in graph_tags(
+                    direction,
+                    network_type,
+                    force_bidirectional,
+                    simplify,
+                    simplify_kwargs,
+                )
+                if tag not in tags_to_keep
+            ]
         if simplify and self._use_engine(timestamp):
             nodes, edges = self._read_engine(
                 graph_network,

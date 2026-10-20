@@ -978,6 +978,7 @@ def test_get_graph_is_the_exported_network(request, graph_type, osm_kwargs, kwar
     """get_graph builds the graph that to_graph builds from get_network(nodes=True)."""
     import warnings
     from pyrosm import OSM
+    from pyrosm.graphs import graph_tags
 
     if graph_type in ("pandarm", "pandana"):
         pytest.importorskip(graph_type)
@@ -993,6 +994,17 @@ def test_get_graph_is_the_exported_network(request, graph_type, osm_kwargs, kwar
     )
     read = {k: v for k, v in kwargs.items() if k in read_keys}
     export = {k: v for k, v in kwargs.items() if k not in read_keys}
+    if "tags_to_keep" in read:  # get_graph also reads the tags the graph is built from
+        added = graph_tags(
+            export.get("direction", "oneway"),
+            read["network_type"],
+            export.get("force_bidirectional", False),
+            export.get("simplify", True),
+            export.get("simplify_kwargs"),
+        )
+        read["tags_to_keep"] = read["tags_to_keep"] + [
+            tag for tag in added if tag not in read["tags_to_keep"]
+        ]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         nodes, edges = OSM(pbf, **osm_kwargs).get_network(nodes=True, **read)
