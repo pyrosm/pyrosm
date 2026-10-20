@@ -9,7 +9,10 @@ from pyrosm.filter_compiler import CompiledFilter
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm.frames import create_nodes_gdf
 from pyrosm.utils import (
+    custom_read_columns,
+    feature_columns,
     keys_as_filter,
+    read_tag_columns,
     validate_custom_filter,
     validate_osm_keys,
     validate_tags_as_columns,
@@ -539,27 +542,21 @@ class OSM:
         # Get filter (also validates network_type, which still drives the graph
         # semantics even when a custom_filter is provided)
         network_filter = self._get_network_filter(network_type)
-        tags_as_columns = list(self.conf.tags.highway)
         # Predefined networks select ways by 'highway'; an advanced custom filter selects by
         # its own positive keys (so railway/cycleway networks work).
         network_osm_keys = "highway"
-
-        if tags_to_keep is not None:
-            validate_tags_as_columns(tags_to_keep)
-            tags_as_columns = list(tags_to_keep)
+        column_keys = ["highway"]
 
         if custom_filter is not None:
             network_filter = custom_filter
-            # Expose the filter keys as columns too (e.g. 'bicycle', 'service').
-            for key in custom_filter.keys():
-                if key not in tags_as_columns:
-                    tags_as_columns.append(key)
+            # The filter keys are columns too (e.g. 'bicycle', 'service').
+            column_keys = custom_filter.keys()
             if advanced_filter:
                 network_osm_keys = list(custom_filter.positive_keys)
 
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        tags_as_columns = read_tag_columns(
+            self.conf.tags.highway, extra_attributes, tags_to_keep, column_keys
+        )
 
         # Read pbf
         self._read_pbf(timestamp)
@@ -650,16 +647,10 @@ class OSM:
                 warn_empty_result("buildings")
             return gdf
 
-        # Default tags to keep as columns
-        tags_as_columns = list(self.conf.tags.building)
-
-        if tags_to_keep is not None:
-            validate_tags_as_columns(tags_to_keep)
-            tags_as_columns = list(tags_to_keep)
-
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        read_filter = _require_layer_key(custom_filter, "building")
+        tags_as_columns = read_tag_columns(
+            self.conf.tags.building, extra_attributes, tags_to_keep, read_filter.keys()
+        )
 
         self._read_pbf(timestamp)
 
@@ -747,16 +738,10 @@ class OSM:
 
         self._read_pbf(timestamp)
 
-        # Default tags to keep as columns
-        tags_as_columns = list(self.conf.tags.landuse)
-
-        if tags_to_keep is not None:
-            validate_tags_as_columns(tags_to_keep)
-            tags_as_columns = list(tags_to_keep)
-
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        read_filter = _require_layer_key(custom_filter, "landuse")
+        tags_as_columns = read_tag_columns(
+            self.conf.tags.landuse, extra_attributes, tags_to_keep, read_filter.keys()
+        )
 
         gdf = get_landuse_data(
             self._nodes,
@@ -843,16 +828,10 @@ class OSM:
 
         self._read_pbf(timestamp)
 
-        # Default tags to keep as columns
-        tags_as_columns = list(self.conf.tags.natural)
-
-        if tags_to_keep is not None:
-            validate_tags_as_columns(tags_to_keep)
-            tags_as_columns = list(tags_to_keep)
-
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        read_filter = _require_layer_key(custom_filter, "natural")
+        tags_as_columns = read_tag_columns(
+            self.conf.tags.natural, extra_attributes, tags_to_keep, read_filter.keys()
+        )
 
         gdf = get_natural_data(
             self._nodes,
@@ -970,16 +949,10 @@ class OSM:
 
         self._read_pbf(timestamp)
 
-        # Default tags to keep as columns
-        tags_as_columns = list(self.conf.tags.boundary)
-
-        if tags_to_keep is not None:
-            validate_tags_as_columns(tags_to_keep)
-            tags_as_columns = list(tags_to_keep)
-
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        read_filter = _boundary_filter(custom_filter, boundary_type)
+        tags_as_columns = read_tag_columns(
+            self.conf.tags.boundary, extra_attributes, tags_to_keep, read_filter.keys()
+        )
 
         gdf = get_boundary_data(
             self._node_coordinates,
@@ -1097,23 +1070,12 @@ class OSM:
 
         self._read_pbf(timestamp)
 
-        # Default tags to keep as columns
-        tags_as_columns = []
-        for k in custom_filter.keys():
-            try:
-                tags_as_columns += getattr(self.conf.tags, k)
-            except AttributeError:
-                tags_as_columns += self.conf.tags._basic_tags
-            except Exception as e:
-                raise e
-
-        if tags_to_keep is not None:
-            validate_tags_as_columns(tags_to_keep)
-            tags_as_columns = list(tags_to_keep)
-
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        tags_as_columns = read_tag_columns(
+            feature_columns(custom_filter.keys(), self.conf.tags._basic_tags),
+            extra_attributes,
+            tags_to_keep,
+            custom_filter.keys(),
+        )
 
         gdf = get_poi_data(
             self._nodes,
@@ -1149,6 +1111,7 @@ class OSM:
         extra_attributes=None,
         keep_other_tags=True,
         timestamp=None,
+        tags_to_keep=None,
     ):
         """
         Parse OSM data based on custom criteria.
@@ -1176,7 +1139,9 @@ class OSM:
             Whether the filters should be used to keep or exclude the data from OSM.
 
         tags_as_columns : list
-            Which tags should be kept as columns in the resulting GeoDataFrame.
+            Which tags should be kept as columns in the resulting GeoDataFrame. The keys
+            of the filter (and of ``osm_keys_to_keep``) are always columns too, so each
+            row shows what it was selected by.
 
         keep_nodes : bool
             Whether or not the nodes should be kept in the resulting GeoDataFrame if they are found.
@@ -1207,6 +1172,10 @@ class OSM:
             This means that elements can be older than the given timestamp (the most up-to-date version is selected),
             but not newer (records having exactly the selected timestamp will be kept). In case only a date is given,
             the time will represent midnight of the given day, such as "2021-01-01 00:00:00".
+
+        tags_to_keep : list (optional)
+            The name the other readers give ``tags_as_columns``: the tags kept as columns.
+            Give one of the two.
 
         """
 
@@ -1243,6 +1212,7 @@ class OSM:
                 keep_relations=keep_relations,
                 extra_attributes=extra_attributes,
                 keep_other_tags=keep_other_tags,
+                tags_to_keep=tags_to_keep,
             )
             if gdf is None:
                 warn_empty_result("custom")
@@ -1270,32 +1240,15 @@ class OSM:
         if isinstance(osm_keys_to_keep, str):
             osm_keys_to_keep = [osm_keys_to_keep]
 
-        # Tags to keep as columns
-        if tags_as_columns is None:
-            if keep_all:
-                # No key filter to derive columns from: expose the default columns
-                # of every known feature, so common tags become columns and the
-                # rest land in the JSON 'tags' column.
-                tags_as_columns = self.conf.tags._every_feature_columns()
-            else:
-                tags_as_columns = []
-                for k in custom_filter.keys():
-                    try:
-                        tags_as_columns += getattr(self.conf.tags, k)
-                    except Exception:
-                        pass
-                # If tags weren't available in conf, store keys as columns by
-                # default (all other tags will be stored in 'tags' column as JSON)
-                if len(tags_as_columns) == 0:
-                    tags_as_columns = list(custom_filter.keys())
-
-        else:
-            # Validate tags
-            validate_tags_as_columns(tags_as_columns)
-
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        tags_as_columns = read_tag_columns(
+            custom_read_columns(
+                None if keep_all else custom_filter,
+                osm_keys_to_keep,
+                tags_as_columns,
+                tags_to_keep,
+            ),
+            extra_attributes,
+        )
 
         self._read_pbf(timestamp)
 

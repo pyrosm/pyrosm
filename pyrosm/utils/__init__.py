@@ -136,6 +136,65 @@ def records_read(read_filter):
     return decorate
 
 
+def feature_columns(keys, missing=()):
+    """The default tag columns of a read whose filter has the ``keys``: the default
+    columns of each key's feature (``Conf.tags.<key>``), and ``missing`` for a key without
+    them."""
+    from pyrosm.config import Conf
+
+    columns = []
+    for key in keys:
+        defaults = getattr(Conf.tags, key, None)
+        columns += defaults if isinstance(defaults, list) else list(missing)
+    return columns
+
+
+def read_tag_columns(
+    base_tags, extra_attributes=None, tags_to_keep=None, filter_keys=()
+):
+    """The tag columns of a read: ``tags_to_keep``, by default ``base_tags``, then the
+    ``filter_keys`` of the read's filter it lacks, so the key each row was selected by is
+    a column, then ``extra_attributes``. Validated, and a new list: the caller's lists do
+    not change."""
+    columns = list(base_tags)
+    if tags_to_keep is not None:
+        validate_tags_as_columns(tags_to_keep)
+        columns = list(tags_to_keep)
+    columns += [key for key in dict.fromkeys(filter_keys) if key not in columns]
+    if extra_attributes is not None:
+        validate_tags_as_columns(extra_attributes)
+        columns += list(extra_attributes)
+    return columns
+
+
+def custom_read_columns(custom_filter, osm_keys_to_keep, tags_as_columns, tags_to_keep):
+    """The tag columns of ``get_data_by_custom_criteria`` before ``extra_attributes`` (see
+    :func:`read_tag_columns`): ``tags_to_keep`` or ``tags_as_columns`` (two names of the same
+    parameter, so giving both raises), by default the feature columns of the filter's keys
+    (the keys themselves when they have none) or, for a read of every element
+    (``custom_filter=None``), those of every known feature; and the keys of the filter and
+    of ``osm_keys_to_keep``."""
+    from pyrosm.config import Conf
+
+    if tags_as_columns is not None and tags_to_keep is not None:
+        raise ValueError(
+            "Give 'tags_to_keep' or 'tags_as_columns', not both: they name the same "
+            "columns."
+        )
+    requested = tags_to_keep if tags_to_keep is not None else tags_as_columns
+    if custom_filter is None:
+        return read_tag_columns(Conf.tags._every_feature_columns(), None, requested)
+    keys = list(custom_filter.keys())
+    keys += (
+        [osm_keys_to_keep]
+        if isinstance(osm_keys_to_keep, str)
+        else osm_keys_to_keep or []
+    )
+    return read_tag_columns(
+        feature_columns(custom_filter.keys()) or keys, None, requested, keys
+    )
+
+
 def keys_as_filter(custom_filter, osm_keys_to_keep, filter_type):
     """``(custom_filter, filter_type)`` of a custom read: as given, or, with only
     ``osm_keys_to_keep``, a filter keeping every element with one of its keys (there is

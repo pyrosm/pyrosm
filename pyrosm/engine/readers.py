@@ -213,21 +213,6 @@ def _node_lists(result):
     return result
 
 
-def _resolve_tags_as_columns(base_tags, extra_attributes, tags_to_keep):
-    """Build the tag-as-columns list the way the in-memory feature methods do: ``tags_to_keep``
-    replaces the layer default, ``extra_attributes`` appends (both validated)."""
-    from pyrosm.utils import validate_tags_as_columns
-
-    tags_as_columns = list(base_tags)
-    if tags_to_keep is not None:
-        validate_tags_as_columns(tags_to_keep)
-        tags_as_columns = list(tags_to_keep)
-    if extra_attributes is not None:
-        validate_tags_as_columns(extra_attributes)
-        tags_as_columns = tags_as_columns + list(extra_attributes)
-    return tags_as_columns
-
-
 def _require_layer_key(custom_filter, key):
     """A ``None`` ``custom_filter`` becomes ``{key: [True]}``; otherwise it is narrowed to
     the layer of ``key`` (see :func:`pyrosm.utils.require_layer_key`), as the in-memory
@@ -282,12 +267,16 @@ def get_buildings(
     ``complete_relations`` / ``output`` / ``workers`` / ``keep_metadata`` / ``progress``.
     """
     from pyrosm.config import Conf
+    from pyrosm.utils import read_tag_columns
 
+    read_filter = _require_layer_key(custom_filter, "building")
     return _get_layer(
         filepath,
-        _require_layer_key(custom_filter, "building"),
+        read_filter,
         "keep",
-        _resolve_tags_as_columns(Conf.tags.building, extra_attributes, tags_to_keep),
+        read_tag_columns(
+            Conf.tags.building, extra_attributes, tags_to_keep, read_filter.keys()
+        ),
         workers,
         output,
         keep_metadata,
@@ -317,12 +306,16 @@ def get_landuse(
     which landuse to keep (the ``landuse`` key is always ensured); ``extra_attributes`` /
     ``tags_to_keep`` adjust the tag columns. See :func:`_get_layer` for the others."""
     from pyrosm.config import Conf
+    from pyrosm.utils import read_tag_columns
 
+    read_filter = _require_layer_key(custom_filter, "landuse")
     return _get_layer(
         filepath,
-        _require_layer_key(custom_filter, "landuse"),
+        read_filter,
         "keep",
-        _resolve_tags_as_columns(Conf.tags.landuse, extra_attributes, tags_to_keep),
+        read_tag_columns(
+            Conf.tags.landuse, extra_attributes, tags_to_keep, read_filter.keys()
+        ),
         workers,
         output,
         keep_metadata,
@@ -352,12 +345,16 @@ def get_natural(
     ``extra_attributes`` / ``tags_to_keep`` adjust the tag columns. See :func:`_get_layer` for
     the others."""
     from pyrosm.config import Conf
+    from pyrosm.utils import read_tag_columns
 
+    read_filter = _require_layer_key(custom_filter, "natural")
     return _get_layer(
         filepath,
-        _require_layer_key(custom_filter, "natural"),
+        read_filter,
         "keep",
-        _resolve_tags_as_columns(Conf.tags.natural, extra_attributes, tags_to_keep),
+        read_tag_columns(
+            Conf.tags.natural, extra_attributes, tags_to_keep, read_filter.keys()
+        ),
         workers,
         output,
         keep_metadata,
@@ -388,17 +385,17 @@ def get_pois(
     the other keyword arguments."""
     from pyrosm.config import Conf
 
+    from pyrosm.utils import feature_columns, read_tag_columns
+
     custom_filter = _poi_filter(custom_filter)
-    # Per-key tag columns, exactly as OSM.get_pois builds them (Conf.tags.<key>, or the
-    # basic tags for keys without a dedicated column set).
-    base_tags = []
-    for k in custom_filter.keys():
-        base_tags += getattr(Conf.tags, k, list(Conf.tags._basic_tags))
+    base_tags = feature_columns(custom_filter.keys(), Conf.tags._basic_tags)
     return _get_layer(
         filepath,
         custom_filter,
         "keep",
-        _resolve_tags_as_columns(base_tags, extra_attributes, tags_to_keep),
+        read_tag_columns(
+            base_tags, extra_attributes, tags_to_keep, custom_filter.keys()
+        ),
         workers,
         output,
         keep_metadata,
@@ -430,7 +427,7 @@ def get_boundaries(
     contains that text; ``extra_attributes`` / ``tags_to_keep`` adjust the tag columns. See
     :func:`_get_layer` for the other keyword arguments."""
     from pyrosm.config import Conf
-    from pyrosm.utils import validate_boundary_type
+    from pyrosm.utils import read_tag_columns, validate_boundary_type
 
     boundary_type = validate_boundary_type(boundary_type)
     if name is not None and output is not None:
@@ -444,7 +441,9 @@ def get_boundaries(
         filepath,
         custom_filter,
         "keep",
-        _resolve_tags_as_columns(Conf.tags.boundary, extra_attributes, tags_to_keep),
+        read_tag_columns(
+            Conf.tags.boundary, extra_attributes, tags_to_keep, custom_filter.keys()
+        ),
         workers,
         output,
         keep_metadata,
@@ -481,24 +480,28 @@ def get_data_by_custom_criteria(
     keep_other_tags=True,
     progress=None,
     keep_node_info=False,
+    tags_to_keep=None,
 ):
     """Read OSM elements matching an arbitrary ``custom_filter`` from ``filepath`` with the
     out-of-core engine, with the same columns as
     ``OSM(...).get_data_by_custom_criteria(...)``. ``osm_keys_to_keep`` (if given) is the
     set of keys filtered on; ``keep_nodes`` / ``keep_ways`` / ``keep_relations`` select
-    which element kinds are returned; ``extra_attributes`` adds further tag columns.
+    which element kinds are returned; ``tags_to_keep`` (another name of
+    ``tags_as_columns``) and ``extra_attributes`` set the tag columns, to which the filter
+    keys are added (see :func:`pyrosm.utils.custom_read_columns`).
     ``keep_other_tags=False`` resolves only the requested tags (``tags_as_columns`` plus the
     filter keys) and drops the JSON ``tags`` column of leftovers, so the read does minimal
     tag work. ``custom_filter=None`` reads every tagged element (``filter_type`` is then
     not used), with the default columns of every known feature as tag columns, or, with
-    ``osm_keys_to_keep``, every element with one of those keys. See :func:`_get_layer` for the other keyword arguments.
+    ``osm_keys_to_keep``, every element with one of those keys. See :func:`_get_layer` for
+    the other keyword arguments.
     """
-    from pyrosm.config import Conf
     from pyrosm.utils import (
+        custom_read_columns,
         keys_as_filter,
+        read_tag_columns,
         validate_custom_filter,
         validate_osm_keys,
-        validate_tags_as_columns,
     )
 
     validate_osm_keys(osm_keys_to_keep)
@@ -516,23 +519,12 @@ def get_data_by_custom_criteria(
     filter_type = filter_type.lower()
     if isinstance(osm_keys_to_keep, str):
         osm_keys_to_keep = [osm_keys_to_keep]
-    if tags_as_columns is None and keep_all:
-        tags_as_columns = Conf.tags._every_feature_columns()
-    elif tags_as_columns is None:
-        tags_as_columns = []
-        for k in custom_filter.keys():
-            try:
-                tags_as_columns += getattr(Conf.tags, k)
-            except Exception:
-                pass
-        # Keys without a dedicated column set become columns themselves.
-        if len(tags_as_columns) == 0:
-            tags_as_columns = list(custom_filter.keys())
-    else:
-        validate_tags_as_columns(tags_as_columns)
-    if extra_attributes is not None:
-        validate_tags_as_columns(extra_attributes)
-        tags_as_columns = list(tags_as_columns) + list(extra_attributes)
+    tags_as_columns = read_tag_columns(
+        custom_read_columns(
+            custom_filter, osm_keys_to_keep, tags_as_columns, tags_to_keep
+        ),
+        extra_attributes,
+    )
     return _get_layer(
         filepath,
         custom_filter,
@@ -733,20 +725,17 @@ def _network_spec(
     filter_spec)``, the filter ``(network_keys, data_filter, filter_type)`` with the keys
     whose ways are read."""
     from pyrosm.config import Conf
-    from pyrosm.utils import validate_custom_filter, validate_tags_as_columns
+    from pyrosm.utils import read_tag_columns, validate_custom_filter
     from pyrosm.filter_compiler import CompiledFilter
 
     # The network type drives the graph semantics even with a custom_filter, so it is
     # validated for every read, as the in-memory reader does.
     _network_filter(network_type)
 
-    tags_as_columns = list(Conf.tags.highway)
-    if tags_to_keep is not None:
-        validate_tags_as_columns(tags_to_keep)
-        tags_as_columns = list(tags_to_keep)
     # Predefined networks select 'highway' ways; an advanced custom filter selects ways by its
     # own positive keys (so railway/cycleway networks work).
     network_keys = ["highway"]
+    column_keys = ["highway"]
     if custom_filter is not None:
         custom_filter = validate_custom_filter(custom_filter)
         advanced_filter = isinstance(custom_filter, CompiledFilter)
@@ -763,19 +752,17 @@ def _network_spec(
                 "'filter_type' -parameter should be either 'keep' or 'exclude'."
             )
         network_filter = custom_filter
-        # Expose the filter keys as columns too (e.g. 'bicycle', 'service').
-        for key in custom_filter.keys():
-            if key not in tags_as_columns:
-                tags_as_columns.append(key)
+        # The filter keys are columns too (e.g. 'bicycle', 'service').
+        column_keys = custom_filter.keys()
         if advanced_filter:
             network_keys = list(custom_filter.positive_keys)
     else:
         network_filter = _network_filter(network_type)
         # Predefined networks are always exclude filters keyed on 'highway'.
         filter_type = "exclude"
-    if extra_attributes is not None:
-        validate_tags_as_columns(extra_attributes)
-        tags_as_columns = tags_as_columns + list(extra_attributes)
+    tags_as_columns = read_tag_columns(
+        Conf.tags.highway, extra_attributes, tags_to_keep, column_keys
+    )
 
     data_filter = (
         None if network_filter is None else parse_custom_filter(network_filter)[0]

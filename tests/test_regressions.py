@@ -3747,3 +3747,41 @@ def test_get_boundaries_finds_the_name_as_plain_text(engine, tmp_path):
     assert osm.get_boundaries(name="KAMP")["name"].tolist() == ["Kamppi"]
     with pytest.warns(UserWarning, match="Could not find any boundaries"):
         assert osm.get_boundaries(name="Helsinki") is None
+
+
+@pytest.mark.parametrize("engine", ["out_of_core", "in_memory"])
+def test_readers_keep_the_key_they_select_by_as_a_column(engine):
+    """With ``tags_to_keep``, the readers left out the key they select by, so a row did
+    not show what it was; ``get_data_by_custom_criteria`` had no ``tags_to_keep``, and in
+    memory it added ``extra_attributes`` to the caller's ``tags_as_columns`` list. Every
+    reader keeps its filter's keys as columns and leaves the caller's lists as they are."""
+    import warnings
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), engine=engine)
+    columns = ["name"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        reads = {
+            "building": osm.get_buildings(tags_to_keep=columns),
+            "amenity": osm.get_pois(
+                custom_filter={"amenity": ["cafe"]}, tags_to_keep=columns
+            ),
+            "highway": osm.get_network(tags_to_keep=columns),
+            "landuse": osm.get_landuse(tags_to_keep=columns),
+            "shop": osm.get_data_by_custom_criteria({"shop": True}, tags_to_keep=columns),
+            "cuisine": osm.get_data_by_custom_criteria(
+                {"cuisine": True},
+                tags_as_columns=columns,
+                extra_attributes=["opening_hours"],
+            ),
+        }
+    for key, frame in reads.items():
+        assert frame[key].notna().all(), key
+        assert "name" in frame.columns
+    assert columns == ["name"]
+    with pytest.raises(ValueError, match="not both"):
+        osm.get_data_by_custom_criteria(
+            {"shop": True}, tags_as_columns=columns, tags_to_keep=columns
+        )
