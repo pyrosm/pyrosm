@@ -13,7 +13,12 @@ from pyrosm.graph_simplify import (
     _WayEdges,
     _simplify_rows,
 )
-from pyrosm.utils import validate_edge_gdf, validate_node_gdf, warn_future
+from pyrosm.utils import (
+    set_frame_attr,
+    validate_edge_gdf,
+    validate_node_gdf,
+    warn_future,
+)
 from pyrosm.utils.progress import Bar, reporting
 from pyrosm.config import Conf
 from pyrosm.config.osm_filters import _UNKNOWN_NETWORK_TYPE, normalize_network_type
@@ -62,11 +67,7 @@ def record_network_type(result, network_type):
     ``attrs`` of the frames ``get_network`` returns (the edges, or the ``(nodes, edges)``
     pair), where graph export looks it up. Entries that are not frames (an empty read's
     ``None``) are left alone. Returns ``result``."""
-    frames = result if isinstance(result, tuple) else (result,)
-    for frame in frames:
-        if isinstance(frame, pd.DataFrame):
-            frame.attrs["network_type"] = normalize_network_type(network_type)
-    return result
+    return set_frame_attr(result, "network_type", normalize_network_type(network_type))
 
 
 def _summing_weights(simplify_kwargs, weight_cols):

@@ -21,7 +21,9 @@ import numpy as np
 import pandas as pd
 from geopandas import GeoDataFrame
 
+from pyrosm.filter_compiler import CompiledFilter, Condition
 from pyrosm.pbf_export import write_pbf_from_records
+from pyrosm.utils import _stacklevel_outside_pyrosm
 from pyrosm.way_store import NodeTags
 
 # Columns that are structural attributes / pyrosm-computed, never OSM tags.
@@ -125,6 +127,168 @@ def _record_tags(record):
     return tags
 
 
+# The tags pyrosm's readers detect features by, with the reader that finds them and the
+# element types it finds by their own tags (a network's nodes come with its ways). A frame
+# without the note of its read (see pyrosm.utils.records_read) is checked against these.
+_ALL_TYPES = frozenset({"node", "way", "relation"})
+_AREA_TYPES = frozenset({"way", "relation"})
+_FEATURE_TAGS = {
+    "building": ("get_buildings()", _AREA_TYPES),
+    "highway": ("get_network()", frozenset({"way"})),
+    "amenity": ("get_pois()", _ALL_TYPES),
+    "shop": ("get_pois()", _ALL_TYPES),
+    "tourism": ("get_pois()", _ALL_TYPES),
+    "landuse": ("get_landuse()", _ALL_TYPES),
+    "natural": ("get_natural()", _ALL_TYPES),
+    "boundary": ("get_boundaries()", _AREA_TYPES),
+}
+
+# What the elements of each reader are, for the warning.
+_READ_FEATURES = {
+    "get_buildings": "buildings",
+    "get_pois": "points of interest",
+    "get_landuse": "land use areas",
+    "get_natural": "natural features",
+    "get_boundaries": "boundaries",
+    "get_network": "network ways",
+    "get_data_by_custom_criteria": "matches of its filter",
+}
+
+
+def _text_list(items):
+    """``items`` (strings) as text: ``a``, ``a and b``, ``a, b and c``."""
+    items = list(items)
+    if len(items) < 2:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _elements(count):
+    return f"{count} element{'' if count == 1 else 's'}"
+
+
+def _read_note(gdf):
+    """``(reader, filter)`` from the note a pyrosm reader left on ``gdf`` (see
+    :func:`pyrosm.utils.records_read`), or ``None`` when it has none. The filter keeps
+    only which keys the read selected by: each AND-group requires its positively tested
+    keys to exist, so a changed value is an edit, not a lost tag."""
+    note = gdf.attrs.get("pyrosm_read")
+    try:
+        read_filter = CompiledFilter.from_json(note["filter"])
+        reader = note["reader"]
+    except (KeyError, TypeError, ValueError):
+        return None
+    groups = tuple(
+        tuple(
+            Condition(key, "exists")
+            for key in sorted({c.key for c in group if c.is_positive})
+        )
+        for group in read_filter.groups
+    )
+    return reader, CompiledFilter(groups)
+
+
+class _LostTags:
+    """The edited elements whose written tags lose what they were selected by, counted
+    once each for the warning of ``write_pbf`` (see :meth:`warn`)."""
+
+    def __init__(self):
+        self.by_reader = {}  # reader -> [element count, tags the elements lose]
+        self.by_tag = {}  # feature tag -> element count, for frames without a note
+
+    def check(self, note, otype, original, written):
+        """Count an element of type ``otype`` if its ``written`` tags no longer match the
+        filter of the ``note`` its frame carries (see :func:`_read_note`) while its
+        ``original`` tags do, or, without a note, lose a tag of :data:`_FEATURE_TAGS` that
+        its reader finds elements of this type by."""
+        if note is not None:
+            reader, read_filter = note
+            if read_filter.matches(original) and not read_filter.matches(written):
+                entry = self.by_reader.setdefault(reader, [0, set()])
+                entry[0] += 1
+                entry[1].update(
+                    key
+                    for key in read_filter.positive_keys
+                    if key in original and key not in written
+                )
+            return
+        for tag, (_, types) in _FEATURE_TAGS.items():
+            if otype in types and tag in original and tag not in written:
+                self.by_tag[tag] = self.by_tag.get(tag, 0) + 1
+
+    def warn(self):
+        """Warn once, at the user's call, about the elements counted."""
+        parts = []
+        for reader, (count, keys) in self.by_reader.items():
+            quoted = _text_list(f"'{key}'" for key in sorted(keys))
+            verb = "tag is" if len(keys) == 1 else "tags are"
+            cause = f"their {quoted} {verb} not in the frame"
+            parts.append(
+                f"{_elements(count)} would no longer be found by {reader}(): {cause}, so "
+                "pyrosm and other OSM tools cannot detect them as "
+                f"{_READ_FEATURES.get(reader, 'its features')} in the written file."
+            )
+        if self.by_tag:
+            phrases = []
+            counts = sorted(self.by_tag.items(), key=lambda item: -item[1])
+            for tag, count in counts:
+                if phrases:
+                    subject = str(count)
+                else:
+                    subject = (
+                        f"{_elements(count)} {'is' if count == 1 else 'are'} written"
+                    )
+                their = "its" if count == 1 else "their"
+                phrases.append(f"{subject} without {their} '{tag}' tag")
+            readers = dict.fromkeys(_FEATURE_TAGS[tag][0] for tag, _ in counts)
+            them = "it" if len(counts) == 1 and counts[0][1] == 1 else "them"
+            parts.append(
+                f"{_text_list(phrases)}; {_text_list(readers)} will not find {them} in the "
+                "written file."
+            )
+        if parts:
+            warnings.warn(
+                " ".join(parts), UserWarning, stacklevel=_stacklevel_outside_pyrosm()
+            )
+
+
+def _warn_lost_tags(edits, plan, way_by_id, poi_tags, relations):
+    """Warn about the edited elements whose written tags lose what their read selected them
+    by (see :class:`_LostTags`), comparing each with its tags in the source: a way's
+    record, a tagged node's ``poi_tags`` (an untagged node has none to lose) or a
+    relation's tags. Elements the ``plan`` removes are not written, so not checked."""
+    written = {
+        "node": edits.node_tags,
+        "way": edits.way_tags,
+        "relation": edits.rel_tags,
+    }
+    removed = {
+        "node": plan.removed_nodes,
+        "way": plan.removed_ways,
+        "relation": plan.removed_rels,
+    }
+    rel_position = None
+    lost = _LostTags()
+    for (otype, oid), note in edits.notes.items():
+        tags = written[otype][oid]
+        if tags is None or oid in removed[otype]:
+            continue
+        if otype == "way":
+            original = _record_tags(way_by_id[oid])
+        else:
+            if otype == "node":
+                source = poi_tags.get(oid)
+            else:
+                if rel_position is None:
+                    rel_position = {int(r): i for i, r in enumerate(relations["id"])}
+                source = relations["tags"][rel_position[oid]]
+            original = (
+                _record_tags({"tags": source}) if isinstance(source, dict) else {}
+            )
+        lost.check(note, otype, original, tags)
+    lost.warn()
+
+
 # ---------------------------------------------------------------------------
 # Frame normalization + edit/new-row collection
 # ---------------------------------------------------------------------------
@@ -218,6 +382,8 @@ class _Edits:
         self.node_tags, self.node_coords = {}, {}
         self.way_tags, self.way_refs = {}, {}
         self.rel_tags = {}
+        # (osm_type, id) -> the read note of the frame whose row the element's tags come from
+        self.notes = {}
         self.new_nodes = []  # (id, lon, lat, tags)
         self.new_ways = []  # (id, refs, tags)
         self.auto_rows = []  # (row id, geometry, tags, explicit id or None)
@@ -261,7 +427,8 @@ def _collect_edits(frames, way_by_id, node_coordinates, rel_ids, apply_geometry)
     """Split frame rows into edits of existing elements and new elements.
 
     Existing elements are matched by ``osm_type`` + ``id``; their tags are taken from the
-    row, unless the frame has no tag columns, in which case they keep their own. With
+    row, unless the frame has no tag columns, in which case they keep their own. Each
+    element's tags come with the read note of their frame (see :func:`_read_note`). With
     ``apply_geometry`` a node row's ``Point`` also moves the
     node, a way row's ``nodes`` column also reshapes the way, and a row with a
     negative unmatched id is added under exactly that id (so a way can reference a
@@ -272,6 +439,7 @@ def _collect_edits(frames, way_by_id, node_coordinates, rel_ids, apply_geometry)
     seen_new = set()
     for gdf in frames:
         geom_col = gdf.geometry.name
+        note = _read_note(gdf)
         has_tags = any(
             col == "tags" or col not in _NON_TAG_COLS
             for col in gdf.columns
@@ -286,6 +454,13 @@ def _collect_edits(frames, way_by_id, node_coordinates, rel_ids, apply_geometry)
             tags = _row_tags(row, geom_col)
             edit = tags if has_tags else None
             refs = _row_refs(row) if apply_geometry else None
+            matched = oid is not None and (
+                (otype == "way" and oid in way_by_id)
+                or (otype == "node" and oid in node_coordinates)
+                or (otype == "relation" and oid in rel_ids)
+            )
+            if matched:
+                edits.notes[(otype, oid)] = note
             if oid is not None and otype == "way" and oid in way_by_id:
                 edits.way_tags[oid] = edit
                 if refs is not None:
@@ -747,8 +922,10 @@ def _node_tag_records(nodes_cache):
     return out
 
 
-def _add_base_nodes(builder, node_coordinates, nodes_cache, plan, keep=None):
-    poi_tags = _node_tag_records(nodes_cache)
+def _add_base_nodes(builder, node_coordinates, poi_tags, plan, keep=None):
+    """Add the source nodes (those in ``keep`` when given) to ``builder``, with the tags and
+    coordinates their edits in ``plan`` give, else their own (``poi_tags`` for tagged nodes).
+    """
     for nid, rec in node_coordinates.items():
         if nid in plan.removed_nodes:
             continue
@@ -869,6 +1046,7 @@ def write_geodataframe_to_pbf(
 
     way_by_id = {w["id"]: w for w in way_records}
     rel_ids = set(int(i) for i in relations["id"]) if "id" in relations else set()
+    poi_tags = _node_tag_records(nodes)
 
     edits = _collect_edits(frames, way_by_id, node_coordinates, rel_ids, apply_geometry)
     deletions = _parse_deletions(delete, node_coordinates, way_by_id, rel_ids)
@@ -881,6 +1059,7 @@ def write_geodataframe_to_pbf(
         on_orphan_node,
         on_deleted_member,
     )
+    _warn_lost_tags(edits, plan, way_by_id, poi_tags, relations)
 
     keep_nodes = keep_ways = keep_rels = None
     if subset_only:
@@ -893,7 +1072,7 @@ def write_geodataframe_to_pbf(
         )
 
     builder = _RecordBuilder()
-    _add_base_nodes(builder, node_coordinates, nodes, plan, keep_nodes)
+    _add_base_nodes(builder, node_coordinates, poi_tags, plan, keep_nodes)
     for nid, lon, lat, tags in edits.new_nodes:
         builder.add_new_node(nid, lon, lat, tags)
     _add_base_ways(builder, way_records, plan, keep_ways)

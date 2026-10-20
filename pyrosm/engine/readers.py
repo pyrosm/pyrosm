@@ -240,6 +240,28 @@ def _require_layer_key(custom_filter, key):
     return require_layer_key(validate_custom_filter(custom_filter), key)
 
 
+def _poi_filter(custom_filter):
+    """The validated filter of a POI read: ``custom_filter``, by default the elements with an
+    ``amenity``, ``shop`` or ``tourism`` tag."""
+    from pyrosm.utils import validate_custom_filter
+
+    if custom_filter is None:
+        custom_filter = {"amenity": True, "shop": True, "tourism": True}
+    return validate_custom_filter(custom_filter)
+
+
+def _boundary_filter(custom_filter, boundary_type):
+    """The validated filter of a boundary read: ``custom_filter``, by default every boundary,
+    narrowed to the boundaries of the validated ``boundary_type`` (``"all"`` for any).
+    """
+    from pyrosm.utils import validate_custom_filter, require_layer_key
+
+    value = True if boundary_type == "all" else [boundary_type]
+    if custom_filter is None:
+        custom_filter = {"boundary": value}
+    return require_layer_key(validate_custom_filter(custom_filter), "boundary", value)
+
+
 def get_buildings(
     filepath,
     custom_filter=None,
@@ -365,12 +387,8 @@ def get_pois(
     ``extra_attributes`` / ``tags_to_keep`` adjust the tag columns. See :func:`_get_layer` for
     the other keyword arguments."""
     from pyrosm.config import Conf
-    from pyrosm.utils import validate_custom_filter
 
-    if custom_filter is None:
-        custom_filter = {"amenity": True, "shop": True, "tourism": True}
-    # Validate / compile (also accepts advanced regex & bracket forms) before reading keys.
-    custom_filter = validate_custom_filter(custom_filter)
+    custom_filter = _poi_filter(custom_filter)
     # Per-key tag columns, exactly as OSM.get_pois builds them (Conf.tags.<key>, or the
     # basic tags for keys without a dedicated column set).
     base_tags = []
@@ -412,11 +430,7 @@ def get_boundaries(
     contains that text; ``extra_attributes`` / ``tags_to_keep`` adjust the tag columns. See
     :func:`_get_layer` for the other keyword arguments."""
     from pyrosm.config import Conf
-    from pyrosm.utils import (
-        validate_custom_filter,
-        validate_boundary_type,
-        require_layer_key,
-    )
+    from pyrosm.utils import validate_boundary_type
 
     boundary_type = validate_boundary_type(boundary_type)
     if name is not None and output is not None:
@@ -425,13 +439,7 @@ def get_boundaries(
             "GeoParquet is written before the name filter is applied. Omit output= to "
             "filter by name, or omit name to stream all boundaries."
         )
-    value = True if boundary_type == "all" else [boundary_type]
-    if custom_filter is None:
-        custom_filter = {"boundary": value}
-    # Validate / normalize (normalizes True -> [True]; compiles advanced forms), then narrow
-    # the filter to the boundaries of boundary_type.
-    custom_filter = validate_custom_filter(custom_filter)
-    custom_filter = require_layer_key(custom_filter, "boundary", value)
+    custom_filter = _boundary_filter(custom_filter, boundary_type)
     gdf = _get_layer(
         filepath,
         custom_filter,

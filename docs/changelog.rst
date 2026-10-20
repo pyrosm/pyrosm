@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- FIXED: ``OSM.write_pbf`` warns when written elements lose the tag their read selected them by, e.g. buildings written without a ``building`` column. The warning names the reader that will no longer find them in the written file (``get_buildings()``); for a frame that no longer notes how it was read (e.g. after ``pd.merge``) it names the tags that pyrosm's readers detect features by. The file is written as the frame says, as before (`#589 <https://github.com/pyrosm/pyrosm/pull/589>`__)
+
 v0.23.0 (Oct 19, 2026)
 ----------------------
 
