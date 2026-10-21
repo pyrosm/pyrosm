@@ -5018,3 +5018,105 @@ def test_merge_of_files_without_nodes_warns(tmp_path):
     empty = write_pbf_from_records(nodes, [], [], str(tmp_path / "empty.osm.pbf"), (0, 0, 1, 1))
     with pytest.warns(UserWarning, match="empty.osm.pbf hold no node"):
         merge_pbf([empty], str(tmp_path / "merged.osm.pbf"), progress=False)
+
+
+def test_write_pbf_writes_new_elements_in_order(tmp_path):
+    """write_pbf wrote a new way after the ways of the source, so the file was not sorted
+    by type then id and merge_pbf refused it. It writes every element sorted by id, new
+    ones included."""
+    import geopandas as gpd
+    from shapely.geometry import LineString
+
+    from pyrosm import OSM, get_data, merge_pbf
+    from pyrosm.pbf_export import _iter_decoded_blocks
+
+    osm = OSM(get_data("test_pbf"))
+    footway = gpd.GeoDataFrame(
+        {"highway": ["footway"]},
+        geometry=[LineString([(26.94, 60.52), (26.945, 60.525)])],
+        crs=4326,
+    )
+    written = osm.write_pbf([footway], str(tmp_path / "written.osm.pbf"))
+    merged = merge_pbf([written], str(tmp_path / "merged.osm.pbf"), progress=False)
+    way_ids = [
+        i
+        for _, _, ways, _ in _iter_decoded_blocks(merged)
+        if ways is not None
+        for i in ways["id"].tolist()
+    ]
+    assert way_ids[0] < 0 and way_ids == sorted(way_ids)
+
+
+def _metadata_source(path):
+    """A PBF with one building (way 10, changeset 88) on four nodes (changeset 77)."""
+    import numpy as np
+
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    nodes = {
+        "id": np.arange(1, 5, dtype=np.int64),
+        "lon": np.array([24.90, 24.91, 24.91, 24.90]),
+        "lat": np.array([60.10, 60.10, 60.11, 60.11]),
+        "version": np.full(4, 3, dtype=np.int64),
+        "timestamp": np.full(4, 1600000000, dtype=np.int64),
+        "changeset": np.full(4, 77, dtype=np.int64),
+        "tags": [None] * 4,
+    }
+    way = {
+        "id": 10,
+        "refs": [1, 2, 3, 4, 1],
+        "version": 2,
+        "timestamp": 1600000000,
+        "changeset": 88,
+        "tags": {"building": "yes"},
+    }
+    return write_pbf_from_records(nodes, [way], [], str(path), (24.9, 60.1, 24.91, 60.11))
+
+
+@pytest.mark.parametrize("keep_metadata", [True, False])
+def test_write_pbf_writes_the_metadata_it_read(keep_metadata, tmp_path):
+    """write_pbf wrote every way with changeset 0 and, for nodes read with
+    keep_metadata=False, invented version 1, timestamp 1970 and changeset 0. It writes
+    the metadata it read and none where none was read."""
+    from pyrosm import OSM
+    from pyrosm.pbfreader import iter_decoded_blocks
+
+    osm = OSM(_metadata_source(tmp_path / "source.osm.pbf"), keep_metadata=keep_metadata)
+    out = osm.write_pbf(osm.get_buildings(), str(tmp_path / "out.osm.pbf"))
+    nodes = ways = None
+    for _, _, block_nodes, block_ways, _ in iter_decoded_blocks(out):
+        nodes = block_nodes if block_nodes is not None else nodes
+        ways = block_ways if block_ways is not None else ways
+    assert (ways["version"].tolist(), ways["changeset"].tolist()) == ([2], [88])
+    if keep_metadata:
+        assert nodes["changeset"].tolist() == [77] * 4
+    else:
+        assert len(nodes["version"]) == len(nodes["timestamp"]) == 0
+
+
+@pytest.mark.parametrize("write", ["crop", "crop in parallel", "write_pbf"])
+def test_interrupted_writes_leave_the_earlier_file(write, tmp_path):
+    """Crops and write_pbf wrote straight into output_path, so an interrupted call left a
+    truncated file that read as a smaller valid one, and a failed crop without
+    output_path left its temporary file. They write next to it and replace it when the
+    file is complete."""
+    from pyrosm import OSM, get_data
+    from pyrosm.pbf_export import crop_pbf
+
+    fp, box = get_data("helsinki_pbf"), [24.93, 60.16, 24.95, 60.18]
+    out = tmp_path / "out.osm.pbf"
+    out.write_bytes(b"earlier")
+
+    def stop(done, total):
+        if done > total * 0.97:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        if write == "write_pbf":
+            osm = OSM(fp, engine="in_memory", progress=False)
+            osm.write_pbf(osm.get_buildings(), str(out), progress=stop)
+        else:
+            workers = 2 if write.endswith("parallel") else 1
+            crop_pbf(fp, str(out), bounding_box=box, workers=workers, progress=stop)
+    assert [p.name for p in tmp_path.iterdir()] == ["out.osm.pbf"]
+    assert out.read_bytes() == b"earlier"

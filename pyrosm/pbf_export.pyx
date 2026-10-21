@@ -73,6 +73,7 @@ from pyrosm.utils import (
     validate_bounding_box,
     validate_workers,
 )
+from pyrosm.utils.download import write_atomic_path
 from pyrosm.utils.progress import stepping, validate_progress
 from pyrosm.zlib_blob import zlib_compress
 from pyrosm.primitive_block_decoder import (
@@ -1945,6 +1946,9 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     so its geometry is complete in the cropped file (one more pass over the file).
     Members that are relations are not completed.
 
+    The crop is written next to `output_path` and replaces it only when it is complete,
+    so a failed or interrupted crop leaves the earlier file as it was.
+
     Returns the output path. When ``workers > 1`` and the file has enough blocks
     to amortize pool startup (>= ``2 * workers`` OSMData blocks), the parallel
     path is used; otherwise the (faster, for small files) sequential path runs.
@@ -1972,27 +1976,43 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     bounds = region[0]
     _refuse_input_as_output(output_path, [source_path])
 
-    if output_path is None:
-        fd, output_path = tempfile.mkstemp(suffix=".osm.pbf", prefix="pyrosm_crop_")
-        os.close(fd)
-
     # Stage 0: header pre-flight (rejects unsupported inputs before any streaming).
     _read_header(source_path)
 
+    made = output_path is None
+    if made:
+        fd, output_path = tempfile.mkstemp(suffix=".osm.pbf", prefix="pyrosm_crop_")
+        os.close(fd)
     name = Path(source_path).name
-    with timed(
-        logger, "crop_pbf", logging.INFO, file=name, output=Path(output_path).name
-    ) as fields, stepping(
-        progress, "Cropping %s" % name, _CROP_SHARES, delay=2.0, leave=False, timed=True
-    ) as steps:
-        _with_pool(
-            _select_and_write,
-            (source_path, output_path, region, keep_relations, compact, repack,
-             _ReadProgress(steps, [source_path]), complete_relations),
-            workers, [source_path], region, compact,
-        )
-        fields["megabytes"] = os.path.getsize(output_path) / 1e6
+    try:
+        with timed(
+            logger, "crop_pbf", logging.INFO, file=name, output=Path(output_path).name
+        ) as fields, stepping(
+            progress, "Cropping %s" % name, _CROP_SHARES, delay=2.0, leave=False,
+            timed=True
+        ) as steps:
+            write_atomic_path(output_path, partial(
+                _write_crop, source_path, region, keep_relations, compact, repack,
+                _ReadProgress(steps, [source_path]), complete_relations, workers,
+            ))
+            fields["megabytes"] = os.path.getsize(output_path) / 1e6
+    except BaseException:
+        if made:
+            Path(output_path).unlink(missing_ok=True)
+        raise
     return output_path
+
+
+def _write_crop(source_path, region, keep_relations, compact, repack, progress,
+                complete_relations, workers, path):
+    """Write the crop of `crop_pbf` to `path`, with a worker pool when one is used (see
+    `_with_pool`)."""
+    _with_pool(
+        _select_and_write,
+        (source_path, path, region, keep_relations, compact, repack, progress,
+         complete_relations),
+        workers, [source_path], region, compact,
+    )
 
 
 def _select_and_write(source_path, output_path, region, keep_relations, compact, repack,
@@ -2714,8 +2734,9 @@ cdef _new_block():
     return block
 
 
-cdef _emit_node_block(out, ids, lat_raw, lon_raw, versions, timestamps, changesets,
-                      tags_list):
+cdef _emit_node_block(out, ids, lat_raw, lon_raw, meta, tags_list):
+    """Write a block of the nodes `ids`, with the DenseInfo of `meta` (their versions,
+    timestamps and changesets) when it is not None."""
     block = _new_block()
     st = _StringTable()
 
@@ -2737,10 +2758,12 @@ cdef _emit_node_block(out, ids, lat_raw, lon_raw, versions, timestamps, changese
     if has_tags:
         dense.keys_vals.extend(keys_vals)
 
-    di = dense.denseinfo
-    di.version.extend([int(v) for v in versions])
-    di.timestamp.extend(delta_encode(timestamps).tolist())
-    di.changeset.extend(delta_encode(changesets).tolist())
+    if meta is not None:
+        versions, timestamps, changesets = meta
+        di = dense.denseinfo
+        di.version.extend([int(v) for v in versions])
+        di.timestamp.extend(delta_encode(timestamps).tolist())
+        di.changeset.extend(delta_encode(changesets).tolist())
 
     for s in st.strings:
         block.stringtable.s.append(s)
@@ -2748,6 +2771,8 @@ cdef _emit_node_block(out, ids, lat_raw, lon_raw, versions, timestamps, changese
 
 
 cdef _emit_way_block(out, way_batch):
+    """Write a block of the way records `way_batch`, each with the version, timestamp
+    and changeset it has (none when 0 or missing)."""
     block = _new_block()
     st = _StringTable()
     group = block.primitivegroup.add()
@@ -2759,9 +2784,12 @@ cdef _emit_way_block(out, way_batch):
             for k, v in tags.items():
                 way.keys.append(st.intern(k))
                 way.vals.append(st.intern(v))
-        way.info.version = int(w.get("version") or 1)
-        if w.get("timestamp") is not None:
+        if w.get("version"):
+            way.info.version = int(w["version"])
+        if w.get("timestamp"):
             way.info.timestamp = int(w["timestamp"])
+        if w.get("changeset"):
+            way.info.changeset = int(w["changeset"])
         refs = np.ascontiguousarray(w["refs"], dtype=np.int64)
         way.refs.extend(delta_encode(refs).tolist())
     for s in st.strings:
@@ -2770,6 +2798,8 @@ cdef _emit_way_block(out, way_batch):
 
 
 cdef _emit_relation_block(out, rel_batch):
+    """Write a block of the relation records `rel_batch`, each with the version,
+    timestamp and changeset it has (none when 0 or missing)."""
     type_map = {
         b"node": 0, "node": 0, 0: 0,
         b"way": 1, "way": 1, 1: 1,
@@ -2786,10 +2816,11 @@ cdef _emit_relation_block(out, rel_batch):
             for k, v in tags.items():
                 rel.keys.append(st.intern(k))
                 rel.vals.append(st.intern(v))
-        rel.info.version = int(r.get("version") or 1)
-        if r.get("timestamp") is not None:
+        if r.get("version"):
+            rel.info.version = int(r["version"])
+        if r.get("timestamp"):
             rel.info.timestamp = int(r["timestamp"])
-        if r.get("changeset") is not None:
+        if r.get("changeset"):
             rel.info.changeset = int(r["changeset"])
         memids = []
         for (mtype, mref, mrole) in r["members"]:
@@ -2812,38 +2843,54 @@ _RELATION_WRITE_COST = 50
 
 
 cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds, progress=None):
-    """Serialize node/way/relation records to a valid PBF at `output_path`.
+    """Serialize node/way/relation records to a valid PBF at `output_path`, sorted by type
+    then id, replacing `output_path` only once the file is complete.
 
-    `nodes` is a dict of aligned arrays (id/lat/lon/version/timestamp/changeset and
-    an object array `tags`); `ways`/`relations` are lists of record dicts. `bounds`
-    is (xmin, ymin, xmax, ymax) for the header bbox. `progress(done, total)`, when
+    `nodes` is a dict of aligned arrays (id/lat/lon, an object array `tags` and, when the
+    nodes have metadata, version/timestamp/changeset); `ways`/`relations` are lists of
+    record dicts, whose `version`, `timestamp` and `changeset` are written when given.
+    `bounds` is (xmin, ymin, xmax, ymax) for the header bbox. `progress(done, total)`, when
     given, gets the work done after each block (a node counting 1, a way
     `_WAY_WRITE_COST` and a relation `_RELATION_WRITE_COST`), and the total once the file
     is closed.
     """
+    write_atomic_path(
+        output_path, partial(_write_records, nodes, ways, relations, bounds, progress)
+    )
+    return output_path
+
+
+def _write_records(nodes, ways, relations, bounds, progress, path):
+    """Write the records of `write_pbf_from_records` to `path`."""
     ids = np.ascontiguousarray(nodes["id"], dtype=np.int64)
     order = np.argsort(ids, kind="stable")
     ids = ids[order]
     lat_raw = _coord_to_raw(nodes["lat"])[order]
     lon_raw = _coord_to_raw(nodes["lon"])[order]
-    versions = np.ascontiguousarray(nodes["version"], dtype=np.int64)[order]
-    timestamps = np.ascontiguousarray(nodes["timestamp"], dtype=np.int64)[order]
-    changesets = np.ascontiguousarray(nodes["changeset"], dtype=np.int64)[order]
+    meta = None
+    if "version" in nodes:
+        meta = [
+            np.ascontiguousarray(nodes[name], dtype=np.int64)[order]
+            for name in ("version", "timestamp", "changeset")
+        ]
     tags_arr = nodes["tags"]
     tags_ordered = [tags_arr[i] for i in order]
+    ways = sorted(ways, key=itemgetter("id"))
+    relations = sorted(relations, key=itemgetter("id"))
 
     cdef int n = len(ids)
     cdef int i = 0
     cdef int j
     cdef Py_ssize_t way_work = _WAY_WRITE_COST * len(ways)
     cdef Py_ssize_t total = n + way_work + _RELATION_WRITE_COST * len(relations)
-    with open(output_path, "wb") as out:
-        _write_header(out, bounds)
+    with open(path, "wb") as out:
+        _write_header(out, bounds, sorted_output=True)
         while i < n:
             j = min(i + _MAX_GROUP, n)
             _emit_node_block(
-                out, ids[i:j], lat_raw[i:j], lon_raw[i:j], versions[i:j],
-                timestamps[i:j], changesets[i:j], tags_ordered[i:j],
+                out, ids[i:j], lat_raw[i:j], lon_raw[i:j],
+                None if meta is None else [values[i:j] for values in meta],
+                tags_ordered[i:j],
             )
             i = j
             if progress is not None and i < total:
@@ -2864,7 +2911,6 @@ cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds, progre
                 progress(n + way_work + _RELATION_WRITE_COST * i, total)
     if progress is not None:
         progress(total, total)
-    return output_path
 
 
 # ---------------------------------------------------------------------------
@@ -3874,39 +3920,37 @@ cdef _merge(sources, output_path, bounding_box, keep_relations, workers, polygon
         )
         won = (None, [_to_set(w) for w in kept_ways], [_to_set(r) for r in kept_rel])
 
-    # Written next to the output and moved into place when complete, so a failed
-    # merge leaves no partial file at `output_path`.
-    if output_path is None:
-        out_dir = tempfile.gettempdir()
-    else:
-        out_dir = os.path.dirname(os.path.abspath(output_path))
-    fd, partial_path = tempfile.mkstemp(
-        suffix=".osm.pbf", prefix=".pyrosm_merge_", dir=out_dir
-    )
+    made = output_path is None
+    if made:
+        fd, output_path = tempfile.mkstemp(suffix=".osm.pbf", prefix="pyrosm_merge_")
+        os.close(fd)
+    boxed = bounding_box is not None or polygon is not None
     try:
-        with os.fdopen(fd, "wb") as out, progress.one_pass(_WRITING):
-            inputs = [_SortedInput(p, progress) for p in sources]
-            _write_header(out, bounds, sorted_output=True)
-            writer = _RepackWriter(out)
-            for kind in (_NODES, _WAYS, _RELATIONS):
-                _merge_kind(inputs, kind, kept[kind], won[kind], writer)
-            writer.close()
-        if writer.nodes_written == 0:
-            boxed = bounding_box is not None or polygon is not None
-            _warn_empty(sources, bounds if boxed else None)
-        changed = [
-            p for p, before in zip(sources, fingerprints) if _fingerprint(p) != before
-        ]
-        if changed:
-            raise ValueError(
-                "'%s' changed while it was being merged; the merge was discarded."
-                % changed[0]
-            )
-        if output_path is None:
-            fd, output_path = tempfile.mkstemp(suffix=".osm.pbf", prefix="pyrosm_merge_")
-            os.close(fd)
-        os.replace(partial_path, output_path)
+        write_atomic_path(output_path, partial(
+            _write_merge, sources, fingerprints, bounds, boxed, kept, won, progress
+        ))
     except BaseException:
-        Path(partial_path).unlink(missing_ok=True)
+        if made:
+            Path(output_path).unlink(missing_ok=True)
         raise
     return output_path
+
+
+def _write_merge(sources, fingerprints, bounds, boxed, kept, won, progress, path):
+    """Write the merge of `_merge` to `path` with the header box `bounds`, refusing it
+    when an input changed since its `fingerprints`; warn when no node is written (none
+    lies in the box `bounds` when `boxed`, else the inputs hold none)."""
+    with open(path, "wb") as out, progress.one_pass(_WRITING):
+        inputs = [_SortedInput(p, progress) for p in sources]
+        _write_header(out, bounds, sorted_output=True)
+        writer = _RepackWriter(out)
+        for kind in (_NODES, _WAYS, _RELATIONS):
+            _merge_kind(inputs, kind, kept[kind], won[kind], writer)
+        writer.close()
+    if writer.nodes_written == 0:
+        _warn_empty(sources, bounds if boxed else None)
+    changed = [p for p, before in zip(sources, fingerprints) if _fingerprint(p) != before]
+    if changed:
+        raise ValueError(
+            "'%s' changed while it was being merged; the merge was discarded." % changed[0]
+        )

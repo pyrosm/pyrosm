@@ -1396,7 +1396,11 @@ class OSM:
         without a ``building`` column, a ``UserWarning`` says how many and which reader
         will no longer find them in the written file.
         Topology and coordinates come from the data pyrosm read, so the output is
-        faithful and re-readable (e.g. by pyrosm, osmium, GDAL and r5py/R5).
+        faithful and re-readable (e.g. by pyrosm, osmium, GDAL and r5py/R5). The
+        elements are written sorted by type then id, new ones included, with the version,
+        timestamp and changeset they were read with (none for nodes read with
+        ``keep_metadata=False``); the file is written next to ``output_path`` and
+        replaces it only when it is complete.
 
         Pass ``subset_only=True`` to instead write a PBF containing **only** the
         elements in ``data`` (matched by ``osm_type`` + ``id``) plus the references

@@ -1008,6 +1008,8 @@ class _RecordBuilder:
     def __init__(self):
         self.node_ids, self.lats, self.lons = [], [], []
         self.vers, self.tss, self.css, self.ntags = [], [], [], []
+        # False when the source nodes were read without metadata: none is written.
+        self.node_meta = True
         self.ways = []
         self.rels = []
         self._now = int(time.time())
@@ -1109,15 +1111,21 @@ class _RecordBuilder:
             )
 
     def node_payload(self):
-        return {
+        """The nodes as the arrays :func:`~pyrosm.pbf_export.write_pbf_from_records`
+        takes, without metadata when the source nodes had none."""
+        payload = {
             "id": np.asarray(self.node_ids, dtype=np.int64),
             "lat": np.asarray(self.lats, dtype=np.float64),
             "lon": np.asarray(self.lons, dtype=np.float64),
-            "version": np.asarray(self.vers, dtype=np.int64),
-            "timestamp": np.asarray(self.tss, dtype=np.int64),
-            "changeset": np.asarray(self.css, dtype=np.int64),
             "tags": self.ntags,
         }
+        if self.node_meta:
+            payload.update(
+                version=np.asarray(self.vers, dtype=np.int64),
+                timestamp=np.asarray(self.tss, dtype=np.int64),
+                changeset=np.asarray(self.css, dtype=np.int64),
+            )
+        return payload
 
     def bounds(self):
         if not self.lons:  # empty subset -> degenerate header bbox
@@ -1173,11 +1181,14 @@ def _add_base_nodes(builder, node_coordinates, poi_tags, plan, keep=None):
         tags[i] = t if isinstance(t, dict) else None
     for i, t in _rows_of(ids, plan.node_tags):
         tags[i] = t
+    versions = node_coordinates.values_at("version", rows)
+    if versions is None:
+        builder.node_meta = False
     builder.add_nodes(
         ids,
         lat,
         lon,
-        _int_values(node_coordinates.values_at("version", rows), 1, len(ids)),
+        _int_values(versions, 1, len(ids)),
         _int_values(node_coordinates.values_at("timestamp", rows), 0, len(ids)),
         _int_values(node_coordinates.values_at("changeset", rows), 0, len(ids)),
         tags,
@@ -1209,7 +1220,11 @@ def _int_values(values, default, count):
     return values
 
 
-def _add_base_ways(builder, way_records, plan, keep=None):
+def _add_base_ways(builder, way_records, plan, keep=None, changesets=None):
+    """Add the source ways (those in ``keep`` when given) to ``builder``, with the node ids
+    and tags their edits in ``plan`` give, else their own, and the changeset ``changesets``
+    (a way id -> changeset dict) gives them."""
+    changesets = changesets or {}
     for w in way_records:
         wid = w["id"]
         if wid not in plan.way_refs:
@@ -1221,8 +1236,9 @@ def _add_base_ways(builder, way_records, plan, keep=None):
             {
                 "id": wid,
                 "refs": plan.way_refs[wid],
-                "version": w.get("version") or 1,
+                "version": w.get("version"),
                 "timestamp": w.get("timestamp"),
+                "changeset": changesets.get(wid),
                 "tags": _record_tags(w) if tags is None else tags,
             }
         )
@@ -1314,6 +1330,11 @@ def write_geodataframe_to_pbf(
     start_step(steps, _APPLYING)
 
     relations = relations or {}
+    way_changesets = {}
+    if hasattr(way_records, "changeset"):
+        way_changesets = dict(
+            zip(way_records.ids.tolist(), way_records.changeset.tolist())
+        )
     way_records = list(way_records) + list(relation_member_ways or [])
     frames = _reproject_to_wgs84(_as_frames(data))
 
@@ -1359,7 +1380,7 @@ def write_geodataframe_to_pbf(
     for nid, lon, lat, tags in edits.new_nodes:
         builder.add_new_node(nid, lon, lat, tags)
     start_step(steps, _WAYS)
-    _add_base_ways(builder, way_records, plan, keep_ways)
+    _add_base_ways(builder, way_records, plan, keep_ways, way_changesets)
     for wid, refs, tags in new_ways:
         builder.add_new_way(wid, refs, tags)
     start_step(steps, _RELATIONS)

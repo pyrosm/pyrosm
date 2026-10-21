@@ -358,24 +358,36 @@ def get_file_size(file_name, size_type=UNIT.MB):
     return round(convert_unit(size, size_type), 2)
 
 
-def write_atomic(path, write):
-    """Write ``path`` by calling ``write(file)`` on a new temporary file next to it.
+def write_atomic_path(path, write):
+    """Write ``path`` by calling ``write(partial)`` with the path of a new temporary file
+    next to it, ``<name>.<random>.part``.
 
-    The temporary file gets a unique name and replaces ``path`` only when ``write`` returns, so
-    readers never see a partial file; it is removed when ``write`` fails.
+    The temporary file replaces ``path`` only when ``write`` returns, so readers never see
+    a partial file; it is removed when ``write`` fails.
     """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     fd, partial = tempfile.mkstemp(
         prefix=path.name + ".", suffix=".part", dir=path.parent
     )
+    os.close(fd)
     try:
-        with open(fd, "wb") as out_file:
-            write(out_file)
+        write(partial)
         Path(partial).replace(path)
     except BaseException:
         Path(partial).unlink(missing_ok=True)
         raise
+
+
+def write_atomic(path, write):
+    """Write ``path`` by calling ``write(file)`` on a new temporary file next to it (see
+    :func:`write_atomic_path`), creating its folder when missing."""
+
+    def write_file(partial):
+        with open(partial, "wb") as out_file:
+            write(out_file)
+
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    write_atomic_path(path, write_file)
 
 
 def copy_atomic(source, path):
