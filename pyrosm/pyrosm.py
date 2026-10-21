@@ -133,10 +133,12 @@ class OSM:
     filepath : str
         Filepath to input OSM dataset (``*.osm.pbf``)
 
-    bounding_box : list | shapely geometry
-        Filtering OSM data spatially is allowed by passing a
-        bounding box either as a list `[minx, miny, maxx, maxy]` or
-        as a Shapely Polygon/MultiPolygon or closed LineString/LinearRing.
+    bounding_box : list | tuple | numpy.ndarray | shapely geometry | GeoDataFrame | GeoSeries
+        Filtering OSM data spatially is allowed by passing a bounding box in lon/lat:
+        four numbers `[minx, miny, maxx, maxy]` (a list, tuple or array, such as a
+        GeoDataFrame's `total_bounds`), a Shapely Polygon/MultiPolygon or closed
+        LineString/LinearRing, or a GeoDataFrame/GeoSeries (its geometries together,
+        reprojected to lon/lat). Every function that takes a bounding box takes these.
 
     keep_metadata : bool (default: True)
         Whether to keep the OSM element metadata columns (`timestamp`,
@@ -263,32 +265,9 @@ class OSM:
         if "osh.pbf" in self.filepath.lower():
             self._osh_file = True
 
-        if bounding_box is None:
-            self.bounding_box = None
-        elif type(bounding_box) in self.allowed_bbox_types:
-            # Ensures bounding box is a closed geometry
-            # (+ attempts to close MultiLineStrings)
-            self.bounding_box = validate_bounding_box(bounding_box)
-        elif isinstance(bounding_box, list):
-            if not len(bounding_box) == 4:
-                raise ValueError(
-                    "When passing bounding box as a list it should contain 4 coordinates: "
-                    "[minx, miny, maxx, maxy]."
-                )
-            minx, miny, maxx, maxy = bounding_box
-            if minx >= maxx or miny >= maxy:
-                raise ValueError(
-                    "Invalid bounding box {bbox}: expected [minx, miny, maxx, maxy] with "
-                    "minx < maxx and miny < maxy. Please double-check the order of the "
-                    "coordinates (they may be swapped/inverted).".format(
-                        bbox=bounding_box
-                    )
-                )
-            self.bounding_box = bounding_box
-        else:
-            raise ValueError(
-                "bounding_box should be a list, Shapely Polygon or a Shapely LinearRing."
-            )
+        self.bounding_box = (
+            None if bounding_box is None else validate_bounding_box(bounding_box)
+        )
 
         self.conf = Conf
         self.keep_node_info = keep_node_info
@@ -307,6 +286,7 @@ class OSM:
         self._way_records = None
         self._relations = None
         self._relation_member_ways = None
+        self._way_changesets = None
 
         # Timestamp
         self._current_timestamp = None
@@ -365,6 +345,7 @@ class OSM:
                 relations,
                 node_coordinates,
                 relation_member_ways,
+                way_changesets,
             ) = parse_osm_data(
                 self.filepath,
                 bounding_box,
@@ -380,6 +361,7 @@ class OSM:
         self._relations = relations
         self._node_coordinates = node_coordinates
         self._relation_member_ways = relation_member_ways
+        self._way_changesets = way_changesets
 
     def _read_pbf(self, timestamp=None, steps=None):
         """Parse the file for ``timestamp`` unless it is parsed for it already, in the
@@ -1059,10 +1041,10 @@ class OSM:
 
         >>> from pyrosm.config import Conf
         >>> print("All available OSM keys", Conf.tags.available)
-        All available OSM keys ['aerialway', 'aeroway', 'amenity', 'building', 'craft',
-        'emergency', 'geological', 'highway', 'historic', 'landuse', 'leisure',
-        'natural', 'office', 'power', 'public_transport', 'railway', 'route',
-        'place', 'shop', 'tourism', 'waterway']
+        All available OSM keys ['aerialway', 'aeroway', 'amenity', 'boundary', 'building',
+        'craft', 'emergency', 'geological', 'highway', 'historic', 'landuse', 'leisure',
+        'natural', 'office', 'power', 'public_transport', 'railway', 'route', 'place',
+        'shop', 'tourism', 'waterway']
 
         >>> print("Typical tags associated with tourism:", Conf.tags.tourism)
         ['alpine_hut', 'apartment', 'aquarium', 'artwork', 'attraction', 'camp_pitch',
@@ -1316,7 +1298,10 @@ class OSM:
 
         keep_relations : bool
             When ``True`` (default) relations referencing a kept node or way are
-            written; when ``False`` no relations are written.
+            written; when ``False`` no relations are written. With
+            ``complete_relations=True`` (see :class:`OSM`), a relation with a way member
+            in the area is written with all its way members and their nodes, so the
+            cropped file reads back with its complete geometry.
 
         workers : int | str
             Number of threads for the CPU-heavy per-block work. By default (``None``)
@@ -1373,6 +1358,7 @@ class OSM:
             compact=compact,
             repack=repack,
             progress=self.progress,
+            complete_relations=self.complete_relations,
             **region,
         )
 
@@ -1394,7 +1380,9 @@ class OSM:
         GeoDataFrame.
 
         The whole cached dataset (all nodes/ways/relations read from the source)
-        is written. The tag columns of a row (and its JSON ``tags``) are the tags written
+        is written; for a read with a ``bounding_box``, its nodes and ways and the
+        relations with a member among them, and with ``complete_relations=True`` also the
+        member ways outside the box and their nodes. The tag columns of a row (and its JSON ``tags``) are the tags written
         for the matching element (by ``osm_type`` + ``id``), so a tag whose column is
         left out of the frame is not written; rows whose ``id`` is not in the source are
         added as new elements synthesized from their geometry (with negative ids).
@@ -1411,7 +1399,11 @@ class OSM:
         without a ``building`` column, a ``UserWarning`` says how many and which reader
         will no longer find them in the written file.
         Topology and coordinates come from the data pyrosm read, so the output is
-        faithful and re-readable (e.g. by pyrosm, osmium, GDAL and r5py/R5).
+        faithful and re-readable (e.g. by pyrosm, osmium, GDAL and r5py/R5). The
+        elements are written sorted by type then id, new ones included, with the version,
+        timestamp and changeset they were read with (none for nodes read with
+        ``keep_metadata=False``); the file is written next to ``output_path`` and
+        replaces it only when it is complete.
 
         Pass ``subset_only=True`` to instead write a PBF containing **only** the
         elements in ``data`` (matched by ``osm_type`` + ``id``) plus the references
@@ -1419,12 +1411,16 @@ class OSM:
         network to a new file. Multiple layers can be combined by passing a list
         (``[buildings, network]``); the union of their elements is written.
 
-        Typical use is to modify attributes in pandas and save them back::
+        Typical use is to modify attributes in pandas and save them back (tags are
+        text, so a number is read from them first)::
+
+            import pandas as pd
 
             osm = OSM("data.osm.pbf")
             edges = osm.get_network("driving")
-            edges["maxspeed"] = edges["maxspeed"].fillna(50)
-            edges["travel_time"] = edges["length"] / (edges["maxspeed"] / 3.6)
+            edges["maxspeed"] = edges["maxspeed"].fillna("50")
+            speed = pd.to_numeric(edges["maxspeed"], errors="coerce")  # km/h
+            edges["travel_time"] = edges["length"] / (speed / 3.6)
             osm.write_pbf(edges, "modified.osm.pbf")
 
         Pass ``apply_geometry=True`` and/or ``delete=`` to edit the geometry itself.
@@ -1566,6 +1562,9 @@ class OSM:
                 on_orphan_node=on_orphan_node,
                 on_deleted_member=on_deleted_member,
                 steps=steps,
+                relation_member_ways=self._relation_member_ways,
+                bounded=self.bounding_box is not None,
+                way_changesets=self._way_changesets,
             )
 
     @logged("network_type", "graph_type", "simplify", count=False)
@@ -1621,7 +1620,7 @@ class OSM:
         """
         validate_graph_type(graph_type)
         if tags_to_keep is not None:
-            validate_tags_as_columns(tags_to_keep)
+            validate_tags_as_columns(tags_to_keep, "tags_to_keep")
             tags_to_keep = list(tags_to_keep) + [
                 tag
                 for tag in graph_tags(
@@ -1755,7 +1754,7 @@ class OSM:
 
         The export shows its progress as ``progress`` says: by default a bar on stderr
         once it has run 2 seconds, from 0 to 100 % with the step it is in (directing the
-        edges, simplifying, keeping the largest connected part, building the graph) in
+        edges, keeping the largest connected part, simplifying, building the graph) in
         its label, cleared at the end, or without a terminal one line with the time it
         took.
 
@@ -1819,7 +1818,9 @@ class OSM:
             ``osmid``, the nodes get ``x``/``y`` from their geometry, in the CRS of the
             frames, in place of ``lon``/``lat``, and node ``tags`` are stored as a JSON
             string. The node ``osmid`` is the key of the node in the graph and is not
-            repeated as a node attribute.
+            repeated as a node attribute. The edges get OSMnx's ``oneway`` and
+            ``reversed`` booleans, and the OSM text of the ``oneway`` tag is
+            ``oneway_tag`` (see :func:`pyrosm.graphs.to_networkx`).
             NOTE: Only applicable with "networkx" graph type.
 
         pandana_weights : list
@@ -1845,7 +1846,8 @@ class OSM:
             Keyword arguments forwarded to ``pyrosm.graph_simplify.simplify_graph``
             when ``simplify=True``, e.g. ``edge_attrs_differ`` (the columns whose change
             stops a merge; ``None`` merges across every change, as OSMnx does by
-            default), ``node_attrs_include`` (keep the listed nodes as endpoints),
+            default), ``node_attrs_include`` (keep the nodes with a value for one of the listed node
+            columns or tags as endpoints),
             ``remove_rings``, ``track_merged``, ``length_cols`` or ``edge_attr_aggs``.
 
         progress : bool | callable | None (default: None)
@@ -1984,21 +1986,29 @@ class OSM:
 
     @staticmethod
     def clear_downloads(filepath=None):
-        """Remove PBF files downloaded by ``get_data`` from the default download directory
-        (``<tempdir>/pyrosm``). The result cache and the bundled package datasets are left
-        untouched.
+        """Remove PBF files downloaded or cropped into the default download directory
+        (``<tempdir>/pyrosm``), with the partial files that interrupted downloads leave and
+        the records kept beside crops. The result cache, the provider indexes and the
+        bundled package datasets are left untouched.
 
         Parameters
         ----------
 
         filepath : str | os.PathLike (optional)
-            A downloaded file's path or bare filename to remove just that file; when ``None``
-            (default) every downloaded ``*.pbf`` in the directory is removed.
+            A ``.osm.pbf`` or ``.osh.pbf`` file to remove, with its partial files: a path
+            removes exactly that file, a bare file name the file of that name in the download
+            directory. When ``None`` (default) every ``*.pbf`` file in the download directory
+            is removed.
 
         Returns
         -------
         int
-            The number of files removed.
+            The number of PBF and partial files removed.
+
+        Raises
+        ------
+        ValueError
+            If ``filepath`` does not name a ``.osm.pbf`` or ``.osh.pbf`` file.
         """
         from pyrosm.utils.download import clear_downloads
 

@@ -67,7 +67,13 @@ from pyrosm._arrays import _offsets_from_lengths
 from pyrosm.engine.pool import _PoolStartError, _ordered_map
 from pyrosm.int64_hash cimport Int64Set, SortedInt64Set, _set_has, kh_i64set_t
 from pyrosm._log import timed
-from pyrosm.utils import _file_identity, default_workers, validate_workers
+from pyrosm.utils import (
+    _file_identity,
+    default_workers,
+    validate_bounding_box,
+    validate_workers,
+)
+from pyrosm.utils.download import write_atomic_path
 from pyrosm.utils.progress import stepping, validate_progress
 from pyrosm.zlib_blob import zlib_compress
 from pyrosm.primitive_block_decoder import (
@@ -92,35 +98,44 @@ _RELATIONS = 2
 # ---------------------------------------------------------------------------
 # Bounding box
 # ---------------------------------------------------------------------------
-cdef _bounds_from_bbox(bounding_box):
-    """Return (xmin, ymin, xmax, ymax) from a list or shapely (Multi)Polygon."""
-    if bounding_box is None:
-        raise ValueError(
-            "Cropping a PBF requires a bounding box. Construct the OSM object "
-            "with `OSM(filepath, bounding_box=...)` before calling `to_pbf()`."
-        )
-    if isinstance(bounding_box, (list, tuple)):
-        xmin, ymin, xmax, ymax = bounding_box
-        return float(xmin), float(ymin), float(xmax), float(ymax)
-    # shapely geometry -> use its envelope (matches how OSM() filters by bbox)
-    xmin, ymin, xmax, ymax = bounding_box.bounds
-    return float(xmin), float(ymin), float(xmax), float(ymax)
+cdef _bounds(region):
+    """``(xmin, ymin, xmax, ymax)`` of a checked box: four numbers, or a geometry's
+    envelope (matches how OSM() filters by bbox)."""
+    if isinstance(region, list):
+        return tuple(region)
+    return tuple(float(v) for v in region.bounds)
 
 
 cdef _region(bounding_box, polygon):
     """The crop region: its box ``(xmin, ymin, xmax, ymax)`` and the prepared polygon
-    to crop to, or None to crop to the box. A polygon's box is its envelope."""
+    to crop to, or None to crop to the box. Both take any form
+    :func:`~pyrosm.utils.validate_bounding_box` takes; a polygon's box is its
+    envelope."""
     if polygon is None:
-        return _bounds_from_bbox(bounding_box), None
+        if bounding_box is None:
+            raise ValueError("Give a bounding box or a polygon to crop to.")
+        return _bounds(validate_bounding_box(bounding_box)), None
     if bounding_box is not None:
         raise ValueError("Give either a bounding box or a polygon to crop to, not both.")
-    if getattr(polygon, "geom_type", None) not in ("Polygon", "MultiPolygon") or \
-            polygon.is_empty:
-        raise ValueError(
-            "The polygon to crop to must be a non-empty Shapely Polygon or "
-            "MultiPolygon; got %r." % (polygon,)
+    polygon = validate_bounding_box(polygon, "polygon")
+    if isinstance(polygon, list):
+        from shapely.geometry import box
+
+        polygon = box(*polygon)
+    return _bounds(polygon), _prepared(polygon.wkb)
+
+
+cdef _warn_empty(sources, bounds):
+    """Warn that the file written from the files `sources` holds no node: none lies in
+    the area of the box `bounds`, or with `bounds` None, the files hold none."""
+    names = ", ".join(Path(p).name for p in sources)
+    if bounds is None:
+        message = "%s hold no node; the written file holds no elements." % names
+    else:
+        message = "No node of %s lies in the area %s; the written file holds no elements." % (
+            names, list(bounds)
         )
-    return _bounds_from_bbox(polygon), _prepared(polygon.wkb)
+    warnings.warn(message)
 
 
 def _prepared(wkb):
@@ -226,12 +241,16 @@ _FINDING_NODES = "finding the nodes in the area"
 _FINDING_WAYS = "finding the ways"
 _CHOOSING_WAYS = "choosing each way's copy"
 _FINDING_RELATIONS = "finding the relations"
+_FINDING_MEMBERS = "finding the members of the relations"
+_COMPLETING_RELATIONS = "completing the relations"
 _WRITING = "writing the file"
 _CROP_SHARES = {
     _SELECTING: 1.1,
     _FINDING_NODES: 1.1,
     _FINDING_WAYS: 1.4,
     _FINDING_RELATIONS: 0.4,
+    _FINDING_MEMBERS: 0.4,
+    _COMPLETING_RELATIONS: 1.4,
     _WRITING: 1.0,
 }
 _MERGE_SHARES = {
@@ -404,7 +423,7 @@ cdef _nodes_inside(header, nodes, bounds, polygon):
     return nodes["id"][mask]
 
 
-cdef _any_member(hits, offsets):
+def _any_member(hits, offsets):
     """Whether each element has a hit among its members: `hits` holds one value per
     member, laid out by the elements' CSR `offsets`."""
     counts = np.diff(offsets)
@@ -415,28 +434,56 @@ cdef _any_member(hits, offsets):
     return out
 
 
+cdef _ways_and_nodes(ways, kept):
+    """Ids of the decoded `ways` of a block where `kept` is true, and the nodes of those
+    ways."""
+    return ways["id"][kept], ways["refs"][np.repeat(kept, np.diff(ways["refs_off"]))]
+
+
 cdef _ways_touching(ways, nodes_set):
     """Ids of the decoded `ways` of a block with a node in `nodes_set`, and the nodes of
     those ways."""
     if ways is None:
         return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
-    refs, offsets = ways["refs"], ways["refs_off"]
-    touching = _any_member(_isin(refs, nodes_set), offsets)
-    return ways["id"][touching], refs[np.repeat(touching, np.diff(offsets))]
+    return _ways_and_nodes(ways, _any_member(_isin(ways["refs"], nodes_set), ways["refs_off"]))
 
 
 cdef _relations_touching(relations, nodes_set, ways_set):
     """Ids of the decoded `relations` of a block with a node member in `nodes_set` or a
-    way member in `ways_set`."""
+    way member in `ways_set`, and the ids of those with a way member in `ways_set` (the
+    relations to complete)."""
+    empty = np.empty(0, dtype=np.int64)
     if relations is None:
-        return np.empty(0, dtype=np.int64)
-    memids, types = relations["memids"], relations["types"]
+        return empty, empty
+    memids, types, offsets = relations["memids"], relations["types"], relations["members_off"]
     hits = np.zeros(len(memids), dtype=bool)
     is_node = types == _MEMBER_NODE
     is_way = types == _MEMBER_WAY
     hits[is_node] = _isin(memids[is_node], nodes_set)
-    hits[is_way] = _isin(memids[is_way], ways_set)
-    return relations["id"][_any_member(hits, relations["members_off"])]
+    way_hits = np.zeros(len(memids), dtype=bool)
+    way_hits[is_way] = _isin(memids[is_way], ways_set)
+    hits |= way_hits
+    return (
+        relations["id"][_any_member(hits, offsets)],
+        np.unique(relations["id"][_any_member(way_hits, offsets)]),
+    )
+
+
+cdef _member_ways(relations, ids_set):
+    """The way members of the decoded `relations` of a block whose id is in `ids_set`,
+    of every version of them."""
+    if relations is None:
+        return np.empty(0, dtype=np.int64)
+    memids, types, offsets = relations["memids"], relations["types"], relations["members_off"]
+    listed = np.repeat(_isin(relations["id"], ids_set), np.diff(offsets))
+    return np.unique(memids[listed & (types == _MEMBER_WAY)])
+
+
+cdef _ways_listed(ways, ids_set):
+    """Ids of the decoded `ways` of a block in `ids_set`, and the nodes of those ways."""
+    if ways is None:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+    return _ways_and_nodes(ways, _isin(ways["id"], ids_set))
 
 
 cdef _nodes_inside_file(filepath, region, progress):
@@ -460,17 +507,53 @@ cdef _ways_touching_file(filepath, nodes_in_bbox_set, progress):
 
 
 cdef _relations_touching_file(filepath, kept_nodes_set, kept_ways_set, progress):
-    return np.concatenate([
+    """`_relations_touching` over the blocks of `filepath`: the relation ids and the ways
+    that complete them."""
+    found = [
         _relations_touching(relations, kept_nodes_set, kept_ways_set)
         for _, _, _, relations in _iter_decoded_blocks(filepath, progress)
-    ] or [np.empty(0, dtype=np.int64)])
+    ]
+    return _concat_pairs(found)
+
+
+cdef _concat_pairs(pairs):
+    """The relation ids and the ids of the relations to complete of `_relations_touching`
+    results, each concatenated (the second without duplicates)."""
+    empty = np.empty(0, dtype=np.int64)
+    return (
+        np.concatenate([ids for ids, _ in pairs] or [empty]),
+        _unique_concat([ways for _, ways in pairs]),
+    )
+
+
+cdef _member_ways_file(filepath, ids_set, progress):
+    """`_member_ways` over the blocks of `filepath` that hold relations."""
+    cdef const unsigned char[::1] view
+    found = []
+    for data in _iter_block_data(filepath, progress):
+        view = data
+        if len(data) and _has_relations(&view[0], len(data)):
+            found.append(_member_ways(_decode_block(data, filepath)[3], ids_set))
+    return _unique_concat(found)
+
+
+cdef _ways_listed_file(filepath, ids_set, progress):
+    """`_ways_listed` over the blocks of `filepath`: the way ids and their nodes."""
+    found = [
+        _ways_listed(ways, ids_set)
+        for _, _, ways, _ in _iter_decoded_blocks(filepath, progress)
+    ]
+    return _unique_concat([ids for ids, _ in found]), _unique_concat(
+        [refs for _, refs in found]
+    )
 
 
 cdef _select_one_pass(filepath, region, keep_relations, progress):
     """The crop selection of `filepath` in one pass, as (kept node ids, [kept way ids],
-    [kept relation ids]) like `_select`, for a file whose blocks hold every node before
-    every way and every way before every relation, as a file sorted by type then id
-    does. None when a block breaks that order."""
+    [kept relation ids]) like `_select`, and the ids of the kept relations to complete,
+    for a file whose blocks hold every node before every way and every way before every
+    relation, as a file sorted by type then id does. None when a block breaks that
+    order."""
     bounds, polygon = region
     inside, way_ids, way_refs, rel_ids = [], [], [], []
     nodes_set = kept_nodes_set = kept_ways_set = None
@@ -501,11 +584,12 @@ cdef _select_one_pass(filepath, region, keep_relations, progress):
                     _relations_touching(relations, kept_nodes_set, kept_ways_set)
                 )
     empty = np.empty(0, dtype=np.int64)
+    rels, reaching = _concat_pairs(rel_ids)
     return (
         _unique_concat(inside + way_refs),
         [np.concatenate(way_ids or [empty])],
-        [np.concatenate(rel_ids or [empty])],
-    )
+        [rels],
+    ), reaching
 
 
 cdef _block_way_copies(pblock, candidates, nodes_in_bbox_set):
@@ -1849,9 +1933,21 @@ cdef _refuse_input_as_output(output_path, sources):
 
 
 cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
-               workers=None, compact=False, repack=False, polygon=None, progress=None):
+               workers=None, compact=False, repack=False, polygon=None, progress=None,
+               complete_relations=False):
     """Crop `source_path` by `bounding_box`, or by the Shapely (Multi)Polygon
-    `polygon`, writing a valid PBF to `output_path`.
+    `polygon`, writing a valid PBF to `output_path`. Both take any form
+    :class:`pyrosm.OSM` takes for its bounding box (a GeoDataFrame or GeoSeries is
+    united and reprojected to lon/lat); an unusable box is refused as ``OSM`` refuses it,
+    and a crop that keeps no node warns.
+
+    With `complete_relations`, a relation kept for a way member in the area also keeps
+    its other way members and their nodes, as ``OSM(complete_relations=True)`` reads it,
+    so its geometry is complete in the cropped file (one more pass over the file).
+    Members that are relations are not completed.
+
+    The crop is written next to `output_path` and replaces it only when it is complete,
+    so a failed or interrupted crop leaves the earlier file as it was.
 
     Returns the output path. When ``workers > 1`` and the file has enough blocks
     to amortize pool startup (>= ``2 * workers`` OSMData blocks), the parallel
@@ -1880,37 +1976,56 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     bounds = region[0]
     _refuse_input_as_output(output_path, [source_path])
 
-    if output_path is None:
-        fd, output_path = tempfile.mkstemp(suffix=".osm.pbf", prefix="pyrosm_crop_")
-        os.close(fd)
-
     # Stage 0: header pre-flight (rejects unsupported inputs before any streaming).
     _read_header(source_path)
 
+    made = output_path is None
+    if made:
+        fd, output_path = tempfile.mkstemp(suffix=".osm.pbf", prefix="pyrosm_crop_")
+        os.close(fd)
     name = Path(source_path).name
-    with timed(
-        logger, "crop_pbf", logging.INFO, file=name, output=Path(output_path).name
-    ) as fields, stepping(
-        progress, "Cropping %s" % name, _CROP_SHARES, delay=2.0, leave=False, timed=True
-    ) as steps:
-        _with_pool(
-            _select_and_write,
-            (source_path, output_path, region, keep_relations, compact, repack,
-             _ReadProgress(steps, [source_path])),
-            workers, [source_path], region, compact,
-        )
-        fields["megabytes"] = os.path.getsize(output_path) / 1e6
+    try:
+        with timed(
+            logger, "crop_pbf", logging.INFO, file=name, output=Path(output_path).name
+        ) as fields, stepping(
+            progress, "Cropping %s" % name, _CROP_SHARES, delay=2.0, leave=False,
+            timed=True
+        ) as steps:
+            write_atomic_path(output_path, partial(
+                _write_crop, source_path, region, keep_relations, compact, repack,
+                _ReadProgress(steps, [source_path]), complete_relations, workers,
+            ))
+            fields["megabytes"] = os.path.getsize(output_path) / 1e6
+    except BaseException:
+        if made:
+            Path(output_path).unlink(missing_ok=True)
+        raise
     return output_path
 
 
+def _write_crop(source_path, region, keep_relations, compact, repack, progress,
+                complete_relations, workers, path):
+    """Write the crop of `crop_pbf` to `path`, with a worker pool when one is used (see
+    `_with_pool`)."""
+    _with_pool(
+        _select_and_write,
+        (source_path, path, region, keep_relations, compact, repack, progress,
+         complete_relations),
+        workers, [source_path], region, compact,
+    )
+
+
 def _select_and_write(source_path, output_path, region, keep_relations, compact, repack,
-              progress, pool):
-    """Select the elements to keep and write `output_path`; in parallel with `pool`.
+              progress, complete_relations, pool):
+    """Select the elements to keep (completing the kept relations with
+    `complete_relations`, see `_select`) and write `output_path`; in parallel with `pool`.
     Each pass over the file is reported to `progress` (a `_ReadProgress`)."""
     bounds = region[0]
     kept_nodes, kept_ways, kept_rel = _select(
-        [source_path], region, keep_relations, pool, progress
+        [source_path], region, keep_relations, pool, progress, complete_relations
     )
+    if len(kept_nodes) == 0:
+        _warn_empty([source_path], bounds)
     kept_ways, kept_rel = kept_ways[0], kept_rel[0]
     if repack:
         _repack_write(
@@ -1935,27 +2050,35 @@ def _select_and_write(source_path, output_path, region, keep_relations, compact,
         )
 
 
-cdef _select(sources, region, keep_relations, pool, progress):
+cdef _select(sources, region, keep_relations, pool, progress, complete_relations=False):
     """Run the crop selection stages over one or more PBF files.
 
     Returns the kept node ids of all files together, and a list with the kept way
     ids and a list with the kept relation ids of each file. With several files, a
     way is kept only from the file holding its winning copy (see `_way_winners`).
+    With `complete_relations` (one file only), a relation kept for a kept way member
+    also keeps its other way members and their nodes (see `_complete_relations`).
     With a `pool`, each stage spreads a file's blocks over the workers, which get the
     id sets the stage needs from `pool.broadcast`. Each pass over the files is reported
     to `progress` (a `_ReadProgress`).
     """
+    completing = complete_relations and keep_relations
+    completion = [_FINDING_MEMBERS, _COMPLETING_RELATIONS] if completing else []
     if pool is None and len(sources) == 1:
-        progress.plan([_SELECTING, _WRITING])
+        progress.plan([_SELECTING] + completion + [_WRITING])
         with progress.one_pass(_SELECTING):
-            selection = _select_one_pass(sources[0], region, keep_relations, progress)
-        if selection is not None:
+            found = _select_one_pass(sources[0], region, keep_relations, progress)
+        if found is not None:
+            selection, reaching = found
+            if completing:
+                return _complete_relations(sources[0], selection, reaching, pool, progress)
             return selection
 
     progress.plan(
         [_FINDING_NODES, _FINDING_WAYS]
         + ([_CHOOSING_WAYS] if len(sources) > 1 else [])
         + ([_FINDING_RELATIONS] if keep_relations else [])
+        + completion
         + [_WRITING]
     )
     # Stage 1: nodes inside the bbox (or polygon).
@@ -2003,19 +2126,55 @@ cdef _select(sources, region, keep_relations, pool, progress):
         if pool is None:
             kept_nodes_set = _to_set(kept_nodes)
             kept_ways_set = _to_set(all_ways)
-            kept_rel = [
+            found = [
                 _relations_touching_file(p, kept_nodes_set, kept_ways_set, progress)
                 for p in sources
             ]
         else:
-            pool.broadcast("kept_nodes", kept_nodes)
-            pool.broadcast("kept_ways", all_ways)
-            kept_rel = []
+            pool.broadcast("relation_nodes", kept_nodes)
+            pool.broadcast("relation_ways", all_ways)
+            found = []
             for p in sources:
                 payloads = _iter_payloads(p, progress)
-                parts = pool.imap(_worker_relations_touching, payloads)
-                kept_rel.append(_unique_concat(list(parts)))
-    return kept_nodes, kept_ways, kept_rel
+                parts = list(pool.imap(_worker_relations_touching, payloads))
+                ids, reaching = _concat_pairs(parts)
+                found.append((np.unique(ids), reaching))
+    selection = kept_nodes, kept_ways, [ids for ids, _ in found]
+    if completing:
+        return _complete_relations(sources[0], selection, found[0][1], pool, progress)
+    return selection
+
+
+cdef _complete_relations(source, selection, reaching, pool, progress):
+    """`selection` (of the one file `source`) with the way members of the relations
+    `reaching` (those it keeps for a kept way member), of every version of them, and
+    their nodes, so those relations are complete in the cropped file."""
+    kept_nodes, kept_ways, kept_rel = selection
+    if len(reaching) == 0:
+        return selection
+    with progress.one_pass(_FINDING_MEMBERS):
+        if pool is None:
+            ways = _member_ways_file(source, _to_set(reaching), progress)
+        else:
+            pool.broadcast("reaching_relations", reaching)
+            payloads = _iter_payloads(source, progress)
+            ways = _unique_concat(list(pool.imap(_worker_member_ways, payloads)))
+    missing = np.setdiff1d(ways, kept_ways[0])
+    if len(missing) == 0:
+        return selection
+    with progress.one_pass(_COMPLETING_RELATIONS):
+        if pool is None:
+            ids, refs = _ways_listed_file(source, _to_set(missing), progress)
+        else:
+            pool.broadcast("listed_ways", missing)
+            results = list(pool.imap(_worker_ways_listed, _iter_payloads(source, progress)))
+            ids = _unique_concat([found for found, _ in results])
+            refs = _unique_concat([found for _, found in results])
+    return (
+        _unique_concat([kept_nodes, refs]),
+        [np.concatenate([kept_ways[0], ids])],
+        kept_rel,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2147,16 +2306,31 @@ cdef _nodes_inside_block(ctx, data, filepath):
     return np.unique(_nodes_inside(header, nodes, ctx.bounds, ctx.polygon()))
 
 
-cdef _ways_touching_block(ctx, data, filepath):
+cdef _ways_block(ctx, data, filepath, bint listed):
+    """The kept ways of the block `data` and their nodes: with `listed` the ways in the
+    set ``listed_ways`` of the pool's context `ctx`, else those with a node in
+    ``nodes_in_bbox``."""
     _, _, ways, _ = _decode_block(data, filepath)
-    ids, refs = _ways_touching(ways, ctx.get_set("nodes_in_bbox"))
+    if listed:
+        ids, refs = _ways_listed(ways, ctx.get_set("listed_ways"))
+    else:
+        ids, refs = _ways_touching(ways, ctx.get_set("nodes_in_bbox"))
     return ids, np.unique(refs)
 
 
+cdef _member_ways_block(ctx, data, filepath):
+    """`_member_ways` of the block `data` with the set ``reaching_relations`` of the
+    pool's context `ctx`."""
+    _, _, _, relations = _decode_block(data, filepath)
+    return _member_ways(relations, ctx.get_set("reaching_relations"))
+
+
 cdef _relations_touching_block(ctx, data, filepath):
+    """`_relations_touching` of the block `data` with the sets ``relation_nodes`` and
+    ``relation_ways`` of the pool's context `ctx`."""
     _, _, _, relations = _decode_block(data, filepath)
     return _relations_touching(
-        relations, ctx.get_set("kept_nodes"), ctx.get_set("kept_ways")
+        relations, ctx.get_set("relation_nodes"), ctx.get_set("relation_ways")
     )
 
 
@@ -2187,11 +2361,19 @@ def _worker_nodes_inside(payload):
 
 
 def _worker_ways_touching(payload):
-    return _ways_touching_block(_WORKER_CONTEXT, _payload_data(payload), payload[0])
+    return _ways_block(_WORKER_CONTEXT, _payload_data(payload), payload[0], False)
 
 
 def _worker_way_copies(payload):
     return _way_copies_block(_WORKER_CONTEXT, _payload_data(payload), payload[0])
+
+
+def _worker_member_ways(payload):
+    return _member_ways_block(_WORKER_CONTEXT, _payload_data(payload), payload[0])
+
+
+def _worker_ways_listed(payload):
+    return _ways_block(_WORKER_CONTEXT, _payload_data(payload), payload[0], True)
 
 
 def _worker_relations_touching(payload):
@@ -2260,20 +2442,35 @@ def _batch_nodes_inside(ctx, payloads, buffer, starts):
 def _batch_ways_touching(ctx, payloads, buffer, starts):
     """`_worker_ways_touching` of each payload of a part of a batch (its blocks in
     ``buffer``), with the pool's context ``ctx``."""
+    return _batch_way_selection(ctx, payloads, buffer, starts, False)
+
+
+def _batch_ways_listed(ctx, payloads, buffer, starts):
+    """`_worker_ways_listed` of each payload of a part of a batch (its blocks in
+    ``buffer``), with the pool's context ``ctx``."""
+    return _batch_way_selection(ctx, payloads, buffer, starts, True)
+
+
+cdef _batch_way_selection(ctx, payloads, buffer, starts, bint listed):
+    """The kept ways of each payload of a part of a batch (its blocks in ``buffer``) and
+    their nodes, as `_ways_block` with ``listed`` selects them."""
     decoded = decode_batch_nogil(buffer, starts, keys=[], all_ways=True)
     counts = decoded["counts"]
     ids, refs, refs_off = decoded["all_id"], decoded["all_refs"], decoded["all_refs_off"]
-    touching = _any_member(_isin(refs, ctx.get_set("nodes_in_bbox")), refs_off)
+    if listed:
+        kept_ways = _isin(ids, ctx.get_set("listed_ways"))
+    else:
+        kept_ways = _any_member(_isin(refs, ctx.get_set("nodes_in_bbox")), refs_off)
     at = _offsets_from_lengths(counts[:, _BC_ALL_WAYS])
     out = []
     for b, payload in enumerate(payloads):
         if counts[b, _BC_STATUS]:
             out.append(
-                _ways_touching_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0])
+                _ways_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0], listed)
             )
             continue
         w0, w1 = at[b], at[b + 1]
-        kept = touching[w0:w1]
+        kept = kept_ways[w0:w1]
         way_refs = refs[refs_off[w0]:refs_off[w1]]
         out.append((
             ids[w0:w1][kept],
@@ -2290,7 +2487,19 @@ def _batch_relations_touching(ctx, payloads, buffer, starts):
     empty = np.empty(0, dtype=np.int64)
     return [
         _relations_touching_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0])
-        if marked[b] else empty
+        if marked[b] else (empty, empty)
+        for b, payload in enumerate(payloads)
+    ]
+
+
+def _batch_member_ways(ctx, payloads, buffer, starts):
+    """`_worker_member_ways` of each payload of a part of a batch (its blocks in
+    ``buffer``), with the pool's context ``ctx``: only the blocks `_relation_blocks`
+    marks are decoded."""
+    marked = _relation_blocks(buffer, starts)
+    return [
+        _member_ways_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0])
+        if marked[b] else np.empty(0, dtype=np.int64)
         for b, payload in enumerate(payloads)
     ]
 
@@ -2345,6 +2554,8 @@ def _batch_write(ctx, payloads, buffer, starts):
 _BATCHED = {
     _worker_nodes_inside: _batch_nodes_inside,
     _worker_ways_touching: _batch_ways_touching,
+    _worker_ways_listed: _batch_ways_listed,
+    _worker_member_ways: _batch_member_ways,
     _worker_relations_touching: _batch_relations_touching,
     _worker_way_copies: _batch_way_copies,
     _worker_write: _batch_write,
@@ -2523,8 +2734,9 @@ cdef _new_block():
     return block
 
 
-cdef _emit_node_block(out, ids, lat_raw, lon_raw, versions, timestamps, changesets,
-                      tags_list):
+cdef _emit_node_block(out, ids, lat_raw, lon_raw, meta, tags_list):
+    """Write a block of the nodes `ids`, with the DenseInfo of `meta` (their versions,
+    timestamps and changesets) when it is not None."""
     block = _new_block()
     st = _StringTable()
 
@@ -2546,10 +2758,12 @@ cdef _emit_node_block(out, ids, lat_raw, lon_raw, versions, timestamps, changese
     if has_tags:
         dense.keys_vals.extend(keys_vals)
 
-    di = dense.denseinfo
-    di.version.extend([int(v) for v in versions])
-    di.timestamp.extend(delta_encode(timestamps).tolist())
-    di.changeset.extend(delta_encode(changesets).tolist())
+    if meta is not None:
+        versions, timestamps, changesets = meta
+        di = dense.denseinfo
+        di.version.extend([int(v) for v in versions])
+        di.timestamp.extend(delta_encode(timestamps).tolist())
+        di.changeset.extend(delta_encode(changesets).tolist())
 
     for s in st.strings:
         block.stringtable.s.append(s)
@@ -2557,6 +2771,8 @@ cdef _emit_node_block(out, ids, lat_raw, lon_raw, versions, timestamps, changese
 
 
 cdef _emit_way_block(out, way_batch):
+    """Write a block of the way records `way_batch`, each with the version, timestamp
+    and changeset it has (none when 0 or missing)."""
     block = _new_block()
     st = _StringTable()
     group = block.primitivegroup.add()
@@ -2568,9 +2784,12 @@ cdef _emit_way_block(out, way_batch):
             for k, v in tags.items():
                 way.keys.append(st.intern(k))
                 way.vals.append(st.intern(v))
-        way.info.version = int(w.get("version") or 1)
-        if w.get("timestamp") is not None:
+        if w.get("version"):
+            way.info.version = int(w["version"])
+        if w.get("timestamp"):
             way.info.timestamp = int(w["timestamp"])
+        if w.get("changeset"):
+            way.info.changeset = int(w["changeset"])
         refs = np.ascontiguousarray(w["refs"], dtype=np.int64)
         way.refs.extend(delta_encode(refs).tolist())
     for s in st.strings:
@@ -2579,6 +2798,8 @@ cdef _emit_way_block(out, way_batch):
 
 
 cdef _emit_relation_block(out, rel_batch):
+    """Write a block of the relation records `rel_batch`, each with the version,
+    timestamp and changeset it has (none when 0 or missing)."""
     type_map = {
         b"node": 0, "node": 0, 0: 0,
         b"way": 1, "way": 1, 1: 1,
@@ -2595,10 +2816,11 @@ cdef _emit_relation_block(out, rel_batch):
             for k, v in tags.items():
                 rel.keys.append(st.intern(k))
                 rel.vals.append(st.intern(v))
-        rel.info.version = int(r.get("version") or 1)
-        if r.get("timestamp") is not None:
+        if r.get("version"):
+            rel.info.version = int(r["version"])
+        if r.get("timestamp"):
             rel.info.timestamp = int(r["timestamp"])
-        if r.get("changeset") is not None:
+        if r.get("changeset"):
             rel.info.changeset = int(r["changeset"])
         memids = []
         for (mtype, mref, mrole) in r["members"]:
@@ -2621,38 +2843,63 @@ _RELATION_WRITE_COST = 50
 
 
 cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds, progress=None):
-    """Serialize node/way/relation records to a valid PBF at `output_path`.
+    """Serialize node/way/relation records to a valid PBF at `output_path`, sorted by type
+    then id, replacing `output_path` only once the file is complete.
 
-    `nodes` is a dict of aligned arrays (id/lat/lon/version/timestamp/changeset and
-    an object array `tags`); `ways`/`relations` are lists of record dicts. `bounds`
-    is (xmin, ymin, xmax, ymax) for the header bbox. `progress(done, total)`, when
+    `nodes` is a dict of aligned arrays (id/lat/lon, an object array `tags` and,
+    optionally, version/timestamp/changeset; a node whose three are all 0 is written
+    without metadata); `ways`/`relations` are lists of record dicts, whose `version`,
+    `timestamp` and `changeset` are written when given.
+    `bounds` is (xmin, ymin, xmax, ymax) for the header bbox. `progress(done, total)`, when
     given, gets the work done after each block (a node counting 1, a way
     `_WAY_WRITE_COST` and a relation `_RELATION_WRITE_COST`), and the total once the file
     is closed.
     """
+    write_atomic_path(
+        output_path, partial(_write_records, nodes, ways, relations, bounds, progress)
+    )
+    return output_path
+
+
+def _write_records(nodes, ways, relations, bounds, progress, path):
+    """Write the records of `write_pbf_from_records` to `path`."""
     ids = np.ascontiguousarray(nodes["id"], dtype=np.int64)
     order = np.argsort(ids, kind="stable")
     ids = ids[order]
     lat_raw = _coord_to_raw(nodes["lat"])[order]
     lon_raw = _coord_to_raw(nodes["lon"])[order]
-    versions = np.ascontiguousarray(nodes["version"], dtype=np.int64)[order]
-    timestamps = np.ascontiguousarray(nodes["timestamp"], dtype=np.int64)[order]
-    changesets = np.ascontiguousarray(nodes["changeset"], dtype=np.int64)[order]
+    meta = None
+    if "version" in nodes:
+        meta = [
+            np.ascontiguousarray(nodes[name], dtype=np.int64)[order]
+            for name in ("version", "timestamp", "changeset")
+        ]
+        has_meta = (meta[0] != 0) | (meta[1] != 0) | (meta[2] != 0)
     tags_arr = nodes["tags"]
     tags_ordered = [tags_arr[i] for i in order]
+    ways = sorted(ways, key=itemgetter("id"))
+    relations = sorted(relations, key=itemgetter("id"))
 
     cdef int n = len(ids)
     cdef int i = 0
     cdef int j
     cdef Py_ssize_t way_work = _WAY_WRITE_COST * len(ways)
     cdef Py_ssize_t total = n + way_work + _RELATION_WRITE_COST * len(relations)
-    with open(output_path, "wb") as out:
-        _write_header(out, bounds)
+    with open(path, "wb") as out:
+        _write_header(out, bounds, sorted_output=True)
         while i < n:
             j = min(i + _MAX_GROUP, n)
+            if meta is not None:
+                # A block's DenseInfo is all or nothing: end the block where the nodes
+                # with metadata and those without it meet.
+                change = np.flatnonzero(has_meta[i:j] != has_meta[i])
+                if len(change):
+                    j = i + int(change[0])
             _emit_node_block(
-                out, ids[i:j], lat_raw[i:j], lon_raw[i:j], versions[i:j],
-                timestamps[i:j], changesets[i:j], tags_ordered[i:j],
+                out, ids[i:j], lat_raw[i:j], lon_raw[i:j],
+                [values[i:j] for values in meta] if meta is not None and has_meta[i]
+                else None,
+                tags_ordered[i:j],
             )
             i = j
             if progress is not None and i < total:
@@ -2673,7 +2920,6 @@ cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds, progre
                 progress(n + way_work + _RELATION_WRITE_COST * i, total)
     if progress is not None:
         progress(total, total)
-    return output_path
 
 
 # ---------------------------------------------------------------------------
@@ -3222,6 +3468,7 @@ cdef class _RepackWriter:
     cdef object out
     cdef list node_chunks
     cdef long node_count
+    cdef readonly long nodes_written
     cdef list way_buf
     cdef long way_count
     cdef list rel_buf
@@ -3231,6 +3478,7 @@ cdef class _RepackWriter:
         self.out = out
         self.node_chunks = []
         self.node_count = 0
+        self.nodes_written = 0
         self.way_buf = []
         self.way_count = 0
         self.rel_buf = []
@@ -3252,6 +3500,7 @@ cdef class _RepackWriter:
             self._flush_nodes()
         self.node_chunks.append(chunk)
         self.node_count += len(chunk[0])
+        self.nodes_written += len(chunk[0])
         while self.node_count >= _MAX_GROUP:
             self._emit_full_node_block()
 
@@ -3573,11 +3822,12 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
         Where to write the merged PBF. When ``None`` (default) a temporary file
         is created in the system temp directory and its path returned.
 
-    bounding_box : list or shapely geometry, optional
-        ``[minx, miny, maxx, maxy]`` in lon/lat, or a ``Polygon``/``MultiPolygon``,
-        which is cropped by its envelope. The output's header bounding box is
-        this box (the polygon's envelope with ``polygon``), or else the union of
-        the inputs' header boxes.
+    bounding_box : list | tuple | numpy.ndarray | shapely geometry | GeoDataFrame | GeoSeries, optional
+        The box in lon/lat, in any form :class:`pyrosm.OSM` takes: four numbers
+        ``[minx, miny, maxx, maxy]``, or a geometry or GeoDataFrame, which is cropped by
+        its envelope. The output's header bounding box is this box (the polygon's
+        envelope with ``polygon``), or else the union of the inputs' header boxes. A
+        box that ``OSM`` refuses is refused, and a merge that keeps no node warns.
 
     keep_relations : bool
         When ``True`` (default) relations are written (with ``bounding_box`` or
@@ -3594,7 +3844,7 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
         ``if __name__ == "__main__":`` guard, or one read from stdin), the merge runs
         in one process and warns.
 
-    polygon : shapely Polygon or MultiPolygon, optional
+    polygon : shapely Polygon or MultiPolygon | GeoDataFrame | GeoSeries, optional
         The area to crop to, in lon/lat, in place of ``bounding_box``: a node is
         kept when it lies inside the polygon or on its boundary. The output's
         header bounding box is the polygon's envelope.
@@ -3679,36 +3929,37 @@ cdef _merge(sources, output_path, bounding_box, keep_relations, workers, polygon
         )
         won = (None, [_to_set(w) for w in kept_ways], [_to_set(r) for r in kept_rel])
 
-    # Written next to the output and moved into place when complete, so a failed
-    # merge leaves no partial file at `output_path`.
-    if output_path is None:
-        out_dir = tempfile.gettempdir()
-    else:
-        out_dir = os.path.dirname(os.path.abspath(output_path))
-    fd, partial_path = tempfile.mkstemp(
-        suffix=".osm.pbf", prefix=".pyrosm_merge_", dir=out_dir
-    )
+    made = output_path is None
+    if made:
+        fd, output_path = tempfile.mkstemp(suffix=".osm.pbf", prefix="pyrosm_merge_")
+        os.close(fd)
+    boxed = bounding_box is not None or polygon is not None
     try:
-        with os.fdopen(fd, "wb") as out, progress.one_pass(_WRITING):
-            inputs = [_SortedInput(p, progress) for p in sources]
-            _write_header(out, bounds, sorted_output=True)
-            writer = _RepackWriter(out)
-            for kind in (_NODES, _WAYS, _RELATIONS):
-                _merge_kind(inputs, kind, kept[kind], won[kind], writer)
-            writer.close()
-        changed = [
-            p for p, before in zip(sources, fingerprints) if _fingerprint(p) != before
-        ]
-        if changed:
-            raise ValueError(
-                "'%s' changed while it was being merged; the merge was discarded."
-                % changed[0]
-            )
-        if output_path is None:
-            fd, output_path = tempfile.mkstemp(suffix=".osm.pbf", prefix="pyrosm_merge_")
-            os.close(fd)
-        os.replace(partial_path, output_path)
+        write_atomic_path(output_path, partial(
+            _write_merge, sources, fingerprints, bounds, boxed, kept, won, progress
+        ))
     except BaseException:
-        Path(partial_path).unlink(missing_ok=True)
+        if made:
+            Path(output_path).unlink(missing_ok=True)
         raise
     return output_path
+
+
+def _write_merge(sources, fingerprints, bounds, boxed, kept, won, progress, path):
+    """Write the merge of `_merge` to `path` with the header box `bounds`, refusing it
+    when an input changed since its `fingerprints`; warn when no node is written (none
+    lies in the box `bounds` when `boxed`, else the inputs hold none)."""
+    with open(path, "wb") as out, progress.one_pass(_WRITING):
+        inputs = [_SortedInput(p, progress) for p in sources]
+        _write_header(out, bounds, sorted_output=True)
+        writer = _RepackWriter(out)
+        for kind in (_NODES, _WAYS, _RELATIONS):
+            _merge_kind(inputs, kind, kept[kind], won[kind], writer)
+        writer.close()
+    if writer.nodes_written == 0:
+        _warn_empty(sources, bounds if boxed else None)
+    changed = [p for p, before in zip(sources, fingerprints) if _fingerprint(p) != before]
+    if changed:
+        raise ValueError(
+            "'%s' changed while it was being merged; the merge was discarded." % changed[0]
+        )

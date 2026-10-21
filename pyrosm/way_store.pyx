@@ -47,21 +47,22 @@ def _map_strings(dict string_ids, list table, list strings, used):
 
 
 cdef class WayStore:
-    """The ways of a parse as arrays: ``ids``, ``version``, ``timestamp``, ``visible``,
-    the node ids (``refs``, way ``i`` owning ``refs[refs_off[i]:refs_off[i + 1]]``) and
+    """The ways of a parse as arrays: ``ids``, ``version``, ``timestamp``, ``changeset``,
+    ``visible``, the node ids (``refs``, way ``i`` owning ``refs[refs_off[i]:refs_off[i + 1]]``) and
     the tags (``keys`` / ``vals`` ids into ``strings``, with ``tags_off``). ``len()`` is
     the number of ways and iterating yields their records (see :meth:`records`)."""
 
-    cdef readonly object ids, version, timestamp, visible, refs, refs_off
+    cdef readonly object ids, version, timestamp, changeset, visible, refs, refs_off
     cdef readonly object keys, vals, tags_off
     cdef readonly list strings
     cdef dict _string_ids
 
-    def __init__(self, ids, version, timestamp, visible, refs, refs_off, keys, vals,
-                 tags_off, list strings, dict string_ids):
+    def __init__(self, ids, version, timestamp, changeset, visible, refs, refs_off, keys,
+                 vals, tags_off, list strings, dict string_ids):
         self.ids = ids
         self.version = version
         self.timestamp = timestamp
+        self.changeset = changeset
         self.visible = visible
         self.refs = refs
         self.refs_off = refs_off
@@ -178,6 +179,7 @@ cdef class WayStoreBuilder:
             "ids": ways["id"],
             "version": ways["version"],
             "timestamp": ways["timestamp"],
+            "changeset": ways["changeset"],
             "visible": ways["visible"].astype(bool),
         }
         if keep is not None:
@@ -210,6 +212,7 @@ cdef class WayStoreBuilder:
             _joined(parts, "ids", np.int64),
             _joined(parts, "version", np.int64),
             _joined(parts, "timestamp", np.int64),
+            _joined(parts, "changeset", np.int64),
             _joined(parts, "visible", bool),
             _joined(parts, "refs", np.int64),
             _offsets_from_lengths(_joined(parts, "ref_counts", np.int64)),

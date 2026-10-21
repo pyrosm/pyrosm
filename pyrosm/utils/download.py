@@ -1,8 +1,12 @@
 import email.utils
 import enum
+import glob
 import http.client
 import logging
+import os
 import re
+import secrets
+import shutil
 import ssl
 import tempfile
 import time
@@ -355,23 +359,78 @@ def get_file_size(file_name, size_type=UNIT.MB):
     return round(convert_unit(size, size_type), 2)
 
 
-def write_atomic(path, write):
-    """Write ``path`` by calling ``write(file)`` on a new temporary file next to it.
+def _new_partial(path):
+    """A new, empty file ``<name>.<random>.part`` next to ``path``, with the permissions a
+    new file gets."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    while True:
+        partial = path.with_name("%s.%s.part" % (path.name, secrets.token_hex(4)))
+        try:
+            os.close(os.open(partial, flags, 0o666))
+        except FileExistsError:
+            continue
+        return partial
 
-    The temporary file gets a unique name and replaces ``path`` only when ``write`` returns, so
-    readers never see a partial file; it is removed when ``write`` fails.
+
+def write_atomic_path(path, write):
+    """Write ``path`` by calling ``write(partial)`` with the path of a new temporary file
+    next to it, ``<name>.<random>.part``.
+
+    The temporary file replaces ``path`` only when ``write`` returns, so readers never see
+    a partial file, and takes the permissions of the ``path`` it replaces (on POSIX); it is
+    removed when ``write`` fails.
     """
     path = Path(path)
+    partial = _new_partial(path)
+    try:
+        write(partial)
+        if os.name != "nt":
+            try:
+                shutil.copymode(path, partial)
+            except FileNotFoundError:
+                pass
+        Path(partial).replace(path)
+    except BaseException:
+        Path(partial).unlink(missing_ok=True)
+        raise
+
+
+def write_atomic(path, write):
+    """Write ``path`` by calling ``write(file)`` on a new temporary file next to it (see
+    :func:`write_atomic_path`), creating its folder when missing."""
+
+    def write_file(partial):
+        with open(partial, "wb") as out_file:
+            write(out_file)
+
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    write_atomic_path(path, write_file)
+
+
+def copy_atomic(source, path):
+    """Make ``path`` a copy of the file ``source``: a hard link to it where the file system
+    allows one, else a copy of its bytes and permissions. ``path`` is replaced only once the
+    copy is complete (see :func:`write_atomic`); nothing is done when it is ``source``
+    already.
+    """
+    path = Path(path)
+    if path.exists() and os.path.samefile(source, path):
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, partial = tempfile.mkstemp(
         prefix=path.name + ".", suffix=".part", dir=path.parent
     )
+    os.close(fd)
+    partial = Path(partial)
     try:
-        with open(fd, "wb") as out_file:
-            write(out_file)
-        Path(partial).replace(path)
+        partial.unlink()
+        try:
+            os.link(source, partial)
+        except OSError:
+            shutil.copy(source, partial)
+        partial.replace(path)
     except BaseException:
-        Path(partial).unlink(missing_ok=True)
+        partial.unlink(missing_ok=True)
         raise
 
 
@@ -389,25 +448,55 @@ def list_downloads():
     return sorted(str(p) for p in directory.glob("*.pbf") if p.is_file())
 
 
-def clear_downloads(filepath=None):
-    """Remove PBF files downloaded by ``get_data`` from the default download directory
-    (``<tempdir>/pyrosm``). With no ``filepath`` every downloaded ``*.pbf`` there is removed; with
-    a ``filepath`` (a path or a bare filename) only that file is removed. The out-of-core ``cache``
-    subdirectory and the bundled package data are left untouched. Returns the number of files
+# The suffix `write_atomic` gives the partial file of `<name>`: `.<random>.part`.
+_PARTIAL_SUFFIX = re.compile(r"\.[A-Za-z0-9_]+\.part")
+
+
+def sources_record(path):
+    """The file beside ``path`` that records the files it was cropped or merged from."""
+    return Path(os.fspath(path) + ".sources")
+
+
+def _remove_download(path):
+    """Remove the file ``path``, the partial files of its interrupted downloads and its
+    record (see :func:`sources_record`); returns the number of PBF and partial files
     removed."""
+    partials = [
+        p
+        for p in path.parent.glob(glob.escape(path.name) + ".*.part")
+        if _PARTIAL_SUFFIX.fullmatch(p.name[len(path.name) :])
+    ]
+    removed = [p for p in (path, *partials) if p.is_file()]
+    for file in removed:
+        file.unlink()
+    sources_record(path).unlink(missing_ok=True)
+    return len(removed)
+
+
+def clear_downloads(filepath=None):
+    """Remove PBF files downloaded or cropped into the default download directory
+    (``<tempdir>/pyrosm``), with the partial files of interrupted downloads and the records
+    of the crops. With no ``filepath`` every ``*.pbf`` file there is removed; with a bare
+    file name, the file of that name there; with a path, exactly that file. ``filepath``
+    must name a ``.osm.pbf`` or ``.osh.pbf`` file. The out-of-core ``cache``, the provider
+    indexes and the bundled package data are left untouched. Returns the number of PBF and
+    partial files removed."""
     directory = download_dir()
+    if filepath is not None:
+        name = os.fspath(filepath)
+        if not name.lower().endswith((".osm.pbf", ".osh.pbf")):
+            raise ValueError(
+                "clear_downloads removes .osm.pbf and .osh.pbf files only; got %r."
+                % (name,)
+            )
+        bare = os.path.basename(name) == name
+        return _remove_download(directory / name if bare else Path(name))
     if not directory.is_dir():
         return 0
-    if filepath is None:
-        targets = sorted(p for p in directory.glob("*.pbf") if p.is_file())
-    else:
-        target = directory / Path(filepath).name
-        targets = [target] if target.is_file() else []
-    removed = 0
-    for path in targets:
-        path.unlink()
-        removed += 1
-    return removed
+    stems = {p.name for p in directory.glob("*.pbf")}
+    stems |= {p.name.rsplit(".", 2)[0] for p in directory.glob("*.pbf.*.part")}
+    stems |= {p.name[: -len(".sources")] for p in directory.glob("*.pbf.sources")}
+    return sum(_remove_download(directory / stem) for stem in sorted(stems))
 
 
 def download(

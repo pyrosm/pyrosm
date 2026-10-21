@@ -1,107 +1,81 @@
-import json
-import logging
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 import pytest
-from shapely.geometry import box, mapping
+from shapely.geometry import box
 
 import pyrosm
+import pyrosm.data.extract_index as ei
 import pyrosm.data.geofabrik_index as gi
 from pyrosm import get_data_by_bbox
 
 HELSINKI = [24.93, 60.16, 24.96, 60.18]
-LONDON = [-0.20, 51.45, 0.0, 51.55]
-CHICAGO = [-87.70, 41.80, -87.60, 41.95]
-FINLAND_URL = "https://download.geofabrik.de/europe/finland-latest.osm.pbf"
+BBBIKE_URL = "https://download.bbbike.org/osm/bbbike/Helsinki/Helsinki.osm.pbf"
+
+
+def _found(*urls):
+    """Extracts in the shape ``find_extracts(..., contains_only=True)`` returns, each
+    containing the Helsinki box."""
+    return gpd.GeoDataFrame(
+        {
+            "provider": ["BBBike"] * len(urls),
+            "id": list(urls),
+            "name": list(urls),
+            "url": list(urls),
+            "bytes": pd.array([50] * len(urls), dtype="Int64"),
+            "contains": [True] * len(urls),
+        },
+        geometry=[box(*HELSINKI)] * len(urls),
+        crs="EPSG:4326",
+    )
 
 
 @pytest.fixture
-def mock_download(monkeypatch):
-    """Return the bundled Helsinki extract instead of downloading a large file."""
+def searches(monkeypatch):
+    """The extract search finds the BBBike Helsinki extract for every area, and downloads
+    return the bundled Helsinki extract; gives the areas searched."""
     helsinki = pyrosm.get_data("helsinki_pbf")
+    areas = []
     monkeypatch.setattr(
-        "pyrosm.utils.download.download",
-        lambda url, filename, update, directory, progress: helsinki,
+        ei, "find_extracts", lambda geom, **k: areas.append(geom) or _found(BBBIKE_URL)
     )
-    return helsinki
-
-
-# -- download=False: the no-download lookup --
-
-
-def test_download_false_returns_covering_extract_url():
-    assert get_data_by_bbox(HELSINKI, download=False) == FINLAND_URL
-
-
-def test_download_false_picks_smallest_covering_extract():
-    # London and Chicago each sit inside several nested extents; the smallest
-    # covering one must win over its parents.
-    assert "greater-london" in get_data_by_bbox(LONDON, download=False)
-    assert "illinois" in get_data_by_bbox(CHICAGO, download=False)
+    monkeypatch.setattr("pyrosm.utils.download.download", lambda *a, **k: helsinki)
+    return areas
 
 
 @pytest.mark.parametrize(
-    "bbox, shown",
+    "bbox, bounds",
     [
-        (HELSINKI, "covering_extract provider=Geofabrik name=Finland id=finland"),
-        (CHICAGO, "covering_extract provider=Geofabrik name=us/illinois id=us/illinois"),
+        (list(HELSINKI), HELSINKI),
+        (tuple(HELSINKI), HELSINKI),
+        (box(*HELSINKI), HELSINKI),
+        # A polygon other than a box: its envelope is used.
+        (box(*HELSINKI).buffer(0.01), box(*HELSINKI).buffer(0.01).bounds),
+        (gpd.GeoSeries([box(*HELSINKI)], crs=4326), HELSINKI),
+        (gpd.GeoDataFrame(geometry=[box(*HELSINKI)], crs=4326), HELSINKI),
     ],
 )
-def test_lookup_logs_matched_extract(caplog, capsys, bbox, shown):
-    caplog.set_level(logging.INFO, logger="pyrosm")
-    get_data_by_bbox(bbox, download=False)
-    assert shown in caplog.text
-    assert capsys.readouterr().out == ""
+def test_accepts_bbox_input_forms(searches, bbox, bounds):
+    assert get_data_by_bbox(bbox, download=False) == BBBIKE_URL
+    assert searches[0].equals(box(*bounds))
 
 
-@pytest.mark.parametrize(
-    "bbox",
-    [
-        list(HELSINKI),
-        tuple(HELSINKI),
-        box(*HELSINKI),
-        box(*HELSINKI).buffer(0.01),  # non-box polygon -> uses its envelope
-        gpd.GeoSeries([box(*HELSINKI)], crs=4326),
-        gpd.GeoDataFrame(geometry=[box(*HELSINKI)], crs=4326),
-    ],
-)
-def test_accepts_bbox_input_forms(bbox):
-    assert get_data_by_bbox(bbox, download=False) == FINLAND_URL
+def test_download_false_lists_the_urls_of_a_set(monkeypatch):
+    found = _found("https://b/a.osm.pbf", "https://b/b.osm.pbf")
+    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: found)
+    monkeypatch.setattr(ei, "_choose", lambda target, candidates, strategy: found)
+    urls = get_data_by_bbox(HELSINKI, download=False, strategy="smallest_total")
+    assert urls == ["https://b/a.osm.pbf", "https://b/b.osm.pbf"]
 
 
-# -- download + crop --
-
-
-def test_crop_default_writes_bbox_named_file(mock_download):
-    out = get_data_by_bbox(HELSINKI)  # crop=True, download=True (defaults)
-    assert Path(out).name == "bbox_24.93_60.16_24.96_60.18.osm.pbf"
-    assert Path(out).stat().st_size < Path(mock_download).stat().st_size
-    assert pyrosm.OSM(out).get_buildings() is not None
-
-
-def test_crop_false_returns_full_extract(mock_download, monkeypatch):
-    seen = []
-    monkeypatch.setattr(
-        "pyrosm.utils.download.download",
-        lambda url, filename, update, directory, progress: seen.append(progress)
-        or mock_download,
-    )
-    assert get_data_by_bbox(HELSINKI, crop=False, progress=False) == mock_download
-    assert seen == [False]
-
-
-def test_output_path_overrides_name(mock_download, tmp_path):
-    target = str(tmp_path / "myclip.osm.pbf")
-    out = get_data_by_bbox(HELSINKI, output_path=target)
-    assert out == target
-    assert Path(target).exists()
-
-
-def test_directory_controls_output_location(mock_download, tmp_path):
-    out = get_data_by_bbox(HELSINKI, directory=str(tmp_path))
-    assert str(Path(out).parent) == str(tmp_path)
-    assert Path(out).name == "bbox_24.93_60.16_24.96_60.18.osm.pbf"
+def test_crops_to_the_box_or_returns_the_extract(searches, tmp_path):
+    helsinki = pyrosm.get_data("helsinki_pbf")
+    out = get_data_by_bbox(HELSINKI, directory=tmp_path, progress=False)
+    assert Path(out) == tmp_path / "bbox_24.93_60.16_24.96_60.18.osm.pbf"
+    assert Path(out).stat().st_size < Path(helsinki).stat().st_size
+    assert len(pyrosm.OSM(out).get_buildings()) > 0
+    assert get_data_by_bbox(HELSINKI, crop=False, progress=False) == helsinki
 
 
 def test_bbox_filename_format():
@@ -115,61 +89,23 @@ def test_bbox_filename_format():
     )
 
 
-def test_lookup_uses_envelope_not_raw_polygon(monkeypatch):
-    # An extract covering an irregular polygon but not its bounding-box envelope
-    # must be rejected: the crop filters by the envelope, so the chosen extract
-    # must cover it. (Without the envelope fix the smaller "L" extract would win.)
-    from shapely.geometry import Polygon
-
-    el = Polygon([(0, 0), (10, 0), (10, 1), (1, 1), (1, 10), (0, 10)])
-    square = box(0, 0, 10, 10)
-    synthetic = gpd.GeoDataFrame(
-        {
-            "id": ["l-shape", "square"],
-            "name": ["l-shape", "square"],
-            "pbf": ["l-shape.pbf", "square.pbf"],
-            "geometry": [el, square],
-        },
-        crs="EPSG:4326",
-    )
-    monkeypatch.setattr(gi, "_load_index", lambda update=False: synthetic)
-    assert gi._covering_extract_url(el) == "square.pbf"
-
-
 # -- errors / edge cases (no download needed) --
 
 
-def test_raises_when_no_extract_covers():
-    # A mid-Pacific box extends beyond any single extent.
-    with pytest.raises(ValueError, match="fully covers"):
-        get_data_by_bbox([-150, 0, -140, 10], download=False)
-
-
-def test_rejects_malformed_bbox():
-    with pytest.raises(ValueError):
-        get_data_by_bbox([1, 2, 3], download=False)  # not four values
-    with pytest.raises(ValueError):
-        get_data_by_bbox([1, 2, 0, 3], download=False)  # minx > maxx
-    with pytest.raises(ValueError):
-        get_data_by_bbox([float("-inf"), 0, float("inf"), 1], download=False)
-
-
-def test_rejects_unsupported_bbox_type():
-    with pytest.raises(ValueError, match="should be"):
-        get_data_by_bbox("not-a-bbox", download=False)
-
-
-def test_out_of_range_bbox_warns_and_has_no_coverage():
-    # Longitude 200 is off the map: it warns about the range and finds no extract.
-    with pytest.warns(UserWarning, match="lon/lat range"):
-        with pytest.raises(ValueError, match="outside Geofabrik"):
-            get_data_by_bbox([200.0, 0.0, 210.0, 5.0], download=False)
-
-
-def test_spanning_bbox_reports_overlapping_extents():
-    # A box spanning North America and Europe is covered by no single extract.
-    with pytest.raises(ValueError, match="fully covers"):
-        get_data_by_bbox([-50.0, 45.0, 10.0, 55.0], download=False)
+@pytest.mark.parametrize(
+    "bbox, error, match",
+    [
+        ([1, 2, 3], ValueError, "should be four numbers"),
+        ([1, 2, 0, 3], ValueError, "minx < maxx"),
+        ([float("-inf"), 0, float("inf"), 1], ValueError, "finite"),
+        ("not-a-bbox", ValueError, "should be"),
+        ([200.0, 0.0, 210.0, 5.0], ValueError, "lon/lat range"),
+    ],
+)
+def test_errors(monkeypatch, bbox, error, match):
+    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: _found())
+    with pytest.raises(error, match=match):
+        get_data_by_bbox(bbox, download=False)
 
 
 # -- snapshot / index --
@@ -183,53 +119,8 @@ def test_vendored_snapshot_integrity():
         assert col in gdf.columns
 
 
-def test_update_reads_live_index_schema(monkeypatch):
-    # Simulate Geofabrik's live index (download links nested under "urls", as the
-    # vendored snapshot is not) without hitting the network.
-    fc = {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "geometry": mapping(box(20, 59, 31, 71)),  # covers Helsinki
-                "properties": {
-                    "id": "finland",
-                    "parent": "europe",
-                    "name": "Finland",
-                    "urls": {"pbf": FINLAND_URL},
-                },
-            }
-        ],
-    }
-
-    class _FakeResponse:
-        def __init__(self, data):
-            self._data = data
-
-        def read(self):
-            return self._data
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-    monkeypatch.setattr(
-        "urllib.request.urlopen",
-        lambda url, context=None: _FakeResponse(json.dumps(fc).encode()),
-    )
-    # update=True refreshes the index; download=False returns the looked-up URL.
-    assert get_data_by_bbox(HELSINKI, update=True, download=False) == FINLAND_URL
-
-
 def test_data_module_getattr_rejects_unknown():
     import pyrosm.data
 
     with pytest.raises(AttributeError):
         pyrosm.data.this_attribute_does_not_exist
-
-
-@pytest.mark.live_download
-def test_update_fetches_live_index():
-    assert get_data_by_bbox(HELSINKI, update=True, download=False) == FINLAND_URL

@@ -1,3 +1,4 @@
+import difflib
 from pathlib import Path
 
 from pyrosm.utils.download import download
@@ -214,15 +215,59 @@ def _find_sources(name):
     return found
 
 
+def _spellings(name):
+    """The spellings of a dataset or region name that are tried, in this order: as given,
+    without spaces, with underscores for spaces or dashes, and without dashes."""
+    return list(
+        dict.fromkeys(
+            (
+                name,
+                name.replace(" ", ""),
+                name.replace(" ", "_"),
+                name.replace("-", "_"),
+                name.replace("-", ""),
+            )
+        )
+    )
+
+
+def _qualified_source(region, name):
+    """The source of ``name`` in ``region`` (``"usa"``, ``"europe"``, ...), trying the
+    spellings of both (see :func:`_spellings`), or ``None``."""
+    for region_spelling in _spellings(region.strip()):
+        for spelling in _spellings(name.strip()):
+            for found, source in _find_sources(spelling):
+                if found == region_spelling:
+                    return source
+    return None
+
+
+def _unknown_dataset(dataset, name):
+    """The error message for ``dataset``, which is not available: the qualified names of
+    ``name`` when other regions have it, else the closest dataset names."""
+    for spelling in _spellings(name.strip()):
+        close = ["%s/%s" % (region, spelling) for region, _ in _find_sources(spelling)]
+        if close:
+            break
+    else:
+        names = sorted({*sources._all_sources, *_package_files, *_static_sources})
+        close = difflib.get_close_matches(name.strip().replace(" ", "_"), names, n=3)
+    message = "The dataset '%s' is not available." % dataset
+    if close:
+        message += " Did you mean %s?" % " or ".join(repr(c) for c in close)
+    return message + " pyrosm.data.available lists every dataset."
+
+
 def search_source(name):
-    # A region-qualified name ("europe/georgia", "usa/georgia") picks one of the
-    # regions that share a name (#162).
+    """The ``name`` and ``url`` of the download of the dataset ``name``, a lower-case
+    dataset name or, for a name that several regions share, ``region/name``
+    (``"europe/georgia"``, ``"usa/georgia"``). Raises ``ValueError`` when it is unknown or
+    ambiguous."""
     if "/" in name:
-        qualifier, base = name.split("/", 1)
-        for region, source in _find_sources(base):
-            if region == qualifier:
-                return source
-        raise ValueError(f"Could not retrieve url for '{name}'.")
+        source = _qualified_source(*name.split("/", 1))
+        if source is None:
+            raise ValueError(f"Could not retrieve url for '{name}'.")
+        return source
 
     found = _find_sources(name)
     if not found:
@@ -257,8 +302,11 @@ def get_data(
     Parameters
     ----------
     dataset : str
-        The name of the dataset. Run ``pyrosm.data.available`` for
-        all available options.
+        The name of the dataset, e.g. ``"helsinki"`` or ``"new york"``; case is ignored, and
+        spaces, dashes and underscores may replace each other. A name that several regions
+        share, such as the country and the US state ``"georgia"``, takes its region in front:
+        ``"europe/georgia"``, ``"usa/georgia"``. ``pyrosm.data.available`` lists every name
+        by region.
 
     update : bool
         Whether the PBF file should be downloaded/updated if the dataset
@@ -307,22 +355,17 @@ def _resolve_dataset(dataset):
     if dataset in _static_sources:
         return "source", _static_sources[dataset]
     # A region-qualified name ("usa/georgia") disambiguates a name shared by
-    # multiple regions; route it straight to the resolver (#162).
+    # multiple regions (#162).
     if "/" in dataset:
-        return "source", search_source(dataset)
-    # Users might pass city names with spaces (e.g. Rio De Janeiro), country names
-    # without underscores (e.g. North America) or with dashes (e.g. canary-islands).
-    for name in (
-        dataset,
-        dataset.replace(" ", ""),
-        dataset.replace(" ", "_"),
-        dataset.replace("-", "_"),
-    ):
+        region, name = dataset.split("/", 1)
+        source = _qualified_source(region, name)
+        if source is None:
+            raise ValueError(_unknown_dataset(dataset, name))
+        return "source", source
+    for name in _spellings(dataset):
         if name in sources._all_sources:
             return "source", search_source(name)
-    msg = "The dataset '{data}' is not available. ".format(data=dataset)
-    msg += "Available datasets are {}".format(", ".join(sources._all_sources))
-    raise ValueError(msg)
+    raise ValueError(_unknown_dataset(dataset, dataset))
 
 
 def get_path(dataset, update=False, directory=None):

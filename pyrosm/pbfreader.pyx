@@ -242,7 +242,8 @@ cpdef parse_osm_data(
         steps=None,
 ):
     """The nodes, ways, relations, node coordinates and completed relation member ways
-    of ``filepath``, read in memory, in the steps of ``steps`` (a
+    of ``filepath``, and the ``(ids, changesets)`` arrays of the ways (the changesets the
+    way records leave out), read in memory, in the steps of ``steps`` (a
     :class:`~pyrosm.utils.progress.Steps`, or None): :data:`DECODING`, then for a
     history read (``unix_time_filter``) :data:`SELECTING_VERSIONS`, and with a
     ``bounding_box`` the passes :data:`COMPLETING_RELATIONS` (with
@@ -297,6 +298,8 @@ cdef _parse_osm_data(
             all_relations.append(_relation_columns(relations, strings, unix_time_filter))
 
     all_ways = ways_builder.build()
+    # The changesets of the ways read, by id, which the way records leave out.
+    way_changesets = [(all_ways.ids, all_ways.changeset)]
 
     # Concatenate the node columns (history reads below select from them in a DataFrame)
     all_nodes = concatenate_dicts_of_arrays(all_nodes)
@@ -308,7 +311,8 @@ cdef _parse_osm_data(
     # OSM() construction; reaching here means the bounding box is well-formed but does
     # not overlap this PBF's data extent.)
     if "id" not in all_nodes:
-        return {}, [], {}, {}, []
+        empty = np.empty(0, dtype=np.int64)
+        return {}, [], {}, {}, [], (empty, empty)
     if tags_builder is not None:
         all_nodes = _with_tags(all_nodes, tags_builder.build())
 
@@ -316,7 +320,9 @@ cdef _parse_osm_data(
     if unix_time_filter is not None:
         start_step(steps, SELECTING_VERSIONS)
         nodes_df = get_latest_version(create_df(all_nodes))
-        all_ways = all_ways.records(latest_version_rows(all_ways.ids, all_ways.visible))
+        rows = latest_version_rows(all_ways.ids, all_ways.visible)
+        way_changesets = [(all_ways.ids[rows], all_ways.changeset[rows])]
+        all_ways = all_ways.records(rows)
         relations_df = get_latest_version(relations_df)
         if bounding_box is not None:
             xmin, ymin, xmax, ymax = bounding_box
@@ -381,6 +387,10 @@ cdef _parse_osm_data(
                 # The same latest-version selection as for all_ways above.
                 rows = latest_version_rows(completed.ids, completed.visible)
             completed_relation_ways = completed.records(rows)
+            selected = slice(None) if rows is None else rows
+            way_changesets.append(
+                (completed.ids[selected], completed.changeset[selected])
+            )
 
     # Complete the geometries of ways that straddle the bounding box (#236). A way is
     # kept when >=1 of its nodes is inside the box, but the box-filtered node parse
@@ -424,4 +434,5 @@ cdef _parse_osm_data(
     node_coordinates_lookup = NodeLocations(coords)
 
     return (all_nodes, all_ways, all_relations, node_coordinates_lookup,
-            completed_relation_ways)
+            completed_relation_ways,
+            tuple(np.concatenate(column) for column in zip(*way_changesets)))

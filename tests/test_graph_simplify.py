@@ -780,6 +780,8 @@ def test_pandana_weights_are_summed_along_merged_chains(export, module):
         ("driving", None, {"force_bidirectional": True}),
         ("driving", "no oneway column", {}),
         ("driving", "odd index, reversed geometries", {}),
+        ("driving", "one one-way edge", {}),
+        ("driving", "one one-way edge, only its start node", {}),
         (
             "driving",
             None,
@@ -796,8 +798,9 @@ def test_pandana_weights_are_summed_along_merged_chains(export, module):
 )
 def test_graph_tables_match_the_directed_table(network_type, change, options):
     """graph_tables reads the directed edges as row numbers of the edge table; its tables are
-    those of get_directed_edges + simplify_graph + get_connected_edges, which copy the
-    directed edges into a table of their own first."""
+    those of get_directed_edges + get_connected_edges + simplify_graph, which copy the
+    directed edges into a table of their own first. A single one-way edge leaves one node
+    and no edge, also when the nodes hold only its start node."""
     import warnings
 
     import shapely
@@ -809,9 +812,15 @@ def test_graph_tables_match_the_directed_table(network_type, change, options):
 
     osm = OSM(get_data("test_pbf"), progress=False)
     nodes, edges = osm.get_network(nodes=True, network_type=network_type)
-    if change == "no oneway column":
+    if change is None:
+        pass
+    elif change == "no oneway column":
         edges = edges.drop(columns="oneway")
-    elif change is not None:
+    elif change.startswith("one one-way edge"):
+        edges = edges[edges["oneway"] == "yes"].head(1)
+        if change.endswith("only its start node"):
+            nodes = nodes[nodes["id"] == edges["u"].iloc[0]]
+    else:
         edges.index = (np.arange(len(edges)) * 3) // 2
         flip = np.arange(len(edges)) % 4 == 0
         edges.loc[flip, "geometry"] = shapely.reverse(edges.geometry.values[flip])
@@ -825,10 +834,11 @@ def test_graph_tables_match_the_directed_table(network_type, change, options):
         directed_nodes, directed = get_directed_edges(
             nodes.copy(), edges.copy(), **options
         )
-        want = get_connected_edges(
-            *simplify_graph(directed_nodes, directed, **simplify_kwargs)
+        want = simplify_graph(
+            *get_connected_edges(directed_nodes, directed), **simplify_kwargs
         )
     for got_frame, want_frame in zip(got, want):
+        want_frame = want_frame.reset_index(drop=True)
         geometry = got_frame.geometry.name
         assert shapely.equals_exact(
             got_frame.geometry.values, want_frame.geometry.values, tolerance=0

@@ -338,7 +338,7 @@ def test_connected_component(immutable_nodes_and_edges):
     assert len(cn) <= len(nodes)
 
     # Test exact shape
-    assert ce.shape == (1650, 20)
+    assert ce.shape == (1650, 21)
     assert cn.shape == (781, 9)
 
 

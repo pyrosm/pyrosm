@@ -6,7 +6,7 @@ from pyrosm.graph_export import (
     directed_rows,
     generate_directed_edges,
 )
-from pyrosm.graph_connectivity import get_connected_edges
+from pyrosm.graph_connectivity import get_connected_edges, largest_component
 from pyrosm.graph_simplify import (
     EDGE_ATTRS_DIFFER,
     _TableEdges,
@@ -25,6 +25,7 @@ from pyrosm.config import Conf
 from pyrosm.config.osm_filters import _UNKNOWN_NETWORK_TYPE, normalize_network_type
 from rapidjson import dumps
 import contextlib
+import numpy as np
 import pandas as pd
 import warnings
 
@@ -33,7 +34,7 @@ import warnings
 _STEP_SHARES = {
     "directing the edges": 0.1,
     "simplifying": 1.2,
-    "keeping the largest connected part": 0.35,
+    "keeping the largest connected part": 2.0,
 }
 _BUILDING_STEPS = {
     "igraph": ("building the graph", 1.1),
@@ -47,10 +48,10 @@ def step_shares(simplify, retain_all, graph_type=None):
     """The shares of the steps of making a graph's tables, and of building the graph of
     ``graph_type`` when given."""
     names = ["directing the edges"]
-    if simplify:
-        names.append("simplifying")
     if not retain_all:
         names.append("keeping the largest connected part")
+    if simplify:
+        names.append("simplifying")
     shares = {name: _STEP_SHARES[name] for name in names}
     if graph_type is not None:
         name, share = _BUILDING_STEPS[graph_type]
@@ -96,8 +97,10 @@ def get_directed_edges(
     node_id_col="id",
     force_bidirectional=False,
     network_type=None,
+    osmnx_flags=False,
 ):
-    """Prepares the edges and nodes for exporting to different graphs."""
+    """Prepares the edges and nodes for exporting to different graphs; with
+    ``osmnx_flags`` the directed edges get the columns of :func:`_osmnx_flags`."""
     direction, direction_suffix, both_ways = _direction_rules(
         nodes,
         edges,
@@ -110,6 +113,11 @@ def get_directed_edges(
     )
     edges = edges.copy()
     nodes = nodes.copy()
+    flags = None
+    if osmnx_flags:
+        flags = _osmnx_flags(
+            *directed_rows(edges, direction, direction_suffix, both_ways)
+        )
     edges = generate_directed_edges(
         edges,
         direction,
@@ -118,7 +126,28 @@ def get_directed_edges(
         to_id_col,
         force_bidirectional=both_ways,
     )
+    for name, values in (flags or {}).items():
+        edges[name] = pd.Series(values.tolist(), index=edges.index, dtype=object)
     return nodes, edges
+
+
+# The columns of the OSMnx ``oneway`` and ``reversed`` of directed edges, named apart
+# from the OSM tags of those names until the export renames them.
+_OSMNX_ONEWAY = "osmnx:oneway"
+_OSMNX_REVERSED = "osmnx:reversed"
+
+
+def _osmnx_flags(rows, swapped):
+    """The OSMnx ``oneway`` and ``reversed`` of the directed edges ``rows``/``swapped``
+    (see :func:`~pyrosm.graph_export.directed_rows`), by column: an edge is one-way when
+    its row is travelled one way only, and reversed when it runs against its node order.
+    """
+    rows = np.asarray(rows)
+    counts = np.bincount(rows) if len(rows) else np.zeros(0, dtype=np.int64)
+    return {
+        _OSMNX_ONEWAY: counts[rows] == 1,
+        _OSMNX_REVERSED: np.asarray(swapped, dtype=bool),
+    }
 
 
 def _direction_rules(
@@ -321,10 +350,11 @@ def graph_tables(
     progress=None,
 ):
     """The nodes and edges of a graph as GeoDataFrames, as the graph exporters build it: the
-    edges directed (see :func:`get_directed_edges`), simplified when ``simplify`` and, unless
-    ``retain_all``, only the connected part kept. Edges with an end node that is not among
-    ``nodes`` are left out. The parameters are those of
-    :func:`to_networkx`, also ``progress``."""
+    edges directed (see :func:`get_directed_edges`), unless ``retain_all`` only their
+    largest connected part kept, and simplified when ``simplify``, as when the connected
+    part is kept before simplifying (as OSMnx does). Edges with an end node that is not
+    among ``nodes`` are left out; nodes and edges are numbered from 0. The parameters are
+    those of :func:`to_networkx`, also ``progress``."""
     with _steps(
         "Preparing the graph tables", step_shares(simplify, retain_all), progress
     ) as step:
@@ -357,13 +387,16 @@ def _tables(
     simplify,
     simplify_kwargs,
     step,
+    osmnx_flags=False,
 ):
     """:func:`graph_tables`, reporting the start of each step to ``step(name)``. Edges whose
     end nodes are not among ``nodes`` are left out (see :func:`_edges_between`), and the
-    edges returned are numbered from 0.
+    edges returned are numbered from 0. With ``osmnx_flags`` the edges get the OSMnx
+    ``oneway`` and ``reversed`` (see :func:`_osmnx_flags`) in their own columns.
 
     With ``simplify``, the directed edges are row numbers of ``edges`` and a direction each
-    (:func:`directed_rows`), and only the simplified edges become rows of a new table.
+    (:func:`directed_rows`), and only the simplified edges become rows of a new table; the
+    largest connected part of the directed edges is kept before they are simplified.
     ``simplify_kwargs`` are the optional parameters of :func:`simplify_graph`
     (``edge_attrs_differ``, ``node_attrs_include``, ``remove_rings``, ``track_merged``,
     ``length_cols``, ``edge_attr_aggs``). ``nodes`` and ``edges`` may also be the readers of a network read
@@ -400,29 +433,46 @@ def _tables(
             node_id_col,
             force_bidirectional,
             network_type,
+            osmnx_flags,
         )
     if simplify:
+        flags = _osmnx_flags(rows, swapped) if osmnx_flags else {}
+        component = None
+        if not retain_all:
+            # Keep the largest connected part of the directed edges first, so the graph
+            # is simplified once the edges it leaves out are gone (as OSMnx does).
+            step("keeping the largest connected part")
+            from_ids, to_ids = edges.values(from_id_col), edges.values(to_id_col)
+            u = np.where(swapped, to_ids[rows], from_ids[rows])
+            v = np.where(swapped, from_ids[rows], to_ids[rows])
+            component = largest_component(nodes.ids(), u, v)
+            kept = np.isin(u, component) & np.isin(v, component)
+            rows, swapped = rows[kept], swapped[kept]
+            flags = {name: values[kept] for name, values in flags.items()}
         step("simplifying")
-        simplified = _simplify_rows(
+        graph_nodes, graph_edges = _simplify_rows(
             nodes,
             edges,
             rows,
             swapped,
             from_id_col=from_id_col,
             to_id_col=to_id_col,
+            directions=flags,
             **(simplify_kwargs or {}),
         )
+        if component is not None and len(rows) == 0:
+            graph_nodes = nodes.rows(component)
         if isinstance(edges, _WayEdges):
             nodes.release()
             edges.release()
-        nodes, edges = simplified
-    # Keep only strongly connected component if not specifically requested otherwise
-    if not retain_all:
+    elif not retain_all:
         step("keeping the largest connected part")
-        nodes, edges = get_connected_edges(
+        graph_nodes, graph_edges = get_connected_edges(
             nodes, edges, from_id_col, to_id_col, node_id_col
         )
-    return nodes, edges.reset_index(drop=True)
+    else:
+        graph_nodes, graph_edges = nodes, edges
+    return graph_nodes.reset_index(drop=True), graph_edges.reset_index(drop=True)
 
 
 def to_networkx(
@@ -497,7 +547,11 @@ def to_networkx(
         ``osmid``, the nodes get ``x``/``y`` from their geometry, in the CRS of the frames,
         in place of ``lon``/``lat``, and node ``tags`` are stored as a JSON string. The node ``osmid`` is the key of the node in the graph and is not
         repeated as a node attribute. No ``key`` edge attribute is added; an edge column
-        named ``key`` is renamed to ``key_tag``.
+        named ``key`` is renamed to ``key_tag``. The edges get OSMnx's ``oneway`` and
+        ``reversed`` booleans: ``oneway`` when the edge can be travelled only in its own
+        direction (by the rule the graph is directed by), ``reversed`` when it runs against
+        the node order of its way (a simplified edge whose ways differ gets the list of
+        their values, as in OSMnx); the OSM text of the ``oneway`` tag is ``oneway_tag``.
 
     progress : bool | callable | None (default: None)
         How the export shows its progress: ``None`` follows
@@ -530,14 +584,22 @@ def to_networkx(
             simplify,
             simplify_kwargs,
             step,
+            osmnx_compatible,
         )
 
         if osmnx_compatible:
             # OSMnx carries the parallel-edge key in the graph structure, not as an
             # edge attribute, and an attribute named 'key' collides with it. Surface
-            # a tag with that name as 'key_tag' instead (as is done for 'id').
-            if "key" in edges.columns:
-                edges = edges.rename(columns={"key": "key_tag"})
+            # a tag with that name as 'key_tag' instead (as is done for 'id'), and the
+            # oneway and reversed tags as 'oneway_tag' and 'reversed_tag', as the
+            # graph's own booleans take their names.
+            edges = edges.rename(
+                columns={
+                    "key": "key_tag",
+                    "oneway": "oneway_tag",
+                    "reversed": "reversed_tag",
+                }
+            ).rename(columns={_OSMNX_ONEWAY: "oneway", _OSMNX_REVERSED: "reversed"})
 
             # Follow the naming convention of OSMnx
             nodes = _xy_from_geometry(nodes.rename(columns={node_id_col: "osmid"}))

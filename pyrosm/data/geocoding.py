@@ -5,7 +5,7 @@ Public entry points:
 - :func:`geocode` -- a place name -> a Shapely polygon for the place, via
   OpenStreetMap's Nominatim service.
 - :func:`get_data_by_geocoding` -- geocode a place, then download (and by default
-  crop) the Geofabrik extract that covers it.
+  crop) the data for it as :func:`pyrosm.get_data_by_area` does.
 
 No extra dependencies: geocoding uses the stdlib ``urllib`` + ``json`` with the
 bundled ``certifi``, and ``shapely`` (already required) turns the response into a
@@ -24,15 +24,22 @@ import urllib.parse
 from shapely.geometry import box, shape
 
 from pyrosm._log import log_event
-from pyrosm.utils.download import _FETCH_ERRORS, _retry, open_url
-from pyrosm.utils.progress import validate_progress
+from pyrosm.utils.download import _FETCH_ERRORS, _TIMEOUT, _retry, open_url
 
 logger = logging.getLogger(__name__)
 
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org"
 
 
-def geocode(query, polygon=True, base_url=_NOMINATIM_URL, user_agent=None):
+def geocode(
+    query,
+    polygon=True,
+    base_url=_NOMINATIM_URL,
+    user_agent=None,
+    headers=None,
+    timeout=_TIMEOUT,
+    opener=None,
+):
     """Geocode a place name to a Shapely polygon via Nominatim.
 
     Parameters
@@ -53,6 +60,18 @@ def geocode(query, polygon=True, base_url=_NOMINATIM_URL, user_agent=None):
     user_agent : str, optional
         The ``User-Agent`` header sent to Nominatim. Defaults to a pyrosm string.
         Nominatim rejects requests without a descriptive agent.
+
+    headers : dict, optional
+        Extra HTTP headers for the request; ``user_agent`` replaces a ``User-Agent`` in
+        them.
+
+    timeout : float | tuple
+        Seconds to wait for the server to accept the connection and then for each read
+        (60 by default), or a ``(connect, read)`` pair, as for downloads.
+
+    opener : object, optional
+        An object with ``open(request, timeout=...)``, e.g. from
+        ``urllib.request.build_opener()``, that makes the request instead of pyrosm.
 
     Returns
     -------
@@ -76,10 +95,13 @@ def geocode(query, polygon=True, base_url=_NOMINATIM_URL, user_agent=None):
         }
     )
     url = "%s/search?%s" % (base_url.rstrip("/"), params)
-    headers = {"User-Agent": user_agent} if user_agent else None
+    headers = dict(headers or {})
+    if user_agent:
+        headers = {k: v for k, v in headers.items() if k.lower() != "user-agent"}
+        headers["User-Agent"] = user_agent
 
     def fetch():
-        with open_url(url, headers=headers) as response:
+        with open_url(url, headers=headers, timeout=timeout, opener=opener) as response:
             return response.read()
 
     try:
@@ -125,12 +147,19 @@ def get_data_by_geocoding(
     base_url=_NOMINATIM_URL,
     user_agent=None,
     progress=None,
+    headers=None,
+    timeout=_TIMEOUT,
+    opener=None,
+    strategy="single",
+    must_cover=None,
+    workers=None,
 ):
     """Download (and by default crop) the OSM data for a geocoded place name.
 
-    Geocodes ``query`` (:func:`geocode`), finds the smallest Geofabrik extract
-    that covers it, downloads it, and -- by default -- crops it to the place
-    before returning the cropped file path.
+    Geocodes ``query`` (:func:`geocode`) and gets the data for the place as
+    :func:`pyrosm.get_data_by_area` does: the smallest Geofabrik, BBBike or Movisda
+    extract (or set of extracts) that covers it, downloaded and -- by default -- cropped
+    to the place.
 
     Parameters
     ----------
@@ -138,25 +167,22 @@ def get_data_by_geocoding(
         The place name to look up, e.g. ``"Brighton and Hove, UK"``.
 
     crop : bool
-        When ``True`` (default), crop the downloaded extract to the place and
-        return the cropped file, named after the query (e.g.
-        ``area_brighton-and-hove-uk.osm.pbf``). When ``False``, return the full
-        extract.
+        When ``True`` (default), crop the downloaded extract to the place (its boundary
+        polygon, or its box when the geocoder gives none) and return the cropped file,
+        named after the query (e.g. ``area_brighton-and-hove-uk.osm.pbf``) and used again
+        while it and its extract are unchanged. When ``False``, return the full extract.
 
     download : bool
         When ``True`` (default), download the covering extract. When ``False``,
-        skip the download and return the covering extract's PBF URL instead.
+        skip the download and return the PBF URL of the extract it would download
+        instead (a list of URLs for a set of extracts).
 
-    update : bool
-        When ``True``, re-download the extract even if it already exists locally.
-
-    directory : str, optional
-        Directory to download into / write the cropped file to. ``None`` (default)
-        uses a pyrosm temp directory.
+    update, directory
+        As for :func:`pyrosm.get_data_by_area`.
 
     output_path : str, optional
-        Path for the cropped file when ``crop=True`` (overrides the automatic
-        name). Ignored when ``crop=False`` or ``download=False``.
+        Path for the file pyrosm writes, as for :func:`pyrosm.get_data_by_area`.
+        Ignored when ``download=False``.
 
     base_url : str
         The Nominatim base URL (see :func:`geocode`).
@@ -174,17 +200,37 @@ def get_data_by_geocoding(
         The crop shows its progress the same way; a callable is then called with the
         percentage of the crop done (see :func:`pyrosm.pbf_export.crop_pbf`).
 
+    headers, timeout, opener
+        Network options for the geocoding request and for the requests of
+        :func:`pyrosm.get_data_by_area`.
+
+    strategy, must_cover, workers
+        As for :func:`pyrosm.get_data_by_area`.
+
     Returns
     -------
-    str
+    str | list
         The cropped file path (default), the full extract path (``crop=False``), or
-        the covering extract's PBF URL (``download=False``).
+        the covering extract's PBF URL (``download=False``; a list of URLs for a set of
+        extracts).
     """
-    from pyrosm.data.geofabrik_index import _download_optionally_crop
+    from pyrosm.data.extract_index import _get_area, _url_result
 
-    validate_progress(progress)
-    geom = geocode(query, base_url=base_url, user_agent=user_agent)
-    cropped_name = _slug_filename(query)
-    return _download_optionally_crop(
-        geom, crop, download, cropped_name, output_path, update, directory, progress
+    net = dict(headers=headers, timeout=timeout, opener=opener)
+    result = _get_area(
+        lambda: geocode(query, base_url=base_url, user_agent=user_agent, **net),
+        "polygon" if crop and not isinstance(crop, str) else crop,
+        update,
+        directory,
+        output_path,
+        headers,
+        timeout,
+        opener,
+        strategy,
+        must_cover,
+        workers,
+        progress,
+        name=_slug_filename(query),
+        download=download,
     )
+    return _url_result(result) if not download else result.path

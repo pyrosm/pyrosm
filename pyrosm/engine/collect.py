@@ -134,7 +134,8 @@ def _collect_node_features(shard_paths, tags_as_columns, keep_metadata, keep):
 
 def _node_arrays(ids, lon, lat, meta, keep_metadata):
     """The columns of node features that are not tags, ``meta`` holding each node's
-    version, timestamp, changeset and visible. ``tags`` holds its place after ``lat``.
+    version, timestamp, changeset and visible, in the in-memory reader's dtypes. ``tags``
+    holds its place after ``lat``.
     """
     node_arrays = {
         "id": ids,
@@ -144,9 +145,9 @@ def _node_arrays(ids, lon, lat, meta, keep_metadata):
         "visible": meta[:, 3].astype(bool),
     }
     if keep_metadata:
-        node_arrays["version"] = meta[:, 0]
-        node_arrays["timestamp"] = meta[:, 1]
-        node_arrays["changeset"] = meta[:, 2]
+        node_arrays["version"] = meta[:, 0].astype(np.int32)
+        node_arrays["timestamp"] = meta[:, 1].astype(np.uint32)
+        node_arrays["changeset"] = meta[:, 2].astype(np.int32)
     return node_arrays
 
 

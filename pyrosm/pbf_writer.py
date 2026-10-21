@@ -22,7 +22,7 @@ import pandas as pd
 from geopandas import GeoDataFrame
 
 from pyrosm.filter_compiler import CompiledFilter, Condition
-from pyrosm.pbf_export import write_pbf_from_records
+from pyrosm.pbf_export import _any_member, write_pbf_from_records
 from pyrosm.utils import _stacklevel_outside_pyrosm
 from pyrosm.utils.progress import start_step
 from pyrosm.way_store import NodeTags
@@ -662,6 +662,39 @@ def _collect_edits(
     return edits
 
 
+def _relations_with_members(relations, node_ids, way_ids, chunk=10_000):
+    """The ids of the ``relations`` with a member node in ``node_ids`` or a member way in
+    ``way_ids`` (arrays of ids), looked up ``chunk`` relations at a time."""
+    if "id" not in relations or len(relations["id"]) == 0:
+        return set()
+    node_ids, way_ids = np.unique(node_ids), np.unique(way_ids)
+    found = []
+    for start in range(0, len(relations["id"]), chunk):
+        members = relations["members"][start : start + chunk]
+        ids = np.concatenate(
+            [np.asarray(m["member_id"], dtype=np.int64) for m in members]
+        )
+        types = np.concatenate([_member_types(m["member_type"]) for m in members])
+        hits = ((types == b"n") & np.isin(ids, node_ids)) | (
+            (types == b"w") & np.isin(ids, way_ids)
+        )
+        offsets = np.concatenate(
+            [[0], np.cumsum([len(m["member_id"]) for m in members])]
+        ).astype(np.int64)
+        found.append(_any_member(hits, offsets))
+    kept = np.concatenate(found)
+    return set(np.asarray(relations["id"], dtype=np.int64)[kept].tolist())
+
+
+def _member_types(types):
+    """The first letter of each member type (``b"n"``, ``b"w"`` or ``b"r"``), whether the
+    types are bytes or text."""
+    types = np.asarray(types)
+    if types.dtype.kind == "U":
+        types = np.char.encode(types, "ascii")
+    return types.astype("S1")
+
+
 def _subset_keep_sets(node_edits, way_edits, rel_edits, way_refs, relations):
     """Closure of the matched elements over the cache, for ``subset_only``.
 
@@ -1076,6 +1109,8 @@ class _RecordBuilder:
             )
 
     def node_payload(self):
+        """The nodes as the arrays :func:`~pyrosm.pbf_export.write_pbf_from_records`
+        takes; a source node read without metadata has zeros for it."""
         return {
             "id": np.asarray(self.node_ids, dtype=np.int64),
             "lat": np.asarray(self.lats, dtype=np.float64),
@@ -1144,7 +1179,7 @@ def _add_base_nodes(builder, node_coordinates, poi_tags, plan, keep=None):
         ids,
         lat,
         lon,
-        _int_values(node_coordinates.values_at("version", rows), 1, len(ids)),
+        _int_values(node_coordinates.values_at("version", rows), 0, len(ids)),
         _int_values(node_coordinates.values_at("timestamp", rows), 0, len(ids)),
         _int_values(node_coordinates.values_at("changeset", rows), 0, len(ids)),
         tags,
@@ -1176,7 +1211,11 @@ def _int_values(values, default, count):
     return values
 
 
-def _add_base_ways(builder, way_records, plan, keep=None):
+def _add_base_ways(builder, way_records, plan, keep=None, changesets=None):
+    """Add the source ways (those in ``keep`` when given) to ``builder``, with the node ids
+    and tags their edits in ``plan`` give, else their own, and the changeset ``changesets``
+    (a way id -> changeset dict) gives them."""
+    changesets = changesets or {}
     for w in way_records:
         wid = w["id"]
         if wid not in plan.way_refs:
@@ -1188,8 +1227,9 @@ def _add_base_ways(builder, way_records, plan, keep=None):
             {
                 "id": wid,
                 "refs": plan.way_refs[wid],
-                "version": w.get("version") or 1,
+                "version": w.get("version"),
                 "timestamp": w.get("timestamp"),
+                "changeset": changesets.get(wid),
                 "tags": _record_tags(w) if tags is None else tags,
             }
         )
@@ -1249,12 +1289,21 @@ def write_geodataframe_to_pbf(
     on_orphan_node="remove",
     on_deleted_member="drop",
     steps=None,
+    relation_member_ways=None,
+    bounded=False,
+    way_changesets=None,
 ):
     """Write `data` (+ the cached dataset) to a valid PBF at `output_path`.
 
     `node_coordinates` / `way_records` / `relations` / `nodes` are the caches the
     `OSM` object holds after reading; `data` is a GeoDataFrame or list of them
     whose tag edits are applied by ``osm_type``+``id`` (new rows are synthesized).
+    `relation_member_ways` are the member ways outside the bounding box that a read with
+    ``complete_relations`` holds; they are written as ways of the cache. With `bounded`
+    (a read with a bounding box, whose `relations` are those of the whole file), the
+    whole-cache write keeps only the relations with a member node or way in the cache,
+    and those `data` edits. `way_changesets` are the ``(ids, changesets)`` arrays of the
+    source ways, written as their changesets.
 
     When ``subset_only`` is True, only the elements present in `data` are written
     (matched by ``osm_type``+``id``), together with the references they need to stay
@@ -1274,6 +1323,11 @@ def write_geodataframe_to_pbf(
     start_step(steps, _APPLYING)
 
     relations = relations or {}
+    no_changesets = (np.empty(0, dtype=np.int64),) * 2
+    ids, values = no_changesets if way_changesets is None else way_changesets
+    known = values != 0
+    changesets = dict(zip(ids[known].tolist(), values[known].tolist()))
+    way_records = list(way_records) + list(relation_member_ways or [])
     frames = _reproject_to_wgs84(_as_frames(data))
 
     way_by_id = {w["id"]: w for w in way_records}
@@ -1306,6 +1360,11 @@ def write_geodataframe_to_pbf(
             plan.way_refs,
             relations,
         )
+    elif bounded:
+        way_ids = np.fromiter(way_by_id, dtype=np.int64, count=len(way_by_id))
+        node_ids = np.asarray(node_coordinates.ids, dtype=np.int64)
+        keep_rels = _relations_with_members(relations, node_ids, way_ids)
+        keep_rels |= set(edits.rel_tags)
 
     builder = _RecordBuilder()
     start_step(steps, _NODES)
@@ -1313,7 +1372,7 @@ def write_geodataframe_to_pbf(
     for nid, lon, lat, tags in edits.new_nodes:
         builder.add_new_node(nid, lon, lat, tags)
     start_step(steps, _WAYS)
-    _add_base_ways(builder, way_records, plan, keep_ways)
+    _add_base_ways(builder, way_records, plan, keep_ways, changesets)
     for wid, refs, tags in new_ways:
         builder.add_new_way(wid, refs, tags)
     start_step(steps, _RELATIONS)

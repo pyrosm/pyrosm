@@ -91,31 +91,29 @@ def test_enable_logging_sets_progress(pyrosm_logger, tmp_path, monkeypatch):
 
 
 def test_download_progress_covers_the_crop(pyrosm_logger, tmp_path, monkeypatch):
-    """The progress given to get_data_by_bbox (whose crop get_data_by_geocoding shares) and to
-    get_data_by_area reports their crop too, in place of the setting of enable_logging."""
+    """The progress given to get_data_by_bbox (built, as get_data_by_geocoding is, on
+    get_data_by_area) reports its crop too, in place of the setting of enable_logging."""
+    import geopandas as gpd
+    import pandas as pd
     from shapely.geometry import box
     import pyrosm.data.extract_index as ei
     from pyrosm import get_data_by_bbox
 
     fp = get_data("test_pbf")
-    monkeypatch.setattr("pyrosm.utils.download.download", lambda *a, **k: fp)
     bounds = [26.94, 60.52, 26.96, 60.53]
+    found = gpd.GeoDataFrame(
+        {"provider": ["Geofabrik"], "id": ["test"], "name": ["test"], "url": ["url"]},
+        geometry=[box(*bounds)],
+        crs="EPSG:4326",
+    ).assign(bytes=pd.array([0], dtype="Int64"), contains=True)
+    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: found)
+    monkeypatch.setattr("pyrosm.utils.download.download", lambda *a, **k: fp)
     setting, own = [], []
     enable_logging(progress=lambda done, total: setting.append(done))
-
-    def report(done, total):
-        own.append(done)
-
-    source = ei.ExtractSource("geofabrik", "test", "url", 0, fp)
-    for crop in (
-        lambda: get_data_by_bbox(bounds, directory=tmp_path, progress=report),
-        lambda: ei._write_with_provenance(
-            box(*bounds), [source], True, None, tmp_path, 1, report
-        ),
-    ):
-        own.clear()
-        crop()
-        assert own and setting == []
+    get_data_by_bbox(
+        bounds, directory=tmp_path, progress=lambda done, total: own.append(done)
+    )
+    assert own and setting == []
 
 
 def test_graph_export_reports_its_steps(pyrosm_logger, monkeypatch):
@@ -137,7 +135,7 @@ def test_graph_export_reports_its_steps(pyrosm_logger, monkeypatch):
     )
     calls = []
     enable_logging(progress=lambda done, total: calls.append((done, total)))
-    tables = ["directing the edges", "simplifying", "keeping the largest connected part"]
+    tables = ["directing the edges", "keeping the largest connected part", "simplifying"]
     for export, steps in (
         (
             lambda: OSM.to_graph(nodes, edges, graph_type="networkx"),

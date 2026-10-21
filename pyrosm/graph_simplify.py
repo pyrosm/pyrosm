@@ -26,6 +26,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import shapely
+from rapidjson import loads
 
 from pyrosm.distance import segment_lengths
 from pyrosm.frames import network_node_frame
@@ -337,6 +338,9 @@ def simplify_graph(
     simplified edge has one speed limit and one road class; ``edge_attrs_differ=None``
     merges across them as OSMnx does by default.
 
+    A node with a value for one of ``node_attrs_include``, a node column or a tag in the
+    nodes' ``tags``, stays an end of its edges (a warning names a name no node has).
+
     A simplified edge sums the ``length_cols`` of its segments. Other columns keep one
     value when it is the same along the chain, else become a list of the segments' values;
     ``edge_attr_aggs`` aggregates a column instead, as in OSMnx: a dict of column ->
@@ -499,6 +503,25 @@ class _TableEdges:
         return self.frame.iloc[positions].reset_index(drop=True)
 
 
+def _present_in(frame, col):
+    """Whether each node of ``frame`` has a value for ``col``: in the column ``col`` or as
+    a tag in the nodes' ``tags`` (dicts or JSON text); None when the frame has neither.
+    """
+    if col not in frame.columns and "tags" not in frame.columns:
+        return None
+    present = np.zeros(len(frame), dtype=bool)
+    if col in frame.columns:
+        present |= frame[col].notna().to_numpy()
+    if "tags" in frame.columns:
+        for i, tags in enumerate(frame["tags"].tolist()):
+            if present[i]:
+                continue
+            if isinstance(tags, str):
+                tags = loads(tags) if tags else None
+            present[i] = isinstance(tags, dict) and tags.get(col) is not None
+    return present
+
+
 class _TableNodes:
     """The nodes of a table (a GeoDataFrame) keyed by ``node_id_col``, as
     :func:`_simplify_rows` reads them."""
@@ -516,7 +539,9 @@ class _TableNodes:
         return shapely.get_x(geom), shapely.get_y(geom)
 
     def present(self, col):
-        return self.frame[col].notna().to_numpy()
+        """Whether each node has a value for ``col``, as a column or a tag (see
+        :func:`_present_in`)."""
+        return _present_in(self.frame, col)
 
     def rows(self, ids):
         """The nodes whose id is one of ``ids``, in table order."""
@@ -635,7 +660,9 @@ class _StoreNodes:
         return lon, lat
 
     def present(self, col):
-        return self.table()[col].notna().to_numpy()
+        """Whether each node has a value for ``col``, as a column or a tag (see
+        :func:`_present_in`)."""
+        return _present_in(self.table(), col)
 
     def rows(self, ids):
         """The nodes whose id is one of ``ids``, in table order."""
@@ -653,6 +680,20 @@ class _StoreNodes:
         self.store = self.node_ids = self.node_rows = None
 
 
+def _chain_flags(flags, chain_edge_ids, chain_ptr, seg_chain):
+    """The boolean ``flags`` of the directed edges, one value per simplified edge (the
+    chains of ``chain_edge_ids``/``chain_ptr``, ``seg_chain`` the chain of each consumed
+    edge): the value of its edges where they agree, else the sorted list of their
+    values, as OSMnx gives a simplified edge."""
+    per_edge = np.asarray(flags, dtype=bool)[chain_edge_ids]
+    values = per_edge[chain_ptr[:-1]].tolist()
+    inner = seg_chain[1:] == seg_chain[:-1]
+    mixed = np.unique(seg_chain[1:][inner & (per_edge[1:] != per_edge[:-1])])
+    for k in mixed.tolist():
+        values[k] = sorted(set(per_edge[chain_ptr[k] : chain_ptr[k + 1]].tolist()))
+    return values
+
+
 def _simplify_rows(
     nodes,
     edges,
@@ -667,6 +708,7 @@ def _simplify_rows(
     remove_rings=True,
     track_merged=False,
     edge_attr_aggs=None,
+    directions=None,
 ):
     """:func:`simplify_graph` of the directed edges ``rows``/``swapped`` of the edges that
     ``edges`` reads (a :class:`_TableEdges` or :class:`_WayEdges`), with the nodes that
@@ -675,7 +717,8 @@ def _simplify_rows(
     ``to_id_col`` node to its ``from_id_col`` node where ``swapped[i]``, as
     :func:`pyrosm.graph_export.directed_rows` gives them. Every column is read through the
     row numbers, so the directed edges are never copied into a table; only the simplified
-    edges are."""
+    edges are. ``directions`` maps a column name to a boolean of each directed edge,
+    which each simplified edge gets by :func:`_chain_flags`."""
     structural = (from_id_col, to_id_col, edges.geometry_name)
     if track_merged:
         structural += ("merged_edges",)
@@ -712,12 +755,24 @@ def _simplify_rows(
     node_include_mask = None
     if node_attrs_include is not None and len(node_attrs_include):
         nm = np.zeros(n_nodes, dtype=bool)
+        unknown = []
         for c in node_attrs_include:
-            if c in nodes.columns:
-                has = nodes.present(c)
-                f = nid_to_factor.reindex(nid[has]).to_numpy()
-                f = f[~np.isnan(f)].astype(np.int64)
-                nm[f] = True
+            has = nodes.present(c)
+            if has is None or not has.any():
+                unknown.append(c)
+                continue
+            f = nid_to_factor.reindex(nid[has]).to_numpy()
+            f = f[~np.isnan(f)].astype(np.int64)
+            nm[f] = True
+        if unknown:
+            from pyrosm.utils import _stacklevel_outside_pyrosm
+
+            warnings.warn(
+                "node_attrs_include: no node has a column or a tag named %s, which "
+                "therefore keeps no node." % ", ".join(repr(c) for c in unknown),
+                UserWarning,
+                stacklevel=_stacklevel_outside_pyrosm(),
+            )
         node_include_mask = nm
     del nid, nid_to_factor, x, y, present, keep, fpos
 
@@ -837,6 +892,12 @@ def _simplify_rows(
         out[col] = pd.Series(colvals, index=out.index, dtype=object)
     if listed:
         _warn_listed_numbers(listed, n_chains)
+    for name, flags in (directions or {}).items():
+        out[name] = pd.Series(
+            _chain_flags(flags, chain_edge_ids, chain_ptr, seg_chain),
+            index=out.index,
+            dtype=object,
+        )
 
     if track_merged:
         merged_pairs = []

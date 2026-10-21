@@ -383,6 +383,7 @@ def test_get_network_without_custom_filter_unchanged():
         "tags",
         "timestamp",
         "version",
+        "visible",
     ]
     assert edges.attrs["network_type"] == "driving"
 
@@ -2119,7 +2120,7 @@ def test_history_read_with_a_bounding_box_returns_the_state_in_the_box():
 
     fp = get_data("helsinki_test_history_pbf")
     when = datetime_to_unix_time(pd.to_datetime("2014-01-01", utc=True))
-    nodes, ways, _, _, _ = parse_osm_data(fp, None, False, None)
+    nodes, ways, _, _, _, _ = parse_osm_data(fp, None, False, None)
     columns = ("id", "timestamp", "visible", "lon", "lat")
     node_versions = pd.DataFrame({c: np.asarray(nodes[c]) for c in columns})
     state = node_versions[node_versions["timestamp"] <= when]
@@ -2138,7 +2139,7 @@ def test_history_read_with_a_bounding_box_returns_the_state_in_the_box():
         if in_box.intersection(refs)
     }
 
-    got_nodes, got_ways, _, _, _ = parse_osm_data(fp, [xmin, ymin, xmax, ymax], False, when)
+    got_nodes, got_ways, _, _, _, _ = parse_osm_data(fp, [xmin, ymin, xmax, ymax], False, when)
     got = pd.DataFrame({c: np.asarray(got_nodes[c]) for c in ("id", "lon", "lat")})
     expected = inside[["id", "lon", "lat"]]
     pd.testing.assert_frame_equal(
@@ -2189,7 +2190,7 @@ def test_parse_joins_block_arrays_in_each_keys_dtype():
         "timestamp": ("uint32", [5, 6, 5]),
         "changeset": ("int32", [7, 8, 7]),
         "lon": ("float64", [24.5, 24.6, 24.5]),
-        "visible": ("object", [True, False, True]),
+        "visible": ("bool", [True, False, True]),
         "tags": ("object", [tags[0], None, tags[0]]),
     }
     assert list(joined) == list(expected)
@@ -2197,7 +2198,6 @@ def test_parse_joins_block_arrays_in_each_keys_dtype():
         assert joined[key].dtype == dtype
         assert joined[key].tolist() == values
     assert joined["tags"][0] is tags[0] and joined["tags"][2] is tags[0]
-    assert all(type(value) is bool for value in joined["visible"])
     with pytest.raises(AssertionError):
         concatenate_dicts_of_arrays([{"id": np.array([1]), "lon": np.array([1.0, 2.0])}])
 
@@ -3188,8 +3188,11 @@ def test_driving_network_leaves_out_ways_cars_cannot_use(engine):
 @pytest.mark.parametrize("run", ["crop", "merge"])
 def test_crop_and_merge_take_auto_workers(run, tmp_path, monkeypatch):
     """``workers="auto"``, the default, chooses a worker count for crops and merges as it
-    does for out-of-core reads, and writes the same file as ``workers=1``; an unknown value
-    raises ``ValueError``. ``"auto"`` was compared with ``1`` and raised ``TypeError``."""
+    does for out-of-core reads, and writes the same file as ``workers=1``, as a NumPy
+    integer does; an unknown value raises ``ValueError``. ``"auto"`` was compared with
+    ``1`` and raised ``TypeError``, and a NumPy integer was refused."""
+    import numpy as np
+
     import pyrosm.engine.pool as pool
     import pyrosm.pbf_export as pbf_export
     from pyrosm import get_data, merge_pbf
@@ -3220,6 +3223,8 @@ def test_crop_and_merge_take_auto_workers(run, tmp_path, monkeypatch):
     assert Path(runs[run](tmp_path / "par.osm.pbf", workers="auto")).read_bytes() == expected
     assert Path(runs[run](tmp_path / "default.osm.pbf")).read_bytes() == expected
     assert opened == [2, 2]
+    numpy_workers = runs[run](tmp_path / "numpy.osm.pbf", workers=np.int64(2))
+    assert Path(numpy_workers).read_bytes() == expected and opened == [2, 2, 2]
     with pytest.raises(ValueError, match="'workers' should be"):
         runs[run](tmp_path / "bad.osm.pbf", workers="many")
 
@@ -3252,7 +3257,7 @@ def test_geocode_retries_a_cut_off_reply(monkeypatch):
         def __exit__(self, *exc):
             return False
 
-    def fake_urlopen(request, context=None):
+    def fake_urlopen(request, context=None, timeout=None):
         calls.append(request)
         return Reply(cut=len(calls) == 1)
 
@@ -3394,7 +3399,7 @@ def test_write_pbf_merges_the_rows_of_an_element(case, tmp_path):
         return
     nodes, edges = osm.get_network("driving", nodes=True)
     def tag_keys(tags):
-        return [key for key in json.loads(tags or "{}") if key != "visible"]
+        return list(json.loads(tags)) if isinstance(tags, str) else []
 
     usable = edges["maxspeed"].notna() & edges["tags"].map(tag_keys).astype(bool)
     segments = edges[usable].groupby("id").size()
@@ -4130,7 +4135,7 @@ def test_write_pbf_copies_the_nodes_of_any_store():
     builder = writer._RecordBuilder()
     writer._add_base_nodes(builder, store, {}, plan)
     assert builder.node_ids == [7, 7, 8] and builder.lons == [5.0, 5.0, 2.0]
-    assert builder.css == [9007199254740993, 0, 5] and builder.vers == [1, 1, 1]
+    assert builder.css == [9007199254740993, 0, 5] and builder.vers == [0, 0, 0]
     assert builder.ntags == [None, {"a": "b"}, {"c": "d"}]
 
 
@@ -4188,7 +4193,7 @@ def test_get_graph_reports_one_progress(engine, simplify, read, fresh_cache, mon
     seen = []
     osm = OSM(fp, engine=engine, progress=lambda *report: seen.append(report))
     osm.get_graph("driving", graph_type="networkx", simplify=simplify)
-    graph = _GRAPH_STEPS[:1] + (["simplifying"] if simplify else []) + _GRAPH_STEPS[1:]
+    graph = _GRAPH_STEPS + (["simplifying"] if simplify else [])
     assert list(dict.fromkeys(started)) == read + graph + ["building the graph"]
     done = [d for d, _ in seen]
     assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)
@@ -4417,3 +4422,990 @@ def test_empty_box_warns_once_in_either_engine(engine, fresh_cache):
         assert osm.get_buildings() is None
     messages = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
     assert messages == ["Could not find any building elements for given area."]
+
+
+def test_area_crop_is_used_again(tmp_path, monkeypatch):
+    """get_data_by_area cropped again on every call, so each call wrote a new file and
+    the result cache filled with copies, and crop=False ignored output_path for one
+    extract. A file pyrosm names after the area is used again while it, its extract and
+    the area are unchanged; update=True, a newer or other extract, another area of the same
+    name or an explicit output_path crop again, and crop=False copies the extract to
+    output_path."""
+    import os
+    import shutil
+
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import box
+
+    import pyrosm
+    import pyrosm.data.extract_index as ei
+    import pyrosm.pbf_export
+    from pyrosm import get_data
+
+    area = [24.93, 60.16, 24.96, 60.18]
+    source = tmp_path / "bbbike_Helsinki.osm.pbf"
+    shutil.copy(get_data("helsinki_pbf"), source)
+    os.utime(source, (1e9, 1e9))
+    found = gpd.GeoDataFrame(
+        {
+            "provider": ["BBBike"],
+            "id": ["Helsinki"],
+            "name": ["Helsinki"],
+            "url": ["https://b/Helsinki/Helsinki.osm.pbf"],
+            "bytes": pd.array([50], dtype="Int64"),
+            "contains": [True],
+        },
+        geometry=[box(*area)],
+        crs="EPSG:4326",
+    )
+    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: found)
+    monkeypatch.setattr("pyrosm.utils.download.download", lambda *a, **k: str(source))
+    crops = []
+    crop_pbf = pyrosm.pbf_export.crop_pbf
+    monkeypatch.setattr(
+        pyrosm.pbf_export,
+        "crop_pbf",
+        lambda *a, **k: crops.append(a[1]) or crop_pbf(*a, **k),
+    )
+
+    def read(where=area, **options):
+        return pyrosm.get_data_by_area(
+            where, directory=tmp_path, progress=False, **options
+        ).path
+
+    first = read()
+    assert read() == first and len(crops) == 1
+    read(update=True)
+    os.utime(source)
+    read()
+    assert len(crops) == 3
+    # Another extract for the same box, or a crop changed since it was written.
+    other = tmp_path / "geofabrik_finland.osm.pbf"
+    shutil.copy(source, other)
+    monkeypatch.setattr("pyrosm.utils.download.download", lambda *a, **k: str(other))
+    read()
+    os.utime(first)
+    read()
+    assert read() == first and len(crops) == 5
+    # A box that differs from the area only beyond the five decimals of the name.
+    assert read([24.93, 60.16, 24.96, 60.180001]) == first and len(crops) == 6
+    own = str(tmp_path / "own.osm.pbf")
+    assert read(output_path=own) == read(output_path=own) == own and len(crops) == 8
+
+    copied = tmp_path / "copied.osm.pbf"
+    assert read(crop=False, output_path=str(copied)) == str(copied)
+    assert copied.read_bytes() == other.read_bytes() and len(crops) == 8
+
+    # A copy where the file system has no hard links, and none left when it fails too.
+    import pyrosm.utils.download as dl
+
+    dl.copy_atomic(copied, copied)
+    no_links = tmp_path / "no_links"
+
+    def refused(*args):
+        raise OSError("refused")
+
+    monkeypatch.setattr(dl.os, "link", refused)
+    source.chmod(0o600)
+    dl.copy_atomic(source, no_links / "copy.osm.pbf")
+    assert (no_links / "copy.osm.pbf").read_bytes() == source.read_bytes()
+    assert (no_links / "copy.osm.pbf").stat().st_mode == source.stat().st_mode
+    monkeypatch.setattr(dl.shutil, "copy", refused)
+    with pytest.raises(OSError, match="refused"):
+        dl.copy_atomic(source, no_links / "failed.osm.pbf")
+    assert [p.name for p in no_links.iterdir()] == ["copy.osm.pbf"]
+
+
+def test_geocode_takes_the_network_options(monkeypatch):
+    """geocode and get_data_by_geocoding waited without limit for the geocoding service
+    and took no headers, timeout or opener. The request now waits 60 s by default, as
+    downloads do, and the three options reach it."""
+    import io
+    import json
+
+    import pyrosm
+
+    reply = json.dumps(
+        [{"display_name": "Helsinki", "boundingbox": ["60.1", "60.2", "24.9", "25.0"]}]
+    ).encode()
+    sent = []
+
+    class Opener:
+        def open(self, request, timeout=None):
+            sent.append((request, timeout))
+            return io.BytesIO(reply)
+
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda request, context=None, timeout=None: Opener().open(request, timeout),
+    )
+    pyrosm.geocode("Helsinki")
+    pyrosm.geocode("Helsinki", headers={"User-Agent": "app/1", "X-Key": "k"}, timeout=5)
+    pyrosm.geocode("Helsinki", user_agent="me/2", headers={"user-agent": "app/1"})
+    pyrosm.geocode("Helsinki", timeout=7, opener=Opener())
+    agents = [request.get_header("User-agent") for request, _ in sent]
+    assert agents[0].startswith("pyrosm") and agents[1:] == ["app/1", "me/2", agents[0]]
+    assert sent[1][0].get_header("X-key") == "k"
+    assert [timeout for _, timeout in sent] == [60, 5, 60, 7]
+
+
+@pytest.mark.parametrize("wrapper", ["get_data_by_bbox", "get_data_by_geocoding"])
+def test_area_wrappers_get_the_data_as_get_data_by_area(wrapper, tmp_path, monkeypatch):
+    """get_data_by_bbox and get_data_by_geocoding chose only among Geofabrik extracts,
+    took none of the options of get_data_by_area and stopped at the first failed
+    download. Both now get the data as get_data_by_area does: they search every
+    provider with its options, choose again without a failed extract and crop with the
+    workers given."""
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import box
+
+    import pyrosm
+    import pyrosm.data.extract_index as ei
+    import pyrosm.data.geocoding as gc
+    import pyrosm.pbf_export
+    from pyrosm.exceptions import DownloadError
+
+    area = [24.93, 60.16, 24.96, 60.18]
+    urls = ["https://b/Helsinki/Helsinki.osm.pbf", "https://m/grid/N60E024.osm.pbf"]
+    found = gpd.GeoDataFrame(
+        {
+            "provider": ["BBBike", "Movisda"],
+            "id": ["Helsinki", "N60E024"],
+            "name": ["Helsinki", "N60E024"],
+            "url": urls,
+            "bytes": pd.array([50, 66], dtype="Int64"),
+            "contains": [True, True],
+        },
+        geometry=[box(*area)] * 2,
+        crs="EPSG:4326",
+    )
+    searched, geocoded, downloads, crops = [], [], [], []
+    monkeypatch.setattr(ei, "find_extracts", lambda geom, **k: searched.append(k) or found)
+    monkeypatch.setattr(gc, "geocode", lambda query, **k: geocoded.append(k) or box(*area))
+    helsinki = pyrosm.get_data("helsinki_pbf")
+
+    def download(url, filename, update, directory, **net):
+        downloads.append((url, net))
+        if url == urls[0]:
+            raise DownloadError("unavailable", url=url, status=503, attempts=3)
+        return helsinki
+
+    monkeypatch.setattr("pyrosm.utils.download.download", download)
+    crop_pbf = pyrosm.pbf_export.crop_pbf
+    monkeypatch.setattr(
+        pyrosm.pbf_export, "crop_pbf", lambda *a, **k: crops.append(k) or crop_pbf(*a, **k)
+    )
+    net = {"headers": {"User-Agent": "t"}, "timeout": 30, "opener": object()}
+    stops = box(24.94, 60.165, 24.95, 60.17)
+    place = area if wrapper == "get_data_by_bbox" else "Helsinki"
+    with pytest.warns(UserWarning, match="choosing again without it"):
+        out = getattr(pyrosm, wrapper)(
+            place,
+            directory=tmp_path,
+            progress=False,
+            strategy="smallest_total",
+            must_cover=stops,
+            workers=2,
+            **net,
+        )
+    options = [{k: s[k] for k in (*net, "must_cover", "contains_only")} for s in searched]
+    assert options == [{**net, "must_cover": stops, "contains_only": False}]
+    assert downloads == [(url, {**net, "progress": False}) for url in urls]
+    assert [c["workers"] for c in crops] == [2]
+    if wrapper == "get_data_by_bbox":
+        assert "bounding_box" in crops[0]
+        assert Path(out) == tmp_path / "bbox_24.93_60.16_24.96_60.18.osm.pbf"
+    else:
+        assert geocoded == [{"base_url": gc._NOMINATIM_URL, "user_agent": None, **net}]
+        assert "polygon" in crops[0]
+        assert Path(out) == tmp_path / "area_helsinki.osm.pbf"
+
+
+def test_update_refreshes_the_indexes_with_a_fallback(tmp_path, monkeypatch):
+    """find_extracts(update=True) fetched Geofabrik's index without a timeout, retry or
+    fallback, and did not keep it, and BBBike's list of cities was never refreshed. Both
+    are now fetched with the network options, kept next to the downloads, and replaced by
+    the kept copy, or else pyrosm's own, with a warning when they cannot be fetched."""
+    import io
+    import json
+    from urllib.error import URLError
+
+    from shapely.geometry import Point, box, mapping
+
+    import pyrosm.data.extract_index as ei
+    import pyrosm.utils.download as dl
+
+    bbbike = "https://download.bbbike.org/osm/bbbike"
+    finland = "https://download.geofabrik.de/europe/finland-latest.osm.pbf"
+    feature = {
+        "type": "Feature",
+        "geometry": mapping(box(20, 59, 32, 71)),
+        "properties": {"id": "finland-new", "name": "Finland", "urls": {"pbf": finland}},
+    }
+    cities = [c for c in ei._bbbike_extracts(None)["id"] if c != "Basel"]
+    poly = "Newtown\n1\n 24 60\n 25 60\n 25 61\n 24 61\nEND\nEND\n"
+    pages = {
+        "https://download.geofabrik.de/index-v1.json": json.dumps(
+            {"type": "FeatureCollection", "features": [feature]}
+        ),
+        bbbike + "/": "".join(
+            '<a href="%s/">' % c for c in cities + ["Newtown", "Broken"]
+        ),
+        bbbike + "/Newtown/Newtown.poly": poly,
+        bbbike + "/Broken/Broken.poly": "not a boundary",
+    }
+    timeouts, online = [], [True]
+
+    class Response(io.BytesIO):
+        headers = {}
+
+    def fake(url, method="GET", headers=None, timeout=None, opener=None):
+        timeouts.append(timeout)
+        if not online[0]:
+            raise URLError("down")
+        return Response(pages[url].encode())
+
+    monkeypatch.setattr(dl, "open_url", fake)
+    net = dl._Net(None, 5, None)
+    with pytest.warns(UserWarning, match="leaving Broken out"):
+        found = [
+            ei._geofabrik_extracts(tmp_path, True, net),
+            ei._bbbike_extracts(tmp_path, True, net),
+        ]
+    assert set(timeouts) == {5}
+    online[0] = False
+    with pytest.warns(UserWarning, match="Could not refresh|leaving Broken out"):
+        kept = [
+            ei._geofabrik_extracts(tmp_path, True, net),
+            ei._bbbike_extracts(tmp_path, True, net),
+        ]
+    for geofabrik, cities_found in (found, kept):
+        assert list(zip(geofabrik["id"], geofabrik["url"])) == [("finland-new", finland)]
+        ids = set(cities_found["id"])
+        assert "Newtown" in ids and not {"Basel", "Broken"} & ids
+        newtown = cities_found[cities_found["id"] == "Newtown"].iloc[0]
+        assert newtown.url == bbbike + "/Newtown/Newtown.osm.pbf"
+        assert newtown.geometry.covers(Point(24.5, 60.5))
+    with pytest.warns(UserWarning, match="using pyrosm's copy") as caught:
+        geofabrik = ei._geofabrik_extracts(tmp_path / "other", True, net)
+        cities_found = ei._bbbike_extracts(tmp_path / "other", True, net)
+    assert len(caught) == 2 and len(geofabrik) > 500
+    assert cities_found is ei._bbbike_extracts(None)
+    # A list with no new city.
+    online[0] = True
+    pages[bbbike + "/"] = "".join('<a href="%s/">' % c for c in cities)
+    assert set(ei._bbbike_extracts(tmp_path / "third", True, net)["id"]) == set(cities)
+
+
+def test_recipe_force_downloads_again_and_geocodes_with_its_options(
+    tmp_path, monkeypatch
+):
+    """pyrosm run --force reran the extract stage on the extract an earlier run had
+    downloaded, and a recipe's place was geocoded without the headers and timeout of its
+    extract section. --force now downloads again, and the geocoding takes those options."""
+    import functools
+
+    from shapely.geometry import box
+
+    import pyrosm.data.extract_index as ei
+    import pyrosm.data.geocoding as gc
+    from pyrosm import recipes
+
+    seen = []
+
+    class Stop(Exception):
+        pass
+
+    @functools.wraps(ei.get_data_by_area)
+    def get_data_by_area(area, output_path=None, **keywords):
+        seen.append(keywords)
+        raise Stop()
+
+    monkeypatch.setattr(ei, "get_data_by_area", get_data_by_area)
+    monkeypatch.setattr(
+        gc, "geocode", lambda place, **net: seen.append(net) or box(24.9, 60.1, 25, 60.2)
+    )
+    recipe = tmp_path / "recipe.yaml"
+    recipe.write_text(
+        "recipe: pyrosm\n"
+        "extract: {area: {place: Kallio}, headers: {User-Agent: app/1}, timeout: 20}\n"
+        "outputs: {extract: a.osm.pbf}\n"
+    )
+    for force in (False, True):
+        with pytest.raises(Stop):
+            recipes.run(recipe, force=force)
+    net = {"headers": {"User-Agent": "app/1"}, "timeout": 20}
+    assert seen == [net, net, net, dict(net, update=True)]
+
+
+def test_get_data_downloads_over_https():
+    """get_data downloaded every Geofabrik extract over plain HTTP, so anything on the way
+    could change the file. Its Geofabrik and BBBike downloads use https."""
+    from pyrosm.data import _resolve_dataset
+
+    for name in ("finland", "usa/georgia", "greater_london", "helsinki"):
+        assert _resolve_dataset(name)[1]["url"].startswith("https://download.")
+
+
+def test_clear_downloads_removes_the_file_given_and_partial_files(tmp_path, monkeypatch):
+    """clear_downloads(path) removed the file of that name in the download folder and kept
+    the file at the path, and the partial files of interrupted downloads were never
+    removed. A path removes exactly that file, a bare name the downloaded one, each with
+    its partial files and crop record, and only PBF files can be named."""
+    import pyrosm.utils.download as dl
+    from pyrosm import OSM
+
+    downloads, own = tmp_path / "pyrosm", tmp_path / "my_data"
+    monkeypatch.setattr(dl, "download_dir", lambda: downloads)
+    files = [
+        downloads / "monaco-latest.osm.pbf",
+        own / "monaco-latest.osm.pbf",
+        downloads / "monaco-latest.osm.pbf.k2j3h4.part",
+        downloads / "bbox_1_2_3_4.osm.pbf",
+        downloads / "bbox_1_2_3_4.osm.pbf.sources",
+        downloads / "estonia-latest.osm.pbf.x8y9z0.part",
+        downloads / "monaco-latest.osm.pbf.copy.osm.pbf.ab12cd34.part",
+        downloads / "geofabrik" / "index-v1.json",
+    ]
+    for file in files:
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(b"x")
+    assert OSM.clear_downloads(own / "monaco-latest.osm.pbf") == 1
+    assert files[0].exists() and not files[1].exists()
+    assert OSM.clear_downloads("monaco-latest.osm.pbf") == 2
+    assert files[-2].exists()
+    assert OSM.clear_downloads() == 3
+    left = [p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*") if p.is_file()]
+    assert left == ["pyrosm/geofabrik/index-v1.json"]
+    with pytest.raises(ValueError, match="removes .osm.pbf and .osh.pbf files only"):
+        OSM.clear_downloads(files[-1])
+
+
+def test_dataset_names_take_every_spelling_and_get_suggestions():
+    """An unknown dataset name listed about 800 names in no order, and a region-qualified
+    name did not take the spellings a bare name takes. The error names the closest
+    datasets, and both forms take spaces, dashes and underscores."""
+    from pyrosm.data import _resolve_dataset
+
+    for name in ("usa/new york", "USA / New-York", "usa/new_york"):
+        assert _resolve_dataset(name)[1]["url"].endswith("/us/new-york-latest.osm.pbf")
+    assert _resolve_dataset("Rio-de-Janeiro")[1]["url"].endswith("/RiodeJaneiro.osm.pbf")
+    for name, hint in (
+        ("finlnd", "'finland'"),
+        ("test_pb", "'test_pbf'"),
+        ("asia/georgia", "'europe/georgia' or 'usa/georgia'"),
+    ):
+        with pytest.raises(ValueError, match="Did you mean") as info:
+            _resolve_dataset(name)
+        assert hint in str(info.value) and len(str(info.value)) < 200
+
+
+def test_get_data_knows_every_bbbike_city():
+    """get_data lacked three cities (Damaskus, LosAngeles, Minsk) that BBBike lists and
+    get_data_by_area finds. Every city of pyrosm's BBBike index is a get_data dataset."""
+    from pyrosm.data import _resolve_dataset
+    from pyrosm.data.extract_index import _bbbike_extracts
+
+    cities = _bbbike_extracts(None)
+    for city, url in zip(cities["id"], cities["url"]):
+        name = "NewYorkCity" if city == "NewYork" else city
+        assert _resolve_dataset("cities/" + name)[1]["url"] == url
+
+
+@pytest.mark.parametrize(
+    "write", ["to_pbf", "to_pbf in parallel", "write_pbf", "write_pbf subset"]
+)
+def test_written_files_keep_the_completed_relations(write, tmp_path):
+    """With complete_relations=True a read with a bounding box fetches the member ways of
+    the relations reaching into the box, also those outside it, but to_pbf and write_pbf
+    left them out, so the written file read back with other relation geometries. Both
+    write those member ways and their nodes now."""
+    from pyrosm import OSM, get_data
+
+    box = [24.94758, 60.16839, 24.94787, 60.16888]
+    osm = OSM(get_data("helsinki_pbf"), bounding_box=box, complete_relations=True)
+    buildings = osm.get_buildings()
+    out = str(tmp_path / "out.osm.pbf")
+    if write.startswith("to_pbf"):
+        osm.to_pbf(out, workers=2 if write.endswith("parallel") else 1)
+    else:
+        osm.write_pbf(buildings, out, subset_only=write.endswith("subset"))
+
+    def relations(gdf):
+        return gdf[gdf["osm_type"] == "relation"].set_index("id").geometry
+
+    read, again = relations(buildings), relations(OSM(out).get_buildings())
+    assert 1689811 in read.index
+    areas = [g.area for g in read]
+    assert [g.area for g in again.loc[read.index]] == pytest.approx(areas, abs=1e-12)
+
+
+def test_crop_completes_every_version_of_a_relation(tmp_path):
+    """A crop keeps a relation by its id, so a file with several records of one relation
+    (its versions) gets every record written; the crop completes the way members of all
+    of them, also of a record that does not reach into the area."""
+    import numpy as np
+
+    from pyrosm.pbf_export import _iter_decoded_blocks, crop_pbf, write_pbf_from_records
+
+    corners = [(0, 0), (0.01, 0), (0.01, 0.01), (0, 0.01)]
+    squares = (0, 0.02, 0.04)
+    nodes = {
+        "id": np.arange(1, 13, dtype=np.int64),
+        "lon": np.array([24.90 + dx + x for dx in squares for x, _ in corners]),
+        "lat": np.array([60.10 + y for _ in squares for _, y in corners]),
+        "version": np.ones(12, dtype=np.int64),
+        "timestamp": np.full(12, 1600000000, dtype=np.int64),
+        "changeset": np.zeros(12, dtype=np.int64),
+        "tags": [None] * 12,
+    }
+    ways = [
+        {"id": 10 + i, "refs": [s, s + 1, s + 2, s + 3, s], "version": 1, "tags": {}}
+        for i, s in enumerate((1, 5, 9))
+    ]
+    relations = [
+        {"id": 20, "members": members, "version": version, "timestamp": 1600000000 + version,
+         "changeset": 0, "tags": {"type": "multipolygon", "building": "yes"}}
+        for version, members in (
+            (1, [("way", 10, "outer"), ("way", 11, "outer")]),
+            (2, [("way", 12, "outer")]),
+        )
+    ]
+    source = write_pbf_from_records(
+        nodes, ways, relations, str(tmp_path / "versions.osm.pbf"), (24.9, 60.1, 24.95, 60.11)
+    )
+    out = crop_pbf(
+        source,
+        str(tmp_path / "crop.osm.pbf"),
+        bounding_box=[24.899, 60.099, 24.911, 60.111],
+        complete_relations=True,
+        progress=False,
+    )
+    kept_ways = np.concatenate(
+        [ways["id"] for _, _, ways, _ in _iter_decoded_blocks(out) if ways is not None]
+    )
+    assert sorted(kept_ways.tolist()) == [10, 11, 12]
+
+
+def test_bounding_box_write_keeps_the_relations_of_the_box(tmp_path):
+    """write_pbf of a read with a bounding box wrote every relation of the whole file,
+    most of them without a member in the written file. It writes the relations with a
+    member in the file, as to_pbf does."""
+    from pyrosm import OSM, get_data
+    from pyrosm.pbf_writer import _relations_with_members
+
+    fp = get_data("helsinki_pbf")
+    osm = OSM(fp, bounding_box=[24.94, 60.165, 24.945, 60.17])
+    with pytest.warns(UserWarning, match="extend beyond the bounding box"):
+        buildings = osm.get_buildings()
+    written = osm.write_pbf(buildings, str(tmp_path / "written.osm.pbf"))
+    cropped = osm.to_pbf(str(tmp_path / "cropped.osm.pbf"))
+
+    def relation_ids(path):
+        read = OSM(path)
+        read._read_pbf()
+        return set(read._relations["id"].tolist())
+
+    assert relation_ids(written) == relation_ids(cropped) < relation_ids(fp)
+    assert _relations_with_members({}, [], []) == set()
+    text = {"id": [1, 2], "members": [{"member_id": [5], "member_type": ["way"]}] * 2}
+    assert _relations_with_members(text, [5], [7]) == set()
+    assert _relations_with_members(text, [], [5]) == {1, 2}
+
+
+@pytest.mark.parametrize(
+    "form",
+    ["list", "tuple", "array", "polygon", "GeoDataFrame", "GeoSeries", "projected", "no CRS"],
+)
+def test_bounding_box_forms(form):
+    """Each function took its own bounding-box forms: OSM() refused a tuple, an array
+    and a GeoDataFrame, crop_pbf failed on them with unrelated errors, and
+    get_data_by_bbox read a projected GeoDataFrame's metres as degrees. One check takes
+    every form, a GeoDataFrame or GeoSeries in lon/lat."""
+    import geopandas as gpd
+    import numpy as np
+    from shapely.geometry import box
+
+    from pyrosm.utils import validate_bounding_box
+
+    bounds = [24.94, 60.165, 24.945, 60.17]
+    gdf = gpd.GeoDataFrame(geometry=[box(*bounds)], crs=4326)
+    given = {
+        "list": bounds,
+        "tuple": tuple(bounds),
+        "array": np.array(bounds),
+        "polygon": box(*bounds),
+        "GeoDataFrame": gdf,
+        "GeoSeries": gdf.geometry,
+        "projected": gdf.to_crs(3067),
+        "no CRS": gdf.set_crs(None, allow_override=True),
+    }[form]
+    checked = validate_bounding_box(given)
+    got = checked if isinstance(checked, list) else list(checked.bounds)
+    assert got == pytest.approx(bounds, abs=1e-6)
+
+
+def test_every_function_takes_a_geodataframe_box(tmp_path, monkeypatch):
+    """OSM(), the out-of-core readers, crop_pbf, merge_pbf and get_data_by_bbox all take
+    a GeoDataFrame as the box, and read or crop what its bounds give."""
+    import geopandas as gpd
+    from shapely.geometry import box
+
+    import pyrosm.data.extract_index as ei
+    from pyrosm import OSM, get_data, get_data_by_bbox, merge_pbf
+    from pyrosm.pbf_export import crop_pbf
+
+    fp = get_data("helsinki_pbf")
+    bounds = [24.94, 60.165, 24.945, 60.17]
+    gdf = gpd.GeoDataFrame(geometry=[box(*bounds)], crs=4326)
+    ids = sorted(OSM(fp, bounding_box=bounds).get_buildings()["id"])
+    for engine in ("in_memory", "out_of_core"):
+        read = OSM(fp, bounding_box=gdf, engine=engine).get_buildings()
+        assert sorted(read["id"]) == ids
+    crop = crop_pbf(fp, str(tmp_path / "crop.osm.pbf"), bounding_box=gdf, progress=False)
+    merged = merge_pbf([fp], str(tmp_path / "merged.osm.pbf"), polygon=gdf, progress=False)
+    for written in (crop, merged):
+        assert set(ids) <= set(OSM(written).get_buildings()["id"])
+    searched = []
+    monkeypatch.setattr(ei, "find_extracts", lambda geom, **k: searched.append(geom) or [])
+    with pytest.raises(Exception):
+        get_data_by_bbox(gdf, download=False)
+    assert list(searched[0].bounds) == pytest.approx(bounds)
+
+
+@pytest.mark.parametrize("merge", [False, True])
+@pytest.mark.parametrize(
+    "bounding_box, problem",
+    [
+        ([24.95, 60.16, 24.93, 60.17], "minx < maxx"),
+        ([385000, 6672000, 386000, 6673000], "lon/lat range"),
+        ((24.93, 60.16, 24.95), "should be four numbers"),
+        ([10.0, 50.0, 10.1, 50.1], "No node of"),
+    ],
+)
+def test_crops_refuse_unusable_boxes_and_warn_when_empty(
+    bounding_box, problem, merge, tmp_path
+):
+    """crop_pbf and merge_pbf wrote an empty file, without a word, for an inverted box,
+    one in metres or one outside the data, and failed with unrelated errors on others.
+    They refuse a box OSM() refuses and warn when they keep no node."""
+    from pyrosm import get_data, merge_pbf
+    from pyrosm.pbf_export import crop_pbf
+
+    fp, out = get_data("helsinki_pbf"), str(tmp_path / "out.osm.pbf")
+
+    def write():
+        if merge:
+            return merge_pbf([fp], out, bounding_box=bounding_box, progress=False)
+        return crop_pbf(fp, out, bounding_box=bounding_box, progress=False)
+
+    if problem == "No node of":
+        with pytest.warns(UserWarning, match="No node of Helsinki.osm.pbf lies in"):
+            write()
+    else:
+        with pytest.raises(ValueError, match=problem):
+            write()
+
+
+def test_merge_of_files_without_nodes_warns(tmp_path):
+    """A merge without a box warns, as a crop does, when the file it writes holds no
+    node."""
+    import numpy as np
+
+    from pyrosm import merge_pbf
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    columns = ("id", "lat", "lon", "version", "timestamp", "changeset")
+    nodes = {name: np.empty(0, dtype=np.int64) for name in columns}
+    nodes.update(lat=np.empty(0), lon=np.empty(0), tags=[])
+    empty = write_pbf_from_records(nodes, [], [], str(tmp_path / "empty.osm.pbf"), (0, 0, 1, 1))
+    with pytest.warns(UserWarning, match="empty.osm.pbf hold no node"):
+        merge_pbf([empty], str(tmp_path / "merged.osm.pbf"), progress=False)
+
+
+def test_write_pbf_writes_new_elements_in_order(tmp_path):
+    """write_pbf wrote a new way after the ways of the source, so the file was not sorted
+    by type then id and merge_pbf refused it. It writes every element sorted by id, new
+    ones included."""
+    import geopandas as gpd
+    from shapely.geometry import LineString
+
+    from pyrosm import OSM, get_data, merge_pbf
+    from pyrosm.pbf_export import _iter_decoded_blocks
+
+    osm = OSM(get_data("test_pbf"))
+    footway = gpd.GeoDataFrame(
+        {"highway": ["footway"]},
+        geometry=[LineString([(26.94, 60.52), (26.945, 60.525)])],
+        crs=4326,
+    )
+    written = osm.write_pbf([footway], str(tmp_path / "written.osm.pbf"))
+    merged = merge_pbf([written], str(tmp_path / "merged.osm.pbf"), progress=False)
+    way_ids = [
+        i
+        for _, _, ways, _ in _iter_decoded_blocks(merged)
+        if ways is not None
+        for i in ways["id"].tolist()
+    ]
+    assert way_ids[0] < 0 and way_ids == sorted(way_ids)
+
+
+def _metadata_source(path, mixed=False):
+    """A PBF with a building relation (id 20) of two square ways: way 10 (changeset 88)
+    on nodes 1-4 and way 11 (changeset 99) on nodes 5-8, 0.02 degrees east; the nodes
+    have changeset 77, or when ``mixed`` nodes 5-8 have no metadata."""
+    import numpy as np
+
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    corners = [(0, 0), (0.01, 0), (0.01, 0.01), (0, 0.01)]
+    nodes = {
+        "id": np.arange(1, 9, dtype=np.int64),
+        "lon": np.array([24.90 + dx + x for dx in (0, 0.02) for x, _ in corners]),
+        "lat": np.array([60.10 + y for _ in (0, 0.02) for _, y in corners]),
+        "version": np.full(8, 3, dtype=np.int64),
+        "timestamp": np.full(8, 1600000000, dtype=np.int64),
+        "changeset": np.full(8, 77, dtype=np.int64),
+        "tags": [None] * 8,
+    }
+    if mixed:
+        for name in ("version", "timestamp", "changeset"):
+            nodes[name][4:] = 0
+    ways = [
+        {"id": 10 + i, "refs": [s, s + 1, s + 2, s + 3, s], "version": 2,
+         "timestamp": 1600000000, "changeset": changeset, "tags": {}}
+        for i, (s, changeset) in enumerate(((1, 88), (5, 99)))
+    ]
+    relation = {
+        "id": 20,
+        "members": [("way", 10, "outer"), ("way", 11, "outer")],
+        "version": 1,
+        "timestamp": 1600000000,
+        "changeset": 66,
+        "tags": {"type": "multipolygon", "building": "yes"},
+    }
+    return write_pbf_from_records(
+        nodes, ways, [relation], str(path), (24.9, 60.1, 24.93, 60.11)
+    )
+
+
+@pytest.mark.parametrize(
+    "read", ["whole", "no node metadata", "box, complete relations", "mixed nodes"]
+)
+def test_write_pbf_writes_the_metadata_it_read(read, tmp_path):
+    """write_pbf wrote every way with changeset 0 and, for nodes read with
+    keep_metadata=False, invented version 1, timestamp 1970 and changeset 0. It writes
+    the metadata it read, also for the member ways a read with complete_relations adds,
+    and none where none was read, node by node."""
+    from pyrosm import OSM
+    from pyrosm.pbfreader import iter_decoded_blocks
+
+    source = _metadata_source(tmp_path / "source.osm.pbf", mixed=read == "mixed nodes")
+    options = {
+        "whole": {},
+        "no node metadata": {"keep_metadata": False},
+        "box, complete relations": {
+            "bounding_box": [24.899, 60.099, 24.911, 60.111],
+            "complete_relations": True,
+        },
+        "mixed nodes": {},
+    }[read]
+    osm = OSM(source, engine="in_memory", **options)
+    out = osm.write_pbf(osm.get_buildings(), str(tmp_path / "out.osm.pbf"))
+    nodes, ways = [], {}
+    for _, _, block_nodes, block_ways, _ in iter_decoded_blocks(out):
+        if block_nodes is not None:
+            nodes.append(block_nodes)
+        if block_ways is not None:
+            ways.update(zip(block_ways["id"].tolist(), block_ways["changeset"].tolist()))
+    assert ways == {10: 88, 11: 99}
+    with_metadata = [
+        (i, c)
+        for block in nodes
+        if len(block["changeset"])
+        for i, c in zip(block["id"].tolist(), block["changeset"].tolist())
+    ]
+    expected = {"no node metadata": [], "mixed nodes": [(i, 77) for i in range(1, 5)]}
+    assert with_metadata == expected.get(read, [(i, 77) for i in range(1, 9)])
+
+
+def test_write_pbf_of_a_history_read_keeps_the_way_changesets(tmp_path):
+    """A write of a history read gives each way the changeset of the version read."""
+    import warnings
+
+    import numpy as np
+
+    from pyrosm import OSM, get_data
+    from pyrosm.pbfreader import iter_decoded_blocks
+
+    def ways_of(path):
+        return [w for _, _, _, w, _ in iter_decoded_blocks(path) if w is not None]
+
+    fp = get_data("helsinki_test_history_pbf")
+    latest = {}
+    for ways in ways_of(fp):
+        for i, version, changeset in zip(
+            ways["id"].tolist(), ways["version"].tolist(), ways["changeset"].tolist()
+        ):
+            if version >= latest.get(i, (0, 0))[0]:
+                latest[i] = (version, changeset)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        osm = OSM(fp, engine="in_memory")
+        out = osm.write_pbf(osm.get_buildings(), str(tmp_path / "out.osm.pbf"))
+    written = [
+        (i, c)
+        for ways in ways_of(out)
+        for i, c in zip(ways["id"].tolist(), ways["changeset"].tolist())
+    ]
+    assert written and np.all([latest[i][1] == c for i, c in written])
+
+
+@pytest.mark.parametrize("write", ["crop", "crop in parallel", "write_pbf"])
+def test_interrupted_writes_leave_the_earlier_file(write, tmp_path):
+    """Crops and write_pbf wrote straight into output_path, so an interrupted call left a
+    truncated file that read as a smaller valid one, and a failed crop without
+    output_path left its temporary file. They write next to it and replace it when the
+    file is complete."""
+    import os
+
+    from pyrosm import OSM, get_data
+    from pyrosm.pbf_export import crop_pbf
+
+    fp, box = get_data("helsinki_pbf"), [24.93, 60.16, 24.95, 60.18]
+    out = tmp_path / "out.osm.pbf"
+    out.write_bytes(b"earlier")
+
+    def stop(done, total):
+        if done > total * 0.97:
+            raise KeyboardInterrupt
+
+    def run(progress):
+        if write == "write_pbf":
+            osm = OSM(fp, engine="in_memory", progress=False)
+            osm.write_pbf(osm.get_buildings(), str(out), progress=progress)
+        else:
+            workers = 2 if write.endswith("parallel") else 1
+            crop_pbf(fp, str(out), bounding_box=box, workers=workers, progress=progress)
+
+    out.chmod(0o640)
+    with pytest.raises(KeyboardInterrupt):
+        run(stop)
+    assert [p.name for p in tmp_path.iterdir()] == ["out.osm.pbf"]
+    assert out.read_bytes() == b"earlier"
+    # A complete write replaces the file and keeps its permissions (POSIX), read-only ones
+    # too.
+    for mode in (0o640, 0o444) if os.name != "nt" else (0o666,):
+        out.chmod(mode)
+        run(False)
+        assert out.stat().st_size > 1000 and out.stat().st_mode & 0o777 == mode
+    out.chmod(0o644)
+
+
+def test_partial_file_names_skip_taken_ones(tmp_path, monkeypatch):
+    """A partial file is created under a name nothing else holds."""
+    import pyrosm.utils.download as dl
+
+    names = iter(["taken", "fresh"])
+    monkeypatch.setattr(dl.secrets, "token_hex", lambda n: next(names))
+    (tmp_path / "x.osm.pbf.taken.part").write_bytes(b"other")
+    assert dl._new_partial(tmp_path / "x.osm.pbf").name == "x.osm.pbf.fresh.part"
+    assert (tmp_path / "x.osm.pbf.taken.part").read_bytes() == b"other"
+
+
+@pytest.mark.parametrize("simplify", [True, False])
+def test_networkx_graphs_carry_the_osmnx_booleans(simplify, tmp_path):
+    """NetworkX graphs kept oneway as the OSM text and had no reversed, so OSMnx could
+    not load a saved graph. With osmnx_compatible they carry oneway and reversed as
+    booleans (a list where the ways of a simplified edge differ), the OSM text as
+    oneway_tag."""
+    osmnx = pytest.importorskip("osmnx")
+    from pyrosm import OSM, get_data
+
+    graph = OSM(get_data("helsinki_pbf"), progress=False).get_graph(
+        "driving", graph_type="networkx", simplify=simplify
+    )
+
+    def booleans(value):
+        values = value if isinstance(value, list) else [value]
+        return all(type(v) is bool for v in values)
+
+    edges = list(graph.edges(data=True))
+    assert all(booleans(d["oneway"]) and booleans(d["reversed"]) for *_, d in edges)
+    assert {d["oneway"] for *_, d in edges} == {True, False}
+    assert all(graph.has_edge(v, u) for u, v, d in edges if d["oneway"] is False)
+    assert "yes" in {d.get("oneway_tag") for *_, d in edges}
+    osmnx.save_graphml(graph, tmp_path / "graph.graphml")
+    loaded = osmnx.load_graphml(tmp_path / "graph.graphml")
+    assert loaded.number_of_edges() == graph.number_of_edges()
+
+
+def test_node_attrs_include_finds_node_tags():
+    """simplify_kwargs node_attrs_include looked only at node columns, and the network's
+    node tags are in their tags, so naming a tag kept no node. It finds node tags too,
+    in both engines, and warns about a name no node has."""
+    import json
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), engine="in_memory", progress=False)
+    nodes, edges = osm.get_network("driving", nodes=True)
+    signals = {
+        i
+        for i, tags in zip(nodes["id"], nodes["tags"])
+        if isinstance(tags, dict) and tags.get("highway") == "traffic_signals"
+    }
+    full = osm.to_graph(nodes, edges, graph_type="networkx", simplify=False)
+    signals &= set(full)
+    keep = {"node_attrs_include": ["highway"]}
+    default = osm.to_graph(nodes, edges, graph_type="networkx")
+    graph = osm.to_graph(nodes, edges, graph_type="networkx", simplify_kwargs=keep)
+    assert signals - set(default) and signals <= set(graph)
+    engine = OSM(get_data("helsinki_pbf"), progress=False)
+    engine_graph = engine.get_graph("driving", graph_type="networkx", simplify_kwargs=keep)
+    assert set(engine_graph) == set(graph)
+    # Tags as JSON text, as a frame read back from a file holds them.
+    text = nodes.assign(
+        tags=[json.dumps(t) if isinstance(t, dict) else t for t in nodes["tags"]]
+    )
+    text_graph = osm.to_graph(text, edges, graph_type="networkx", simplify_kwargs=keep)
+    assert set(text_graph) == set(graph)
+    # A column of the name that holds the values of some nodes only.
+    partial = nodes.assign(highway=None)
+    partial_graph = osm.to_graph(partial, edges, graph_type="networkx", simplify_kwargs=keep)
+    assert set(partial_graph) == set(graph)
+    with pytest.warns(UserWarning, match="named 'no_such_tag'"):
+        osm.to_graph(
+            nodes,
+            edges,
+            graph_type="networkx",
+            simplify_kwargs={"node_attrs_include": ["no_such_tag"]},
+        )
+
+
+@pytest.mark.parametrize("network_type", ["driving", "cycling"])
+def test_default_graphs_are_fully_simplified(network_type):
+    """A graph was simplified first and its largest connected part kept afterwards, so a
+    node whose side street the second step removed was left between two edges of one
+    street. Graphs are fully simplified also where that step removes edges, in both
+    readers."""
+    from pyrosm import OSM, get_data
+    from pyrosm.graph_simplify import simplify_graph
+    from pyrosm.graphs import graph_tables
+
+    osm = OSM(get_data("helsinki_pbf"), engine="in_memory", progress=False)
+    nodes, edges = osm.get_network(network_type, nodes=True)
+    graph_nodes, graph_edges = graph_tables(nodes, edges, network_type=network_type)
+    assert len(simplify_graph(graph_nodes, graph_edges)[0]) == len(graph_nodes)
+    read = OSM(get_data("helsinki_pbf"), progress=False)
+    graph = read.get_graph(network_type, graph_type="networkx")
+    assert set(graph) == set(graph_nodes["id"])
+
+
+@pytest.mark.parametrize("network_type", ["driving", "walking"])
+def test_unsimplified_edges_run_from_u_to_v(network_type):
+    """In a graph built with simplify=False, an edge that runs against the node order of
+    its way kept the way's line, which started at its v node. Every edge's line runs
+    from its u node to its v node."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), engine="in_memory", progress=False)
+    nodes, edges = osm.get_network(network_type, nodes=True)
+    graph = osm.to_graph(nodes, edges, graph_type="networkx", simplify=False)
+
+    def at(node):
+        return pytest.approx((graph.nodes[node]["x"], graph.nodes[node]["y"]), abs=1e-7)
+
+    for u, v, data in graph.edges(data=True):
+        line = data["geometry"].coords
+        assert line[0] == at(u) and line[-1] == at(v)
+
+
+@pytest.mark.parametrize(
+    "call, name",
+    [
+        (lambda osm: osm.get_buildings(extra_attributes="name"), "extra_attributes"),
+        (lambda osm: osm.get_buildings(tags_to_keep="name"), "tags_to_keep"),
+        (
+            lambda osm: osm.get_data_by_custom_criteria(
+                {"highway": True}, tags_as_columns="name"
+            ),
+            "tags_as_columns",
+        ),
+        (
+            lambda osm: osm.get_data_by_custom_criteria(
+                {"highway": True}, tags_to_keep=["name", 1]
+            ),
+            "tags_to_keep",
+        ),
+        (lambda osm: osm.get_graph("driving", tags_to_keep="name"), "tags_to_keep"),
+    ],
+)
+def test_tag_list_errors_name_the_parameter_given(call, name):
+    """A tag list that is not a list of strings was refused as 'tags_as_columns', a
+    parameter most of the methods do not have; the error names the parameter given."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"), progress=False)
+    with pytest.raises(ValueError, match=f"'{name}' should be"):
+        call(osm)
+
+
+@pytest.mark.parametrize(
+    "method, kwargs",
+    [
+        ("get_pois", {}),
+        ("get_network", {}),
+        (
+            "get_data_by_custom_criteria",
+            {
+                "custom_filter": {"amenity": True},
+                "keep_ways": False,
+                "keep_relations": False,
+            },
+        ),
+    ],
+)
+def test_both_engines_give_visible_and_the_metadata_the_same_dtypes(method, kwargs):
+    """Out-of-core node rows had int64 ``version``, ``timestamp`` and ``changeset`` where
+    the in-memory reader has int32, uint32 and int32, the in-memory ``visible`` was an
+    object column, and the ways of reads without a ``visible`` column held it in the JSON
+    ``tags``. Both engines give the same columns with the same dtypes, and ``visible`` is
+    a bool column of every read, never a key of ``tags``."""
+    from pyrosm import OSM, get_data
+
+    frames = [
+        getattr(OSM(get_data("helsinki_pbf"), engine=engine, progress=False), method)(
+            **kwargs
+        )
+        for engine in ("in_memory", "out_of_core")
+    ]
+    dtypes = [list(frame.dtypes.astype(str).items()) for frame in frames]
+    assert dtypes[0] == dtypes[1]
+    for frame in frames:
+        assert frame["visible"].dtype == bool
+        assert not frame["tags"].fillna("").str.contains('"visible"').any()
+
+
+def test_box_reads_leave_out_tag_columns_of_rows_outside_the_box():
+    """With a box and ``complete_relations``, the in-memory reader read the boundary
+    Honkasuo, which lies outside the box, left it out by the box, and kept its
+    ``start_date`` column with no value. Both engines give the same columns, none of them
+    empty."""
+    from pyrosm import OSM, get_data
+
+    box = [24.85, 60.15, 25.05, 60.25]
+    frames = [
+        OSM(
+            get_data("helsinki_region_pbf"),
+            engine=engine,
+            bounding_box=box,
+            complete_relations=True,
+            progress=False,
+        ).get_boundaries()
+        for engine in ("in_memory", "out_of_core")
+    ]
+    assert list(frames[0].columns) == list(frames[1].columns)
+    assert not [c for c in frames[0].columns if frames[0][c].isna().all()]

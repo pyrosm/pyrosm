@@ -92,6 +92,7 @@ def test_parsing_osm_with_custom_filter_by_excluding_tags(test_pbf):
         "version",
         "timestamp",
         "changeset",
+        "visible",
     ]
     for col in gdf.columns:
         assert col in allowed_columns
@@ -141,6 +142,7 @@ def test_parsing_osm_with_custom_filter_by_including_tags(test_pbf):
         "version",
         "timestamp",
         "changeset",
+        "visible",
     ]
     for col in gdf.columns:
         assert col in allowed_columns

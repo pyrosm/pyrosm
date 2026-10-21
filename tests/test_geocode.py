@@ -2,10 +2,13 @@ import json
 import logging
 from pathlib import Path
 
+import geopandas as gpd
+import pandas as pd
 import pytest
 from shapely.geometry import box
 
 import pyrosm
+import pyrosm.data.extract_index as ei
 import pyrosm.data.geocoding as gc
 
 BRIGHTON = [
@@ -59,7 +62,7 @@ class _FakeResponse:
 
 
 def _mock_urlopen(payload, captured=None):
-    def fake(request, context=None):
+    def fake(request, context=None, timeout=None):
         if captured is not None:
             captured.append(request)
         return _FakeResponse(payload)
@@ -117,7 +120,7 @@ def test_geocode_empty_query_raises():
 def test_geocode_service_error_raises(monkeypatch):
     from urllib.error import URLError
 
-    def fake(request, context=None):
+    def fake(request, context=None, timeout=None):
         raise URLError("connection refused")
 
     monkeypatch.setattr("urllib.request.urlopen", fake)
@@ -125,44 +128,41 @@ def test_geocode_service_error_raises(monkeypatch):
         pyrosm.geocode("Brighton and Hove, UK")
 
 
-def test_get_data_by_geocoding_download_false_returns_url(monkeypatch):
-    monkeypatch.setattr("urllib.request.urlopen", _mock_urlopen(BRIGHTON))
-    out = pyrosm.get_data_by_geocoding("Brighton and Hove, UK", download=False)
-    assert "england-latest.osm.pbf" in out
-
-
-def test_get_data_by_geocoding_crop_false_returns_full_extract(monkeypatch):
-    monkeypatch.setattr("urllib.request.urlopen", _mock_urlopen(BRIGHTON))
-    captured = {}
-
-    def fake_download(url, filename, update, directory, progress):
-        captured.update(url=url, progress=progress)
-        return "/tmp/fake-england-latest.osm.pbf"
-
-    monkeypatch.setattr("pyrosm.utils.download.download", fake_download)
-    out = pyrosm.get_data_by_geocoding(
-        "Brighton and Hove, UK", crop=False, progress=False
-    )
-    assert out == "/tmp/fake-england-latest.osm.pbf"
-    assert "england-latest.osm.pbf" in captured["url"]
-    assert captured["progress"] is False
-
-
-def test_get_data_by_geocoding_crop_default_names_by_place(monkeypatch):
-    # crop=True is the default; the cropped file is named after the query. Mock
-    # geocode to a Helsinki sub-box and download to the bundled Helsinki extract.
+def test_get_data_by_geocoding(monkeypatch, tmp_path):
+    # The place is a Helsinki sub-box, and its extract the bundled Helsinki extract.
     helsinki = pyrosm.get_data("helsinki_pbf")
-    monkeypatch.setattr(
-        gc, "geocode", lambda q, **kwargs: box(24.93, 60.16, 24.96, 60.18)
-    )
-    monkeypatch.setattr(
-        "pyrosm.utils.download.download",
-        lambda url, filename, update, directory, progress: helsinki,
-    )
-    out = pyrosm.get_data_by_geocoding("Brighton and Hove, UK")
-    assert Path(out).name == "area_brighton-and-hove-uk.osm.pbf"
+    url = "https://download.bbbike.org/osm/bbbike/Helsinki/Helsinki.osm.pbf"
+    found = gpd.GeoDataFrame(
+        {"provider": ["BBBike"], "id": ["Helsinki"], "name": ["Helsinki"], "url": [url]},
+        geometry=[box(24.9, 60.1, 25.0, 60.2)],
+        crs="EPSG:4326",
+    ).assign(bytes=pd.array([50], dtype="Int64"), contains=True)
+    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: found)
+    monkeypatch.setattr(gc, "geocode", lambda q, **k: box(24.93, 60.16, 24.96, 60.18))
+    monkeypatch.setattr("pyrosm.utils.download.download", lambda *a, **k: helsinki)
+    place = "Brighton and Hove, UK"
+    out = pyrosm.get_data_by_geocoding(place, directory=tmp_path, progress=False)
+    assert Path(out) == tmp_path / "area_brighton-and-hove-uk.osm.pbf"
     assert Path(out).stat().st_size < Path(helsinki).stat().st_size
-    assert pyrosm.OSM(out).get_buildings() is not None
+    assert len(pyrosm.OSM(out).get_buildings()) > 0
+    assert pyrosm.get_data_by_geocoding(place, crop=False, progress=False) == helsinki
+    assert pyrosm.get_data_by_geocoding(place, download=False) == url
+
+
+@pytest.mark.parametrize(
+    "options, message",
+    [
+        ({"strategy": "fast"}, "strategy must be"),
+        ({"workers": 0}, "'workers' should be"),
+        ({"must_cover": box(0, 0, 1, 1).buffer(-1)}, "must_cover is empty"),
+        ({"progress": "yes"}, "progress must be"),
+        ({"crop": "bbox"}, "crop must be"),
+    ],
+)
+def test_get_data_by_geocoding_checks_options_first(monkeypatch, options, message):
+    monkeypatch.setattr(gc, "open_url", lambda *a, **k: pytest.fail("a request was sent"))
+    with pytest.raises(ValueError, match=message):
+        pyrosm.get_data_by_geocoding("Helsinki", **options)
 
 
 def test_slug_filename():
@@ -175,4 +175,4 @@ def test_slug_filename():
 def test_geocode_live():
     geom = pyrosm.geocode("Brighton and Hove, UK")
     assert geom.geom_type in ("Polygon", "MultiPolygon")
-    assert "england-latest.osm.pbf" in pyrosm.get_data_by_bbox(geom, download=False)
+    assert pyrosm.get_data_by_bbox(geom, download=False).endswith(".osm.pbf")

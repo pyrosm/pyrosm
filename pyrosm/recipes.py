@@ -580,13 +580,16 @@ def _read_vector(source):
     return gpd.read_file(source["file"], layer=source.get("layer"))
 
 
-def _run_extract(extract, target):
-    """Run the extract stage, writing its PBF to ``target``; returns its provenance entry."""
+def _run_extract(extract, target, update=False):
+    """Run the extract stage, writing its PBF to ``target``, downloaded anew when ``update``;
+    returns its provenance entry."""
     from pyrosm.data import _resolve_dataset, get_data
     from pyrosm.data.extract_index import _area_geometry, _provenance, get_data_by_area
     from pyrosm.data.geocoding import geocode
 
     area, keywords = extract["area"], dict(extract["keywords"])
+    if update:
+        keywords["update"] = True
     if "name" in area:
         shutil.copyfile(get_data(area["name"], **keywords), target)
         kind, source = _resolve_dataset(area["name"])
@@ -601,7 +604,8 @@ def _run_extract(extract, target):
     if "file" in area:
         geometry = _area_geometry(_read_vector(area["file"]))
     elif "place" in area:
-        geometry = geocode(area["place"])
+        net = {k: keywords[k] for k in ("headers", "timeout") if k in keywords}
+        geometry = geocode(area["place"], **net)
     else:
         geometry = _area_geometry(area["bbox"])
     if "must_cover" in keywords:
@@ -740,7 +744,7 @@ def run(path, out_dir=None, force=False):
     out_dir : str | pathlib.Path, optional
         The output folder, created when missing.
     force : bool
-        Run every stage, whether or not it changed.
+        Run every stage, whether or not it changed, and download the extract again.
 
     Returns
     -------
@@ -951,7 +955,7 @@ def _run_recipe(path, out_dir, invocation, force=False):
 
                 def run_extract():
                     pbf.parent.mkdir(parents=True, exist_ok=True)
-                    entry = _run_extract(extract, pbf)
+                    entry = _run_extract(extract, pbf, update=force)
                     return entry, {name: entry["sha256"]}
 
                 inputs = {"stage": extract, "upstream": record["inputs"]}
@@ -1029,7 +1033,9 @@ def main(argv=None):
         "-o", "--out", help="the output folder (default: the recipe's folder)"
     )
     runner.add_argument(
-        "--force", action="store_true", help="run every stage, changed or not"
+        "--force",
+        action="store_true",
+        help="run every stage, changed or not, and download the extract again",
     )
     checker = commands.add_parser("validate", help="check a recipe without running it")
     checker.add_argument("recipe", help="the recipe YAML file")

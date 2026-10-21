@@ -18,7 +18,7 @@ import pandas as pd
 import pytest
 from pathlib import Path
 import shapely
-from shapely.geometry import LineString, MultiPoint, Point, Polygon, box
+from shapely.geometry import LineString, MultiPoint, Point, Polygon, box, mapping
 
 import pyrosm
 from pyrosm.data import extract_index as ei
@@ -69,11 +69,36 @@ def _age(path, seconds):
     ],
 )
 def test_vendored_indexes(loader, point, expected):
-    gdf = loader()
+    gdf = loader(None)
     assert gdf["id"].is_unique and gdf.geometry.is_valid.all()
     assert gdf["url"].str.match(r"https://download\.(bbbike\.org|geofabrik\.de)/").all()
     assert sorted(gdf[gdf.covers(point)]["id"]) == expected
-    assert ei._bbbike_extracts() is ei._bbbike_extracts()
+    assert ei._bbbike_extracts(None) is ei._bbbike_extracts(None)
+
+
+NO_PBF = {"type": "Feature", "geometry": mapping(box(0, 0, 1, 1)), "properties": {"urls": {}}}
+
+
+def test_fetched_index_readers():
+    """The readers of the fetched indexes refuse what is not an index, and a ``.poly``
+    boundary keeps its holes and gets its rings closed."""
+    for read, data in (
+        (ei._read_geofabrik_index, json.dumps({"features": [NO_PBF]})),
+        (ei._bbbike_cities, b'<a href="Berlin/">'),
+        (ei._bbbike_boundary, b"x\nEND\n"),
+    ):
+        with pytest.raises(ValueError):
+            read(data)
+    poly = b"c\nouter\n 0 0\n 4 0\n 4 4\n 0 4\nEND\n!hole\n 1 1\n 2 1\n 2 2\n 1 1\nEND\nEND\n"
+    assert ei._bbbike_boundary(poly).area == 15.5
+
+
+@pytest.mark.live_download
+def test_update_fetches_the_live_indexes(tmp_path):
+    geofabrik = ei._geofabrik_extracts(tmp_path, update=True).set_index("id")
+    url = "https://download.geofabrik.de/europe/finland-latest.osm.pbf"
+    assert geofabrik.loc["finland", "url"] == url
+    assert "Helsinki" in set(ei._bbbike_extracts(tmp_path, update=True)["id"])
 
 
 NOT_MODIFIED = HTTPError("u", 304, "Not Modified", {}, None)
@@ -365,8 +390,8 @@ def test_find_extracts_ranks_by_recorded_size(tmp_path, monkeypatch):
     area = box(24.9, 60.1, 25.1, 60.3)
     geofabrik = _candidates("Geofabrik", [("finland", None, box(19, 59, 32, 71))])
     movisda = _candidates("Movisda", [("FI", 700, box(19, 59, 32, 71))])
-    monkeypatch.setattr(ei, "_geofabrik_extracts", lambda update: geofabrik)
-    monkeypatch.setattr(ei, "_bbbike_extracts", lambda: _candidates("BBBike", []))
+    monkeypatch.setattr(ei, "_geofabrik_extracts", lambda *a: geofabrik)
+    monkeypatch.setattr(ei, "_bbbike_extracts", lambda *a: _candidates("BBBike", []))
     monkeypatch.setattr(ei, "_movisda_extracts", lambda *a: movisda)
     monkeypatch.setattr(
         ei,
@@ -550,13 +575,18 @@ def test_find_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up, contain
             ("FI", 700, box(19, 59, 32, 71)),
         ],
     )
-    refreshed = []
-    monkeypatch.setattr(
-        ei, "_geofabrik_extracts", lambda update: refreshed.append(update) or geofabrik
-    )
-    monkeypatch.setattr(ei, "_bbbike_extracts", lambda: bbbike)
+    refreshed, nets, fallbacks = [], [], []
 
-    nets, fallbacks = [], []
+    def index(frame):
+        def extracts(directory, update, net):
+            refreshed.append(update)
+            nets.append(net)
+            return frame
+
+        return extracts
+
+    monkeypatch.setattr(ei, "_geofabrik_extracts", index(geofabrik))
+    monkeypatch.setattr(ei, "_bbbike_extracts", index(bbbike))
 
     def movisda_extracts(directory, update=False, net=None, progress=None):
         refreshed.append(update)
@@ -609,14 +639,14 @@ def test_find_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up, contain
         for p, i in zip(got["provider"], got["id"])
         if p != "Movisda"
     )
-    # Geofabrik's index, Movisda's indexes and the download sizes are all refreshed.
-    assert refreshed == [True, True, True]
+    # Geofabrik's index, BBBike's cities, Movisda's indexes and the sizes are all refreshed.
+    assert refreshed == [True] * 4
     # The sizes recorded in pyrosm's Geofabrik index back up the size requests.
     assert fallbacks == [ei._vendored_geofabrik_sizes()]
-    # The caller's network options reach the Movisda index and the size requests.
+    # The caller's network options reach every index and the size requests.
     assert [(n.headers, n.timeout, n.opener) for n in nets] == [
         ({"User-Agent": "transitio/1"}, 30, OPENER)
-    ] * 2
+    ] * 4
 
 
 HELSINKI = [24.93, 60.16, 24.96, 60.18]
@@ -752,10 +782,10 @@ def test_get_data_by_area_accepts_area_forms(monkeypatch, area):
             {"crop": "polygon"},
             "Polygon or MultiPolygon",
         ),
-        (box(*HELSINKI), {"workers": 0}, "workers must be an integer"),
-        (box(*HELSINKI), {"workers": 1.5}, "workers must be an integer"),
-        (box(*HELSINKI), {"workers": True}, "workers must be an integer"),
-        (box(*HELSINKI), {"workers": "many"}, "workers must be an integer"),
+        (box(*HELSINKI), {"workers": 0}, "'workers' should be"),
+        (box(*HELSINKI), {"workers": 1.5}, "'workers' should be"),
+        (box(*HELSINKI), {"workers": True}, "'workers' should be"),
+        (box(*HELSINKI), {"workers": "many"}, "'workers' should be"),
     ],
 )
 def test_get_data_by_area_rejects_bad_options(area, options, message):
@@ -1135,8 +1165,8 @@ def test_find_extracts_with_must_cover(tmp_path, monkeypatch):
             ("Vantaa", 40, box(25.1, 60.0, 25.5, 60.5)),
         ],
     )
-    monkeypatch.setattr(ei, "_geofabrik_extracts", lambda update: geofabrik)
-    monkeypatch.setattr(ei, "_bbbike_extracts", lambda: bbbike)
+    monkeypatch.setattr(ei, "_geofabrik_extracts", lambda *a: geofabrik)
+    monkeypatch.setattr(ei, "_bbbike_extracts", lambda *a: bbbike)
     monkeypatch.setattr(ei, "_movisda_extracts", lambda *a: _candidates("Movisda", []))
     monkeypatch.setattr(ei, "_download_sizes", lambda *a, **k: {})
     got = pyrosm.find_extracts(area, must_cover=STOPS, directory=tmp_path)

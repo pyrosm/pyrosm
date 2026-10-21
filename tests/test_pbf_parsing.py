@@ -271,6 +271,7 @@ def test_way_store_candidate_rows(osm_keys, relation_way_ids, keep_all, rows):
             "id": np.array([10, 11, 12, 13]),
             "version": np.ones(4, dtype=np.int64),
             "timestamp": np.ones(4, dtype=np.int64),
+            "changeset": np.ones(4, dtype=np.int64),
             "visible": np.ones(4, dtype=np.int64),
             "refs": np.array([1, 2, 3, 4, 5]),
             "refs_off": np.array([0, 2, 3, 4, 5]),
