@@ -4024,3 +4024,45 @@ def test_history_ways_are_chosen_without_a_frame_of_their_records(monkeypatch):
     monkeypatch.setattr(reader, "pd", NoRecordFrames())
     ways = reader.parse_osm_data(fp, None, False, when)[1]
     assert ways == expected and len(ways) > 0
+
+
+@pytest.mark.parametrize("parsed", [True, False])
+def test_write_pbf_reports_progress_through_its_steps(tmp_path, monkeypatch, parsed):
+    """write_pbf showed no progress and took no progress parameter (33 s without a sign
+    for the buildings of Helsinki). It reports one progress from 0 to 100 % through its
+    steps, after the read of the file when it is not read yet; by default it follows
+    the object's progress, progress=False shows nothing, and other values are refused."""
+    from pyrosm import OSM, get_data
+    from pyrosm.utils import progress
+
+    fp = get_data("test_pbf")
+    seen = []
+    osm = OSM(fp, engine="in_memory", progress=lambda *report: seen.append(report))
+    buildings = osm.get_buildings()
+    if not parsed:
+        osm = OSM(fp, engine="in_memory", progress=lambda *report: seen.append(report))
+    seen.clear()
+    started = []
+    real = progress.Steps.start_step
+
+    def recorded(self, name):
+        started.append(name)
+        return real(self, name)
+
+    monkeypatch.setattr(progress.Steps, "start_step", recorded)
+    osm.write_pbf(buildings, str(tmp_path / "all.osm.pbf"))
+    steps = [
+        "applying the edits",
+        "preparing the nodes",
+        "preparing the ways",
+        "preparing the relations",
+        "writing the file",
+    ]
+    assert list(dict.fromkeys(started)) == ([] if parsed else ["decoding the blocks"]) + steps
+    done = [d for d, _ in seen]
+    assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)
+    seen.clear()
+    osm.write_pbf(buildings, str(tmp_path / "quiet.osm.pbf"), progress=False)
+    assert seen == []
+    with pytest.raises(ValueError, match="progress must be"):
+        osm.write_pbf(buildings, str(tmp_path / "refused.osm.pbf"), progress="yes")

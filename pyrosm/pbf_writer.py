@@ -24,7 +24,23 @@ from geopandas import GeoDataFrame
 from pyrosm.filter_compiler import CompiledFilter, Condition
 from pyrosm.pbf_export import write_pbf_from_records
 from pyrosm.utils import _stacklevel_outside_pyrosm
+from pyrosm.utils.progress import start_step
 from pyrosm.way_store import NodeTags
+
+# The steps of a write, as its progress names them, and their shares, relative to
+# decoding the file in memory, from writing the buildings of Helsinki (65 MB) back.
+_APPLYING = "applying the edits"
+_NODES = "preparing the nodes"
+_WAYS = "preparing the ways"
+_RELATIONS = "preparing the relations"
+_WRITING = "writing the file"
+WRITE_SHARES = {
+    _APPLYING: 12.0,
+    _NODES: 8.6,
+    _WAYS: 4.8,
+    _RELATIONS: 0.6,
+    _WRITING: 5.4,
+}
 
 # Frame columns that hold an element's fields, not its tags.
 _FIELD_COLS = {
@@ -1183,6 +1199,7 @@ def write_geodataframe_to_pbf(
     delete=None,
     on_orphan_node="remove",
     on_deleted_member="drop",
+    steps=None,
 ):
     """Write `data` (+ the cached dataset) to a valid PBF at `output_path`.
 
@@ -1198,10 +1215,14 @@ def write_geodataframe_to_pbf(
     ``apply_geometry`` additionally applies the rows' geometry to existing elements
     and ``delete`` removes elements; ``on_orphan_node`` and ``on_deleted_member``
     decide what happens to the references those removals break. See
-    ``pyrosm.OSM.write_pbf`` for the full semantics.
+    ``pyrosm.OSM.write_pbf`` for the full semantics. The write goes through the steps
+    of :data:`WRITE_SHARES` in ``steps`` (a :class:`~pyrosm.utils.progress.Steps`, or
+    None).
     """
     _validate_policy("on_orphan_node", on_orphan_node, _ORPHAN_NODE_POLICIES)
     _validate_policy("on_deleted_member", on_deleted_member, _DELETED_MEMBER_POLICIES)
+
+    start_step(steps, _APPLYING)
 
     relations = relations or {}
     frames = _reproject_to_wgs84(_as_frames(data))
@@ -1238,12 +1259,15 @@ def write_geodataframe_to_pbf(
         )
 
     builder = _RecordBuilder()
+    start_step(steps, _NODES)
     _add_base_nodes(builder, node_coordinates, poi_tags, plan, keep_nodes)
     for nid, lon, lat, tags in edits.new_nodes:
         builder.add_new_node(nid, lon, lat, tags)
+    start_step(steps, _WAYS)
     _add_base_ways(builder, way_records, plan, keep_ways)
     for wid, refs, tags in new_ways:
         builder.add_new_way(wid, refs, tags)
+    start_step(steps, _RELATIONS)
     _add_base_relations(builder, relations, plan, keep_rels)
 
     builder.begin_synthesis(
@@ -1252,10 +1276,12 @@ def write_geodataframe_to_pbf(
     for oid, geom, tags, wid in edits.auto_rows:
         builder.add_geometry(oid, geom, tags, wid)
 
+    payload = builder.node_payload()
     return write_pbf_from_records(
-        builder.node_payload(),
+        payload,
         builder.ways,
         builder.rels,
         output_path,
         builder.bounds(),
+        progress=start_step(steps, _WRITING),
     )

@@ -40,6 +40,7 @@ from pyrosm.utils.progress import (
     DECODING,
     SELECTING_VERSIONS,
     read_steps,
+    stepping,
     validate_progress,
 )
 from shapely.geometry import (
@@ -406,18 +407,22 @@ class OSM:
         history read, and the passes that complete the elements the bounding box cuts.
         """
         self._set_current_time(timestamp)
-        planned = {}
-        if self._parse_needed():
-            names = [DECODING]
-            if self._current_timestamp is not None:
-                names.append(SELECTING_VERSIONS)
-            if self.bounding_box is not None:
-                if self.complete_relations:
-                    names.append(COMPLETING_RELATIONS)
-                names.append(COMPLETING_WAYS)
-            planned = {name: _PARSE_SHARES[name] for name in names}
+        planned = self._parse_shares() if self._parse_needed() else {}
         planned.update(shares)
         return read_steps(self.filepath, self.progress, planned)
+
+    def _parse_shares(self):
+        """The shares of the steps of parsing the file for the current timestamp:
+        decoding it, selecting the versions of a history read, and the passes that
+        complete the elements the bounding box cuts."""
+        names = [DECODING]
+        if self._current_timestamp is not None:
+            names.append(SELECTING_VERSIONS)
+        if self.bounding_box is not None:
+            if self.complete_relations:
+                names.append(COMPLETING_RELATIONS)
+            names.append(COMPLETING_WAYS)
+        return {name: _PARSE_SHARES[name] for name in names}
 
     def _drop_node_lists(self, gdf):
         """``gdf`` without its ``nodes`` column (each row's list of node ids, which file
@@ -1371,6 +1376,7 @@ class OSM:
         delete=None,
         on_orphan_node="remove",
         on_deleted_member="drop",
+        progress=None,
     ):
         """
         Write the OSM data this object holds back to a valid, re-readable
@@ -1492,6 +1498,13 @@ class OSM:
             either (with a ``UserWarning``) and its own members go through
             ``on_orphan_node``; a relation left with no members is still written.
 
+        progress : bool | callable | None (default: None)
+            How the write shows its progress, as ``progress`` of :class:`OSM` does
+            (``None`` follows the ``progress`` of this object): one bar "Writing
+            <file>" from 0 to 100 % over the whole write, its current step in the
+            label, including the read of the file when it is not read in memory yet,
+            or ``progress(done, 100)`` calls.
+
         Returns
         -------
         str
@@ -1505,24 +1518,39 @@ class OSM:
         a source way whose members already point outside a clipped extract is re-emitted
         as it was read.
         """
-        from pyrosm.pbf_writer import write_geodataframe_to_pbf
+        from pyrosm.pbf_writer import WRITE_SHARES, write_geodataframe_to_pbf
 
-        if self._way_records is None or self._node_coordinates is None:
-            self._read_pbf()
-
-        return write_geodataframe_to_pbf(
-            data,
-            output_path,
-            node_coordinates=self._node_coordinates,
-            way_records=self._way_records,
-            relations=self._relations,
-            nodes=self._nodes,
-            subset_only=subset_only,
-            apply_geometry=apply_geometry,
-            delete=delete,
-            on_orphan_node=on_orphan_node,
-            on_deleted_member=on_deleted_member,
-        )
+        validate_progress(progress)
+        parse = self._way_records is None or self._node_coordinates is None
+        shares = {}
+        if parse:
+            self._set_current_time(None)
+            shares = self._parse_shares()
+        shares.update(WRITE_SHARES)
+        with stepping(
+            self.progress if progress is None else progress,
+            "Writing %s" % Path(output_path).name,
+            shares,
+            delay=2.0,
+            leave=False,
+            timed=True,
+        ) as steps:
+            if parse:
+                self._read_pbf(steps=steps)
+            return write_geodataframe_to_pbf(
+                data,
+                output_path,
+                node_coordinates=self._node_coordinates,
+                way_records=self._way_records,
+                relations=self._relations,
+                nodes=self._nodes,
+                subset_only=subset_only,
+                apply_geometry=apply_geometry,
+                delete=delete,
+                on_orphan_node=on_orphan_node,
+                on_deleted_member=on_deleted_member,
+                steps=steps,
+            )
 
     @logged("network_type", "graph_type", "simplify", count=False)
     def get_graph(
