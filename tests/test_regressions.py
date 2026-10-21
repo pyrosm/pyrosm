@@ -5267,6 +5267,10 @@ def test_node_attrs_include_finds_node_tags():
     )
     text_graph = osm.to_graph(text, edges, graph_type="networkx", simplify_kwargs=keep)
     assert set(text_graph) == set(graph)
+    # A column of the name that holds the values of some nodes only.
+    partial = nodes.assign(highway=None)
+    partial_graph = osm.to_graph(partial, edges, graph_type="networkx", simplify_kwargs=keep)
+    assert set(partial_graph) == set(graph)
     with pytest.warns(UserWarning, match="named 'no_such_tag'"):
         osm.to_graph(
             nodes,

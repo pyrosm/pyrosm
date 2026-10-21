@@ -504,18 +504,21 @@ class _TableEdges:
 
 
 def _present_in(frame, col):
-    """Whether each node of ``frame`` has a value for ``col``: in the column ``col``, else
-    as a tag in the nodes' ``tags`` (dicts or JSON text); None when the frame has
-    neither."""
-    if col in frame.columns:
-        return frame[col].notna().to_numpy()
-    if "tags" not in frame.columns:
+    """Whether each node of ``frame`` has a value for ``col``: in the column ``col`` or as
+    a tag in the nodes' ``tags`` (dicts or JSON text); None when the frame has neither.
+    """
+    if col not in frame.columns and "tags" not in frame.columns:
         return None
     present = np.zeros(len(frame), dtype=bool)
-    for i, tags in enumerate(frame["tags"].tolist()):
-        if isinstance(tags, str):
-            tags = loads(tags) if tags else None
-        present[i] = isinstance(tags, dict) and tags.get(col) is not None
+    if col in frame.columns:
+        present |= frame[col].notna().to_numpy()
+    if "tags" in frame.columns:
+        for i, tags in enumerate(frame["tags"].tolist()):
+            if present[i]:
+                continue
+            if isinstance(tags, str):
+                tags = loads(tags) if tags else None
+            present[i] = isinstance(tags, dict) and tags.get(col) is not None
     return present
 
 
