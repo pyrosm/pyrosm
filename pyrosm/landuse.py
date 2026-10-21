@@ -14,9 +14,12 @@ def get_landuse_data(
     keep_metadata=True,
     relation_member_ways=None,
     complete_relations=False,
+    steps=None,
 ):
     """The landuse features as a GeoDataFrame, read from the in-memory reader's parsed arrays;
-    ``custom_filter`` narrows them. Returns ``None`` when nothing matches."""
+    ``custom_filter`` narrows them. Returns ``None`` when nothing matches;
+    the selection and the geometries are steps of ``steps`` (a
+    :class:`~pyrosm.utils.progress.Steps`, or None)."""
     # If custom_filter has not been defined, initialize with default
     if custom_filter is None:
         custom_filter = {"landuse": [True]}
@@ -37,6 +40,7 @@ def get_landuse_data(
         osm_keys=None,
         keep_metadata=keep_metadata,
         relation_member_ways=relation_member_ways,
+        steps=steps,
     )
 
     # If there weren't any data, return empty GeoDataFrame
@@ -55,5 +59,6 @@ def get_landuse_data(
         bounding_box,
         keep_metadata=keep_metadata,
         complete_relations=complete_relations,
+        steps=steps,
     )
     return gdf

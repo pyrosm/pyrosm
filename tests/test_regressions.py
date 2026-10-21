@@ -3886,10 +3886,14 @@ def test_progress_of_several_passes_keeps_moving(monkeypatch):
     assert len(woken) >= 3 and len(refreshed) == before
 
 
+_BUILD = ["collecting the elements", "building the ways", "building the relations"]
+
+
 @pytest.mark.parametrize(
-    "read, steps",
+    "engine, read, steps",
     [
         (
+            "out_of_core",
             "buildings",
             [
                 "indexing the file",
@@ -3900,6 +3904,7 @@ def test_progress_of_several_passes_keeps_moving(monkeypatch):
             ],
         ),
         (
+            "out_of_core",
             "network",
             [
                 "indexing the file",
@@ -3910,6 +3915,7 @@ def test_progress_of_several_passes_keeps_moving(monkeypatch):
             ],
         ),
         (
+            "out_of_core",
             "network with nodes",
             [
                 "indexing the file",
@@ -3920,25 +3926,59 @@ def test_progress_of_several_passes_keeps_moving(monkeypatch):
                 "loading the result",
             ],
         ),
-        ("cached buildings", ["loading the result"]),
+        ("out_of_core", "second buildings", ["loading the result"]),
+        ("in_memory", "buildings", ["decoding the blocks"] + _BUILD),
+        (
+            "in_memory",
+            "network with nodes",
+            ["decoding the blocks", "collecting the elements", "building the edges"],
+        ),
+        ("in_memory", "second buildings", _BUILD),
+        (
+            "in_memory",
+            "box buildings",
+            [
+                "decoding the blocks",
+                "completing the relations",
+                "completing the ways",
+            ]
+            + _BUILD,
+        ),
+        (
+            "in_memory",
+            "history buildings",
+            ["decoding the blocks", "selecting the versions"] + _BUILD,
+        ),
     ],
 )
-def test_read_progress_covers_the_whole_read(read, steps, fresh_cache, monkeypatch):
-    """An out-of-core read reported only its decoding (12-20 % of a read of Paris), then
-    went silent while it built the geometries, wrote the cache and loaded the result.
-    The whole read is one progress through named steps, from 0 to 100 %; a read served
-    from the cache shows its load."""
+def test_read_progress_covers_the_whole_read(
+    engine, read, steps, fresh_cache, monkeypatch
+):
+    """A read reported only its decoding (12-20 % of an out-of-core read of Paris, 17 %
+    of one in memory), then went silent while it built the geometries, wrote the cache
+    and loaded the result, or selected the versions of a history read (92 % of a read
+    of the Helsinki history sample); a second read on the same object showed nothing.
+    The whole read is one progress through named steps, from 0 to 100 %."""
     from pyrosm import OSM, get_data
     from pyrosm.utils import progress
 
-    fp = get_data("test_pbf")
+    fp, options = get_data("test_pbf"), {}
+    if read == "box buildings":
+        fp = get_data("helsinki_pbf")
+        options = {"bounding_box": [24.93, 60.16, 24.95, 60.18], "complete_relations": True}
+    elif read == "history buildings":
+        fp = get_data("helsinki_test_history_pbf")
     calls = {
         "buildings": lambda osm: osm.get_buildings(),
         "network": lambda osm: osm.get_network("driving"),
         "network with nodes": lambda osm: osm.get_network("driving", nodes=True),
+        "history buildings": lambda osm: osm.get_buildings(timestamp="2019-01-01"),
     }
-    if read == "cached buildings":
-        calls["buildings"](OSM(fp, progress=False))
+    seen = []
+    osm = OSM(fp, engine=engine, progress=lambda *report: seen.append(report), **options)
+    if read == "second buildings":
+        calls["buildings"](osm)
+        seen.clear()
     started = []
     real = progress.Steps.start_step
 
@@ -3947,9 +3987,7 @@ def test_read_progress_covers_the_whole_read(read, steps, fresh_cache, monkeypat
         return real(self, name)
 
     monkeypatch.setattr(progress.Steps, "start_step", recorded)
-    seen = []
-    osm = OSM(fp, progress=lambda *report: seen.append(report))
-    calls[read.replace("cached ", "")](osm)
+    calls.get(read, calls["buildings"])(osm)
     assert list(dict.fromkeys(started)) == steps
     done = [d for d, _ in seen]
     assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)

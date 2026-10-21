@@ -30,7 +30,18 @@ from pyrosm.utils import (
     warn_empty_result,
 )
 from pyrosm.utils.download import get_file_size
-from pyrosm.utils.progress import reporting, validate_progress
+from pyrosm.utils.progress import (
+    BUILDING_EDGES,
+    BUILDING_RELATIONS,
+    BUILDING_WAYS,
+    COLLECTING,
+    COMPLETING_RELATIONS,
+    COMPLETING_WAYS,
+    DECODING,
+    SELECTING_VERSIONS,
+    read_steps,
+    validate_progress,
+)
 from shapely.geometry import (
     Polygon,
     MultiPolygon,
@@ -66,6 +77,18 @@ from pyrosm.engine.readers import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The shares of the steps of an in-memory read, relative to decoding the file, from the
+# times of reads of Paris (242 MB) and of the Helsinki history sample.
+_PARSE_SHARES = {
+    DECODING: 1.0,
+    SELECTING_VERSIONS: 13.0,
+    COMPLETING_RELATIONS: 1.0,
+    COMPLETING_WAYS: 1.0,
+}
+_LAYER_SHARES = {COLLECTING: 1.0, BUILDING_WAYS: 1.4, BUILDING_RELATIONS: 0.8}
+_NETWORK_SHARES = {COLLECTING: 0.35, BUILDING_EDGES: 0.12}
+_NETWORK_NODES_SHARES = {COLLECTING: 0.35, BUILDING_EDGES: 0.3}
 
 
 def _network_read_filter(args):
@@ -325,12 +348,12 @@ class OSM:
             kwargs["complete_relations"] = self.complete_relations
         return reader(self.filepath, **kwargs)
 
-    def _get_pbf_elements(self, bounding_box):
+    def _get_pbf_elements(self, bounding_box, steps):
+        """Parse the file within ``bounding_box`` in memory, in the steps of ``steps``
+        (see :func:`~pyrosm.pbfreader.parse_osm_data`), and keep its elements."""
         name = Path(self.filepath).name
         size = Path(self.filepath).stat().st_size
-        with timed(logger, "read_pbf", file=name, bytes=size), reporting(
-            self.progress, "Reading %s" % name, delay=2.0, leave=False, timed=True
-        ) as report:
+        with timed(logger, "read_pbf", file=name, bytes=size):
             (
                 nodes,
                 ways,
@@ -344,7 +367,7 @@ class OSM:
                 unix_time_filter=self._current_timestamp,
                 keep_metadata=self.keep_metadata,
                 complete_relations=self.complete_relations,
-                progress=report,
+                steps=steps,
             )
 
         self._nodes = nodes
@@ -353,7 +376,10 @@ class OSM:
         self._node_coordinates = node_coordinates
         self._relation_member_ways = relation_member_ways
 
-    def _read_pbf(self, timestamp=None):
+    def _read_pbf(self, timestamp=None, steps=None):
+        """Parse the file for ``timestamp`` unless it is parsed for it already, in the
+        steps of ``steps``, or without them as a read of its own (see
+        :meth:`_read_steps`)."""
         # PBF reading requires a list of bounding box coordinates
         if type(self.bounding_box) in self.allowed_bbox_types:
             bounding_box = self.bounding_box.bounds
@@ -363,13 +389,41 @@ class OSM:
         # Update current timestamp
         self._set_current_time(timestamp)
 
-        if self._nodes is None or self._way_records is None:
-            self._get_pbf_elements(bounding_box)
-        elif self._timestamp_changed:
-            self._get_pbf_elements(bounding_box)
+        if self._parse_needed():
+            if steps is None:
+                with self._read_steps(timestamp, {}) as steps:
+                    self._get_pbf_elements(bounding_box, steps)
+            else:
+                self._get_pbf_elements(bounding_box, steps)
 
         # Once the data has been read update the flag
         self._timestamp_changed = False
+
+    def _parse_needed(self):
+        """Whether the file is not parsed yet, or not for the current timestamp."""
+        return (
+            self._nodes is None or self._way_records is None or self._timestamp_changed
+        )
+
+    def _read_steps(self, timestamp, shares):
+        """The :func:`~pyrosm.utils.progress.read_steps` of an in-memory read for
+        ``timestamp`` whose own steps have the ``shares``, after the steps of parsing
+        the file when it is not parsed yet: decoding it, selecting the versions of a
+        history read, and the passes that complete the elements the bounding box cuts.
+        """
+        self._set_current_time(timestamp)
+        planned = {}
+        if self._parse_needed():
+            names = [DECODING]
+            if self._current_timestamp is not None:
+                names.append(SELECTING_VERSIONS)
+            if self.bounding_box is not None:
+                if self.complete_relations:
+                    names.append(COMPLETING_RELATIONS)
+                names.append(COMPLETING_WAYS)
+            planned = {name: _PARSE_SHARES[name] for name in names}
+        planned.update(shares)
+        return read_steps(self.filepath, self.progress, planned)
 
     def _get_network_filter(self, net_type):
         """Resolve a predefined network type to its filter, raising for an unknown one."""
@@ -542,21 +596,22 @@ class OSM:
             self.conf.tags.highway, extra_attributes, tags_to_keep, column_keys
         )
 
-        # Read pbf
-        self._read_pbf(timestamp)
-
-        # Filter network data with given filter
-        edges, node_gdf = get_network_data(
-            self._node_coordinates,
-            self._way_records,
-            tags_as_columns,
-            network_filter,
-            self.bounding_box,
-            slice_to_segments=nodes,
-            filter_type=filter_type,
-            keep_metadata=self.keep_metadata,
-            osm_keys=network_osm_keys,
-        )
+        # Read pbf and filter network data with given filter
+        shares = _NETWORK_NODES_SHARES if nodes else _NETWORK_SHARES
+        with self._read_steps(timestamp, shares) as steps:
+            self._read_pbf(timestamp, steps)
+            edges, node_gdf = get_network_data(
+                self._node_coordinates,
+                self._way_records,
+                tags_as_columns,
+                network_filter,
+                self.bounding_box,
+                slice_to_segments=nodes,
+                filter_type=filter_type,
+                keep_metadata=self.keep_metadata,
+                osm_keys=network_osm_keys,
+                steps=steps,
+            )
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
@@ -636,19 +691,20 @@ class OSM:
             self.conf.tags.building, extra_attributes, tags_to_keep, read_filter.keys()
         )
 
-        self._read_pbf(timestamp)
-
-        gdf = get_building_data(
-            self._node_coordinates,
-            self._way_records,
-            self._relations,
-            tags_as_columns,
-            custom_filter,
-            self.bounding_box,
-            keep_metadata=self.keep_metadata,
-            relation_member_ways=self._relation_member_ways,
-            complete_relations=self.complete_relations,
-        )
+        with self._read_steps(timestamp, _LAYER_SHARES) as steps:
+            self._read_pbf(timestamp, steps)
+            gdf = get_building_data(
+                self._node_coordinates,
+                self._way_records,
+                self._relations,
+                tags_as_columns,
+                custom_filter,
+                self.bounding_box,
+                keep_metadata=self.keep_metadata,
+                relation_member_ways=self._relation_member_ways,
+                complete_relations=self.complete_relations,
+                steps=steps,
+            )
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
@@ -720,25 +776,26 @@ class OSM:
                 warn_empty_result("landuse")
             return gdf
 
-        self._read_pbf(timestamp)
-
         read_filter = _require_layer_key(custom_filter, "landuse")
         tags_as_columns = read_tag_columns(
             self.conf.tags.landuse, extra_attributes, tags_to_keep, read_filter.keys()
         )
 
-        gdf = get_landuse_data(
-            self._nodes,
-            self._node_coordinates,
-            self._way_records,
-            self._relations,
-            tags_as_columns,
-            custom_filter,
-            self.bounding_box,
-            keep_metadata=self.keep_metadata,
-            relation_member_ways=self._relation_member_ways,
-            complete_relations=self.complete_relations,
-        )
+        with self._read_steps(timestamp, _LAYER_SHARES) as steps:
+            self._read_pbf(timestamp, steps)
+            gdf = get_landuse_data(
+                self._nodes,
+                self._node_coordinates,
+                self._way_records,
+                self._relations,
+                tags_as_columns,
+                custom_filter,
+                self.bounding_box,
+                keep_metadata=self.keep_metadata,
+                relation_member_ways=self._relation_member_ways,
+                complete_relations=self.complete_relations,
+                steps=steps,
+            )
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
@@ -810,25 +867,26 @@ class OSM:
                 warn_empty_result("natural")
             return gdf
 
-        self._read_pbf(timestamp)
-
         read_filter = _require_layer_key(custom_filter, "natural")
         tags_as_columns = read_tag_columns(
             self.conf.tags.natural, extra_attributes, tags_to_keep, read_filter.keys()
         )
 
-        gdf = get_natural_data(
-            self._nodes,
-            self._node_coordinates,
-            self._way_records,
-            self._relations,
-            tags_as_columns,
-            custom_filter,
-            self.bounding_box,
-            keep_metadata=self.keep_metadata,
-            relation_member_ways=self._relation_member_ways,
-            complete_relations=self.complete_relations,
-        )
+        with self._read_steps(timestamp, _LAYER_SHARES) as steps:
+            self._read_pbf(timestamp, steps)
+            gdf = get_natural_data(
+                self._nodes,
+                self._node_coordinates,
+                self._way_records,
+                self._relations,
+                tags_as_columns,
+                custom_filter,
+                self.bounding_box,
+                keep_metadata=self.keep_metadata,
+                relation_member_ways=self._relation_member_ways,
+                complete_relations=self.complete_relations,
+                steps=steps,
+            )
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
@@ -931,26 +989,27 @@ class OSM:
                 warn_empty_result("boundaries")
             return gdf
 
-        self._read_pbf(timestamp)
-
         read_filter = _boundary_filter(custom_filter, boundary_type)
         tags_as_columns = read_tag_columns(
             self.conf.tags.boundary, extra_attributes, tags_to_keep, read_filter.keys()
         )
 
-        gdf = get_boundary_data(
-            self._node_coordinates,
-            self._way_records,
-            self._relations,
-            tags_as_columns,
-            custom_filter,
-            boundary_type,
-            name,
-            self.bounding_box,
-            keep_metadata=self.keep_metadata,
-            relation_member_ways=self._relation_member_ways,
-            complete_relations=self.complete_relations,
-        )
+        with self._read_steps(timestamp, _LAYER_SHARES) as steps:
+            self._read_pbf(timestamp, steps)
+            gdf = get_boundary_data(
+                self._node_coordinates,
+                self._way_records,
+                self._relations,
+                tags_as_columns,
+                custom_filter,
+                boundary_type,
+                name,
+                self.bounding_box,
+                keep_metadata=self.keep_metadata,
+                relation_member_ways=self._relation_member_ways,
+                complete_relations=self.complete_relations,
+                steps=steps,
+            )
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
@@ -1052,8 +1111,6 @@ class OSM:
 
         custom_filter = _poi_filter(custom_filter)
 
-        self._read_pbf(timestamp)
-
         tags_as_columns = read_tag_columns(
             feature_columns(custom_filter.keys(), self.conf.tags._basic_tags),
             extra_attributes,
@@ -1061,18 +1118,21 @@ class OSM:
             custom_filter.keys(),
         )
 
-        gdf = get_poi_data(
-            self._nodes,
-            self._node_coordinates,
-            self._way_records,
-            self._relations,
-            tags_as_columns,
-            custom_filter,
-            self.bounding_box,
-            keep_metadata=self.keep_metadata,
-            relation_member_ways=self._relation_member_ways,
-            complete_relations=self.complete_relations,
-        )
+        with self._read_steps(timestamp, _LAYER_SHARES) as steps:
+            self._read_pbf(timestamp, steps)
+            gdf = get_poi_data(
+                self._nodes,
+                self._node_coordinates,
+                self._way_records,
+                self._relations,
+                tags_as_columns,
+                custom_filter,
+                self.bounding_box,
+                keep_metadata=self.keep_metadata,
+                relation_member_ways=self._relation_member_ways,
+                complete_relations=self.complete_relations,
+                steps=steps,
+            )
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)
@@ -1234,26 +1294,27 @@ class OSM:
             extra_attributes,
         )
 
-        self._read_pbf(timestamp)
-
-        gdf = get_user_defined_data(
-            self._nodes,
-            self._node_coordinates,
-            self._way_records,
-            self._relations,
-            tags_as_columns,
-            custom_filter,
-            osm_keys_to_keep,
-            filter_type,
-            keep_nodes,
-            keep_ways,
-            keep_relations,
-            self.bounding_box,
-            keep_metadata=self.keep_metadata,
-            relation_member_ways=self._relation_member_ways,
-            complete_relations=self.complete_relations,
-            keep_all=keep_all,
-        )
+        with self._read_steps(timestamp, _LAYER_SHARES) as steps:
+            self._read_pbf(timestamp, steps)
+            gdf = get_user_defined_data(
+                self._nodes,
+                self._node_coordinates,
+                self._way_records,
+                self._relations,
+                tags_as_columns,
+                custom_filter,
+                osm_keys_to_keep,
+                filter_type,
+                keep_nodes,
+                keep_ways,
+                keep_relations,
+                self.bounding_box,
+                keep_metadata=self.keep_metadata,
+                relation_member_ways=self._relation_member_ways,
+                complete_relations=self.complete_relations,
+                keep_all=keep_all,
+                steps=steps,
+            )
 
         # Do not keep node information unless specifically asked for
         # (they are in a list, and can cause issues when saving the files)

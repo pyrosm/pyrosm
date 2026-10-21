@@ -10,6 +10,13 @@ from pyrosm.data_filter cimport (
     clean_empty_values_from_ways,
 )
 from pyrosm.utils import valid_header_block
+from pyrosm.utils.progress import (
+    COMPLETING_RELATIONS,
+    COMPLETING_WAYS,
+    DECODING,
+    SELECTING_VERSIONS,
+    start_step,
+)
 from pyrosm.frames import create_df
 from pyrosm.node_lookup import NodeLocations
 from pyrosm.way_store import (
@@ -233,11 +240,17 @@ cpdef parse_osm_data(
         unix_time_filter,
         bint keep_metadata=True,
         bint complete_relations=False,
-        progress=None,
+        steps=None,
 ):
+    """The nodes, ways, relations, node coordinates and completed relation member ways
+    of ``filepath``, read in memory, in the steps of ``steps`` (a
+    :class:`~pyrosm.utils.progress.Steps`, or None): :data:`DECODING`, then for a
+    history read (``unix_time_filter``) :data:`SELECTING_VERSIONS`, and with a
+    ``bounding_box`` the passes :data:`COMPLETING_RELATIONS` (with
+    ``complete_relations``) and :data:`COMPLETING_WAYS`."""
     return _parse_osm_data(filepath, bounding_box, exclude_relations,
                            unix_time_filter, keep_metadata, complete_relations,
-                           progress)
+                           steps)
 
 
 cdef _parse_osm_data(
@@ -247,8 +260,11 @@ cdef _parse_osm_data(
         unix_time_filter,
         bint keep_metadata=True,
         bint complete_relations=False,
-        progress=None,
+        steps=None,
 ):
+    """The read of :func:`parse_osm_data`, with its arguments: one pass over the blocks
+    for the elements, then each element's version at ``unix_time_filter``, and with a
+    ``bounding_box`` the passes for the member ways and the nodes the box cut off."""
     ways_builder = WayStoreBuilder()
     # History reads select each node's state in a DataFrame, so they keep a dict per node.
     tags_builder = NodeTagsBuilder() if unix_time_filter is None else None
@@ -261,7 +277,8 @@ cdef _parse_osm_data(
     # move into or out of the box between versions.
     box = None if unix_time_filter is not None else bounding_box
 
-    for strings, header, nodes, ways, relations in iter_decoded_blocks(filepath, progress):
+    for strings, header, nodes, ways, relations in iter_decoded_blocks(
+            filepath, start_step(steps, DECODING)):
         if nodes is not None:
             all_nodes.append(_node_columns(header, nodes, strings, box,
                                            unix_time_filter, None, keep_metadata,
@@ -303,9 +320,12 @@ cdef _parse_osm_data(
 
     # Keep each element's state at the timestamp if filter is used
     if unix_time_filter is not None:
+        select = start_step(steps, SELECTING_VERSIONS)
         nodes_df = get_latest_version(create_df(all_nodes))
         ways_df = get_latest_version(pd.DataFrame(all_ways.records()))
         relations_df = get_latest_version(relations_df)
+        if select is not None:
+            select(1, 2)
         if bounding_box is not None:
             xmin, ymin, xmax, ymax = bounding_box
             inside = nodes_df["lon"].between(xmin, xmax) & nodes_df["lat"].between(ymin, ymax)
@@ -360,7 +380,7 @@ cdef _parse_osm_data(
             missing = np.fromiter(missing_way_ids, dtype=np.int64)
             completed = WayStoreBuilder()
             for strings, header, nodes, ways, relations in iter_decoded_blocks(
-                    filepath, progress):
+                    filepath, start_step(steps, COMPLETING_RELATIONS)):
                 if ways is not None:
                     completed.add(
                         ways, strings, _way_mask(ways, None, unix_time_filter, missing)
@@ -390,7 +410,7 @@ cdef _parse_osm_data(
         if len(node_id_filter) > 0:
             boundary_nodes = []
             for strings, header, nodes, ways, relations in iter_decoded_blocks(
-                    filepath, progress):
+                    filepath, start_step(steps, COMPLETING_WAYS)):
                 if nodes is not None:
                     boundary_nodes.append(_node_columns(
                         header, nodes, strings, None, unix_time_filter,

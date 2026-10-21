@@ -6,6 +6,7 @@ import importlib.util
 import sys
 import threading
 import time
+from pathlib import Path
 
 from pyrosm._log import _printable
 
@@ -16,6 +17,21 @@ _REDRAW_SECONDS = 1.0
 # The progress of every operation whose own ``progress`` is None, set by
 # pyrosm.enable_logging(progress=...).
 _setting = True
+
+# The steps of a read, as its progress names them.
+INDEXING = "indexing the file"
+DECODING = "decoding the blocks"
+COMPLETING_RELATIONS = "completing the relations"
+COMPLETING_WAYS = "completing the ways"
+SELECTING_VERSIONS = "selecting the versions"
+COLLECTING = "collecting the elements"
+BUILDING = "building the geometries"
+BUILDING_WAYS = "building the ways"
+BUILDING_RELATIONS = "building the relations"
+GATHERING_NODES = "gathering the nodes"
+BUILDING_EDGES = "building the edges"
+WRITING = "writing the result"
+LOADING = "loading the result"
 
 
 def _bar_class():
@@ -189,6 +205,20 @@ def stepping(progress, desc, shares=None, **options):
         steps.plan(list(steps.shares))
         yield steps
         steps.finish()
+
+
+def read_steps(filepath, progress, shares):
+    """The :func:`stepping` of a read of ``filepath`` with the step ``shares``, shown as
+    ``progress`` says: a bar "Reading <file>" after 2 seconds, cleared at the end, or a
+    progress function's ``progress(done, 100)``."""
+    return stepping(
+        progress,
+        "Reading %s" % Path(filepath).name,
+        shares,
+        delay=2.0,
+        leave=False,
+        timed=True,
+    )
 
 
 class Steps:

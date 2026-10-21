@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 
 from pyrosm._log import log_event
-from pyrosm.engine.pool import LOADING
+from pyrosm.utils.progress import LOADING
 
 logger = logging.getLogger(__name__)
 

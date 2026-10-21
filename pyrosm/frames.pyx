@@ -12,6 +12,12 @@ from pyrosm.relations import prepare_relations
 from shapely.geometry import box
 from pyrosm.data_filter import get_mask_by_osmid, _filter_array_dict_by_indices_or_mask
 from pyrosm.distance import calculate_line_lengths, segment_lengths
+from pyrosm.utils.progress import (
+    BUILDING_EDGES,
+    BUILDING_RELATIONS,
+    BUILDING_WAYS,
+    start_step,
+)
 
 cpdef create_nodes_gdf(nodes, osmids_to_keep=None):
     cdef str k
@@ -158,7 +164,13 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
                            parse_network=False,
                            calculate_seg_lengths=False,
                            bint keep_metadata=True,
-                           bint complete_relations=False):
+                           bint complete_relations=False,
+                           steps=None):
+    """The GeoDataFrame of the nodes, ways and relations of a read (a network's edges,
+    and with them its nodes, with ``parse_network``), built in the steps
+    :data:`~pyrosm.utils.progress.BUILDING_WAYS` and
+    :data:`~pyrosm.utils.progress.BUILDING_RELATIONS` (a network's
+    :data:`~pyrosm.utils.progress.BUILDING_EDGES`) of ``steps`` (or None)."""
 
     # Warn when a bounding-box read returned relations the box cut (some member ways
     # fall outside the box, so the geometry is incomplete) and completion was not
@@ -177,12 +189,15 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
             )
 
     # Prepare ways
+    start_step(steps, BUILDING_EDGES if parse_network else BUILDING_WAYS)
     way_gdf, node_attr = prepare_way_gdf(node_coordinates,
                                          ways,
                                          parse_network,
                                          calculate_seg_lengths)
 
     # Prepare relation data
+    if not parse_network:
+        start_step(steps, BUILDING_RELATIONS)
     relation_gdf = prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns, keep_metadata)
 
     # When not parsing the network,

@@ -22,17 +22,19 @@ from pyrosm.engine.decode import (
     _decode_batch_threads,
 )
 from pyrosm.utils import default_workers, warn_future_once
+from pyrosm.utils.progress import (
+    BUILDING,
+    BUILDING_EDGES,
+    COLLECTING,
+    DECODING,
+    GATHERING_NODES,
+    INDEXING,
+    LOADING,
+    WRITING,
+)
 
-# The steps of an out-of-core read, the names its progress shows, and their shares of
-# the read by kind of read, from the times of reads of Paris (242 MB) on 8 threads.
-INDEXING = "indexing the file"
-DECODING = "decoding the blocks"
-COLLECTING = "collecting the elements"
-BUILDING = "building the geometries"
-GATHERING_NODES = "gathering the nodes"
-BUILDING_EDGES = "building the edges"
-WRITING = "writing the result"
-LOADING = "loading the result"
+# The shares of the steps of an out-of-core read by kind of read, from the times of
+# reads of Paris (242 MB) on 8 threads.
 LAYER_SHARES = {
     INDEXING: 0.02,
     DECODING: 0.12,

@@ -16,9 +16,14 @@ from pyrosm.engine.collect import (
     _needed_node_ids,
     _result_tag_columns,
 )
-from pyrosm.engine.pool import BUILDING, BUILDING_EDGES, COLLECTING, GATHERING_NODES
 from pyrosm.utils import _compat
-from pyrosm.utils.progress import start_step
+from pyrosm.utils.progress import (
+    BUILDING,
+    BUILDING_EDGES,
+    COLLECTING,
+    GATHERING_NODES,
+    start_step,
+)
 
 
 def _assemble_chunk(

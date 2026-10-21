@@ -18,8 +18,7 @@ from pyrosm.engine.collect import (
 )
 from pyrosm.engine.assemble import _assemble_chunk
 from pyrosm.engine.decode import _is_threaded
-from pyrosm.engine.pool import BUILDING, COLLECTING
-from pyrosm.utils.progress import start_step
+from pyrosm.utils.progress import BUILDING, COLLECTING, start_step
 from pyrosm.engine.ways import (
     ChunkContext,
     ElementStore,

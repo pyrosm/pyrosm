@@ -17,7 +17,6 @@ from pyrosm.engine.pool import (
     LAYER_SHARES,
     NETWORK_NODES_SHARES,
     NETWORK_SHARES,
-    WRITING,
     _decode_and_run,
 )
 from pyrosm.engine.bounding_box import _bbox_bounds, _normalize_bounding_box
@@ -28,7 +27,7 @@ from pyrosm.engine.assemble import (
 )
 from pyrosm.engine import cache, geoparquet
 from pyrosm.engine.ways import ArrowFrame
-from pyrosm.utils.progress import start_step, stepping, validate_progress
+from pyrosm.utils.progress import WRITING, read_steps, start_step, validate_progress
 
 # Tags the geometry assembly reads straight from an element's tag dict (not from the exploded
 # columns): ``relations.pyx`` consults ``type`` and ``area`` plus the linestring keys
@@ -46,20 +45,6 @@ _GEOMETRY_TAG_KEYS = (
     "highway",
     "waterway",
 )
-
-
-def _read_steps(filepath, progress, shares):
-    """The :class:`~pyrosm.utils.progress.Steps` of a read of ``filepath`` with the step
-    ``shares``, shown as ``progress`` says: a bar "Reading <file>" after 2 seconds,
-    cleared at the end, or a progress function's ``progress(done, 100)``."""
-    return stepping(
-        progress,
-        "Reading %s" % Path(filepath).name,
-        shares,
-        delay=2.0,
-        leave=False,
-        timed=True,
-    )
 
 
 def _get_layer(
@@ -128,7 +113,7 @@ def _get_layer(
     bounding_box = _normalize_bounding_box(bounding_box)
     bounds = _bbox_bounds(bounding_box)
 
-    with _read_steps(filepath, progress, LAYER_SHARES) as steps:
+    with read_steps(filepath, progress, LAYER_SHARES) as steps:
         # Per-layer result cache: when returning an in-memory frame (not streaming to a
         # user file) and pyarrow is available, assemble the layer once via the bounded
         # per-call path, write its result to a deterministic GeoParquet keyed by the
@@ -707,7 +692,7 @@ def get_network(
         _compat.require_pyarrow()
 
     shares = NETWORK_NODES_SHARES if nodes else NETWORK_SHARES
-    with _read_steps(filepath, progress, shares) as steps:
+    with read_steps(filepath, progress, shares) as steps:
 
         def assemble(shard_paths, steps):
             edges, node_gdf = _assemble_network(
@@ -871,7 +856,7 @@ def graph_network(
             keep_node_info,
         )
 
-    with _read_steps(filepath, progress, GRAPH_SHARES) as steps:
+    with read_steps(filepath, progress, GRAPH_SHARES) as steps:
         return _decode_network(
             filepath, filter_spec, bounding_box, workers, steps, assemble
         )

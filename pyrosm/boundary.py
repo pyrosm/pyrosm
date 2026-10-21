@@ -15,11 +15,14 @@ def get_boundary_data(
     keep_metadata=True,
     relation_member_ways=None,
     complete_relations=False,
+    steps=None,
 ):
     """The boundaries of ``boundary_type`` (``"all"`` for any) as a GeoDataFrame, read from the
     in-memory reader's parsed arrays; ``custom_filter`` narrows them (a filter on ``boundary``
     itself chooses the boundary values in place of ``boundary_type``), and ``name`` keeps the
-    boundaries whose name contains that text. Returns ``None`` when nothing matches."""
+    boundaries whose name contains that text. Returns ``None`` when nothing matches;
+    the selection and the geometries are steps of ``steps`` (a
+    :class:`~pyrosm.utils.progress.Steps`, or None)."""
     if boundary_type == "all":
         boundary_type = True
     else:
@@ -45,6 +48,7 @@ def get_boundary_data(
         osm_keys=None,
         keep_metadata=keep_metadata,
         relation_member_ways=relation_member_ways,
+        steps=steps,
     )
 
     # If there weren't any data, return empty GeoDataFrame
@@ -63,6 +67,7 @@ def get_boundary_data(
         bounding_box,
         keep_metadata=keep_metadata,
         complete_relations=complete_relations,
+        steps=steps,
     )
 
     if gdf is None:
