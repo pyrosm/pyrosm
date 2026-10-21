@@ -3252,7 +3252,7 @@ def test_geocode_retries_a_cut_off_reply(monkeypatch):
         def __exit__(self, *exc):
             return False
 
-    def fake_urlopen(request, context=None):
+    def fake_urlopen(request, context=None, timeout=None):
         calls.append(request)
         return Reply(cut=len(calls) == 1)
 
@@ -4510,3 +4510,109 @@ def test_area_crop_is_used_again(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="refused"):
         dl.copy_atomic(source, no_links / "failed.osm.pbf")
     assert [p.name for p in no_links.iterdir()] == ["copy.osm.pbf"]
+
+
+def test_geocode_takes_the_network_options(monkeypatch):
+    """geocode and get_data_by_geocoding waited without limit for the geocoding service
+    and took no headers, timeout or opener. The request now waits 60 s by default, as
+    downloads do, and the three options reach it."""
+    import io
+    import json
+
+    import pyrosm
+
+    reply = json.dumps(
+        [{"display_name": "Helsinki", "boundingbox": ["60.1", "60.2", "24.9", "25.0"]}]
+    ).encode()
+    sent = []
+
+    class Opener:
+        def open(self, request, timeout=None):
+            sent.append((request, timeout))
+            return io.BytesIO(reply)
+
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda request, context=None, timeout=None: Opener().open(request, timeout),
+    )
+    pyrosm.geocode("Helsinki")
+    pyrosm.geocode("Helsinki", headers={"User-Agent": "app/1", "X-Key": "k"}, timeout=5)
+    pyrosm.geocode("Helsinki", user_agent="me/2", headers={"user-agent": "app/1"})
+    pyrosm.geocode("Helsinki", timeout=7, opener=Opener())
+    agents = [request.get_header("User-agent") for request, _ in sent]
+    assert agents[0].startswith("pyrosm") and agents[1:] == ["app/1", "me/2", agents[0]]
+    assert sent[1][0].get_header("X-key") == "k"
+    assert [timeout for _, timeout in sent] == [60, 5, 60, 7]
+
+
+@pytest.mark.parametrize("wrapper", ["get_data_by_bbox", "get_data_by_geocoding"])
+def test_area_wrappers_get_the_data_as_get_data_by_area(wrapper, tmp_path, monkeypatch):
+    """get_data_by_bbox and get_data_by_geocoding chose only among Geofabrik extracts,
+    took none of the options of get_data_by_area and stopped at the first failed
+    download. Both now get the data as get_data_by_area does: they search every
+    provider with its options, choose again without a failed extract and crop with the
+    workers given."""
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import box
+
+    import pyrosm
+    import pyrosm.data.extract_index as ei
+    import pyrosm.data.geocoding as gc
+    import pyrosm.pbf_export
+    from pyrosm.exceptions import DownloadError
+
+    area = [24.93, 60.16, 24.96, 60.18]
+    urls = ["https://b/Helsinki/Helsinki.osm.pbf", "https://m/grid/N60E024.osm.pbf"]
+    found = gpd.GeoDataFrame(
+        {
+            "provider": ["BBBike", "Movisda"],
+            "id": ["Helsinki", "N60E024"],
+            "name": ["Helsinki", "N60E024"],
+            "url": urls,
+            "bytes": pd.array([50, 66], dtype="Int64"),
+            "contains": [True, True],
+        },
+        geometry=[box(*area)] * 2,
+        crs="EPSG:4326",
+    )
+    searched, geocoded, downloads, crops = [], [], [], []
+    monkeypatch.setattr(ei, "find_extracts", lambda geom, **k: searched.append(k) or found)
+    monkeypatch.setattr(gc, "geocode", lambda query, **k: geocoded.append(k) or box(*area))
+    helsinki = pyrosm.get_data("helsinki_pbf")
+
+    def download(url, filename, update, directory, **net):
+        downloads.append((url, net))
+        if url == urls[0]:
+            raise DownloadError("unavailable", url=url, status=503, attempts=3)
+        return helsinki
+
+    monkeypatch.setattr("pyrosm.utils.download.download", download)
+    crop_pbf = pyrosm.pbf_export.crop_pbf
+    monkeypatch.setattr(
+        pyrosm.pbf_export, "crop_pbf", lambda *a, **k: crops.append(k) or crop_pbf(*a, **k)
+    )
+    net = {"headers": {"User-Agent": "t"}, "timeout": 30, "opener": object()}
+    stops = box(24.94, 60.165, 24.95, 60.17)
+    place = area if wrapper == "get_data_by_bbox" else "Helsinki"
+    with pytest.warns(UserWarning, match="choosing again without it"):
+        out = getattr(pyrosm, wrapper)(
+            place,
+            directory=tmp_path,
+            progress=False,
+            strategy="smallest_total",
+            must_cover=stops,
+            workers=2,
+            **net,
+        )
+    options = [{k: s[k] for k in (*net, "must_cover", "contains_only")} for s in searched]
+    assert options == [{**net, "must_cover": stops, "contains_only": False}]
+    assert downloads == [(url, {**net, "progress": False}) for url in urls]
+    assert [c["workers"] for c in crops] == [2]
+    if wrapper == "get_data_by_bbox":
+        assert "bounding_box" in crops[0]
+        assert Path(out) == tmp_path / "bbox_24.93_60.16_24.96_60.18.osm.pbf"
+    else:
+        assert geocoded == [{"base_url": gc._NOMINATIM_URL, "user_agent": None, **net}]
+        assert "polygon" in crops[0]
+        assert Path(out) == tmp_path / "area_helsinki.osm.pbf"

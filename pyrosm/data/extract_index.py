@@ -868,15 +868,24 @@ def _area_geometry(area):
 
 
 def _write_area_file(
-    area, sources, crop, output_path, directory, workers=1, progress=None, update=False
+    area,
+    sources,
+    crop,
+    output_path,
+    directory,
+    workers=1,
+    progress=None,
+    update=False,
+    name=None,
 ):
     """The file for :class:`AreaExtract`: the one extract, cropped to the area's bounding box
     when ``crop`` (to the area itself when ``crop="polygon"``); several extracts merged (and
     cropped) with :func:`pyrosm.merge_pbf`. Without ``crop``, one extract is itself the file,
     or is copied to ``output_path`` when given. The crop or merge shows its progress as
-    ``progress`` says. A file pyrosm names after the area (no ``output_path``) is used
-    again, unless ``update``, while its record says it was cut to this region from these
-    extracts as they are now and it is unchanged since.
+    ``progress`` says. The file is named after the area, or ``name`` when given, unless
+    ``output_path`` is; a file pyrosm names is used again, unless ``update``, while its record
+    says it was cut to this region from these extracts as they are now and it is unchanged
+    since.
     """
     from pyrosm.pbf_export import crop_pbf, merge_pbf
 
@@ -889,14 +898,14 @@ def _write_area_file(
     region = {}
     if crop == "polygon":
         region["polygon"] = area
-        name = "area_%s.osm.pbf" % hashlib.sha1(area.wkb).hexdigest()[:12]
+        area_name = "area_%s.osm.pbf" % hashlib.sha1(area.wkb).hexdigest()[:12]
     elif crop:
         region["bounding_box"] = box(*area.bounds)
-        name = _bbox_filename(area.bounds)
+        area_name = _bbox_filename(area.bounds)
     else:
         urls = "\n".join(s.url for s in sources).encode()
-        name = "merged_%s.osm.pbf" % hashlib.sha1(urls).hexdigest()[:12]
-    target = output_path or str(_default_target_dir(directory) / name)
+        area_name = "merged_%s.osm.pbf" % hashlib.sha1(urls).hexdigest()[:12]
+    target = output_path or str(_default_target_dir(directory) / (name or area_name))
     cut = {key: hashlib.sha1(geom.wkb).hexdigest() for key, geom in region.items()}
     if output_path is None and not update and _made_from(target, paths, cut):
         return target
@@ -946,7 +955,15 @@ def _made_from(path, sources, cut):
 
 
 def _write_with_provenance(
-    area, sources, crop, output_path, directory, workers=1, progress=None, update=False
+    area,
+    sources,
+    crop,
+    output_path,
+    directory,
+    workers=1,
+    progress=None,
+    update=False,
+    name=None,
 ):
     """Write the area's file (:func:`_write_area_file`) and read the provenance of it and of
     its sources afterwards, so they describe the bytes that were used. When a source changed
@@ -957,7 +974,7 @@ def _write_with_provenance(
     for _ in range(3):
         before = [_file_identity(s.path) for s in sources]
         path = _write_area_file(
-            area, sources, crop, output_path, directory, workers, progress, update
+            area, sources, crop, output_path, directory, workers, progress, update, name
         )
         written = _file_identity(path)
         provenance = {p: _provenance(p) for p in {path, *(s.path for s in sources)}}
@@ -1102,6 +1119,47 @@ def get_data_by_area(
         If every extract that contains the area failed to download; its ``errors`` hold the
         :class:`~pyrosm.exceptions.DownloadError` of each extract tried.
     """
+    return _get_area(
+        area,
+        crop,
+        update,
+        directory,
+        output_path,
+        headers,
+        timeout,
+        opener,
+        strategy,
+        must_cover,
+        workers,
+        progress,
+    )
+
+
+def _url_result(urls):
+    """The URL of the one extract that ``urls`` lists, or all of them as a list."""
+    return urls[0] if len(urls) == 1 else urls
+
+
+def _get_area(
+    area,
+    crop,
+    update,
+    directory,
+    output_path,
+    headers,
+    timeout,
+    opener,
+    strategy,
+    must_cover,
+    workers,
+    progress,
+    name=None,
+    download=True,
+):
+    """:func:`get_data_by_area`, whose arguments these are, with the file pyrosm writes
+    named ``name`` instead of after the area; without ``download`` it returns the URLs of
+    the extracts it would download instead, as a list. ``area`` can also be a function
+    that gives it, called once the other arguments are checked."""
     from pyrosm.utils.download import download as _download_file
 
     validate_progress(progress)
@@ -1121,13 +1179,14 @@ def get_data_by_area(
         raise ValueError(
             'workers must be an integer of at least 1 or "auto"; got %r.' % (workers,)
         )
-    geom = _area_geometry(area)
+    parts = None if must_cover is None else _must_cover_parts(must_cover)
+    geom = _area_geometry(area() if callable(area) else area)
     if crop == "polygon" and geom.geom_type not in ("Polygon", "MultiPolygon"):
         raise ValueError(
             'crop="polygon" needs a Polygon or MultiPolygon area; got %s.'
             % geom.geom_type
         )
-    target = (geom, None) if must_cover is None else _must_cover_parts(must_cover)
+    target = (geom, None) if parts is None else parts
     net = dict(headers=headers, timeout=timeout, opener=opener)
     candidates = find_extracts(
         geom,
@@ -1140,6 +1199,8 @@ def get_data_by_area(
     )
     failed, errors = [], []
     while (chosen := _choose(target, candidates, strategy)) is not None:
+        if not download:
+            return list(chosen["url"])
         sources = []
         start = time.perf_counter()
         for extract in chosen.itertuples():
@@ -1178,7 +1239,15 @@ def get_data_by_area(
             download_seconds = time.perf_counter() - start
             start = time.perf_counter()
             path, provenance = _write_with_provenance(
-                geom, sources, crop, output_path, directory, workers, progress, update
+                geom,
+                sources,
+                crop,
+                output_path,
+                directory,
+                workers,
+                progress,
+                update,
+                name,
             )
             merged = len(sources) > 1
             total = [s.bytes for s in sources]

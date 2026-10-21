@@ -1,16 +1,15 @@
-"""Download (and optionally crop) the Geofabrik extract covering a bounding box.
+"""Geofabrik's extract index, and :func:`get_data_by_bbox`, which downloads (and by default
+crops) the OSM data for a bounding box as :func:`pyrosm.get_data_by_area` does.
 
-Public entry point: :func:`get_data_by_bbox`. It is backed by a vendored snapshot
-of Geofabrik's ``index-v1.json`` (``geofabrik_index.geojson.gz``), a GeoJSON
-``FeatureCollection`` of every extract's extent polygon and PBF URL. Refresh the
-snapshot with ``scripts/update_extract_indexes.py``.
+The index is a vendored snapshot of Geofabrik's ``index-v1.json``
+(``geofabrik_index.geojson.gz``), a GeoJSON ``FeatureCollection`` of every extract's extent
+polygon and PBF URL. Refresh the snapshot with ``scripts/update_extract_indexes.py``.
 """
 
 import collections
 import functools
 import gzip
 import json
-import logging
 import tempfile
 import warnings
 from pathlib import Path, PurePosixPath
@@ -21,11 +20,7 @@ import numpy as np
 from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 
-from pyrosm._log import log_event
-from pyrosm.utils.download import open_url
-from pyrosm.utils.progress import validate_progress
-
-logger = logging.getLogger(__name__)
+from pyrosm.utils.download import _TIMEOUT, open_url
 
 _INDEX_PATH = Path(__file__).parent / "geofabrik_index.geojson.gz"
 _INDEX_URL = "https://download.geofabrik.de/index-v1.json"
@@ -124,42 +119,6 @@ def _bbox_to_polygon(bbox):
     return box(minx, miny, maxx, maxy)
 
 
-def _covering_extract_url(geom, update=False):
-    """Return the PBF URL of the smallest Geofabrik extract that covers ``geom``."""
-    # The crop downstream filters by the geometry's bounding-box envelope, so the
-    # extract must cover that envelope, not just an irregular polygon.
-    geom = geom.envelope
-    gdf = _load_index(update)
-
-    covering = gdf[gdf.covers(geom)]
-    if len(covering) == 0:
-        intersecting = sorted(gdf[gdf.intersects(geom)]["id"].tolist())
-        if intersecting:
-            preview = ", ".join(intersecting[:5])
-            more = "" if len(intersecting) <= 5 else ", ..."
-            raise ValueError(
-                "No single Geofabrik extract fully covers the area; it extends "
-                "beyond the extent(s) it overlaps (%s%s). Use a smaller area, or "
-                "download a covering parent extract." % (preview, more)
-            )
-        raise ValueError("The area lies outside Geofabrik's available extracts.")
-
-    ranked = covering.assign(
-        _area=covering.geometry.to_crs(_EQUAL_AREA_CRS).area
-    ).sort_values(["_area", "id"], kind="stable")
-    best = ranked.iloc[0]
-
-    log_event(
-        logger,
-        logging.INFO,
-        "covering_extract",
-        provider="Geofabrik",
-        name=best["name"] or best["id"],
-        id=best["id"],
-    )
-    return best["pbf"]
-
-
 def _fmt_coord(value):
     return ("%.5f" % value).rstrip("0").rstrip(".")
 
@@ -174,41 +133,6 @@ def _default_target_dir(directory):
     return Path(tempfile.gettempdir()) / "pyrosm"
 
 
-def _download_optionally_crop(
-    geom, crop, download, cropped_name, output_path, update, directory, progress
-):
-    """Look up the covering extract, then optionally download and crop it.
-
-    Shared by :func:`get_data_by_bbox` and
-    :func:`pyrosm.data.geocoding.get_data_by_geocoding`.
-    """
-    url = _covering_extract_url(geom, update)
-    if not download:
-        return url
-
-    # Aliased so the ``download`` flag does not shadow the download function.
-    from pyrosm.utils.download import download as _download_file
-
-    full_path = _download_file(
-        url, extract_file_name(url), update, directory, progress=progress
-    )
-    if not crop:
-        return full_path
-    return _crop(full_path, geom, cropped_name, output_path, directory, progress)
-
-
-def _crop(full_path, geom, cropped_name, output_path, directory, progress=None):
-    """Crop ``full_path`` to ``geom`` into ``output_path`` or ``<directory>/<cropped_name>``,
-    showing the crop's progress as ``progress`` says (see :class:`pyrosm.OSM`)."""
-    from pyrosm import OSM
-
-    target = output_path or str(_default_target_dir(directory) / cropped_name)
-    Path(target).resolve().parent.mkdir(parents=True, exist_ok=True)
-    return OSM(full_path, bounding_box=geom, progress=progress).to_pbf(
-        output_path=target, workers=1
-    )
-
-
 def get_data_by_bbox(
     bbox,
     crop=True,
@@ -217,12 +141,18 @@ def get_data_by_bbox(
     directory=None,
     output_path=None,
     progress=None,
+    headers=None,
+    timeout=_TIMEOUT,
+    opener=None,
+    strategy="single",
+    must_cover=None,
+    workers=None,
 ):
     """Download (and by default crop) the OSM data covering a bounding box.
 
-    Finds the smallest Geofabrik extract whose extent fully covers ``bbox``,
-    downloads it, and -- by default -- crops it to ``bbox`` before returning the
-    cropped file path.
+    Gets the data for the box as :func:`pyrosm.get_data_by_area` does: the smallest
+    Geofabrik, BBBike or Movisda extract (or set of extracts) that covers it, downloaded
+    and -- by default -- cropped to the box.
 
     Parameters
     ----------
@@ -233,23 +163,21 @@ def get_data_by_bbox(
 
     crop : bool
         When ``True`` (default), crop the downloaded extract to ``bbox`` and return
-        the cropped file, named ``bbox_<minx>_<miny>_<maxx>_<maxy>.osm.pbf``. When
-        ``False``, return the full downloaded extract.
+        the cropped file, named ``bbox_<minx>_<miny>_<maxx>_<maxy>.osm.pbf`` and used
+        again while it and its extract are unchanged. When ``False``, return the full
+        downloaded extract.
 
     download : bool
         When ``True`` (default), download the covering extract. When ``False``,
-        skip the download and return the covering extract's PBF URL instead.
+        skip the download and return the PBF URL of the extract it would download
+        instead (a list of URLs for a set of extracts).
 
-    update : bool
-        When ``True``, re-download the extract even if it already exists locally.
-
-    directory : str, optional
-        Directory to download into / write the cropped file to. ``None`` (default)
-        uses a pyrosm temp directory.
+    update, directory
+        As for :func:`pyrosm.get_data_by_area`.
 
     output_path : str, optional
-        Path for the cropped file when ``crop=True`` (overrides the automatic
-        name). Ignored when ``crop=False`` or ``download=False``.
+        Path for the file pyrosm writes, as for :func:`pyrosm.get_data_by_area`.
+        Ignored when ``download=False``.
 
     progress : bool | callable | None
         ``None`` (default) follows :func:`pyrosm.enable_logging`, which is ``True`` unless
@@ -261,20 +189,37 @@ def get_data_by_bbox(
         The crop shows its progress the same way; a callable is then called with the
         percentage of the crop done (see :func:`pyrosm.pbf_export.crop_pbf`).
 
+    headers, timeout, opener, strategy, must_cover, workers
+        As for :func:`pyrosm.get_data_by_area`.
+
     Returns
     -------
-    str
+    str | list
         The cropped file path (default), the full extract path (``crop=False``), or
-        the covering extract's PBF URL (``download=False``).
+        the covering extract's PBF URL (``download=False``; a list of URLs for a set of
+        extracts).
 
     Raises
     ------
     ValueError
-        If no single extract fully covers ``bbox``.
+        If ``bbox`` is not a usable box, or no extract covers it
+        (:class:`~pyrosm.exceptions.ExtractNotFoundError`).
     """
-    validate_progress(progress)
-    geom = _bbox_to_polygon(bbox)
-    cropped_name = _bbox_filename(geom.bounds)
-    return _download_optionally_crop(
-        geom, crop, download, cropped_name, output_path, update, directory, progress
+    from pyrosm.data.extract_index import _get_area, _url_result
+
+    result = _get_area(
+        _bbox_to_polygon(bbox),
+        crop,
+        update,
+        directory,
+        output_path,
+        headers,
+        timeout,
+        opener,
+        strategy,
+        must_cover,
+        workers,
+        progress,
+        download=download,
     )
+    return _url_result(result) if not download else result.path
