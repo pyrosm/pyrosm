@@ -140,10 +140,12 @@ class Bar:
                 # Not drawn yet: reset() would draw it before its delay.
                 self.bar.n = self.bar.last_print_n = 0
             else:
-                # reset() restarts the bar's clock, and with it the delay.
-                started = self.bar.start_t
+                # reset() restarts the bar's clock, and with it the delay; a hidden bar
+                # has no clock.
+                started = getattr(self.bar, "start_t", None)
                 self.bar.reset(total)
-                self.bar.start_t = started
+                if started is not None:
+                    self.bar.start_t = started
             # reset() keeps the old total when the new one is unknown.
             self.bar.total = total
         self.bar.update(done - self.bar.n)

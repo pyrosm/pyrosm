@@ -3826,7 +3826,9 @@ def test_progress_of_several_passes_keeps_moving(monkeypatch):
     steps.plan(["a", "b"])  # a takes 25 %, b 75 %
     steps.start_step("a")(50, 100)
     steps.plan(["c", "d"])  # the rest, from 12.5 %, in two equal steps
-    steps.start_step("c")(1, 1)
+    advance = steps.start_step("c")
+    advance(0, 0)  # an empty step: no report
+    advance(1, 1)
     steps.start_step("a")(0, 1)  # not planned: it takes the rest, and nothing goes back
     steps.finish()
     done = [d for d, _ in calls]
@@ -3843,6 +3845,13 @@ def test_progress_of_several_passes_keeps_moving(monkeypatch):
     bar(10, 100)  # back: a reset after the delay keeps the start time
     assert bar.bar.start_t == started
     bar.close()
+    # A hidden bar (no terminal) is reset after its delay as well.
+    monkeypatch.setattr(progress, "_bar_class", lambda: (std.tqdm, True))
+    monkeypatch.setattr(progress, "_clock", iter([0.0, 5.0, 6.0]).__next__)
+    hidden = progress.Bar("Cropping x", delay=2.0, unit="%")
+    hidden(50, 100)
+    hidden(10, 100)
+    hidden.close()
 
     refreshed = []
 
@@ -3851,12 +3860,27 @@ def test_progress_of_several_passes_keeps_moving(monkeypatch):
             refreshed.append(True)
             return super().refresh(*args, **kwargs)
 
+    def wait_for(condition):
+        deadline = time.monotonic() + 10.0
+        while not condition() and time.monotonic() < deadline:
+            time.sleep(0.01)
+
     monkeypatch.setattr(progress, "_bar_class", lambda: (Counted, False))
     monkeypatch.setattr(progress, "_clock", time.monotonic)
     monkeypatch.setattr(progress, "_REDRAW_SECONDS", 0.01)
     bar = progress.Bar("Cropping x", unit="%")
     bar(1, 100)
     before = len(refreshed)
-    time.sleep(0.2)
+    wait_for(lambda: len(refreshed) > before)
     bar.close()
     assert len(refreshed) > before
+    # Not before its delay, through several redraw rounds.
+    bar = progress.Bar("Cropping x", delay=60.0, unit="%")
+    woken = []
+    wait = bar._closed.wait
+    bar._closed.wait = lambda timeout: woken.append(True) or wait(timeout)
+    before = len(refreshed)
+    bar(1, 100)  # starts the redraw thread
+    wait_for(lambda: len(woken) >= 3)
+    bar.close()
+    assert len(woken) >= 3 and len(refreshed) == before
