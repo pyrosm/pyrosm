@@ -16,7 +16,6 @@ def helsinki_pbf():
 
 def test_parsing_natural_with_defaults(test_pbf):
     from pyrosm import OSM
-    from pyrosm.natural import get_natural_data
     from geopandas import GeoDataFrame
     import pyproj
     from pyrosm._arrays import concatenate_dicts_of_arrays

@@ -28,7 +28,7 @@ _TIMEOUT = 60
 _ATTEMPTS = 3
 _BACKOFF = 1.0
 _MAX_RETRY_AFTER = 60
-_CHUNK = 1 << 20
+_CHUNK = 1 << 18
 # Headers that belong to the URL they were given for and are not sent on after a redirect.
 _ORIGIN_BOUND = ("authorization", "cookie", "proxy-authorization", "host")
 _STRONG_ETAG = re.compile(r'"[\x21\x23-\x7e\x80-\xff]*"')
@@ -225,7 +225,8 @@ class _Transfer:
     An attempt after a dropped connection asks for the rest of the file with ``Range`` and
     ``If-Range`` when the server gave a strong validator, and starts over otherwise. After a
     partial answer that does not fit the copy, the rest of the call starts over every time.
-    ``progress``, when given, is called as ``progress(written, total)`` after each chunk.
+    ``progress``, when given, is called as ``progress(written, total)`` when the server
+    starts sending the file and after each chunk.
     """
 
     def __init__(self, url, filename, out_file, net, progress=None):
@@ -271,6 +272,9 @@ class _Transfer:
         return last - first + 1
 
     def attempt(self):
+        """One request for the file, or for the rest of it after the bytes kept: writes
+        what the server sends, reporting the progress, and raises ``OSError`` when the
+        answer stops short of its size or holds nothing."""
         self.attempts += 1
         resume = self.written > 0 and self.validator is not None
         # The file's own bytes, whatever encodings the caller's headers would accept.
@@ -294,6 +298,8 @@ class _Transfer:
                     self.validator = _validator(response.headers)
                 self.total = _content_length(response.headers.get("Content-Length"))
             _call_local(self.out_file.seek, self.written)
+            if self.progress is not None and self.written == 0:
+                _call_local(self.progress, 0, self.total)
             received = 0
             while chunk := response.read(_CHUNK):
                 received += len(chunk)
@@ -313,16 +319,16 @@ class _Transfer:
 
 
 class _LocalWriteError(Exception):
-    """Carries an ``OSError`` of the local file or the progress callback out of
-    :func:`_retry` without a retry."""
+    """Carries an error of the local file or the progress callback out of :func:`_retry`
+    and the handlers of network and data failures, without a retry."""
 
 
 def _call_local(call, *args):
-    """Call a method of the local file or the progress callback, marking its ``OSError`` as
-    not a network failure."""
+    """Call a method of the local file or the progress callback, marking its error as not
+    a network or data failure."""
     try:
         return call(*args)
-    except OSError as e:
+    except Exception as e:
         raise _LocalWriteError() from e
 
 
@@ -424,9 +430,10 @@ def download(
     ``progress`` shows the download: ``None`` (default) follows
     :func:`pyrosm.enable_logging`, ``True`` draws a bar on stderr (a widget in Jupyter when
     ipywidgets is installed; without a terminal, only a line naming the file), ``False``
-    shows nothing, and a callable is called as ``progress(written, total)`` after each chunk
-    with the bytes of the file written so far and its size, ``None`` when the server does not
-    give it. A resumed download counts on from the bytes it kept, a restarted one from 0.
+    shows nothing, and a callable is called as ``progress(written, total)`` when the server
+    starts sending the file and after each chunk of 256 KiB, with the bytes written so far and
+    its size, ``None`` when the server does not give it. A resumed download counts on from
+    the bytes it kept, a restarted one from 0.
     """
     validate_progress(progress)
     target_dir = download_dir() if target_dir is None else Path(target_dir)

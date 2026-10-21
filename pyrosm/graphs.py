@@ -20,7 +20,7 @@ from pyrosm.utils import (
     validate_node_gdf,
     warn_future,
 )
-from pyrosm.utils.progress import Bar, reporting
+from pyrosm.utils.progress import stepping, validate_progress
 from pyrosm.config import Conf
 from pyrosm.config.osm_filters import _UNKNOWN_NETWORK_TYPE, normalize_network_type
 from rapidjson import dumps
@@ -28,39 +28,45 @@ import contextlib
 import pandas as pd
 import warnings
 
+# The shares of the steps of a graph export, in seconds of exports of the driving network
+# of Paris (242 MB), and the step that builds the graph of each graph type with its share.
+_STEP_SHARES = {
+    "directing the edges": 0.1,
+    "simplifying": 1.2,
+    "keeping the largest connected part": 0.35,
+}
+_BUILDING_STEPS = {
+    "igraph": ("building the graph", 1.1),
+    "networkx": ("building the graph", 1.9),
+    "pandarm": ("building the network", 9.7),
+    "pandana": ("building the network", 5.0),
+}
 
-def _step_names(simplify, retain_all, last=None):
-    """The steps of making a graph's tables, and ``last`` when given."""
+
+def step_shares(simplify, retain_all, graph_type=None):
+    """The shares of the steps of making a graph's tables, and of building the graph of
+    ``graph_type`` when given."""
     names = ["directing the edges"]
     if simplify:
         names.append("simplifying")
     if not retain_all:
         names.append("keeping the largest connected part")
-    if last is not None:
-        names.append(last)
-    return names
+    shares = {name: _STEP_SHARES[name] for name in names}
+    if graph_type is not None:
+        name, share = _BUILDING_STEPS[graph_type]
+        shares[name] = share
+    return shares
 
 
 @contextlib.contextmanager
-def _steps(desc, names):
-    """A function ``step(name)`` that reports the start of each of the steps ``names`` of the
-    work described ``desc``, as :func:`pyrosm.enable_logging` sets the progress: a bar of
-    steps on stderr that names the current one, shown after 2 seconds, or calls of the
-    function set as ``progress(done, total)`` with the steps done and the steps."""
-    with reporting(
-        None, desc, delay=2.0, leave=False, timed=True, unit="step"
-    ) as report:
-
-        def step(name):
-            if report is None:
-                return
-            if isinstance(report, Bar):
-                report.describe("%s: %s" % (desc, name))
-            report(names.index(name), len(names))
-
-        yield step
-        if report is not None:
-            report(len(names), len(names))
+def _steps(desc, shares, progress):
+    """A function ``step(name)`` that starts each step of ``shares`` (step name ->
+    share) of the work described ``desc``, reported as ``progress`` says (see
+    :func:`~pyrosm.utils.progress.stepping`): a bar that names the current step, shown
+    after 2 seconds, or ``progress(done, 100)`` calls."""
+    validate_progress(progress)
+    with stepping(progress, desc, shares, delay=2.0, leave=False, timed=True) as steps:
+        yield steps.start_step
 
 
 def record_network_type(result, network_type):
@@ -312,15 +318,15 @@ def graph_tables(
     retain_all=False,
     simplify=True,
     simplify_kwargs=None,
+    progress=None,
 ):
     """The nodes and edges of a graph as GeoDataFrames, as the graph exporters build it: the
     edges directed (see :func:`get_directed_edges`), simplified when ``simplify`` and, unless
     ``retain_all``, only the connected part kept. Edges with an end node that is not among
     ``nodes`` are left out. The parameters are those of
-    :func:`to_networkx`. The progress is shown as :func:`pyrosm.enable_logging` sets it, by
-    step."""
+    :func:`to_networkx`, also ``progress``."""
     with _steps(
-        "Preparing the graph tables", _step_names(simplify, retain_all)
+        "Preparing the graph tables", step_shares(simplify, retain_all), progress
     ) as step:
         return _tables(
             nodes,
@@ -433,6 +439,7 @@ def to_networkx(
     osmnx_compatible=True,
     simplify=True,
     simplify_kwargs=None,
+    progress=None,
 ):
     """
     Creates a NetworkX.MultiDiGraph from given OSM GeoDataFrame.
@@ -492,6 +499,12 @@ def to_networkx(
         repeated as a node attribute. No ``key`` edge attribute is added; an edge column
         named ``key`` is renamed to ``key_tag``.
 
+    progress : bool | callable | None (default: None)
+        How the export shows its progress: ``None`` follows
+        ``pyrosm.enable_logging(progress=...)``, ``True`` shows a bar on stderr once it
+        has run 2 seconds, from 0 to 100 % with its current step in the label, ``False``
+        nothing, and a callable is called as ``progress(done, 100)``.
+
     Returns
     -------
     networkx.MultiDiGraph
@@ -500,7 +513,8 @@ def to_networkx(
 
     with _steps(
         "Building the NetworkX graph",
-        _step_names(simplify, retain_all, "building the graph"),
+        step_shares(simplify, retain_all, "networkx"),
+        progress,
     ) as step:
         # Prepare the data
         nodes, edges = _tables(
@@ -565,6 +579,7 @@ def to_igraph(
     retain_all=False,
     simplify=True,
     simplify_kwargs=None,
+    progress=None,
 ):
     """
     Creates an iGraph from given OSM GeoDataFrame.
@@ -616,6 +631,12 @@ def to_igraph(
         if True, return the entire graph even if it is not connected.
         otherwise, retain only the connected edges.
 
+    progress : bool | callable | None (default: None)
+        How the export shows its progress: ``None`` follows
+        ``pyrosm.enable_logging(progress=...)``, ``True`` shows a bar on stderr once it
+        has run 2 seconds, from 0 to 100 % with its current step in the label, ``False``
+        nothing, and a callable is called as ``progress(done, 100)``.
+
     Returns
     -------
     igraph.Graph
@@ -623,7 +644,8 @@ def to_igraph(
     """
     with _steps(
         "Building the igraph graph",
-        _step_names(simplify, retain_all, "building the graph"),
+        step_shares(simplify, retain_all, "igraph"),
+        progress,
     ) as step:
         # Prepare the data
         nodes, edges = _tables(
@@ -657,13 +679,15 @@ def to_pandana(
     weight_cols=["length"],
     simplify=True,
     simplify_kwargs=None,
+    progress=None,
 ):
     """
     Creates a pandana Network from given OSM GeoDataFrames (deprecated: use
     :func:`to_pandarm`). The edges are directed, simplified and kept as
-    :func:`to_igraph` does, whose parameters these are; ``weight_cols`` are the edge
-    columns used as impedances, summed over the edges a simplification merges. The
-    nodes are indexed by ``node_id_col`` at the ``x``/``y`` of their geometry.
+    :func:`to_igraph` does, whose parameters these are, also ``progress``;
+    ``weight_cols`` are the edge columns used as impedances, summed over the edges a
+    simplification merges. The nodes are indexed by ``node_id_col`` at the ``x``/``y``
+    of their geometry.
 
     Returns
     -------
@@ -677,7 +701,8 @@ def to_pandana(
     )
     with _steps(
         "Building the pandana network",
-        _step_names(simplify, retain_all, "building the network"),
+        step_shares(simplify, retain_all, "pandana"),
+        progress,
     ) as step:
         # Prepare the data
         nodes, edges = _tables(
@@ -713,13 +738,15 @@ def to_pandarm(
     weight_cols=["length"],
     simplify=True,
     simplify_kwargs=None,
+    progress=None,
 ):
     """
     Creates a pandarm Network from given OSM GeoDataFrames. The edges are directed,
-    simplified and kept as :func:`to_igraph` does, whose parameters these are;
-    ``weight_cols`` are the edge columns used as impedances, summed over the edges a
-    simplification merges. The nodes are indexed by ``node_id_col`` at the ``x``/``y``
-    of their geometry, in the CRS of the frames, which is the network's ``crs``.
+    simplified and kept as :func:`to_igraph` does, whose parameters these are, also
+    ``progress``; ``weight_cols`` are the edge columns used as impedances, summed over
+    the edges a simplification merges. The nodes are indexed by ``node_id_col`` at the
+    ``x``/``y`` of their geometry, in the CRS of the frames, which is the network's
+    ``crs``.
 
     Returns
     -------
@@ -727,7 +754,8 @@ def to_pandarm(
     """
     with _steps(
         "Building the pandarm network",
-        _step_names(simplify, retain_all, "building the network"),
+        step_shares(simplify, retain_all, "pandarm"),
+        progress,
     ) as step:
         # Prepare the data
         nodes, edges = _tables(

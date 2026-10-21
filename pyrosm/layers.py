@@ -3,7 +3,9 @@ from pyrosm.frames import prepare_geodataframe
 from pyrosm.utils import validate_custom_filter, require_layer_key, warn_empty_result
 
 
-def get_natural_data(
+def get_layer_data(
+    layer,
+    result_name,
     nodes,
     node_coordinates,
     way_records,
@@ -14,19 +16,22 @@ def get_natural_data(
     keep_metadata=True,
     relation_member_ways=None,
     complete_relations=False,
+    steps=None,
 ):
-    """The natural features as a GeoDataFrame, read from the in-memory reader's parsed arrays;
-    ``custom_filter`` narrows them. Returns ``None`` when nothing matches."""
+    """The elements of the layer ``layer`` (an OSM key, such as ``"building"``) as a
+    GeoDataFrame, read from the in-memory reader's parsed arrays (without nodes when
+    ``nodes`` is None); ``custom_filter`` narrows them. Returns ``None`` when nothing
+    matches, with a warning naming ``result_name``; the selection and the geometries
+    are steps of ``steps`` (a :class:`~pyrosm.utils.progress.Steps`, or None)."""
     # If custom_filter has not been defined, initialize with default
     if custom_filter is None:
-        custom_filter = {"natural": [True]}
+        custom_filter = {layer: [True]}
     else:
         # Check that the custom filter is in correct format, then narrow it to the
-        # "natural" layer, so every element kept is one of the natural elements.
+        # layer, so every element kept is one of the layer's elements.
         custom_filter = validate_custom_filter(custom_filter)
-        custom_filter = require_layer_key(custom_filter, "natural")
+        custom_filter = require_layer_key(custom_filter, layer)
 
-    # Call signature for fetching buildings
     nodes, ways, relation_ways, relations = get_osm_data(
         node_arrays=nodes,
         way_records=way_records,
@@ -37,11 +42,12 @@ def get_natural_data(
         osm_keys=None,
         keep_metadata=keep_metadata,
         relation_member_ways=relation_member_ways,
+        steps=steps,
     )
 
     # If there weren't any data, return empty GeoDataFrame
     if nodes is None and ways is None and relations is None:
-        warn_empty_result("natural")
+        warn_empty_result(result_name)
         return None
 
     # Prepare GeoDataFrame
@@ -55,5 +61,6 @@ def get_natural_data(
         bounding_box,
         keep_metadata=keep_metadata,
         complete_relations=complete_relations,
+        steps=steps,
     )
     return gdf

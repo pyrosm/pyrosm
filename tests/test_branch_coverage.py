@@ -25,12 +25,12 @@ def helsinki_region_pbf():
     return get_data("helsinki_region_pbf")
 
 
-# --- natural.py ---------------------------------------------------------------
+# --- layers.py ----------------------------------------------------------------
 
 
 def test_get_natural_custom_filter_without_natural_key(helsinki_pbf):
     """A custom_filter lacking the 'natural' key is narrowed to natural features, so the
-    result holds the natural features that match it (natural.py)."""
+    result holds the natural features that match it (layers.py)."""
     osm = OSM(helsinki_pbf, engine="in_memory")
     default = osm.get_natural()
     via_filter = osm.get_natural(custom_filter={"water": True})

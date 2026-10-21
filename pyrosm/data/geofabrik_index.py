@@ -23,6 +23,7 @@ from shapely.geometry.base import BaseGeometry
 
 from pyrosm._log import log_event
 from pyrosm.utils.download import open_url
+from pyrosm.utils.progress import validate_progress
 
 logger = logging.getLogger(__name__)
 
@@ -257,8 +258,8 @@ def get_data_by_bbox(
         only a line naming the file is printed. ``False`` shows nothing. A callable is called
         as ``progress(written, total)`` after each chunk, with the bytes written so far and
         the file size, ``None`` when the server does not give it.
-        The crop shows its progress the same way (see :class:`pyrosm.OSM`); a
-        callable is then called with the bytes of the extract read in each pass.
+        The crop shows its progress the same way; a callable is then called with the
+        percentage of the crop done (see :func:`pyrosm.pbf_export.crop_pbf`).
 
     Returns
     -------
@@ -271,6 +272,7 @@ def get_data_by_bbox(
     ValueError
         If no single extract fully covers ``bbox``.
     """
+    validate_progress(progress)
     geom = _bbox_to_polygon(bbox)
     cropped_name = _bbox_filename(geom.bounds)
     return _download_optionally_crop(

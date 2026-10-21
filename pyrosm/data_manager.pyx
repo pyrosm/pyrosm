@@ -5,6 +5,7 @@ from pyrosm.tagparser cimport explode_tag_array
 from pyrosm.filter_compiler import compile_custom_filter, CompiledFilter, rename_filter_key
 from pyrosm.way_store import NodeTags, WayStore
 from pyrosm.geometry import AREA_BY_TAGS, tags_make_area
+from pyrosm.utils.progress import COLLECTING, start_step
 import numpy as np
 
 cdef get_data_filter_and_osm_keys(custom_filter):
@@ -235,5 +236,8 @@ cdef _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_fi
     ways, relation_ways, filtered_relations = get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, keep_metadata, relation_member_ways, keep_all)
     return node_arrays, ways, relation_ways, filtered_relations
 
-cpdef get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys=None, bint keep_metadata=True, relation_member_ways=None, bint keep_all=False):
+cpdef get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys=None, bint keep_metadata=True, relation_member_ways=None, bint keep_all=False, steps=None):
+    """The elements that pass the filter (see :func:`_get_osm_data`), selected as the step
+    :data:`~pyrosm.utils.progress.COLLECTING` of ``steps`` (or None)."""
+    start_step(steps, COLLECTING)
     return _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys, keep_metadata, relation_member_ways, keep_all)

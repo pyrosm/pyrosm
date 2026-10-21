@@ -18,6 +18,7 @@ from pyrosm.engine.collect import (
 )
 from pyrosm.engine.assemble import _assemble_chunk
 from pyrosm.engine.decode import _is_threaded
+from pyrosm.utils.progress import BUILDING, COLLECTING, start_step
 from pyrosm.engine.ways import (
     ChunkContext,
     ElementStore,
@@ -81,14 +82,18 @@ def _stream_layer_to_parquet(
     complete_relations=False,
     keep_other_tags=True,
     keep_node_info=False,
+    steps=None,
 ):
-    """Stream the layer (point nodes, then ways in chunks, then relations) to a GeoParquet
-    at ``output``, a few chunks in memory at a time (see
+    """Stream the layer (point nodes, then ways in chunks, then relations) to a
+    GeoParquet at ``output``, a few chunks in memory at a time (see
     :func:`~pyrosm.engine.ways.chunk_tables`). Returns the path, or ``None`` if there
-    was nothing to write. ``keep_node_info`` keeps the ways' ``nodes`` column."""
+    was nothing to write. ``keep_node_info`` keeps the ways' ``nodes`` column. The work
+    is the steps ``COLLECTING`` and ``BUILDING`` (by tables written) of ``steps`` (a
+    :class:`~pyrosm.utils.progress.Steps`, or None)."""
     import pyarrow.parquet as pq
     from geopandas.io.arrow import _geopandas_to_arrow
 
+    start_step(steps, COLLECTING)
     collected = _collect_layer(
         shard_paths,
         tags_as_columns,
@@ -107,6 +112,17 @@ def _stream_layer_to_parquet(
         if kept is not None
         else None
     )
+    # The tables to build: the point nodes, each way chunk and the relations.
+    tables = [0, (node_features is not None) + (relations is not None)]
+    if kept is not None:
+        tables[1] += -(-_num_ways(kept) // chunk_size)
+    advance = start_step(steps, BUILDING)
+
+    def built():
+        """Count a table built for the step ``BUILDING``."""
+        tables[0] += 1
+        if advance is not None:
+            advance(tables[0], tables[1])
 
     def to_table(way_records=None, relations=None, relation_ways=None, nodes=None):
         gdf = _assemble_chunk(
@@ -152,15 +168,18 @@ def _stream_layer_to_parquet(
             if table is False:
                 table = to_table(nodes=python_columns(node_features))
             node_path = set_aside(table, "nodes")
+            built()
         if relations is not None:
             relation_path = set_aside(
                 to_table(relations=relations, relation_ways=relation_ways), "relations"
             )
+            built()
         # The first way chunk that has rows.
         starts = iter(range(0, _num_ways(kept), chunk_size) if kept is not None else ())
         first_ways = None
         for start in starts:
             first_ways = way_table(start)
+            built()
             if first_ways is not None:
                 break
         # The columns of the nodes, the ways and the relations in order of appearance, as
@@ -206,9 +225,11 @@ def _stream_layer_to_parquet(
                     )
                     for table in chunk_tables(ctx, starts, chunk_size):
                         write(table)
+                        built()
                 else:
                     for start in starts:
                         write(way_table(start))
+                        built()
                 write_set_aside(relation_path)
         except BaseException:
             # A read that fails leaves no partial file.

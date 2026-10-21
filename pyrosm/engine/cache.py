@@ -15,9 +15,12 @@ import json
 import logging
 import os
 import tempfile
+import warnings
 from pathlib import Path
 
 from pyrosm._log import log_event
+from pyrosm.utils import _stacklevel_outside_pyrosm, recording_warnings
+from pyrosm.utils.progress import LOADING
 
 logger = logging.getLogger(__name__)
 
@@ -155,57 +158,106 @@ def _temp_in(cache_path):
     return Path(tmp_path)
 
 
-def materialize(cache_path, build):
-    """Populate ``cache_path`` by running ``build(tmp_path)`` -- which writes the result to a
-    unique temp file and returns whether it wrote a non-empty result -- then atomically move it
-    into place. An empty result is recorded with a ``.empty`` marker so an identical later read
-    skips the rebuild. Returns the cached frame read back, or ``None`` for an empty (or
-    already-marked-empty) result."""
+def _warnings_file(cache_path):
+    """The file beside ``cache_path`` that holds the warnings of its build."""
+    return cache_path.with_name(cache_path.name + ".warnings")
+
+
+def _keep_warnings(cache_path, messages):
+    """Keep ``messages``, the warnings of the build of ``cache_path``, beside it before
+    the result is moved into place, or remove those an earlier build kept when there are
+    none."""
+    record = _warnings_file(cache_path)
+    if not messages:
+        record.unlink(missing_ok=True)
+        return
+    tmp = _temp_in(record)
+    try:
+        tmp.write_text(json.dumps(messages))
+        tmp.replace(record)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def _warn_again(cache_path):
+    """Give again the warnings of the build of ``cache_path`` (see :func:`_keep_warnings`),
+    if they can be read."""
+    try:
+        messages = json.loads(_warnings_file(cache_path).read_text())
+    except (OSError, ValueError):
+        return
+    for message in messages:
+        warnings.warn(message, UserWarning, stacklevel=_stacklevel_outside_pyrosm())
+
+
+def materialize(cache_path, build, steps):
+    """Populate ``cache_path`` by running ``build(tmp_path)`` -- which writes the result
+    to a unique temp file and returns whether it wrote a non-empty result -- then
+    atomically move it into place. An empty result is recorded with a ``.empty`` marker
+    so an identical later read skips the rebuild, and a read served from the cache gives
+    the user warnings of its build again. Returns the cached frame read back, or
+    ``None`` for an empty (or already-marked-empty) result; reading it back is the step
+    ``LOADING`` of ``steps`` (a :class:`~pyrosm.utils.progress.Steps`), the only step
+    of a read served from the cache before the steps planned after it."""
     empty_marker = cache_path.with_name(cache_path.name + ".empty")
     if empty_marker.exists():
         log_event(logger, logging.DEBUG, "cache", status="empty", path=empty_marker)
         return None
     if cache_path.exists():
         log_event(logger, logging.DEBUG, "cache", status="hit", path=cache_path)
+        steps.plan([LOADING] + steps.after(LOADING))
+        _warn_again(cache_path)
     else:
         log_event(logger, logging.DEBUG, "cache", status="miss", path=cache_path)
         tmp_path = _temp_in(cache_path)
         try:
-            if not build(tmp_path):
+            with recording_warnings() as recorded:
+                built = build(tmp_path)
+            if not built:
                 empty_marker.touch()
                 return None
+            _keep_warnings(cache_path, recorded)
             tmp_path.replace(cache_path)
         finally:
             if tmp_path.exists():
                 tmp_path.unlink()
+    steps.start_step(LOADING)
     return read_result(cache_path)
 
 
-def materialize_pair(edges_path, nodes_path, build, read_nodes=read_result):
+def materialize_pair(edges_path, nodes_path, build, steps, read_nodes=read_result):
     """Two-file variant of :func:`materialize` for ``get_network(nodes=True)``'s ``(nodes, edges)``
     tuple: ``build(edges_tmp, nodes_tmp)`` writes both temp files and returns whether the read was
     non-empty; on success both are atomically moved into place, and an empty read records a
     ``.empty`` marker beside ``edges_path``. The node frame is read back with ``read_nodes`` (the
     edge frame with :func:`read_result`). Returns ``(nodes, edges)``, or ``(None, None)`` for an
-    empty (or already-marked-empty) result."""
+    empty (or already-marked-empty) result; reading them back is the step ``LOADING`` of
+    ``steps``."""
     empty_marker = edges_path.with_name(edges_path.name + ".empty")
     if empty_marker.exists():
         log_event(logger, logging.DEBUG, "cache", status="empty", path=empty_marker)
         return None, None
     if edges_path.exists() and nodes_path.exists():
         log_event(logger, logging.DEBUG, "cache", status="hit", path=edges_path)
+        steps.plan([LOADING] + steps.after(LOADING))
+        _warn_again(edges_path)
     else:
         log_event(logger, logging.DEBUG, "cache", status="miss", path=edges_path)
         edges_tmp = _temp_in(edges_path)
         nodes_tmp = _temp_in(nodes_path)
         try:
-            if not build(edges_tmp, nodes_tmp):
+            with recording_warnings() as recorded:
+                built = build(edges_tmp, nodes_tmp)
+            if not built:
                 empty_marker.touch()
                 return None, None
+            _keep_warnings(edges_path, recorded)
             edges_tmp.replace(edges_path)
             nodes_tmp.replace(nodes_path)
         finally:
             for tmp in (edges_tmp, nodes_tmp):
                 if tmp.exists():
                     tmp.unlink()
+    steps.start_step(LOADING)
     return read_nodes(nodes_path), read_result(edges_path)

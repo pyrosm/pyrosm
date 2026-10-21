@@ -143,12 +143,16 @@ def _decompress_blob(data, raw_size, filepath, codec="zlib", exact_size=True):
     return out
 
 
-def _index_blobs(filepath):
+def _index_blobs(filepath, progress=None):
     """One cheap sequential pass: ``(type, data_offset, data_size)`` per blob, reading
-    only the ``BlobHeader``s and skipping the payloads (no decompression)."""
+    only the ``BlobHeader``s and skipping the payloads (no decompression), reporting the
+    bytes passed to ``progress(done, total)`` when given."""
     blobs = []
+    size = os.path.getsize(filepath) if progress is not None else 0
     with open(filepath, "rb") as f:
         while True:
+            if progress is not None:
+                progress(f.tell(), size)
             header_len_bytes = f.read(4)
             if len(header_len_bytes) < 4:
                 break

@@ -13,7 +13,13 @@ def get_network_data(
     filter_type="exclude",
     keep_metadata=True,
     osm_keys="highway",
+    steps=None,
 ):
+    """The ways of the network that ``network_filter`` selects as ``(edges, nodes)``
+    GeoDataFrames, read from the in-memory reader's parsed arrays, the ways sliced into
+    edges between their nodes with ``slice_to_segments`` (nodes is None otherwise). The
+    selection and the edges are steps of ``steps`` (a
+    :class:`~pyrosm.utils.progress.Steps`, or None)."""
     # Structural columns are always kept; element metadata only when requested.
     tags_as_columns += ["id", "nodes"]
     if keep_metadata:
@@ -30,6 +36,7 @@ def get_network_data(
         filter_type=filter_type,
         osm_keys=osm_keys,
         keep_metadata=keep_metadata,
+        steps=steps,
     )
 
     # If there weren't any data, return None
@@ -49,6 +56,7 @@ def get_network_data(
         parse_network=True,
         calculate_seg_lengths=slice_to_segments,
         keep_metadata=keep_metadata,
+        steps=steps,
     )
 
     return edges, nodes

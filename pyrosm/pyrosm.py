@@ -1,3 +1,4 @@
+import contextlib
 import logging
 from pathlib import Path
 
@@ -30,7 +31,19 @@ from pyrosm.utils import (
     warn_empty_result,
 )
 from pyrosm.utils.download import get_file_size
-from pyrosm.utils.progress import reporting, validate_progress
+from pyrosm.utils.progress import (
+    BUILDING_EDGES,
+    BUILDING_RELATIONS,
+    BUILDING_WAYS,
+    COLLECTING,
+    COMPLETING_RELATIONS,
+    COMPLETING_WAYS,
+    DECODING,
+    SELECTING_VERSIONS,
+    read_steps,
+    stepping,
+    validate_progress,
+)
 from shapely.geometry import (
     Polygon,
     MultiPolygon,
@@ -39,15 +52,14 @@ from shapely.geometry import (
     MultiLineString,
 )
 from pyrosm.boundary import get_boundary_data
-from pyrosm.buildings import get_building_data
-from pyrosm.landuse import get_landuse_data
-from pyrosm.natural import get_natural_data
+from pyrosm.layers import get_layer_data
 from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
 from pyrosm.graphs import (
     graph_tags,
     record_network_type,
+    step_shares,
     to_networkx,
     to_igraph,
     to_pandana,
@@ -57,6 +69,7 @@ from pyrosm.graphs import (
 # Aliased so the module does not collide with the ``engine`` constructor
 # parameter / ``self.engine`` attribute of the same name.
 from pyrosm import engine as engine_backend
+from pyrosm.engine.pool import GRAPH_SHARES, NETWORK_NODES_SHARES
 from pyrosm.engine.readers import (
     _boundary_filter,
     _network_filter_type,
@@ -66,6 +79,25 @@ from pyrosm.engine.readers import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The shares of the steps of an in-memory read, relative to decoding the file, from the
+# times of reads of Paris (242 MB) and of the Helsinki history sample.
+_PARSE_SHARES = {
+    DECODING: 1.0,
+    SELECTING_VERSIONS: 0.1,
+    COMPLETING_RELATIONS: 1.0,
+    COMPLETING_WAYS: 1.0,
+}
+_LAYER_SHARES = {COLLECTING: 1.0, BUILDING_WAYS: 1.4, BUILDING_RELATIONS: 0.8}
+_NETWORK_SHARES = {COLLECTING: 0.35, BUILDING_EDGES: 0.12}
+_NETWORK_NODES_SHARES = {COLLECTING: 0.35, BUILDING_EDGES: 0.3}
+# The seconds of the reads of Paris that the shares of an out-of-core graph read and of
+# an out-of-core network read with nodes stand for, and of decoding Paris in memory (the
+# unit of the in-memory shares): get_graph weighs its read against the graph steps,
+# whose shares are in seconds too.
+_GRAPH_READ_SECONDS = 2.25
+_NETWORK_NODES_READ_SECONDS = 4.2
+_DECODING_SECONDS = 3.5
 
 
 def _network_read_filter(args):
@@ -153,11 +185,9 @@ class OSM:
         process and warns -- but it is not parallel.
 
         History reads -- an `.osh.pbf` file, or any feature call with a
-        `timestamp` -- are served by the in-memory reader with either engine:
-        selecting the latest version of each element at/before the timestamp uses
-        pyrosm's `get_latest_version`, which pandas evaluates eagerly over the whole
-        multi-version frame, so history is read in memory. `write_pbf` also reads
-        the file in memory with either engine.
+        `timestamp` -- are served by the in-memory reader with either engine, which
+        chooses the latest version of each element at/before the timestamp from all
+        its versions. `write_pbf` also reads the file in memory with either engine.
 
     keep_node_info : bool (default: False)
         Whether to keep the `nodes` column -- the ordered member node ids of each
@@ -180,15 +210,14 @@ class OSM:
 
     progress : bool | callable | None (default: None)
         `None` follows `pyrosm.enable_logging(progress=...)`, which is `True`
-        unless set. `True` shows a bar on stderr while the file is read, once the read has run
-        2 seconds, and clears it when the read finishes; in Jupyter it is a widget
-        when ipywidgets is installed (`pip install "pyrosm[notebook]"`). Without a
-        terminal, a read that took 2 seconds or more prints one line with the time it
-        took instead. `False` shows nothing. A callable is called as
-        `progress(done, total)` with the bytes of the file read so far and the file
-        size: `(0, total)` when a pass over the file starts and `(total, total)` when
-        it ends, with reports in between. A read can make more than one pass, for
-        example with a `bounding_box`.
+        unless set. `True` shows a bar on stderr while the file is read, once the read
+        has run 2 seconds, from 0 to 100 % over the whole read with its current step in
+        the label (e.g. "Reading Paris.osm.pbf: building the geometries"), and clears it
+        when the read finishes; in Jupyter it is a widget when ipywidgets is installed
+        (`pip install "pyrosm[notebook]"`). Without a terminal, a read that took 2
+        seconds or more prints one line with the time it took instead. `False` shows
+        nothing. A callable is called as `progress(done, 100)` with the percentage of
+        the read done, from 0 to 100 and never back.
     """
 
     allowed_bbox_types = [
@@ -305,11 +334,9 @@ class OSM:
 
     def _use_engine(self, timestamp):
         """Whether the out-of-core engine handles this read. History reads -- an ``.osh.pbf``
-        file, or an explicit ``timestamp`` -- route to the in-memory reader instead: selecting
-        the latest version of each element at/before the timestamp is pyrosm's per-id
-        ``get_latest_version`` (each element's last version, taken whole), which pandas
-        evaluates eagerly over the whole materialised multi-version frame, so history is
-        read in memory."""
+        file, or an explicit ``timestamp`` -- route to the in-memory reader instead, which
+        chooses each element's last version at/before the timestamp, taken whole, from all
+        its versions."""
         return self.engine == "out_of_core" and timestamp is None and not self._osh_file
 
     def _read_engine(self, reader, with_relations=True, **kwargs):
@@ -326,12 +353,12 @@ class OSM:
             kwargs["complete_relations"] = self.complete_relations
         return reader(self.filepath, **kwargs)
 
-    def _get_pbf_elements(self, bounding_box):
+    def _get_pbf_elements(self, bounding_box, steps):
+        """Parse the file within ``bounding_box`` in memory, in the steps of ``steps``
+        (see :func:`~pyrosm.pbfreader.parse_osm_data`), and keep its elements."""
         name = Path(self.filepath).name
         size = Path(self.filepath).stat().st_size
-        with timed(logger, "read_pbf", file=name, bytes=size), reporting(
-            self.progress, "Reading %s" % name, delay=2.0, leave=False, timed=True
-        ) as report:
+        with timed(logger, "read_pbf", file=name, bytes=size):
             (
                 nodes,
                 ways,
@@ -345,7 +372,7 @@ class OSM:
                 unix_time_filter=self._current_timestamp,
                 keep_metadata=self.keep_metadata,
                 complete_relations=self.complete_relations,
-                progress=report,
+                steps=steps,
             )
 
         self._nodes = nodes
@@ -354,7 +381,10 @@ class OSM:
         self._node_coordinates = node_coordinates
         self._relation_member_ways = relation_member_ways
 
-    def _read_pbf(self, timestamp=None):
+    def _read_pbf(self, timestamp=None, steps=None):
+        """Parse the file for ``timestamp`` unless it is parsed for it already, in the
+        steps of ``steps``, or without them as a read of its own (see
+        :meth:`_read_steps`)."""
         # PBF reading requires a list of bounding box coordinates
         if type(self.bounding_box) in self.allowed_bbox_types:
             bounding_box = self.bounding_box.bounds
@@ -364,13 +394,105 @@ class OSM:
         # Update current timestamp
         self._set_current_time(timestamp)
 
-        if self._nodes is None or self._way_records is None:
-            self._get_pbf_elements(bounding_box)
-        elif self._timestamp_changed:
-            self._get_pbf_elements(bounding_box)
+        if self._parse_needed():
+            if steps is None:
+                with self._read_steps(timestamp, {}) as steps:
+                    self._get_pbf_elements(bounding_box, steps)
+            else:
+                self._get_pbf_elements(bounding_box, steps)
 
         # Once the data has been read update the flag
         self._timestamp_changed = False
+
+    def _parse_needed(self):
+        """Whether the file is not parsed yet, or not for the current timestamp."""
+        return (
+            self._nodes is None or self._way_records is None or self._timestamp_changed
+        )
+
+    def _read_steps(self, timestamp, shares):
+        """The :func:`~pyrosm.utils.progress.read_steps` of an in-memory read for
+        ``timestamp`` whose own steps have the ``shares``, after the steps of parsing
+        the file when it is not parsed yet: decoding it, selecting the versions of a
+        history read, and the passes that complete the elements the bounding box cuts.
+        """
+        self._set_current_time(timestamp)
+        planned = self._parse_shares() if self._parse_needed() else {}
+        planned.update(shares)
+        return read_steps(self.filepath, self.progress, planned)
+
+    def _parse_shares(self):
+        """The shares of the steps of parsing the file for the current timestamp:
+        decoding it, selecting the versions of a history read, and the passes that
+        complete the elements the bounding box cuts."""
+        names = [DECODING]
+        if self._current_timestamp is not None:
+            names.append(SELECTING_VERSIONS)
+        if self.bounding_box is not None:
+            if self.complete_relations:
+                names.append(COMPLETING_RELATIONS)
+            names.append(COMPLETING_WAYS)
+        return {name: _PARSE_SHARES[name] for name in names}
+
+    def _drop_node_lists(self, gdf):
+        """``gdf`` without its ``nodes`` column (each row's list of node ids, which file
+        formats cannot store) unless ``keep_node_info`` is set."""
+        if not self.keep_node_info and gdf is not None and "nodes" in gdf.columns:
+            gdf = gdf.drop("nodes", axis=1)
+        return gdf
+
+    def _read_layer(
+        self,
+        layer,
+        result_name,
+        engine_reader,
+        custom_filter,
+        extra_attributes,
+        tags_to_keep,
+        timestamp,
+        with_nodes=True,
+    ):
+        """The elements of the layer ``layer`` (an OSM key, such as ``"building"``) for
+        :meth:`get_buildings`, :meth:`get_landuse` and :meth:`get_natural`: read by
+        ``engine_reader`` with the out-of-core engine, else in memory (without nodes
+        unless ``with_nodes``), with a warning naming ``result_name`` when nothing
+        matches."""
+        if self._use_engine(timestamp):
+            gdf = self._read_engine(
+                engine_reader,
+                custom_filter=custom_filter,
+                extra_attributes=extra_attributes,
+                tags_to_keep=tags_to_keep,
+            )
+            if gdf is None:
+                warn_empty_result(result_name)
+            return gdf
+
+        read_filter = _require_layer_key(custom_filter, layer)
+        tags_as_columns = read_tag_columns(
+            getattr(self.conf.tags, layer),
+            extra_attributes,
+            tags_to_keep,
+            read_filter.keys(),
+        )
+        with self._read_steps(timestamp, _LAYER_SHARES) as steps:
+            self._read_pbf(timestamp, steps)
+            gdf = get_layer_data(
+                layer,
+                result_name,
+                self._nodes if with_nodes else None,
+                self._node_coordinates,
+                self._way_records,
+                self._relations,
+                tags_as_columns,
+                custom_filter,
+                self.bounding_box,
+                keep_metadata=self.keep_metadata,
+                relation_member_ways=self._relation_member_ways,
+                complete_relations=self.complete_relations,
+                steps=steps,
+            )
+        return self._drop_node_lists(gdf)
 
     def _get_network_filter(self, net_type):
         """Resolve a predefined network type to its filter, raising for an unknown one."""
@@ -543,27 +665,24 @@ class OSM:
             self.conf.tags.highway, extra_attributes, tags_to_keep, column_keys
         )
 
-        # Read pbf
-        self._read_pbf(timestamp)
+        # Read pbf and filter network data with given filter
+        shares = _NETWORK_NODES_SHARES if nodes else _NETWORK_SHARES
+        with self._read_steps(timestamp, shares) as steps:
+            self._read_pbf(timestamp, steps)
+            edges, node_gdf = get_network_data(
+                self._node_coordinates,
+                self._way_records,
+                tags_as_columns,
+                network_filter,
+                self.bounding_box,
+                slice_to_segments=nodes,
+                filter_type=filter_type,
+                keep_metadata=self.keep_metadata,
+                osm_keys=network_osm_keys,
+                steps=steps,
+            )
 
-        # Filter network data with given filter
-        edges, node_gdf = get_network_data(
-            self._node_coordinates,
-            self._way_records,
-            tags_as_columns,
-            network_filter,
-            self.bounding_box,
-            slice_to_segments=nodes,
-            filter_type=filter_type,
-            keep_metadata=self.keep_metadata,
-            osm_keys=network_osm_keys,
-        )
-
-        # Do not keep node information unless specifically asked for
-        # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and edges is not None:
-            if "nodes" in edges.columns:
-                edges = edges.drop("nodes", axis=1)
+        edges = self._drop_node_lists(edges)
 
         # In case both edges and nodes are requested
         if nodes:
@@ -621,42 +740,16 @@ class OSM:
         `https://wiki.openstreetmap.org/wiki/Key:building <https://wiki.openstreetmap.org/wiki/Key:building>`__
 
         """
-        if self._use_engine(timestamp):
-            gdf = self._read_engine(
-                engine_backend.get_buildings,
-                custom_filter=custom_filter,
-                extra_attributes=extra_attributes,
-                tags_to_keep=tags_to_keep,
-            )
-            if gdf is None:
-                warn_empty_result("buildings")
-            return gdf
-
-        read_filter = _require_layer_key(custom_filter, "building")
-        tags_as_columns = read_tag_columns(
-            self.conf.tags.building, extra_attributes, tags_to_keep, read_filter.keys()
-        )
-
-        self._read_pbf(timestamp)
-
-        gdf = get_building_data(
-            self._node_coordinates,
-            self._way_records,
-            self._relations,
-            tags_as_columns,
+        return self._read_layer(
+            "building",
+            "buildings",
+            engine_backend.get_buildings,
             custom_filter,
-            self.bounding_box,
-            keep_metadata=self.keep_metadata,
-            relation_member_ways=self._relation_member_ways,
-            complete_relations=self.complete_relations,
+            extra_attributes,
+            tags_to_keep,
+            timestamp,
+            with_nodes=False,
         )
-
-        # Do not keep node information unless specifically asked for
-        # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and gdf is not None:
-            if "nodes" in gdf.columns:
-                gdf = gdf.drop("nodes", axis=1)
-        return gdf
 
     @logged()
     @records_read(lambda args: _require_layer_key(args["custom_filter"], "landuse"))
@@ -709,44 +802,15 @@ class OSM:
         `https://wiki.openstreetmap.org/wiki/Key:landuse <https://wiki.openstreetmap.org/wiki/Key:landuse>`__
 
         """
-
-        if self._use_engine(timestamp):
-            gdf = self._read_engine(
-                engine_backend.get_landuse,
-                custom_filter=custom_filter,
-                extra_attributes=extra_attributes,
-                tags_to_keep=tags_to_keep,
-            )
-            if gdf is None:
-                warn_empty_result("landuse")
-            return gdf
-
-        self._read_pbf(timestamp)
-
-        read_filter = _require_layer_key(custom_filter, "landuse")
-        tags_as_columns = read_tag_columns(
-            self.conf.tags.landuse, extra_attributes, tags_to_keep, read_filter.keys()
-        )
-
-        gdf = get_landuse_data(
-            self._nodes,
-            self._node_coordinates,
-            self._way_records,
-            self._relations,
-            tags_as_columns,
+        return self._read_layer(
+            "landuse",
+            "landuse",
+            engine_backend.get_landuse,
             custom_filter,
-            self.bounding_box,
-            keep_metadata=self.keep_metadata,
-            relation_member_ways=self._relation_member_ways,
-            complete_relations=self.complete_relations,
+            extra_attributes,
+            tags_to_keep,
+            timestamp,
         )
-
-        # Do not keep node information unless specifically asked for
-        # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and gdf is not None:
-            if "nodes" in gdf.columns:
-                gdf = gdf.drop("nodes", axis=1)
-        return gdf
 
     @logged()
     @records_read(lambda args: _require_layer_key(args["custom_filter"], "natural"))
@@ -799,44 +863,15 @@ class OSM:
         `https://wiki.openstreetmap.org/wiki/Key:natural <https://wiki.openstreetmap.org/wiki/Key:natural>`__
 
         """
-
-        if self._use_engine(timestamp):
-            gdf = self._read_engine(
-                engine_backend.get_natural,
-                custom_filter=custom_filter,
-                extra_attributes=extra_attributes,
-                tags_to_keep=tags_to_keep,
-            )
-            if gdf is None:
-                warn_empty_result("natural")
-            return gdf
-
-        self._read_pbf(timestamp)
-
-        read_filter = _require_layer_key(custom_filter, "natural")
-        tags_as_columns = read_tag_columns(
-            self.conf.tags.natural, extra_attributes, tags_to_keep, read_filter.keys()
-        )
-
-        gdf = get_natural_data(
-            self._nodes,
-            self._node_coordinates,
-            self._way_records,
-            self._relations,
-            tags_as_columns,
+        return self._read_layer(
+            "natural",
+            "natural",
+            engine_backend.get_natural,
             custom_filter,
-            self.bounding_box,
-            keep_metadata=self.keep_metadata,
-            relation_member_ways=self._relation_member_ways,
-            complete_relations=self.complete_relations,
+            extra_attributes,
+            tags_to_keep,
+            timestamp,
         )
-
-        # Do not keep node information unless specifically asked for
-        # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and gdf is not None:
-            if "nodes" in gdf.columns:
-                gdf = gdf.drop("nodes", axis=1)
-        return gdf
 
     @logged()
     @records_read(
@@ -932,33 +967,29 @@ class OSM:
                 warn_empty_result("boundaries")
             return gdf
 
-        self._read_pbf(timestamp)
-
         read_filter = _boundary_filter(custom_filter, boundary_type)
         tags_as_columns = read_tag_columns(
             self.conf.tags.boundary, extra_attributes, tags_to_keep, read_filter.keys()
         )
 
-        gdf = get_boundary_data(
-            self._node_coordinates,
-            self._way_records,
-            self._relations,
-            tags_as_columns,
-            custom_filter,
-            boundary_type,
-            name,
-            self.bounding_box,
-            keep_metadata=self.keep_metadata,
-            relation_member_ways=self._relation_member_ways,
-            complete_relations=self.complete_relations,
-        )
+        with self._read_steps(timestamp, _LAYER_SHARES) as steps:
+            self._read_pbf(timestamp, steps)
+            gdf = get_boundary_data(
+                self._node_coordinates,
+                self._way_records,
+                self._relations,
+                tags_as_columns,
+                custom_filter,
+                boundary_type,
+                name,
+                self.bounding_box,
+                keep_metadata=self.keep_metadata,
+                relation_member_ways=self._relation_member_ways,
+                complete_relations=self.complete_relations,
+                steps=steps,
+            )
 
-        # Do not keep node information unless specifically asked for
-        # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and gdf is not None:
-            if "nodes" in gdf.columns:
-                gdf = gdf.drop("nodes", axis=1)
-        return gdf
+        return self._drop_node_lists(gdf)
 
     @logged()
     @records_read(lambda args: _poi_filter(args["custom_filter"]))
@@ -1053,8 +1084,6 @@ class OSM:
 
         custom_filter = _poi_filter(custom_filter)
 
-        self._read_pbf(timestamp)
-
         tags_as_columns = read_tag_columns(
             feature_columns(custom_filter.keys(), self.conf.tags._basic_tags),
             extra_attributes,
@@ -1062,25 +1091,23 @@ class OSM:
             custom_filter.keys(),
         )
 
-        gdf = get_poi_data(
-            self._nodes,
-            self._node_coordinates,
-            self._way_records,
-            self._relations,
-            tags_as_columns,
-            custom_filter,
-            self.bounding_box,
-            keep_metadata=self.keep_metadata,
-            relation_member_ways=self._relation_member_ways,
-            complete_relations=self.complete_relations,
-        )
+        with self._read_steps(timestamp, _LAYER_SHARES) as steps:
+            self._read_pbf(timestamp, steps)
+            gdf = get_poi_data(
+                self._nodes,
+                self._node_coordinates,
+                self._way_records,
+                self._relations,
+                tags_as_columns,
+                custom_filter,
+                self.bounding_box,
+                keep_metadata=self.keep_metadata,
+                relation_member_ways=self._relation_member_ways,
+                complete_relations=self.complete_relations,
+                steps=steps,
+            )
 
-        # Do not keep node information unless specifically asked for
-        # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and gdf is not None:
-            if "nodes" in gdf.columns:
-                gdf = gdf.drop("nodes", axis=1)
-        return gdf
+        return self._drop_node_lists(gdf)
 
     @logged()
     @records_read(_custom_read_filter)
@@ -1235,33 +1262,29 @@ class OSM:
             extra_attributes,
         )
 
-        self._read_pbf(timestamp)
+        with self._read_steps(timestamp, _LAYER_SHARES) as steps:
+            self._read_pbf(timestamp, steps)
+            gdf = get_user_defined_data(
+                self._nodes,
+                self._node_coordinates,
+                self._way_records,
+                self._relations,
+                tags_as_columns,
+                custom_filter,
+                osm_keys_to_keep,
+                filter_type,
+                keep_nodes,
+                keep_ways,
+                keep_relations,
+                self.bounding_box,
+                keep_metadata=self.keep_metadata,
+                relation_member_ways=self._relation_member_ways,
+                complete_relations=self.complete_relations,
+                keep_all=keep_all,
+                steps=steps,
+            )
 
-        gdf = get_user_defined_data(
-            self._nodes,
-            self._node_coordinates,
-            self._way_records,
-            self._relations,
-            tags_as_columns,
-            custom_filter,
-            osm_keys_to_keep,
-            filter_type,
-            keep_nodes,
-            keep_ways,
-            keep_relations,
-            self.bounding_box,
-            keep_metadata=self.keep_metadata,
-            relation_member_ways=self._relation_member_ways,
-            complete_relations=self.complete_relations,
-            keep_all=keep_all,
-        )
-
-        # Do not keep node information unless specifically asked for
-        # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and gdf is not None:
-            if "nodes" in gdf.columns:
-                gdf = gdf.drop("nodes", axis=1)
-        return gdf
+        return self._drop_node_lists(gdf)
 
     def to_pbf(
         self,
@@ -1323,8 +1346,8 @@ class OSM:
             current (faster, slightly larger) in-place crop.
 
         The crop shows its progress as this object's ``progress`` says (see
-        :class:`OSM`), counting the bytes of the source file read in each pass over
-        it; a crop makes two or more.
+        :func:`pyrosm.pbf_export.crop_pbf`): one bar, or ``progress(done, 100)`` calls, from 0 to
+        100 % over the whole crop.
 
         Returns
         -------
@@ -1363,6 +1386,7 @@ class OSM:
         delete=None,
         on_orphan_node="remove",
         on_deleted_member="drop",
+        progress=None,
     ):
         """
         Write the OSM data this object holds back to a valid, re-readable
@@ -1484,6 +1508,13 @@ class OSM:
             either (with a ``UserWarning``) and its own members go through
             ``on_orphan_node``; a relation left with no members is still written.
 
+        progress : bool | callable | None (default: None)
+            How the write shows its progress, as ``progress`` of :class:`OSM` does
+            (``None`` follows the ``progress`` of this object): one bar "Writing
+            <file>" from 0 to 100 % over the whole write, its current step in the
+            label, including the read of the file when it is not read in memory yet,
+            or ``progress(done, 100)`` calls.
+
         Returns
         -------
         str
@@ -1497,24 +1528,45 @@ class OSM:
         a source way whose members already point outside a clipped extract is re-emitted
         as it was read.
         """
-        from pyrosm.pbf_writer import write_geodataframe_to_pbf
+        from pyrosm.pbf_writer import WRITE_SHARES, write_geodataframe_to_pbf
 
-        if self._way_records is None or self._node_coordinates is None:
-            self._read_pbf()
-
-        return write_geodataframe_to_pbf(
-            data,
-            output_path,
-            node_coordinates=self._node_coordinates,
-            way_records=self._way_records,
-            relations=self._relations,
-            nodes=self._nodes,
+        validate_progress(progress)
+        parse = self._way_records is None or self._node_coordinates is None
+        shares = {}
+        if parse:
+            self._set_current_time(None)
+            shares = self._parse_shares()
+        shares.update(WRITE_SHARES)
+        with timed(
+            logger,
+            "write_pbf",
+            logging.INFO,
+            output=Path(output_path).name,
             subset_only=subset_only,
-            apply_geometry=apply_geometry,
-            delete=delete,
-            on_orphan_node=on_orphan_node,
-            on_deleted_member=on_deleted_member,
-        )
+        ), stepping(
+            self.progress if progress is None else progress,
+            "Writing %s" % Path(output_path).name,
+            shares,
+            delay=2.0,
+            leave=False,
+            timed=True,
+        ) as steps:
+            if parse:
+                self._read_pbf(steps=steps)
+            return write_geodataframe_to_pbf(
+                data,
+                output_path,
+                node_coordinates=self._node_coordinates,
+                way_records=self._way_records,
+                relations=self._relations,
+                nodes=self._nodes,
+                subset_only=subset_only,
+                apply_geometry=apply_geometry,
+                delete=delete,
+                on_orphan_node=on_orphan_node,
+                on_deleted_member=on_deleted_member,
+                steps=steps,
+            )
 
     @logged("network_type", "graph_type", "simplify", count=False)
     def get_graph(
@@ -1543,6 +1595,10 @@ class OSM:
         every node that ``get_network(nodes=True)`` returns are not built, so the read
         takes less memory. With ``simplify=False``, the in-memory engine or a history
         read, the tables are read with ``get_network`` and exported with ``to_graph``.
+
+        The read and the export show one progress as the ``progress`` of this object
+        says: a bar "Building the graph of <file>" from 0 to 100 % with the current step
+        in its label, or ``progress(done, 100)`` calls.
 
         Parameters
         ----------
@@ -1577,43 +1633,82 @@ class OSM:
                 )
                 if tag not in tags_to_keep
             ]
-        if simplify and self._use_engine(timestamp):
-            nodes, edges = self._read_engine(
-                graph_network,
-                with_relations=False,
-                network_type=network_type,
-                extra_attributes=extra_attributes,
-                custom_filter=custom_filter,
-                filter_type=filter_type,
-                tags_to_keep=tags_to_keep,
-            )
-            if edges is None:
-                warn_empty_result("network")
-        else:
-            nodes, edges = self.get_network(
-                network_type,
-                extra_attributes,
-                nodes=True,
-                timestamp=timestamp,
-                custom_filter=custom_filter,
-                filter_type=filter_type,
-                tags_to_keep=tags_to_keep,
-            )
-        if edges is None:
-            return None
-        return self.to_graph(
-            nodes,
-            edges,
-            graph_type,
-            direction,
-            force_bidirectional=force_bidirectional,
-            network_type=network_type,
-            retain_all=retain_all,
-            osmnx_compatible=osmnx_compatible,
-            pandana_weights=pandana_weights,
-            simplify=simplify,
-            simplify_kwargs=simplify_kwargs,
+        shares = self._graph_read_shares(simplify, timestamp)
+        shares.update(
+            step_shares(simplify, retain_all, validate_graph_type(graph_type))
         )
+        with stepping(
+            self.progress,
+            "Building the graph of %s" % Path(self.filepath).name,
+            shares,
+            delay=2.0,
+            leave=False,
+            timed=True,
+        ) as steps, self._progress_as(steps):
+            if simplify and self._use_engine(timestamp):
+                nodes, edges = self._read_engine(
+                    graph_network,
+                    with_relations=False,
+                    network_type=network_type,
+                    extra_attributes=extra_attributes,
+                    custom_filter=custom_filter,
+                    filter_type=filter_type,
+                    tags_to_keep=tags_to_keep,
+                )
+                if edges is None:
+                    warn_empty_result("network")
+            else:
+                nodes, edges = self.get_network(
+                    network_type,
+                    extra_attributes,
+                    nodes=True,
+                    timestamp=timestamp,
+                    custom_filter=custom_filter,
+                    filter_type=filter_type,
+                    tags_to_keep=tags_to_keep,
+                )
+            if edges is None:
+                return None
+            return self.to_graph(
+                nodes,
+                edges,
+                graph_type,
+                direction,
+                force_bidirectional=force_bidirectional,
+                network_type=network_type,
+                retain_all=retain_all,
+                osmnx_compatible=osmnx_compatible,
+                pandana_weights=pandana_weights,
+                simplify=simplify,
+                simplify_kwargs=simplify_kwargs,
+                progress=steps,
+            )
+
+    def _graph_read_shares(self, simplify, timestamp):
+        """The shares of the steps of the read of :meth:`get_graph`, in seconds of reads of
+        Paris, as the shares of the graph steps are (see
+        :func:`pyrosm.graphs.step_shares`)."""
+        if self._use_engine(timestamp):
+            if simplify:
+                shares, seconds = GRAPH_SHARES, _GRAPH_READ_SECONDS
+            else:
+                shares, seconds = NETWORK_NODES_SHARES, _NETWORK_NODES_READ_SECONDS
+        else:
+            self._set_current_time(timestamp)
+            shares = self._parse_shares() if self._parse_needed() else {}
+            shares.update(_NETWORK_NODES_SHARES)
+            seconds = _DECODING_SECONDS
+        return {name: share * seconds for name, share in shares.items()}
+
+    @contextlib.contextmanager
+    def _progress_as(self, progress):
+        """Use ``progress`` as the ``progress`` of this object inside the block."""
+        kept = self.progress
+        self.progress = progress
+        try:
+            yield
+        finally:
+            self.progress = kept
 
     @staticmethod
     @logged("graph_type", "network_type", "simplify", count=False)
@@ -1633,6 +1728,7 @@ class OSM:
         pandana_weights=["length"],
         simplify=True,
         simplify_kwargs=None,
+        progress=None,
     ):
         """
         Export OSM network to routable graph. Supported output graph types are:
@@ -1657,10 +1753,10 @@ class OSM:
         with ``edge_attrs_differ=["maxspeed", "highway"]``. Pass ``simplify=False`` to
         keep every segment of every way as its own edge.
 
-        The export shows its progress as ``pyrosm.enable_logging(progress=...)`` sets it:
-        by default a bar on stderr once it has run 2 seconds, naming the step it is in
-        (directing the edges, simplifying, keeping the largest connected part, building
-        the graph), cleared at the end, or without a terminal one line with the time it
+        The export shows its progress as ``progress`` says: by default a bar on stderr
+        once it has run 2 seconds, from 0 to 100 % with the step it is in (directing the
+        edges, simplifying, keeping the largest connected part, building the graph) in
+        its label, cleared at the end, or without a terminal one line with the time it
         took.
 
         Parameters
@@ -1751,8 +1847,15 @@ class OSM:
             stops a merge; ``None`` merges across every change, as OSMnx does by
             default), ``node_attrs_include`` (keep the listed nodes as endpoints),
             ``remove_rings``, ``track_merged``, ``length_cols`` or ``edge_attr_aggs``.
+
+        progress : bool | callable | None (default: None)
+            `None` follows `pyrosm.enable_logging(progress=...)`, which is `True`
+            unless set. `True` shows the bar, `False` nothing, and a callable is called
+            as `progress(done, 100)` with the percentage of the export done, from 0 to
+            100 and never back.
         """
         graph_type = validate_graph_type(graph_type)
+        validate_progress(progress)
 
         if graph_type == "igraph":
             return to_igraph(
@@ -1767,6 +1870,7 @@ class OSM:
                 retain_all,
                 simplify=simplify,
                 simplify_kwargs=simplify_kwargs,
+                progress=progress,
             )
         elif graph_type == "networkx":
             return to_networkx(
@@ -1783,6 +1887,7 @@ class OSM:
                 osmnx_compatible,
                 simplify=simplify,
                 simplify_kwargs=simplify_kwargs,
+                progress=progress,
             )
         elif graph_type == "pandarm":
             return to_pandarm(
@@ -1798,6 +1903,7 @@ class OSM:
                 pandana_weights,
                 simplify=simplify,
                 simplify_kwargs=simplify_kwargs,
+                progress=progress,
             )
         elif graph_type == "pandana":
             return to_pandana(
@@ -1813,6 +1919,7 @@ class OSM:
                 pandana_weights,
                 simplify=simplify,
                 simplify_kwargs=simplify_kwargs,
+                progress=progress,
             )
 
     @staticmethod

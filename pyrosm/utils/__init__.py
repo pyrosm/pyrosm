@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import geopandas as gpd
 import pandas as pd
+import contextlib
+import contextvars
 import sys
 import threading
 import warnings
@@ -513,6 +515,33 @@ _EMPTY_RESULT_MESSAGES = {
     "pois": "Could not find any POIs for given area.",
     "custom": "Could not find any OSM data for given area.",
 }
+
+
+# The messages of the warnings of a result build in progress (see recording_warnings).
+_RECORDED_WARNINGS = contextvars.ContextVar("pyrosm_recorded_warnings", default=None)
+
+
+@contextlib.contextmanager
+def recording_warnings():
+    """A list of the messages of the warnings that :func:`warn_recorded` gives in this
+    context inside the block, such as those of a result build to be given again when the
+    result is read from the cache."""
+    recorded = []
+    token = _RECORDED_WARNINGS.set(recorded)
+    try:
+        yield recorded
+    finally:
+        _RECORDED_WARNINGS.reset(token)
+
+
+def warn_recorded(message, stacklevel=2):
+    """Give the ``UserWarning`` ``message``, and add it to the list of
+    :func:`recording_warnings` when one records in this context. ``stacklevel`` counts
+    from the caller, as for ``warnings.warn``."""
+    warnings.warn(message, UserWarning, stacklevel=stacklevel + 1)
+    recorded = _RECORDED_WARNINGS.get()
+    if recorded is not None:
+        recorded.append(message)
 
 
 def warn_empty_result(feature, stacklevel=2):

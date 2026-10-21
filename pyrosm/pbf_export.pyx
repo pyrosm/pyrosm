@@ -19,6 +19,7 @@ to their union when a bounding box or a polygon is given.
 """
 
 import contextlib
+import logging
 import os
 import shutil
 import tempfile
@@ -65,13 +66,16 @@ from pyrosm.engine.blobs import (
 from pyrosm._arrays import _offsets_from_lengths
 from pyrosm.engine.pool import _PoolStartError, _ordered_map
 from pyrosm.int64_hash cimport Int64Set, SortedInt64Set, _set_has, kh_i64set_t
+from pyrosm._log import timed
 from pyrosm.utils import _file_identity, default_workers, validate_workers
-from pyrosm.utils.progress import reporting, validate_progress
+from pyrosm.utils.progress import stepping, validate_progress
 from pyrosm.zlib_blob import zlib_compress
 from pyrosm.primitive_block_decoder import (
     BLOCK_COUNTS, check_batch_starts, decode_batch_nogil, decode_elements,
     decode_primitive_block, element_layout,
 )
+
+logger = logging.getLogger(__name__)
 
 DIV = 1000000000
 
@@ -214,22 +218,54 @@ cdef _read_next_blob(f):
     return blob_header, _decompress(blob.zlib_data, _raw_size(blob), f.name)
 
 
-class _ReadProgress:
-    """The bytes of a crop's or merge's input files read so far, reported to `report`
-    (a `progress(done, total)` callable, as in `OSM`, or None) for each pass over them:
-    `(0, total)` when it starts and `(total, total)` when it ends, in between only when
-    the count grows, and never above `total` (the files' sizes at the start)."""
+# The passes of a crop or merge over its input files, the steps of its progress, and
+# their shares of it, from their times in crops of Finland to a city and in merges of
+# two overlapping extracts of Helsinki with a box.
+_SELECTING = "selecting the elements"
+_FINDING_NODES = "finding the nodes in the area"
+_FINDING_WAYS = "finding the ways"
+_CHOOSING_WAYS = "choosing each way's copy"
+_FINDING_RELATIONS = "finding the relations"
+_WRITING = "writing the file"
+_CROP_SHARES = {
+    _SELECTING: 1.1,
+    _FINDING_NODES: 1.1,
+    _FINDING_WAYS: 1.4,
+    _FINDING_RELATIONS: 0.4,
+    _WRITING: 1.0,
+}
+_MERGE_SHARES = {
+    _FINDING_NODES: 0.5,
+    _FINDING_WAYS: 0.6,
+    _CHOOSING_WAYS: 1.0,
+    _FINDING_RELATIONS: 0.3,
+    _WRITING: 3.5,
+}
 
-    def __init__(self, report, paths):
-        self.report = report
+
+class _ReadProgress:
+    """The passes of a crop or merge over its input files as steps of `steps` (a
+    `pyrosm.utils.progress.Steps`, or None): each pass is a named step, moved through
+    its share by the bytes of the files read in it (out of the files' sizes at the
+    start)."""
+
+    def __init__(self, steps, paths):
+        self.steps = steps
         self.total = sum(Path(path).stat().st_size for path in paths)
         self.done = {}
-        self.sent = None
+        self.advance_step = None
+
+    def plan(self, names):
+        """The passes still to come, by name (see `Steps.plan`)."""
+        if self.steps is not None:
+            self.steps.plan(names)
 
     @contextlib.contextmanager
-    def one_pass(self):
+    def one_pass(self, name):
+        """A pass over the files, the step `name`."""
         self.done = {}
-        self._report_progress(0)
+        if self.steps is not None:
+            self.advance_step = self.steps.start_step(name)
         try:
             yield
         finally:
@@ -242,10 +278,8 @@ class _ReadProgress:
         self._report_progress(sum(self.done.values()))
 
     def _report_progress(self, done):
-        done = min(done, self.total)
-        if self.report is not None and done != self.sent:
-            self.sent = done
-            self.report(done, self.total)
+        if self.advance_step is not None:
+            self.advance_step(min(done, self.total), self.total)
 
 
 def _iter_block_data(filepath, progress=None):
@@ -914,7 +948,9 @@ cdef _write_header(out, bounds, sorted_output=False):
 
 cdef _write_pbf(filepath, output_path, kept_nodes_set, kept_ways_set, kept_rel_set,
                 bounds, compact, progress):
-    with open(output_path, "wb") as out, progress.one_pass():
+    """Sequential write of the crop: the kept elements of each block of `filepath` to
+    `output_path`, in the pass `_WRITING` of `progress` (a `_ReadProgress`)."""
+    with open(output_path, "wb") as out, progress.one_pass(_WRITING):
         _write_header(out, bounds)
         for data in _iter_block_data(filepath, progress):
             block = _crop_block(
@@ -1832,12 +1868,11 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     ``workers`` still parallelizes the selection. ``repack=True`` produces minimal
     string tables, so ``compact`` is irrelevant and ignored.
 
-    ``progress`` works as in :class:`pyrosm.OSM`: ``None`` (default) follows
-    :func:`pyrosm.enable_logging`, ``True`` shows a bar on
-    stderr once the crop has run 2 seconds, ``False`` shows nothing, and a callable is
-    called as ``progress(done, total)`` with the bytes of `source_path` read so far and
-    its size, from ``(0, total)`` to ``(total, total)`` in each pass over the file (a
-    crop makes two or more).
+    ``progress``: ``None`` (default) follows :func:`pyrosm.enable_logging`, ``True``
+    shows a bar on stderr once the crop has run 2 seconds, from 0 to 100 % over the
+    whole crop with its current pass in the label, ``False`` shows nothing, and a
+    callable is called as ``progress(done, 100)`` with the percentage of the crop done,
+    from 0 to 100 and never back.
     """
     validate_progress(progress)
     workers = default_workers(validate_workers(workers))
@@ -1853,15 +1888,18 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     _read_header(source_path)
 
     name = Path(source_path).name
-    with reporting(
-        progress, "Cropping %s" % name, delay=2.0, leave=False, timed=True
-    ) as report:
+    with timed(
+        logger, "crop_pbf", logging.INFO, file=name, output=Path(output_path).name
+    ) as fields, stepping(
+        progress, "Cropping %s" % name, _CROP_SHARES, delay=2.0, leave=False, timed=True
+    ) as steps:
         _with_pool(
             _select_and_write,
             (source_path, output_path, region, keep_relations, compact, repack,
-             _ReadProgress(report, [source_path])),
+             _ReadProgress(steps, [source_path])),
             workers, [source_path], region, compact,
         )
+        fields["megabytes"] = os.path.getsize(output_path) / 1e6
     return output_path
 
 
@@ -1884,7 +1922,7 @@ def _select_and_write(source_path, output_path, region, keep_relations, compact,
         pool.broadcast("kept_ways", kept_ways)
         pool.broadcast("kept_rel", kept_rel)
         # imap preserves input order -> the same bytes as the sequential write.
-        with open(output_path, "wb") as out, progress.one_pass():
+        with open(output_path, "wb") as out, progress.one_pass(_WRITING):
             _write_header(out, bounds)
             payloads = _iter_payloads(source_path, progress)
             for blob_bytes in pool.imap(_worker_write, payloads):
@@ -1908,13 +1946,20 @@ cdef _select(sources, region, keep_relations, pool, progress):
     to `progress` (a `_ReadProgress`).
     """
     if pool is None and len(sources) == 1:
-        with progress.one_pass():
+        progress.plan([_SELECTING, _WRITING])
+        with progress.one_pass(_SELECTING):
             selection = _select_one_pass(sources[0], region, keep_relations, progress)
         if selection is not None:
             return selection
 
+    progress.plan(
+        [_FINDING_NODES, _FINDING_WAYS]
+        + ([_CHOOSING_WAYS] if len(sources) > 1 else [])
+        + ([_FINDING_RELATIONS] if keep_relations else [])
+        + [_WRITING]
+    )
     # Stage 1: nodes inside the bbox (or polygon).
-    with progress.one_pass():
+    with progress.one_pass(_FINDING_NODES):
         if pool is None:
             nodes_in_bbox = _unique_concat(
                 [_nodes_inside_file(p, region, progress) for p in sources]
@@ -1930,7 +1975,7 @@ cdef _select(sources, region, keep_relations, pool, progress):
     # Stage 2: ways with >=1 node in the bbox (+ all their refs -> complete ways).
     kept_ways = []
     kept_nodes = [nodes_in_bbox]
-    with progress.one_pass():
+    with progress.one_pass(_FINDING_WAYS):
         for p in sources:
             if pool is None:
                 ways, refs = _ways_touching_file(p, nib_set, progress)
@@ -1943,7 +1988,7 @@ cdef _select(sources, region, keep_relations, pool, progress):
             kept_ways.append(ways)
             kept_nodes.append(refs)
     if len(sources) > 1:
-        with progress.one_pass():
+        with progress.one_pass(_CHOOSING_WAYS):
             kept_ways, kept_nodes = _way_winners(
                 sources, kept_ways, nodes_in_bbox, pool, progress
             )
@@ -1954,7 +1999,7 @@ cdef _select(sources, region, keep_relations, pool, progress):
     if not keep_relations:
         return kept_nodes, kept_ways, [np.empty(0, dtype=np.int64) for _ in sources]
     all_ways = _unique_concat(kept_ways)
-    with progress.one_pass():
+    with progress.one_pass(_FINDING_RELATIONS):
         if pool is None:
             kept_nodes_set = _to_set(kept_nodes)
             kept_ways_set = _to_set(all_ways)
@@ -2570,12 +2615,20 @@ cdef _emit_relation_block(out, rel_batch):
     _write_blob(out, "OSMData", block)
 
 
-cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds):
+# The time of writing a way, and a relation, in times of writing a node (Helsinki).
+_WAY_WRITE_COST = 16
+_RELATION_WRITE_COST = 50
+
+
+cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds, progress=None):
     """Serialize node/way/relation records to a valid PBF at `output_path`.
 
     `nodes` is a dict of aligned arrays (id/lat/lon/version/timestamp/changeset and
     an object array `tags`); `ways`/`relations` are lists of record dicts. `bounds`
-    is (xmin, ymin, xmax, ymax) for the header bbox.
+    is (xmin, ymin, xmax, ymax) for the header bbox. `progress(done, total)`, when
+    given, gets the work done after each block (a node counting 1, a way
+    `_WAY_WRITE_COST` and a relation `_RELATION_WRITE_COST`), and the total once the file
+    is closed.
     """
     ids = np.ascontiguousarray(nodes["id"], dtype=np.int64)
     order = np.argsort(ids, kind="stable")
@@ -2591,6 +2644,8 @@ cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds):
     cdef int n = len(ids)
     cdef int i = 0
     cdef int j
+    cdef Py_ssize_t way_work = _WAY_WRITE_COST * len(ways)
+    cdef Py_ssize_t total = n + way_work + _RELATION_WRITE_COST * len(relations)
     with open(output_path, "wb") as out:
         _write_header(out, bounds)
         while i < n:
@@ -2600,16 +2655,24 @@ cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds):
                 timestamps[i:j], changesets[i:j], tags_ordered[i:j],
             )
             i = j
+            if progress is not None and i < total:
+                progress(i, total)
         i = 0
         while i < len(ways):
             j = min(i + _MAX_GROUP, len(ways))
             _emit_way_block(out, ways[i:j])
             i = j
+            if progress is not None and n + _WAY_WRITE_COST * i < total:
+                progress(n + _WAY_WRITE_COST * i, total)
         i = 0
         while i < len(relations):
             j = min(i + _MAX_GROUP, len(relations))
             _emit_relation_block(out, relations[i:j])
             i = j
+            if progress is not None and n + way_work + _RELATION_WRITE_COST * i < total:
+                progress(n + way_work + _RELATION_WRITE_COST * i, total)
+    if progress is not None:
+        progress(total, total)
     return output_path
 
 
@@ -3303,7 +3366,7 @@ cdef _repack_write(source_path, output_path, kept_nodes_set, kept_ways_set,
                    kept_rel_set, bounds, progress):
     """Sequential re-pack write: re-chunk the kept crop into canonical full blocks."""
     kept = (kept_nodes_set, kept_ways_set, kept_rel_set)
-    with open(output_path, "wb") as out, progress.one_pass():
+    with open(output_path, "wb") as out, progress.one_pass(_WRITING):
         _write_header(out, bounds)
         writer = _RepackWriter(out)
         for kind, block, group in _iter_groups(source_path, progress):
@@ -3537,12 +3600,11 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
         header bounding box is the polygon's envelope.
 
     progress : bool | callable | None (default: None)
-        As in :class:`pyrosm.OSM`: ``None`` follows :func:`pyrosm.enable_logging`,
-        ``True`` shows a bar on stderr once the merge has
-        run 2 seconds, ``False`` shows nothing, and a callable is called as
-        ``progress(done, total)`` with the bytes of the inputs read so far and their
-        total size, from ``(0, total)`` to ``(total, total)`` in each pass over them
-        (one, or two or more with ``bounding_box`` or ``polygon``).
+        ``None`` follows :func:`pyrosm.enable_logging`, ``True`` shows a bar on stderr
+        once the merge has run 2 seconds, from 0 to 100 % over the whole merge with its
+        current pass in the label, ``False`` shows nothing, and a callable is called as
+        ``progress(done, 100)`` with the percentage of the merge done, from 0 to 100 and
+        never back.
 
     Returns
     -------
@@ -3575,13 +3637,18 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     validate_progress(progress)
     workers = default_workers(validate_workers(workers))
     name = Path(sources[0]).name if len(sources) == 1 else "%d files" % len(sources)
-    with reporting(
-        progress, "Merging %s" % name, delay=2.0, leave=False, timed=True
-    ) as report:
-        return _merge(
+    with timed(
+        logger, "merge_pbf", logging.INFO, files=",".join([Path(p).name for p in sources])
+    ) as fields, stepping(
+        progress, "Merging %s" % name, _MERGE_SHARES, delay=2.0, leave=False, timed=True
+    ) as steps:
+        merged = _merge(
             sources, output_path, bounding_box, keep_relations, workers, polygon,
-            _ReadProgress(report, sources),
+            _ReadProgress(steps, sources),
         )
+        fields["output"] = Path(merged).name
+        fields["megabytes"] = os.path.getsize(merged) / 1e6
+    return merged
 
 
 cdef _merge(sources, output_path, bounding_box, keep_relations, workers, polygon,
@@ -3597,6 +3664,7 @@ cdef _merge(sources, output_path, bounding_box, keep_relations, workers, polygon
         bounds = _header_bounds(headers)
         kept = (None, None, None if keep_relations else Int64Set())
         won = (None, None, None)
+        progress.plan([_WRITING])
     else:
         region = _region(bounding_box, polygon)
         bounds = region[0]
@@ -3621,7 +3689,7 @@ cdef _merge(sources, output_path, bounding_box, keep_relations, workers, polygon
         suffix=".osm.pbf", prefix=".pyrosm_merge_", dir=out_dir
     )
     try:
-        with os.fdopen(fd, "wb") as out, progress.one_pass():
+        with os.fdopen(fd, "wb") as out, progress.one_pass(_WRITING):
             inputs = [_SortedInput(p, progress) for p in sources]
             _write_header(out, bounds, sorted_output=True)
             writer = _RepackWriter(out)

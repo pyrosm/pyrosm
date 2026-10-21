@@ -334,19 +334,14 @@ def test_node_tags_lookup():
         tags[3]
 
 
-@pytest.mark.parametrize(
-    "bounding_box, passes", [(None, 1), ([26.94, 60.525, 26.96, 60.535], 2)]
-)
-def test_read_progress(test_pbf, bounding_box, passes):
-    """A progress callback of the in-memory reader gets the bytes of the file read in
-    each pass over it, from (0, size) to (size, size), and does not change what is read.
-    A bounding box that ways cross makes a second pass for their vertices outside the
-    box."""
-    from pathlib import Path
-
+@pytest.mark.parametrize("bounding_box", [None, [26.94, 60.525, 26.96, 60.535]])
+def test_read_progress(test_pbf, bounding_box):
+    """A progress callback of the in-memory reader gets the percentage of the whole read,
+    from (0, 100) to (100, 100) and never back, also through the second pass a bounding
+    box that ways cross makes for their vertices outside the box, and does not change
+    what is read."""
     from pyrosm import OSM
 
-    size = Path(test_pbf).stat().st_size
     seen = []
     osm = OSM(
         test_pbf,
@@ -355,12 +350,9 @@ def test_read_progress(test_pbf, bounding_box, passes):
         engine="in_memory",
     )
     buildings = osm.get_buildings()
-    assert {total for _, total in seen} == {size}
-    starts = [i for i, (done, _) in enumerate(seen) if done == 0]
-    assert len(starts) == passes
-    for start, end in zip(starts, starts[1:] + [len(seen)]):
-        done = [d for d, _ in seen[start:end]]
-        assert done == sorted(done) and done[-1] == size
+    done = [d for d, _ in seen]
+    assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)
+    assert {total for _, total in seen} == {100}
     expected = OSM(
         test_pbf, bounding_box=bounding_box, progress=False, engine="in_memory"
     ).get_buildings()

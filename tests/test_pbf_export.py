@@ -990,18 +990,16 @@ def _dense_nodes(path):
 
 
 @pytest.mark.parametrize(
-    "how, passes",
+    "how",
     [
-        ("crop", 2), ("repack", 2), ("to_pbf", 2), ("merge", 1), ("merge with a box", 5),
-        ("merge of one file twice", 1), ("crop in parallel", None),
+        "crop", "repack", "to_pbf", "merge", "merge with a box",
+        "merge of one file twice", "crop in parallel",
     ],
 )
-def test_crop_and_merge_report_progress(helsinki_pbf, tmp_path, how, passes):
-    # A progress callable gets the bytes of the inputs read, from (0, total) to
-    # (total, total) in each pass over them: a crop of a file sorted by type selects in
-    # one pass and writes in another; a merge of two files reads them once, also when
-    # they are one file given twice, and a merge with a box first selects in four passes.
-    # A parallel crop selects in three passes, or in one when its workers cannot start.
+def test_crop_and_merge_report_progress(helsinki_pbf, tmp_path, how):
+    # A progress callable gets the percentage of the whole crop or merge done, as
+    # (done, 100), from 0 to 100 and never back, moving through every pass over the
+    # files.
     from pyrosm.pbf_export import crop_pbf, merge_pbf
 
     calls = []
@@ -1012,23 +1010,18 @@ def test_crop_and_merge_report_progress(helsinki_pbf, tmp_path, how, passes):
             inputs = [inputs[0], inputs[0]]
         box = MERGE_CROP if how == "merge with a box" else None
         merge_pbf(inputs, out, box, progress=lambda *call: calls.append(call))
+    elif how == "to_pbf":
+        osm = OSM(helsinki_pbf, bounding_box=CROP_BBOX,
+                  progress=lambda *call: calls.append(call))
+        osm.to_pbf(out)
     else:
-        inputs = [helsinki_pbf]
-        if how == "to_pbf":
-            osm = OSM(helsinki_pbf, bounding_box=CROP_BBOX,
-                      progress=lambda *call: calls.append(call))
-            osm.to_pbf(out)
-        else:
-            crop_pbf(helsinki_pbf, out, CROP_BBOX, repack=how == "repack",
-                     workers=2 if how == "crop in parallel" else 1,
-                     progress=lambda *call: calls.append(call))
-    total = sum(Path(path).stat().st_size for path in inputs)
-    starts = [i for i, call in enumerate(calls) if call == (0, total)]
-    assert len(starts) in ((2, 4) if passes is None else (passes,)) and starts[0] == 0
-    for start, end in zip(starts, starts[1:] + [len(calls)]):
-        done = [d for d, t in calls[start:end]]
-        assert calls[end - 1] == (total, total) and done == sorted(done)
-        assert all(t == total for _, t in calls[start:end])
+        crop_pbf(helsinki_pbf, out, CROP_BBOX, repack=how == "repack",
+                 workers=2 if how == "crop in parallel" else 1,
+                 progress=lambda *call: calls.append(call))
+    done = [d for d, _ in calls]
+    assert calls[0] == (0.0, 100) and calls[-1] == (100.0, 100)
+    assert all(total == 100 for _, total in calls) and done == sorted(done)
+    assert len(set(done)) > 5  # it moves within the passes, not only between them
     with pytest.raises(ValueError, match="progress must be None, True, False or a callable"):
         crop_pbf(helsinki_pbf, out, CROP_BBOX, progress="yes")
 
@@ -2287,7 +2280,7 @@ def test_write_pbf_metadata_preserved(helsinki_pbf, tmp_path):
 
 def test_write_pbf_row_tags_strips_members():
     import pandas as pd
-    from pyrosm.pbf_writer import _row_tags
+    from pyrosm.pbf_writer import _frame_tags
 
     row = pd.Series(
         {
@@ -2298,7 +2291,7 @@ def test_write_pbf_row_tags_strips_members():
             "geometry": None,
         }
     )
-    tags = _row_tags(row, ["route"])
+    tags = _frame_tags(pd.DataFrame([row]), ["route"])[0]
     assert "members" not in tags  # relation-member metadata is not an OSM tag
     assert tags.get("network") == "ncn"
     assert tags.get("route") == "bicycle"
@@ -2390,7 +2383,7 @@ def test_write_pbf_osmium_counts_additions(helsinki_pbf, tmp_path):
 # ---------------------------------------------------------------------------
 def test_pbf_writer_tag_helpers():
     import pandas as pd
-    from pyrosm.pbf_writer import _row_tags, _record_tags, _tag_key, _is_missing
+    from pyrosm.pbf_writer import _frame_tags, _record_tags, _tag_key, _is_missing
 
     # JSON-string tags: members + empty key stripped, real tags kept.
     row = pd.Series(
@@ -2402,7 +2395,7 @@ def test_pbf_writer_tag_helpers():
             "geometry": None,
         }
     )
-    tags = _row_tags(row, ["highway"])
+    tags = _frame_tags(pd.DataFrame([row]), ["highway"])[0]
     assert tags["highway"] == "residential" and tags["surface"] == "asphalt"
     assert "members" not in tags and "" not in tags
 
@@ -2416,7 +2409,7 @@ def test_pbf_writer_tag_helpers():
             "geometry": None,
         }
     )
-    assert _row_tags(row2, ["highway"])["highway"] == "path"
+    assert _frame_tags(pd.DataFrame([row2]), ["highway"])[0]["highway"] == "path"
 
     assert _tag_key("") is None
     assert _tag_key(5) == "5"
@@ -2540,7 +2533,7 @@ def test_pbf_writer_reproject_and_normalize_helpers():
 
 def test_pbf_writer_tag_edge_cases():
     import pandas as pd
-    from pyrosm.pbf_writer import _row_tags, _record_tags
+    from pyrosm.pbf_writer import _frame_tags, _record_tags
 
     # A None-valued column removes its tag, also when the JSON tags hold it.
     row = pd.Series(
@@ -2553,7 +2546,8 @@ def test_pbf_writer_tag_edge_cases():
             "geometry": None,
         }
     )
-    assert _row_tags(row, ["highway", "ref"]) == {"highway": "path"}
+    tags = _frame_tags(pd.DataFrame([row]), ["highway", "ref"])
+    assert tags == [{"highway": "path"}]
 
     rec = {
         "id": 1,

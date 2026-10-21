@@ -1,5 +1,4 @@
 import os
-import warnings
 from libc.stdint cimport int64_t
 from pyrosm.tagparser cimport tounicode
 from pyrosm._arrays cimport concatenate_dicts_of_arrays
@@ -7,9 +6,16 @@ from pyrosm.data_filter cimport (
     get_nodeid_lookup_khash,
     nodes_for_way_exist_khash,
     get_latest_version,
-    clean_empty_values_from_ways,
+    latest_version_rows,
 )
 from pyrosm.utils import valid_header_block
+from pyrosm.utils.progress import (
+    COMPLETING_RELATIONS,
+    COMPLETING_WAYS,
+    DECODING,
+    SELECTING_VERSIONS,
+    start_step,
+)
 from pyrosm.frames import create_df
 from pyrosm.node_lookup import NodeLocations
 from pyrosm.way_store import (
@@ -233,11 +239,17 @@ cpdef parse_osm_data(
         unix_time_filter,
         bint keep_metadata=True,
         bint complete_relations=False,
-        progress=None,
+        steps=None,
 ):
+    """The nodes, ways, relations, node coordinates and completed relation member ways
+    of ``filepath``, read in memory, in the steps of ``steps`` (a
+    :class:`~pyrosm.utils.progress.Steps`, or None): :data:`DECODING`, then for a
+    history read (``unix_time_filter``) :data:`SELECTING_VERSIONS`, and with a
+    ``bounding_box`` the passes :data:`COMPLETING_RELATIONS` (with
+    ``complete_relations``) and :data:`COMPLETING_WAYS`."""
     return _parse_osm_data(filepath, bounding_box, exclude_relations,
                            unix_time_filter, keep_metadata, complete_relations,
-                           progress)
+                           steps)
 
 
 cdef _parse_osm_data(
@@ -247,8 +259,11 @@ cdef _parse_osm_data(
         unix_time_filter,
         bint keep_metadata=True,
         bint complete_relations=False,
-        progress=None,
+        steps=None,
 ):
+    """The read of :func:`parse_osm_data`, with its arguments: one pass over the blocks
+    for the elements, then each element's version at ``unix_time_filter``, and with a
+    ``bounding_box`` the passes for the member ways and the nodes the box cut off."""
     ways_builder = WayStoreBuilder()
     # History reads select each node's state in a DataFrame, so they keep a dict per node.
     tags_builder = NodeTagsBuilder() if unix_time_filter is None else None
@@ -261,7 +276,8 @@ cdef _parse_osm_data(
     # move into or out of the box between versions.
     box = None if unix_time_filter is not None else bounding_box
 
-    for strings, header, nodes, ways, relations in iter_decoded_blocks(filepath, progress):
+    for strings, header, nodes, ways, relations in iter_decoded_blocks(
+            filepath, start_step(steps, DECODING)):
         if nodes is not None:
             all_nodes.append(_node_columns(header, nodes, strings, box,
                                            unix_time_filter, None, keep_metadata,
@@ -287,37 +303,31 @@ cdef _parse_osm_data(
     relations_df = create_df(concatenate_dicts_of_arrays(all_relations))
 
     # If no nodes were parsed there is no 'id' column. Without any nodes the ways cannot
-    # be georeferenced anyway, so return an empty result. (A swapped/inverted bounding box
-    # is rejected earlier with a ValueError at OSM() construction; reaching here means the
-    # bounding box is well-formed but does not overlap this PBF's data extent.)
+    # be georeferenced anyway, so return an empty result, which the feature reads warn
+    # about. (A swapped/inverted bounding box is rejected earlier with a ValueError at
+    # OSM() construction; reaching here means the bounding box is well-formed but does
+    # not overlap this PBF's data extent.)
     if "id" not in all_nodes:
-        warnings.warn(
-            "The given bounding box did not contain any OSM nodes, so no data could be "
-            "parsed. It likely does not overlap the data extent of this PBF file.",
-            UserWarning,
-            stacklevel=2,
-        )
         return {}, [], {}, {}, []
     if tags_builder is not None:
         all_nodes = _with_tags(all_nodes, tags_builder.build())
 
     # Keep each element's state at the timestamp if filter is used
     if unix_time_filter is not None:
+        start_step(steps, SELECTING_VERSIONS)
         nodes_df = get_latest_version(create_df(all_nodes))
-        ways_df = get_latest_version(pd.DataFrame(all_ways.records()))
+        all_ways = all_ways.records(latest_version_rows(all_ways.ids, all_ways.visible))
         relations_df = get_latest_version(relations_df)
         if bounding_box is not None:
             xmin, ymin, xmax, ymax = bounding_box
             inside = nodes_df["lon"].between(xmin, xmax) & nodes_df["lat"].between(ymin, ymax)
             nodes_df = nodes_df.loc[inside]
-            if len(ways_df) > 0:
+            if len(all_ways) > 0:
                 node_lookup = get_nodeid_lookup_khash([{"id": nodes_df["id"].values}])
-                ways_df = ways_df.loc[
-                    [nodes_for_way_exist_khash(ids, node_lookup) for ids in ways_df["nodes"]]
+                all_ways = [
+                    way for way in all_ways
+                    if nodes_for_way_exist_khash(way["nodes"], node_lookup)
                 ]
-
-        # DataFrame structure produces unnecesary None values that needs to be cleaned
-        all_ways = clean_empty_values_from_ways(ways_df.to_dict(orient="records"))
         all_nodes = {col: nodes_df[col].values for col in nodes_df.columns}
 
     # Keys with numpy arrays
@@ -360,18 +370,17 @@ cdef _parse_osm_data(
             missing = np.fromiter(missing_way_ids, dtype=np.int64)
             completed = WayStoreBuilder()
             for strings, header, nodes, ways, relations in iter_decoded_blocks(
-                    filepath, progress):
+                    filepath, start_step(steps, COMPLETING_RELATIONS)):
                 if ways is not None:
                     completed.add(
                         ways, strings, _way_mask(ways, None, unix_time_filter, missing)
                     )
-            completed_relation_ways = completed.build().records()
-            if unix_time_filter is not None and len(completed_relation_ways) > 0:
-                # Mirror the OSH latest-version selection applied to all_ways above.
-                cw_df = get_latest_version(pd.DataFrame(completed_relation_ways))
-                completed_relation_ways = clean_empty_values_from_ways(
-                    cw_df.to_dict(orient="records")
-                )
+            completed = completed.build()
+            rows = None
+            if unix_time_filter is not None:
+                # The same latest-version selection as for all_ways above.
+                rows = latest_version_rows(completed.ids, completed.visible)
+            completed_relation_ways = completed.records(rows)
 
     # Complete the geometries of ways that straddle the bounding box (#236). A way is
     # kept when >=1 of its nodes is inside the box, but the box-filtered node parse
@@ -390,7 +399,7 @@ cdef _parse_osm_data(
         if len(node_id_filter) > 0:
             boundary_nodes = []
             for strings, header, nodes, ways, relations in iter_decoded_blocks(
-                    filepath, progress):
+                    filepath, start_step(steps, COMPLETING_WAYS)):
                 if nodes is not None:
                     boundary_nodes.append(_node_columns(
                         header, nodes, strings, None, unix_time_filter,

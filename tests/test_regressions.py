@@ -3807,3 +3807,613 @@ def test_get_network_plain_dict_filter_keeps_its_matches(engine):
     assert ids[0] == ids[1] == ids[2] and len(ids[0]) > 0
     others = osm.get_network(custom_filter=forms[0], filter_type="exclude")
     assert "footway" not in set(others["highway"]) and not set(others["id"]) & set(ids[0])
+
+
+def test_progress_of_several_passes_keeps_moving(monkeypatch):
+    """A bar of several passes was reset at each pass, which restarted its 2-second
+    delay, so it stood at 0 % through passes shorter than that, and a long step without
+    reports looked frozen. Steps report one progress from 0 to 100 % that names the
+    current step and never goes back, also when the steps to come change; a reset bar
+    keeps its start time; and an open bar is redrawn while no report comes."""
+    import time
+
+    from tqdm import std
+
+    from pyrosm.utils import progress
+
+    calls = []
+    steps = progress.Steps(lambda *call: calls.append(call), "Cropping x", {"b": 3.0})
+    steps.plan(["a", "b"])  # a takes 25 %, b 75 %
+    steps.start_step("a")(50, 100)
+    steps.plan(["c", "d"])  # the rest, from 12.5 %, in two equal steps
+    advance = steps.start_step("c")
+    advance(0, 0)  # an empty step: no report
+    advance(1, 1)
+    steps.start_step("a")(0, 1)  # not planned: it takes the rest, and nothing goes back
+    steps.finish()
+    done = [d for d, _ in calls]
+    assert done[:3] == [0.0, 12.5, 56.2] and done[-1] == 100.0 and done == sorted(done)
+    assert all(total == 100 for _, total in calls)
+
+    monkeypatch.setattr(progress, "_bar_class", lambda: (std.tqdm, False))
+    monkeypatch.setattr(progress, "_clock", iter([0.0, 5.0, 6.0]).__next__)
+    bar = progress.Bar("Cropping x", delay=2.0, unit="%")
+    steps = progress.Steps(bar, "Cropping x")
+    steps.start_step("finding the ways")(1, 2)
+    assert bar.bar.desc.startswith("Cropping x: finding the ways")
+    started = bar.bar.start_t
+    bar(10, 100)  # back: a reset after the delay keeps the start time
+    assert bar.bar.start_t == started
+    bar.close()
+    # A hidden bar (no terminal) is reset after its delay as well.
+    monkeypatch.setattr(progress, "_bar_class", lambda: (std.tqdm, True))
+    monkeypatch.setattr(progress, "_clock", iter([0.0, 5.0, 6.0]).__next__)
+    hidden = progress.Bar("Cropping x", delay=2.0, unit="%")
+    hidden(50, 100)
+    hidden(10, 100)
+    hidden.close()
+
+    refreshed = []
+
+    class Counted(std.tqdm):
+        def refresh(self, *args, **kwargs):
+            refreshed.append(True)
+            return super().refresh(*args, **kwargs)
+
+    def wait_for(condition):
+        deadline = time.monotonic() + 10.0
+        while not condition() and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    monkeypatch.setattr(progress, "_bar_class", lambda: (Counted, False))
+    monkeypatch.setattr(progress, "_clock", time.monotonic)
+    monkeypatch.setattr(progress, "_REDRAW_SECONDS", 0.01)
+    bar = progress.Bar("Cropping x", unit="%")
+    bar(1, 100)
+    before = len(refreshed)
+    wait_for(lambda: len(refreshed) > before)
+    bar.close()
+    assert len(refreshed) > before
+    # Not before its delay, through several redraw rounds.
+    bar = progress.Bar("Cropping x", delay=60.0, unit="%")
+    woken = []
+    wait = bar._closed.wait
+    bar._closed.wait = lambda timeout: woken.append(True) or wait(timeout)
+    before = len(refreshed)
+    bar(1, 100)  # starts the redraw thread
+    wait_for(lambda: len(woken) >= 3)
+    bar.close()
+    assert len(woken) >= 3 and len(refreshed) == before
+
+
+_BUILD = ["collecting the elements", "building the ways", "building the relations"]
+
+
+@pytest.mark.parametrize(
+    "engine, read, steps",
+    [
+        (
+            "out_of_core",
+            "buildings",
+            [
+                "indexing the file",
+                "decoding the blocks",
+                "collecting the elements",
+                "building the geometries",
+                "loading the result",
+            ],
+        ),
+        (
+            "out_of_core",
+            "network",
+            [
+                "indexing the file",
+                "decoding the blocks",
+                "building the edges",
+                "writing the result",
+                "loading the result",
+            ],
+        ),
+        (
+            "out_of_core",
+            "network with nodes",
+            [
+                "indexing the file",
+                "decoding the blocks",
+                "gathering the nodes",
+                "building the edges",
+                "writing the result",
+                "loading the result",
+            ],
+        ),
+        ("out_of_core", "second buildings", ["loading the result"]),
+        ("in_memory", "buildings", ["decoding the blocks"] + _BUILD),
+        (
+            "in_memory",
+            "network with nodes",
+            ["decoding the blocks", "collecting the elements", "building the edges"],
+        ),
+        ("in_memory", "second buildings", _BUILD),
+        (
+            "in_memory",
+            "box buildings",
+            [
+                "decoding the blocks",
+                "completing the relations",
+                "completing the ways",
+            ]
+            + _BUILD,
+        ),
+        (
+            "in_memory",
+            "history buildings",
+            ["decoding the blocks", "selecting the versions"] + _BUILD,
+        ),
+    ],
+)
+def test_read_progress_covers_the_whole_read(
+    engine, read, steps, fresh_cache, monkeypatch
+):
+    """A read reported only its decoding (12-20 % of an out-of-core read of Paris, 17 %
+    of one in memory), then went silent while it built the geometries, wrote the cache
+    and loaded the result, or selected the versions of a history read (92 % of a read
+    of the Helsinki history sample); a second read on the same object showed nothing.
+    The whole read is one progress through named steps, from 0 to 100 %."""
+    from pyrosm import OSM, get_data
+    from pyrosm.utils import progress
+
+    fp, options = get_data("test_pbf"), {}
+    if read == "box buildings":
+        fp = get_data("helsinki_pbf")
+        options = {"bounding_box": [24.93, 60.16, 24.95, 60.18], "complete_relations": True}
+    elif read == "history buildings":
+        fp = get_data("helsinki_test_history_pbf")
+    calls = {
+        "buildings": lambda osm: osm.get_buildings(),
+        "network": lambda osm: osm.get_network("driving"),
+        "network with nodes": lambda osm: osm.get_network("driving", nodes=True),
+        "history buildings": lambda osm: osm.get_buildings(timestamp="2019-01-01"),
+    }
+    seen = []
+    osm = OSM(fp, engine=engine, progress=lambda *report: seen.append(report), **options)
+    if read == "second buildings":
+        calls["buildings"](osm)
+        seen.clear()
+    started = []
+    real = progress.Steps.start_step
+
+    def recorded(self, name):
+        started.append(name)
+        return real(self, name)
+
+    monkeypatch.setattr(progress.Steps, "start_step", recorded)
+    calls.get(read, calls["buildings"])(osm)
+    assert list(dict.fromkeys(started)) == steps
+    done = [d for d, _ in seen]
+    assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)
+
+
+def test_history_ways_are_chosen_without_a_frame_of_their_records(monkeypatch):
+    """A history read put every version of every way into one table with a column for
+    each tag key of the file (1,211 columns for 10 tags per way in the Helsinki sample)
+    and cleaned it again: 21 of the 23 s of a read. The versions are chosen from the
+    ways' ids and deletion flags, and each way is its last version's record as read."""
+    import pandas as pd
+
+    import pyrosm.pbfreader as reader
+    from pyrosm import get_data
+    from pyrosm.utils import datetime_to_unix_time
+
+    fp = get_data("helsinki_test_history_pbf")
+    when = datetime_to_unix_time(pd.to_datetime("2014-01-01", utc=True))
+    latest = {}
+    for way in reader.parse_osm_data(fp, None, False, None)[1]:
+        if way["timestamp"] <= when:
+            latest[way["id"]] = way
+    expected = [way for _, way in sorted(latest.items()) if way["visible"]]
+
+    class NoRecordFrames:
+        def __getattr__(self, name):
+            return getattr(pd, name)
+
+        @staticmethod
+        def DataFrame(data=None, *args, **kwargs):
+            assert not isinstance(data, list), "a frame of way records"
+            return pd.DataFrame(data, *args, **kwargs)
+
+    monkeypatch.setattr(reader, "pd", NoRecordFrames())
+    ways = reader.parse_osm_data(fp, None, False, when)[1]
+    assert ways == expected and len(ways) > 0
+
+
+@pytest.mark.parametrize("parsed", [True, False])
+def test_write_pbf_reports_progress_through_its_steps(tmp_path, monkeypatch, parsed):
+    """write_pbf showed no progress and took no progress parameter (33 s without a sign
+    for the buildings of Helsinki). It reports one progress from 0 to 100 % through its
+    steps, after the read of the file when it is not read yet; by default it follows
+    the object's progress, progress=False shows nothing, and other values are refused."""
+    from pyrosm import OSM, get_data
+    from pyrosm.utils import progress
+
+    fp = get_data("test_pbf")
+    seen = []
+    osm = OSM(fp, engine="in_memory", progress=lambda *report: seen.append(report))
+    buildings = osm.get_buildings()
+    if not parsed:
+        osm = OSM(fp, engine="in_memory", progress=lambda *report: seen.append(report))
+    seen.clear()
+    started = []
+    real = progress.Steps.start_step
+
+    def recorded(self, name):
+        started.append(name)
+        return real(self, name)
+
+    monkeypatch.setattr(progress.Steps, "start_step", recorded)
+    osm.write_pbf(buildings, str(tmp_path / "all.osm.pbf"))
+    steps = [
+        "applying the edits",
+        "preparing the nodes",
+        "preparing the ways",
+        "preparing the relations",
+        "writing the file",
+    ]
+    assert list(dict.fromkeys(started)) == ([] if parsed else ["decoding the blocks"]) + steps
+    done = [d for d, _ in seen]
+    assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)
+    seen.clear()
+    osm.write_pbf(buildings, str(tmp_path / "quiet.osm.pbf"), progress=False)
+    assert seen == []
+    with pytest.raises(ValueError, match="progress must be"):
+        osm.write_pbf(buildings, str(tmp_path / "refused.osm.pbf"), progress="yes")
+
+
+@pytest.mark.parametrize("keep_metadata", [True, False])
+def test_write_pbf_reads_rows_and_nodes_as_columns(tmp_path, monkeypatch, keep_metadata):
+    """write_pbf went through the frame with iterrows() and copied every node of the
+    file with one call each: 33 s for the buildings of Helsinki (17 s now). The rows
+    and the nodes are read as columns, also without metadata, and the written file
+    holds the same elements."""
+    import geopandas as gpd
+
+    import pyrosm.pbf_writer as writer
+    from pyrosm import OSM, get_data
+
+    osm = OSM(
+        get_data("test_pbf"),
+        engine="in_memory",
+        keep_metadata=keep_metadata,
+        progress=False,
+    )
+    buildings = osm.get_buildings()
+
+    def refused(*args, **kwargs):
+        raise AssertionError("one Python call per row")
+
+    added = []
+    add_node = writer._RecordBuilder.add_node
+    monkeypatch.setattr(gpd.GeoDataFrame, "iterrows", refused)
+    monkeypatch.setattr(
+        writer._RecordBuilder,
+        "add_node",
+        lambda self, *node: added.append(node) or add_node(self, *node),
+    )
+    path = osm.write_pbf(buildings, str(tmp_path / "out.osm.pbf"))
+    assert added == []
+    written = OSM(path, engine="in_memory", progress=False).get_buildings()
+    assert sorted(written["id"]) == sorted(buildings["id"])
+
+
+def test_write_pbf_copies_the_nodes_of_any_store():
+    """The copy of the nodes as arrays writes what the copy one node at a time wrote: a
+    repeated id in each of its rows, edited in each, and large integer metadata exactly
+    where some nodes have none."""
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    import pyrosm.pbf_writer as writer
+    from pyrosm.node_lookup import NodeLocations
+
+    store = NodeLocations(
+        {
+            "id": np.array([7, 7, 8]),
+            "lon": [1.0, 1.0, 2.0],
+            "lat": [3.0, 3.0, 4.0],
+            "changeset": np.array([9007199254740993, None, 5], dtype=object),
+            "tags": np.array([None, {"a": "b"}, None], dtype=object),
+        }
+    )
+    plan = SimpleNamespace(
+        removed_nodes=set(), node_coords={7: (5.0, 6.0)}, node_tags={8: {"c": "d"}}
+    )
+    builder = writer._RecordBuilder()
+    writer._add_base_nodes(builder, store, {}, plan)
+    assert builder.node_ids == [7, 7, 8] and builder.lons == [5.0, 5.0, 2.0]
+    assert builder.css == [9007199254740993, 0, 5] and builder.vers == [1, 1, 1]
+    assert builder.ntags == [None, {"a": "b"}, {"c": "d"}]
+
+
+_GRAPH_STEPS = ["directing the edges", "keeping the largest connected part"]
+
+
+@pytest.mark.parametrize(
+    "engine, simplify, read",
+    [
+        (
+            "out_of_core",
+            True,
+            [
+                "indexing the file",
+                "decoding the blocks",
+                "gathering the nodes",
+                "building the edges",
+            ],
+        ),
+        (
+            "out_of_core",
+            False,
+            [
+                "indexing the file",
+                "decoding the blocks",
+                "gathering the nodes",
+                "building the edges",
+                "writing the result",
+                "loading the result",
+            ],
+        ),
+        (
+            "in_memory",
+            True,
+            ["decoding the blocks", "collecting the elements", "building the edges"],
+        ),
+    ],
+)
+def test_get_graph_reports_one_progress(engine, simplify, read, fresh_cache, monkeypatch):
+    """get_graph showed the read and the graph as two progresses, the graph's counting
+    steps, and the graph steps ignored the progress of the OSM object (progress=False
+    still drew a bar). One progress from 0 to 100 % covers the read and the graph
+    steps, and progress=False draws no bar."""
+    from pyrosm import OSM, get_data
+    from pyrosm.utils import progress
+
+    started = []
+    real = progress.Steps.start_step
+    monkeypatch.setattr(
+        progress.Steps,
+        "start_step",
+        lambda self, name: started.append(name) or real(self, name),
+    )
+    fp = get_data("test_pbf")
+    seen = []
+    osm = OSM(fp, engine=engine, progress=lambda *report: seen.append(report))
+    osm.get_graph("driving", graph_type="networkx", simplify=simplify)
+    graph = _GRAPH_STEPS[:1] + (["simplifying"] if simplify else []) + _GRAPH_STEPS[1:]
+    assert list(dict.fromkeys(started)) == read + graph + ["building the graph"]
+    done = [d for d, _ in seen]
+    assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)
+
+    bars = []
+    monkeypatch.setattr(progress.Bar, "__init__", lambda self, *a, **k: bars.append(a))
+    OSM(fp, engine=engine, progress=False).get_graph("driving", graph_type="networkx")
+    assert bars == []
+
+
+def test_find_extracts_reports_reading_the_indexes(tmp_path, monkeypatch):
+    """On first use find_extracts downloaded Movisda's indexes (29 MB, 8 s for an area
+    in Helsinki) without a sign, and took no progress. It reports reading the indexes,
+    by their bytes, and then the extract sizes, from 0 to 100 %."""
+    from urllib.error import URLError
+
+    from shapely.geometry import box
+
+    import pyrosm.data.extract_index as ei
+    from pyrosm import find_extracts
+    from pyrosm.utils import progress
+
+    def cached_index(url, path, update=False, check=None, net=None, progress=None):
+        if "/admin/" in url:
+            # A server that gives no size, and no copy to take one from.
+            for received in (0, 5, 10):
+                progress(received, None)
+            raise URLError("down")
+        for received in (0, 5, 10):
+            progress(received, 10)
+        return ei._MOVISDA_GRID_PATH
+
+    def download_sizes(urls, directory, update=False, net=None, fallback=None, progress=None):
+        progress(0, 1)
+        progress(1, 1)
+        return {}
+
+    monkeypatch.setattr(ei, "_cached_index", cached_index)
+    monkeypatch.setattr(ei, "_download_sizes", download_sizes)
+    started = []
+    real = progress.Steps.start_step
+    monkeypatch.setattr(
+        progress.Steps,
+        "start_step",
+        lambda self, name: started.append(name) or real(self, name),
+    )
+    seen = []
+    with pytest.warns(UserWarning, match="administrative index is unavailable"):
+        find_extracts(
+            box(24.9, 60.15, 25.0, 60.2),
+            directory=tmp_path,
+            progress=lambda *report: seen.append(report),
+        )
+    assert started == ["reading the extract indexes", "reading the extract sizes"]
+    done = [d for d, _ in seen]
+    assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)
+    assert len(set(done)) > 4
+
+
+@pytest.mark.parametrize(
+    "function, place",
+    [
+        ("get_data", "test_pbf"),
+        ("get_data_by_bbox", [24.9, 60.15, 25.0, 60.2]),
+        ("get_data_by_geocoding", "Helsinki"),
+        ("get_data_by_area", [24.9, 60.15, 25.0, 60.2]),
+        ("find_extracts", [24.9, 60.15, 25.0, 60.2]),
+    ],
+)
+def test_download_functions_refuse_an_invalid_progress_first(
+    function, place, monkeypatch
+):
+    """A progress that is not True, False, None or a function was refused only when the
+    first download started: after the extract indexes or the geocoding request, and
+    never for a file bundled with pyrosm. Every download function refuses it before
+    any request."""
+    import pyrosm
+    import pyrosm.data.geocoding as geocoding
+    import pyrosm.utils.download as dl
+
+    def no_request(*args, **kwargs):
+        pytest.fail("a request was sent")
+
+    monkeypatch.setattr(dl._Net, "open", no_request)
+    monkeypatch.setattr(geocoding, "open_url", no_request)
+    with pytest.raises(ValueError, match="progress must be"):
+        getattr(pyrosm, function)(place, progress="yes")
+
+
+def test_index_download_keeps_its_failures(tmp_path, monkeypatch):
+    """Reading an index in chunks for its progress must not hide two failures: an index
+    that stops short of its Content-Length is fetched again, and left out when it keeps
+    failing, and an error of the progress function reaches the caller of find_extracts
+    unchanged, after one request."""
+    import io
+
+    from shapely.geometry import box
+
+    import pyrosm.data.extract_index as ei
+    import pyrosm.utils.download as dl
+
+    class Response(io.BytesIO):
+        headers = {"Content-Length": "10"}
+
+    calls = []
+
+    def short(url, method="GET", headers=None, timeout=None, opener=None):
+        calls.append(url)
+        return Response(b"abc")
+
+    monkeypatch.setattr(dl, "open_url", short)
+    monkeypatch.setattr(dl, "_sleep", lambda seconds: None)
+    with pytest.raises(OSError, match="stopped after 3 of 10 bytes"):
+        ei._cached_index("https://x/index.geojson", tmp_path / "index.geojson")
+    assert len(calls) == dl._ATTEMPTS
+
+    def stop(done, total):
+        if done > 0:
+            raise ValueError("stop")
+
+    calls.clear()
+    with pytest.raises(ValueError, match="stop"):
+        ei.find_extracts(box(24.9, 60.15, 25.0, 60.2), directory=tmp_path, progress=stop)
+    assert len(calls) == 1
+
+
+def test_crops_merges_and_writes_log_a_line(tmp_path, caplog, monkeypatch):
+    """Every read logs a line, but crops, merges and writes logged nothing. Each logs one
+    INFO line with its files, its output and the seconds it took."""
+    import logging
+
+    from pyrosm import OSM, get_data, merge_pbf
+    from pyrosm.pbf_export import crop_pbf
+
+    monkeypatch.setattr(logging.getLogger("pyrosm"), "propagate", True)
+    caplog.set_level(logging.INFO, logger="pyrosm")
+    fp = get_data("test_pbf")
+    crop_pbf(
+        fp,
+        str(tmp_path / "crop.osm.pbf"),
+        bounding_box=[26.94, 60.525, 26.96, 60.535],
+        progress=False,
+    )
+    merge_pbf([fp], str(tmp_path / "merged.osm.pbf"), progress=False)
+    osm = OSM(fp, engine="in_memory", progress=False)
+    osm.write_pbf(osm.get_buildings(), str(tmp_path / "written.osm.pbf"))
+    messages = [r.getMessage() for r in caplog.records if r.name.startswith("pyrosm")]
+    lines = {message.split()[0]: message for message in messages}
+    ops = [message.split()[0] for message in messages]
+    assert [ops.count(op) for op in ("crop_pbf", "merge_pbf", "write_pbf")] == [1, 1, 1]
+    assert "file=test.osm.pbf" in lines["crop_pbf"]
+    assert "output=crop.osm.pbf" in lines["crop_pbf"]
+    assert "files=test.osm.pbf " in lines["merge_pbf"]
+    assert "output=merged.osm.pbf" in lines["merge_pbf"]
+    assert "output=written.osm.pbf" in lines["write_pbf"]
+    assert all("seconds=" in lines[op] for op in ("crop_pbf", "merge_pbf", "write_pbf"))
+
+
+def test_read_from_the_cache_warns_as_its_build(fresh_cache, tmp_path):
+    """A bounding-box read warned that relations reach beyond the box only when it was
+    built; the same read served from the cache gave no warning. It gives the warnings
+    of the build again. The record follows its result: a rebuild without warnings
+    removes it, an unreadable one gives nothing, and builds running at once in two
+    threads each record only their own warnings."""
+    import threading
+    import warnings
+
+    from pyrosm import OSM, get_data
+    from pyrosm.engine import cache
+    from pyrosm.utils import recording_warnings, warn_recorded
+
+    fp = get_data("helsinki_pbf")
+    for read in ("built", "from the cache"):
+        with pytest.warns(UserWarning, match="extend beyond the bounding box"):
+            OSM(fp, bounding_box=[24.93, 60.16, 24.95, 60.18], progress=False).get_buildings()
+
+    path = tmp_path / "result.parquet"
+    cache._keep_warnings(path, ["old"])
+    cache._keep_warnings(path, [])
+    assert not cache._warnings_file(path).exists()
+    with pytest.raises(TypeError):
+        cache._keep_warnings(path, [object()])
+    assert list(tmp_path.iterdir()) == []
+    cache._warnings_file(path).write_text("{not json")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        cache._warn_again(path)
+    assert caught == []
+
+    both = threading.Barrier(2)
+    recorded = {}
+
+    def build(name):
+        with recording_warnings() as messages:
+            both.wait()
+            warn_recorded(name)
+            both.wait()
+        recorded[name] = messages
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        threads = [threading.Thread(target=build, args=(name,)) for name in "ab"]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    assert recorded == {"a": ["a"], "b": ["b"]}
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_empty_box_warns_once_in_either_engine(engine, fresh_cache):
+    """A bounding box without data gave the in-memory engine two warnings and the
+    out-of-core engine one. Both give the same single warning."""
+    import warnings
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(
+        get_data("test_pbf"),
+        engine=engine,
+        bounding_box=[0.0, 0.0, 0.01, 0.01],
+        progress=False,
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert osm.get_buildings() is None
+    messages = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
+    assert messages == ["Could not find any building elements for given area."]

@@ -1,5 +1,4 @@
 import numpy as np
-import pandas as pd
 from cpython cimport array
 from pyrosm.filter_compiler import CompiledFilter
 from pyrosm.config.osm_filters import AccessRule
@@ -341,45 +340,27 @@ cdef filter_node_indices(node_arrays, osm_keys, data_filter, filter_type, bint k
     return indices
 
 
+cpdef latest_version_rows(ids, visible):
+    """The rows of the state of each element in a history read, given the ``ids`` and
+    ``visible`` flags of all its versions (in ascending order per element): the row of
+    each element's last version, sorted by id, without the elements whose last version
+    is a deletion (``visible`` False)."""
+    ids = np.asarray(ids)
+    order = np.argsort(ids, kind="stable")
+    sorted_ids = ids[order]
+    last = np.ones(len(ids), dtype=bool)
+    last[:-1] = sorted_ids[1:] != sorted_ids[:-1]
+    rows = order[last]
+    return rows[np.asarray(visible)[rows] == True]
+
+
 cpdef get_latest_version(df):
-    """The state of each element in a history read: its last version (versions come in
-    ascending order), taken whole, so a value the latest version lacks stays missing
-    instead of coming from an older version. An element whose last version is a deletion
-    (``visible`` False) is left out. Rows are sorted by id, with ``id`` as the first
-    column."""
+    """The state of each element in a history read: its last version (see
+    :func:`latest_version_rows`), taken whole, so a value the latest version lacks stays
+    missing instead of coming from an older version. Rows are sorted by id, with ``id``
+    as the first column."""
     if len(df) == 0:
         return df
-    latest = df.drop_duplicates("id", keep="last").sort_values("id")
-    latest = latest.loc[latest["visible"] == True]
+    rows = latest_version_rows(df["id"].to_numpy(), df["visible"].to_numpy())
     columns = ["id"] + [column for column in df.columns if column != "id"]
-    return latest[columns].reset_index(drop=True)
-
-
-cdef inline bint _is_empty_tag_value(object v):
-    """Return True if ``v`` is a missing-tag sentinel that should be dropped.
-
-    A tag cell is "empty" only if it is ``None`` (pre-pandas-3.0), ``NaN``, or
-    pandas-3.0 string/object ``pd.NA``. Array/list/tuple cells (e.g. the
-    "nodes" key) are always real data here, never a missing sentinel -- and
-    ``pd.isna()`` on them returns an array (calling ``bool()`` on which raises)
-    -- so they are kept unconditionally. Real scalar values, including ``0``,
-    ``0.0`` and ``""``, are kept.
-    """
-    if isinstance(v, (np.ndarray, list, tuple)):
-        return False
-    if v is None:
-        return True
-    try:
-        return bool(pd.isna(v))
-    except (TypeError, ValueError):
-        return False
-
-
-cdef clean_empty_values_from_ways(ways):
-    cdef int i, n = len(ways)
-    cleaned = []
-    for i in range(0, n):
-        cleaned.append(
-            {x: y for x, y in ways[i].items() if not _is_empty_tag_value(y)}
-        )
-    return cleaned
+    return df.iloc[rows][columns].reset_index(drop=True)

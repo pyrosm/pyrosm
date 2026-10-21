@@ -24,7 +24,23 @@ from geopandas import GeoDataFrame
 from pyrosm.filter_compiler import CompiledFilter, Condition
 from pyrosm.pbf_export import write_pbf_from_records
 from pyrosm.utils import _stacklevel_outside_pyrosm
+from pyrosm.utils.progress import start_step
 from pyrosm.way_store import NodeTags
+
+# The steps of a write, as its progress names them, and their shares, relative to
+# decoding the file in memory, from writing the buildings of Helsinki (65 MB) back.
+_APPLYING = "applying the edits"
+_NODES = "preparing the nodes"
+_WAYS = "preparing the ways"
+_RELATIONS = "preparing the relations"
+_WRITING = "writing the file"
+WRITE_SHARES = {
+    _APPLYING: 5.6,
+    _NODES: 2.2,
+    _WAYS: 3.2,
+    _RELATIONS: 0.5,
+    _WRITING: 5.5,
+}
 
 # Frame columns that hold an element's fields, not its tags.
 _FIELD_COLS = {
@@ -133,18 +149,20 @@ def _add_dict_tags(tags, extra, columns=()):
     return tags
 
 
-def _row_tags(row, tag_cols):
-    """Tags for a GeoDataFrame row: its values in the tag columns ``tag_cols`` (see
+def _frame_tags(gdf, tag_cols):
+    """The tags of each row of ``gdf``: its values in the tag columns ``tag_cols`` (see
     :func:`_frame_tag_columns`) and its JSON ``tags``. A missing value removes the tag
     of its column, also when the JSON holds it."""
-    tags, columns = {}, set()
-    for col in tag_cols:
-        key = _tag_key(col)
-        columns.add(key)
-        val = row[col]
-        if not _is_missing(val):
-            tags[key] = _tag_str(val)
-    return _add_dict_tags(tags, row.get("tags"), columns)
+    keys = [_tag_key(col) for col in tag_cols]
+    tags = [{} for _ in range(len(gdf))]
+    for col, key in zip(tag_cols, keys):
+        values = gdf[col]
+        present = values.notna().to_numpy()
+        for i, value in zip(np.flatnonzero(present).tolist(), values[present].tolist()):
+            tags[i][key] = _tag_str(value)
+    extras = gdf["tags"].tolist() if "tags" in gdf.columns else [None] * len(gdf)
+    columns = set(keys)
+    return [_add_dict_tags(row, extra, columns) for row, extra in zip(tags, extras)]
 
 
 def _record_tags(record):
@@ -600,13 +618,14 @@ def _collect_edits(
         tag_cols = _frame_tag_columns(gdf)
         frame_keys.append({_tag_key(col) for col in tag_cols})
         has_tags = bool(tag_cols) or ("tags" in gdf.columns and geom_col != "tags")
-        for _, row in gdf.iterrows():
+        fields = [c for c in ("osm_type", "id", "nodes") if c in gdf.columns]
+        records = gdf[fields + [geom_col]].to_dict("records")
+        for row, tags in zip(records, _frame_tags(gdf, tag_cols)):
             otype = _normalize_osm_type(row.get("osm_type"))
             oid = _normalize_id(row.get("id"))
             geom = row[geom_col]
             if otype is None:
                 otype = _infer_osm_type(geom)
-            tags = _row_tags(row, tag_cols)
             refs = _row_refs(row) if apply_geometry else None
             matched = oid is not None and (
                 (otype == "way" and oid in way_by_id)
@@ -973,6 +992,17 @@ class _RecordBuilder:
         self.css.append(changeset)
         self.ntags.append(tags)
 
+    def add_nodes(self, ids, lats, lons, versions, timestamps, changesets, tags):
+        """Add the nodes of aligned arrays (``tags`` a list), as :meth:`add_node` adds
+        one."""
+        self.node_ids.extend(ids.tolist())
+        self.lats.extend(lats.tolist())
+        self.lons.extend(lons.tolist())
+        self.vers.extend(versions.tolist())
+        self.tss.extend(timestamps.tolist())
+        self.css.extend(changesets.tolist())
+        self.ntags.extend(tags)
+
     def add_new_node(self, nid, lon, lat, tags):
         self.add_node(nid, lat, lon, 1, self._now, 0, tags)
 
@@ -1088,27 +1118,62 @@ def _add_base_nodes(builder, node_coordinates, poi_tags, plan, keep=None):
     """Add the source nodes (those in ``keep`` when given) to ``builder``, with the tags and
     coordinates their edits in ``plan`` give, else their own (``poi_tags`` for tagged nodes).
     """
-    for nid, rec in node_coordinates.items():
-        if nid in plan.removed_nodes:
-            continue
-        if keep is not None and nid not in keep:
-            continue
-        tags = plan.node_tags.get(nid)
-        if tags is None:
-            tags = poi_tags.get(nid)
-            if tags is None:
-                tags = rec.get("tags")
-            tags = tags if isinstance(tags, dict) else None
-        lon, lat = plan.node_coords.get(nid, (rec["lon"], rec["lat"]))
-        builder.add_node(
-            nid,
-            lat,
-            lon,
-            int(rec.get("version") or 1),
-            int(rec.get("timestamp") or 0),
-            int(rec.get("changeset") or 0),
-            tags,
-        )
+    ids = np.asarray(node_coordinates.ids, dtype=np.int64)
+    kept = np.ones(len(ids), dtype=bool)
+    if plan.removed_nodes:
+        kept &= ~np.isin(ids, np.fromiter(plan.removed_nodes, dtype=np.int64))
+    if keep is not None:
+        kept &= np.isin(ids, np.fromiter(keep, dtype=np.int64))
+    rows = np.flatnonzero(kept)
+    ids = ids[rows]
+    lon = np.array(node_coordinates.values_at("lon", rows), dtype=np.float64)
+    lat = np.array(node_coordinates.values_at("lat", rows), dtype=np.float64)
+    tags = node_coordinates.values_at("tags", rows)
+    tags = (
+        [None] * len(ids)
+        if tags is None
+        else [t if isinstance(t, dict) else None for t in tags]
+    )
+    for i, (x, y) in _rows_of(ids, plan.node_coords):
+        lon[i], lat[i] = x, y
+    for i, t in _rows_of(ids, poi_tags):
+        tags[i] = t if isinstance(t, dict) else None
+    for i, t in _rows_of(ids, plan.node_tags):
+        tags[i] = t
+    builder.add_nodes(
+        ids,
+        lat,
+        lon,
+        _int_values(node_coordinates.values_at("version", rows), 1, len(ids)),
+        _int_values(node_coordinates.values_at("timestamp", rows), 0, len(ids)),
+        _int_values(node_coordinates.values_at("changeset", rows), 0, len(ids)),
+        tags,
+    )
+
+
+def _rows_of(ids, values):
+    """``(row, value)`` for each row of ``ids`` (an int64 array) whose id has a value
+    other than None in ``values`` (an id -> value dict); a repeated id gets it in each
+    of its rows."""
+    values = {nid: value for nid, value in values.items() if value is not None}
+    if not values:
+        return []
+    edited = np.fromiter(values, dtype=np.int64, count=len(values))
+    rows = np.flatnonzero(np.isin(ids, edited))
+    return [(row, values[nid]) for row, nid in zip(rows.tolist(), ids[rows].tolist())]
+
+
+def _int_values(values, default, count):
+    """The ``count`` integers of the node values ``values``, each ``int(value or
+    default)``, or all ``default`` when ``values`` is None."""
+    if values is None:
+        return np.full(count, default, dtype=np.int64)
+    values = np.asarray(values)
+    if values.dtype.kind not in "iu":
+        return np.array([int(v or default) for v in values.tolist()], dtype=np.int64)
+    values = values.astype(np.int64)
+    values[values == 0] = default
+    return values
 
 
 def _add_base_ways(builder, way_records, plan, keep=None):
@@ -1183,6 +1248,7 @@ def write_geodataframe_to_pbf(
     delete=None,
     on_orphan_node="remove",
     on_deleted_member="drop",
+    steps=None,
 ):
     """Write `data` (+ the cached dataset) to a valid PBF at `output_path`.
 
@@ -1198,10 +1264,14 @@ def write_geodataframe_to_pbf(
     ``apply_geometry`` additionally applies the rows' geometry to existing elements
     and ``delete`` removes elements; ``on_orphan_node`` and ``on_deleted_member``
     decide what happens to the references those removals break. See
-    ``pyrosm.OSM.write_pbf`` for the full semantics.
+    ``pyrosm.OSM.write_pbf`` for the full semantics. The write goes through the steps
+    of :data:`WRITE_SHARES` in ``steps`` (a :class:`~pyrosm.utils.progress.Steps`, or
+    None).
     """
     _validate_policy("on_orphan_node", on_orphan_node, _ORPHAN_NODE_POLICIES)
     _validate_policy("on_deleted_member", on_deleted_member, _DELETED_MEMBER_POLICIES)
+
+    start_step(steps, _APPLYING)
 
     relations = relations or {}
     frames = _reproject_to_wgs84(_as_frames(data))
@@ -1238,12 +1308,15 @@ def write_geodataframe_to_pbf(
         )
 
     builder = _RecordBuilder()
+    start_step(steps, _NODES)
     _add_base_nodes(builder, node_coordinates, poi_tags, plan, keep_nodes)
     for nid, lon, lat, tags in edits.new_nodes:
         builder.add_new_node(nid, lon, lat, tags)
+    start_step(steps, _WAYS)
     _add_base_ways(builder, way_records, plan, keep_ways)
     for wid, refs, tags in new_ways:
         builder.add_new_way(wid, refs, tags)
+    start_step(steps, _RELATIONS)
     _add_base_relations(builder, relations, plan, keep_rels)
 
     builder.begin_synthesis(
@@ -1252,10 +1325,12 @@ def write_geodataframe_to_pbf(
     for oid, geom, tags, wid in edits.auto_rows:
         builder.add_geometry(oid, geom, tags, wid)
 
+    payload = builder.node_payload()
     return write_pbf_from_records(
-        builder.node_payload(),
+        payload,
         builder.ways,
         builder.rels,
         output_path,
         builder.bounds(),
+        progress=start_step(steps, _WRITING),
     )

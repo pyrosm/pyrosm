@@ -4,15 +4,34 @@ ipywidgets is installed."""
 import contextlib
 import importlib.util
 import sys
+import threading
 import time
+from pathlib import Path
 
 from pyrosm._log import _printable
 
 _clock = time.monotonic
+# How often an open bar is redrawn, so that its time moves on during a long step.
+_REDRAW_SECONDS = 1.0
 
 # The progress of every operation whose own ``progress`` is None, set by
 # pyrosm.enable_logging(progress=...).
 _setting = True
+
+# The steps of a read, as its progress names them.
+INDEXING = "indexing the file"
+DECODING = "decoding the blocks"
+COMPLETING_RELATIONS = "completing the relations"
+COMPLETING_WAYS = "completing the ways"
+SELECTING_VERSIONS = "selecting the versions"
+COLLECTING = "collecting the elements"
+BUILDING = "building the geometries"
+BUILDING_WAYS = "building the ways"
+BUILDING_RELATIONS = "building the relations"
+GATHERING_NODES = "gathering the nodes"
+BUILDING_EDGES = "building the edges"
+WRITING = "writing the result"
+LOADING = "loading the result"
 
 
 def _bar_class():
@@ -37,11 +56,11 @@ def _bar_class():
 
 
 def validate_progress(progress, allow_none=True):
-    """Raise ``ValueError`` unless ``progress`` is ``True``, ``False``, a callable, or
-    ``None`` with ``allow_none``."""
+    """Raise ``ValueError`` unless ``progress`` is ``True``, ``False``, a callable, the
+    :class:`Steps` of an operation in progress, or ``None`` with ``allow_none``."""
     if not (
         (allow_none and progress is None)
-        or isinstance(progress, bool)
+        or isinstance(progress, (bool, Steps))
         or callable(progress)
     ):
         raise ValueError(
@@ -74,10 +93,12 @@ class Bar:
     as given.
 
     The bar opens at the first call and starts over when ``done`` goes back or ``total``
-    changes. It shows only once it has run ``delay`` seconds, and ``leave=False`` clears it
-    when it closes. :meth:`describe` changes the label it shows. When the bar is hidden,
-    ``desc`` is printed once as a line when it opens, or with ``timed`` a line
-    ``"<desc> took <time>"`` when it closes, if it ran at least ``delay`` seconds.
+    changes, keeping its start time. It shows only once it has run ``delay`` seconds, is
+    redrawn every second while open, and ``leave=False`` clears it when it closes. A bar
+    of the ``unit`` ``"%"`` shows the percentage and the times. :meth:`describe`
+    changes the label it shows. When the bar is hidden, ``desc`` is printed once as a
+    line when it opens, or with ``timed`` a line ``"<desc> took <time>"`` when it
+    closes, if it ran at least ``delay`` seconds.
     """
 
     def __init__(self, desc, delay=0.0, leave=True, timed=False, unit="B"):
@@ -91,6 +112,8 @@ class Bar:
         self.hidden = False
         self.done = 0
         self.start = _clock()
+        self._closed = threading.Event()
+        self._redraw = None
 
     def describe(self, label):
         """Show ``label`` in place of the description from the next redraw on."""
@@ -101,6 +124,9 @@ class Bar:
     def __call__(self, done, total):
         if self.bar is None:
             tqdm, disable = _bar_class()
+            percent = {}
+            if self.unit == "%":
+                percent["bar_format"] = "{l_bar}{bar}| {elapsed}<{remaining}"
             self.bar = tqdm(
                 total=total,
                 file=sys.stderr,
@@ -112,6 +138,7 @@ class Bar:
                 delay=self.delay,
                 leave=self.leave,
                 disable=disable,
+                **percent,
             )
             # Set after: the widget shows a description given to it as HTML until it redraws.
             # A delayed bar is not redrawn here, which would show it before its delay.
@@ -120,22 +147,143 @@ class Bar:
             self.hidden = self.bar.disable
             if self.hidden and not self.timed:
                 self.bar.write(self.desc, file=sys.stderr)
+            if not self.hidden:
+                self._redraw = threading.Thread(target=self._redraw_while_open)
+                self._redraw.daemon = True
+                self._redraw.start()
         elif done < self.done or total != self.bar.total:
             if _clock() - self.start < self.delay:
                 # Not drawn yet: reset() would draw it before its delay.
                 self.bar.n = self.bar.last_print_n = 0
             else:
+                # reset() restarts the bar's clock, and with it the delay; a hidden bar
+                # has no clock.
+                started = getattr(self.bar, "start_t", None)
                 self.bar.reset(total)
+                if started is not None:
+                    self.bar.start_t = started
             # reset() keeps the old total when the new one is unknown.
             self.bar.total = total
         self.bar.update(done - self.bar.n)
         self.done = done
 
+    def _redraw_while_open(self):
+        """Redraw the bar every :data:`_REDRAW_SECONDS` once its delay has passed, until
+        it closes, so its time moves on while no report comes."""
+        opened = time.monotonic()
+        while not self._closed.wait(_REDRAW_SECONDS):
+            if time.monotonic() - opened >= self.delay:
+                self.bar.refresh()
+
     def close(self):
+        """Stop redrawing and close the bar, printing its time line when it is hidden
+        and ``timed``."""
         if self.bar is None:
             return
+        self._closed.set()
+        if self._redraw is not None:
+            self._redraw.join()
         self.bar.close()
         elapsed = _clock() - self.start
         if self.timed and self.hidden and elapsed >= self.delay:
             took = self.bar.format_interval(elapsed)
             self.bar.write("%s took %s" % (self.desc, took), file=sys.stderr)
+
+
+def start_step(steps, name):
+    """``steps.start_step(name)`` (see :class:`Steps`), or None without ``steps``."""
+    return None if steps is None else steps.start_step(name)
+
+
+@contextlib.contextmanager
+def stepping(progress, desc, shares=None, **options):
+    """The :class:`Steps` of the work described ``desc``, reported as ``progress`` says
+    (see :func:`reporting`, whose ``options`` these are), planned as the steps of
+    ``shares`` in their order, and at 100 % when the work ends. When ``progress`` is
+    the :class:`Steps` of an operation this work is part of, which planned its steps,
+    it is that :class:`Steps`."""
+    if isinstance(progress, Steps):
+        yield progress
+        return
+    with reporting(progress, desc, unit="%", **options) as report:
+        steps = Steps(report, desc, shares)
+        steps.plan(list(steps.shares))
+        yield steps
+        steps.finish()
+
+
+def read_steps(filepath, progress, shares):
+    """The :func:`stepping` of a read of ``filepath`` with the step ``shares``, shown as
+    ``progress`` says: a bar "Reading <file>" after 2 seconds, cleared at the end, or a
+    progress function's ``progress(done, 100)``."""
+    return stepping(
+        progress,
+        "Reading %s" % Path(filepath).name,
+        shares,
+        delay=2.0,
+        leave=False,
+        timed=True,
+    )
+
+
+class Steps:
+    """The progress of an operation made of named steps, each a fixed share of it: one
+    ``report(done, 100)``, with ``done`` the percentage, from 0 to 100 and never back.
+
+    ``report`` is a :class:`Bar` (whose label then names the current step), a progress
+    function or None. :meth:`plan` spreads what is left of the 100 % over the steps to
+    come, by their ``shares`` (a step name -> share dict; 1 for a step not in it), and
+    :meth:`start_step` starts one, returning the function that moves it through its
+    share.
+    """
+
+    def __init__(self, report, desc, shares=None):
+        self.report = report
+        self.desc = desc
+        self.shares = shares or {}
+        self.done = 0.0
+        self.sent = None
+        self.planned = {}  # step name -> (start, width) in percent
+
+    def plan(self, names):
+        """Spread what is left of the 100 % over the steps ``names``, in this order."""
+        weights = [self.shares.get(name, 1.0) for name in names]
+        start, left = self.done, 100.0 - self.done
+        self.planned = {}
+        for name, weight in zip(names, weights):
+            width = left * weight / sum(weights)
+            self.planned[name] = (start, width)
+            start += width
+
+    def after(self, name):
+        """The names of the steps planned after the step ``name``."""
+        names = list(self.planned)
+        return names[names.index(name) + 1 :] if name in self.planned else []
+
+    def start_step(self, name):
+        """Start the step ``name`` (a step not planned takes what is left) and return
+        its ``advance(done, total)``, which moves the progress through the step's share
+        by ``done / total``."""
+        if name not in self.planned:
+            self.plan([name])
+        start, width = self.planned[name]
+        if isinstance(self.report, Bar):
+            self.report.describe("%s: %s" % (self.desc, name))
+        self._move(start)
+
+        def advance(done, total):
+            if total:
+                self._move(start + width * min(max(done / total, 0.0), 1.0))
+
+        return advance
+
+    def finish(self):
+        """Report the operation done, at 100 %."""
+        self._move(100.0)
+
+    def _move(self, percent):
+        """Report the progress at ``percent``, or where it is when that is less."""
+        self.done = max(self.done, round(percent, 1))
+        if self.report is not None and self.done != self.sent:
+            self.sent = self.done
+            self.report(self.done, 100)
