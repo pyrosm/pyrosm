@@ -219,7 +219,7 @@ def get_data_by_geocoding(
     net = dict(headers=headers, timeout=timeout, opener=opener)
     result = _get_area(
         lambda: geocode(query, base_url=base_url, user_agent=user_agent, **net),
-        "polygon" if crop else False,
+        "polygon" if crop and not isinstance(crop, str) else crop,
         update,
         directory,
         output_path,
