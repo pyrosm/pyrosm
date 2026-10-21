@@ -56,11 +56,11 @@ def _bar_class():
 
 
 def validate_progress(progress, allow_none=True):
-    """Raise ``ValueError`` unless ``progress`` is ``True``, ``False``, a callable, or
-    ``None`` with ``allow_none``."""
+    """Raise ``ValueError`` unless ``progress`` is ``True``, ``False``, a callable, the
+    :class:`Steps` of an operation in progress, or ``None`` with ``allow_none``."""
     if not (
         (allow_none and progress is None)
-        or isinstance(progress, bool)
+        or isinstance(progress, (bool, Steps))
         or callable(progress)
     ):
         raise ValueError(
@@ -199,7 +199,12 @@ def start_step(steps, name):
 def stepping(progress, desc, shares=None, **options):
     """The :class:`Steps` of the work described ``desc``, reported as ``progress`` says
     (see :func:`reporting`, whose ``options`` these are), planned as the steps of
-    ``shares`` in their order, and at 100 % when the work ends."""
+    ``shares`` in their order, and at 100 % when the work ends. When ``progress`` is
+    the :class:`Steps` of an operation this work is part of, which planned its steps,
+    it is that :class:`Steps`."""
+    if isinstance(progress, Steps):
+        yield progress
+        return
     with reporting(progress, desc, unit="%", **options) as report:
         steps = Steps(report, desc, shares)
         steps.plan(list(steps.shares))
@@ -249,6 +254,11 @@ class Steps:
             width = left * weight / sum(weights)
             self.planned[name] = (start, width)
             start += width
+
+    def after(self, name):
+        """The names of the steps planned after the step ``name``."""
+        names = list(self.planned)
+        return names[names.index(name) + 1 :] if name in self.planned else []
 
     def start_step(self, name):
         """Start the step ``name`` (a step not planned takes what is left) and return

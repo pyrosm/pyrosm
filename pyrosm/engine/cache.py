@@ -163,14 +163,14 @@ def materialize(cache_path, build, steps):
     so an identical later read skips the rebuild. Returns the cached frame read back, or
     ``None`` for an empty (or already-marked-empty) result; reading it back is the step
     ``LOADING`` of ``steps`` (a :class:`~pyrosm.utils.progress.Steps`), the only step
-    of a read served from the cache."""
+    of a read served from the cache before the steps planned after it."""
     empty_marker = cache_path.with_name(cache_path.name + ".empty")
     if empty_marker.exists():
         log_event(logger, logging.DEBUG, "cache", status="empty", path=empty_marker)
         return None
     if cache_path.exists():
         log_event(logger, logging.DEBUG, "cache", status="hit", path=cache_path)
-        steps.plan([LOADING])
+        steps.plan([LOADING] + steps.after(LOADING))
     else:
         log_event(logger, logging.DEBUG, "cache", status="miss", path=cache_path)
         tmp_path = _temp_in(cache_path)
@@ -200,7 +200,7 @@ def materialize_pair(edges_path, nodes_path, build, steps, read_nodes=read_resul
         return None, None
     if edges_path.exists() and nodes_path.exists():
         log_event(logger, logging.DEBUG, "cache", status="hit", path=edges_path)
-        steps.plan([LOADING])
+        steps.plan([LOADING] + steps.after(LOADING))
     else:
         log_event(logger, logging.DEBUG, "cache", status="miss", path=edges_path)
         edges_tmp = _temp_in(edges_path)

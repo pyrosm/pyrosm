@@ -1,3 +1,4 @@
+import contextlib
 import logging
 from pathlib import Path
 
@@ -58,6 +59,7 @@ from pyrosm.user_defined import get_user_defined_data
 from pyrosm.graphs import (
     graph_tags,
     record_network_type,
+    step_shares,
     to_networkx,
     to_igraph,
     to_pandana,
@@ -67,6 +69,7 @@ from pyrosm.graphs import (
 # Aliased so the module does not collide with the ``engine`` constructor
 # parameter / ``self.engine`` attribute of the same name.
 from pyrosm import engine as engine_backend
+from pyrosm.engine.pool import GRAPH_SHARES, NETWORK_NODES_SHARES
 from pyrosm.engine.readers import (
     _boundary_filter,
     _network_filter_type,
@@ -88,6 +91,13 @@ _PARSE_SHARES = {
 _LAYER_SHARES = {COLLECTING: 1.0, BUILDING_WAYS: 1.4, BUILDING_RELATIONS: 0.8}
 _NETWORK_SHARES = {COLLECTING: 0.35, BUILDING_EDGES: 0.12}
 _NETWORK_NODES_SHARES = {COLLECTING: 0.35, BUILDING_EDGES: 0.3}
+# The seconds of the reads of Paris that the shares of an out-of-core graph read and of
+# an out-of-core network read with nodes stand for, and of decoding Paris in memory (the
+# unit of the in-memory shares): get_graph weighs its read against the graph steps,
+# whose shares are in seconds too.
+_GRAPH_READ_SECONDS = 2.25
+_NETWORK_NODES_READ_SECONDS = 4.2
+_DECODING_SECONDS = 3.5
 
 
 def _network_read_filter(args):
@@ -1580,6 +1590,10 @@ class OSM:
         takes less memory. With ``simplify=False``, the in-memory engine or a history
         read, the tables are read with ``get_network`` and exported with ``to_graph``.
 
+        The read and the export show one progress as the ``progress`` of this object
+        says: a bar "Building the graph of <file>" from 0 to 100 % with the current step
+        in its label, or ``progress(done, 100)`` calls.
+
         Parameters
         ----------
 
@@ -1613,43 +1627,82 @@ class OSM:
                 )
                 if tag not in tags_to_keep
             ]
-        if simplify and self._use_engine(timestamp):
-            nodes, edges = self._read_engine(
-                graph_network,
-                with_relations=False,
-                network_type=network_type,
-                extra_attributes=extra_attributes,
-                custom_filter=custom_filter,
-                filter_type=filter_type,
-                tags_to_keep=tags_to_keep,
-            )
-            if edges is None:
-                warn_empty_result("network")
-        else:
-            nodes, edges = self.get_network(
-                network_type,
-                extra_attributes,
-                nodes=True,
-                timestamp=timestamp,
-                custom_filter=custom_filter,
-                filter_type=filter_type,
-                tags_to_keep=tags_to_keep,
-            )
-        if edges is None:
-            return None
-        return self.to_graph(
-            nodes,
-            edges,
-            graph_type,
-            direction,
-            force_bidirectional=force_bidirectional,
-            network_type=network_type,
-            retain_all=retain_all,
-            osmnx_compatible=osmnx_compatible,
-            pandana_weights=pandana_weights,
-            simplify=simplify,
-            simplify_kwargs=simplify_kwargs,
+        shares = self._graph_read_shares(simplify, timestamp)
+        shares.update(
+            step_shares(simplify, retain_all, validate_graph_type(graph_type))
         )
+        with stepping(
+            self.progress,
+            "Building the graph of %s" % Path(self.filepath).name,
+            shares,
+            delay=2.0,
+            leave=False,
+            timed=True,
+        ) as steps, self._progress_as(steps):
+            if simplify and self._use_engine(timestamp):
+                nodes, edges = self._read_engine(
+                    graph_network,
+                    with_relations=False,
+                    network_type=network_type,
+                    extra_attributes=extra_attributes,
+                    custom_filter=custom_filter,
+                    filter_type=filter_type,
+                    tags_to_keep=tags_to_keep,
+                )
+                if edges is None:
+                    warn_empty_result("network")
+            else:
+                nodes, edges = self.get_network(
+                    network_type,
+                    extra_attributes,
+                    nodes=True,
+                    timestamp=timestamp,
+                    custom_filter=custom_filter,
+                    filter_type=filter_type,
+                    tags_to_keep=tags_to_keep,
+                )
+            if edges is None:
+                return None
+            return self.to_graph(
+                nodes,
+                edges,
+                graph_type,
+                direction,
+                force_bidirectional=force_bidirectional,
+                network_type=network_type,
+                retain_all=retain_all,
+                osmnx_compatible=osmnx_compatible,
+                pandana_weights=pandana_weights,
+                simplify=simplify,
+                simplify_kwargs=simplify_kwargs,
+                progress=steps,
+            )
+
+    def _graph_read_shares(self, simplify, timestamp):
+        """The shares of the steps of the read of :meth:`get_graph`, in seconds of reads of
+        Paris, as the shares of the graph steps are (see
+        :func:`pyrosm.graphs.step_shares`)."""
+        if self._use_engine(timestamp):
+            if simplify:
+                shares, seconds = GRAPH_SHARES, _GRAPH_READ_SECONDS
+            else:
+                shares, seconds = NETWORK_NODES_SHARES, _NETWORK_NODES_READ_SECONDS
+        else:
+            self._set_current_time(timestamp)
+            shares = self._parse_shares() if self._parse_needed() else {}
+            shares.update(_NETWORK_NODES_SHARES)
+            seconds = _DECODING_SECONDS
+        return {name: share * seconds for name, share in shares.items()}
+
+    @contextlib.contextmanager
+    def _progress_as(self, progress):
+        """Use ``progress`` as the ``progress`` of this object inside the block."""
+        kept = self.progress
+        self.progress = progress
+        try:
+            yield
+        finally:
+            self.progress = kept
 
     @staticmethod
     @logged("graph_type", "network_type", "simplify", count=False)
@@ -1669,6 +1722,7 @@ class OSM:
         pandana_weights=["length"],
         simplify=True,
         simplify_kwargs=None,
+        progress=None,
     ):
         """
         Export OSM network to routable graph. Supported output graph types are:
@@ -1693,10 +1747,10 @@ class OSM:
         with ``edge_attrs_differ=["maxspeed", "highway"]``. Pass ``simplify=False`` to
         keep every segment of every way as its own edge.
 
-        The export shows its progress as ``pyrosm.enable_logging(progress=...)`` sets it:
-        by default a bar on stderr once it has run 2 seconds, naming the step it is in
-        (directing the edges, simplifying, keeping the largest connected part, building
-        the graph), cleared at the end, or without a terminal one line with the time it
+        The export shows its progress as ``progress`` says: by default a bar on stderr
+        once it has run 2 seconds, from 0 to 100 % with the step it is in (directing the
+        edges, simplifying, keeping the largest connected part, building the graph) in
+        its label, cleared at the end, or without a terminal one line with the time it
         took.
 
         Parameters
@@ -1787,8 +1841,15 @@ class OSM:
             stops a merge; ``None`` merges across every change, as OSMnx does by
             default), ``node_attrs_include`` (keep the listed nodes as endpoints),
             ``remove_rings``, ``track_merged``, ``length_cols`` or ``edge_attr_aggs``.
+
+        progress : bool | callable | None (default: None)
+            `None` follows `pyrosm.enable_logging(progress=...)`, which is `True`
+            unless set. `True` shows the bar, `False` nothing, and a callable is called
+            as `progress(done, 100)` with the percentage of the export done, from 0 to
+            100 and never back.
         """
         graph_type = validate_graph_type(graph_type)
+        validate_progress(progress)
 
         if graph_type == "igraph":
             return to_igraph(
@@ -1803,6 +1864,7 @@ class OSM:
                 retain_all,
                 simplify=simplify,
                 simplify_kwargs=simplify_kwargs,
+                progress=progress,
             )
         elif graph_type == "networkx":
             return to_networkx(
@@ -1819,6 +1881,7 @@ class OSM:
                 osmnx_compatible,
                 simplify=simplify,
                 simplify_kwargs=simplify_kwargs,
+                progress=progress,
             )
         elif graph_type == "pandarm":
             return to_pandarm(
@@ -1834,6 +1897,7 @@ class OSM:
                 pandana_weights,
                 simplify=simplify,
                 simplify_kwargs=simplify_kwargs,
+                progress=progress,
             )
         elif graph_type == "pandana":
             return to_pandana(
@@ -1849,6 +1913,7 @@ class OSM:
                 pandana_weights,
                 simplify=simplify,
                 simplify_kwargs=simplify_kwargs,
+                progress=progress,
             )
 
     @staticmethod

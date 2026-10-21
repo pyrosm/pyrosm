@@ -118,33 +118,53 @@ def test_download_progress_covers_the_crop(pyrosm_logger, tmp_path, monkeypatch)
         assert own and setting == []
 
 
-def test_graph_export_reports_its_steps(pyrosm_logger):
-    """A graph export reports its steps to the function set with enable_logging, done from 0
-    to the number of steps, which depends on simplify and retain_all; with progress off it
-    reports nothing and still builds the graph."""
+def test_graph_export_reports_its_steps(pyrosm_logger, monkeypatch):
+    """A graph export reports the percentage done to the function set with
+    enable_logging, from 0 to 100, through its steps, which depend on simplify and
+    retain_all; with progress off it reports nothing and still builds the graph, and
+    progress= sets the progress of one export."""
     from pyrosm.graphs import graph_tables
+    from pyrosm.utils import progress
 
     osm = OSM(get_data("test_pbf"), progress=False)
     nodes, edges = osm.get_network(nodes=True, network_type="driving")
+    started = []
+    real = progress.Steps.start_step
+    monkeypatch.setattr(
+        progress.Steps,
+        "start_step",
+        lambda self, name: started.append(name) or real(self, name),
+    )
     calls = []
     enable_logging(progress=lambda done, total: calls.append((done, total)))
+    tables = ["directing the edges", "simplifying", "keeping the largest connected part"]
     for export, steps in (
-        (lambda: OSM.to_graph(nodes, edges, graph_type="networkx"), 4),
+        (
+            lambda: OSM.to_graph(nodes, edges, graph_type="networkx"),
+            tables + ["building the graph"],
+        ),
         (
             lambda: OSM.to_graph(
                 nodes, edges, graph_type="networkx", simplify=False, retain_all=True
             ),
-            2,
+            ["directing the edges", "building the graph"],
         ),
-        (lambda: graph_tables(nodes, edges), 3),
+        (lambda: graph_tables(nodes, edges), tables),
     ):
         calls.clear()
+        started.clear()
         export()
-        assert calls == [(done, steps) for done in range(steps + 1)]
+        done = [d for d, _ in calls]
+        assert started == steps and done == sorted(done)
+        assert calls[0] == (0.0, 100) and calls[-1] == (100.0, 100)
     calls.clear()
     enable_logging(progress=False)
     assert OSM.to_graph(nodes, edges, graph_type="networkx").number_of_edges()
     assert calls == []
+    OSM.to_graph(
+        nodes, edges, graph_type="networkx", progress=lambda *r: calls.append(r)
+    )
+    assert calls[-1] == (100.0, 100)
 
 
 def test_log_event_and_timed(pyrosm_logger, caplog):

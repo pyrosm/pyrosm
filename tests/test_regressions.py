@@ -4132,3 +4132,68 @@ def test_write_pbf_copies_the_nodes_of_any_store():
     assert builder.node_ids == [7, 7, 8] and builder.lons == [5.0, 5.0, 2.0]
     assert builder.css == [9007199254740993, 0, 5] and builder.vers == [1, 1, 1]
     assert builder.ntags == [None, {"a": "b"}, {"c": "d"}]
+
+
+_GRAPH_STEPS = ["directing the edges", "keeping the largest connected part"]
+
+
+@pytest.mark.parametrize(
+    "engine, simplify, read",
+    [
+        (
+            "out_of_core",
+            True,
+            [
+                "indexing the file",
+                "decoding the blocks",
+                "gathering the nodes",
+                "building the edges",
+            ],
+        ),
+        (
+            "out_of_core",
+            False,
+            [
+                "indexing the file",
+                "decoding the blocks",
+                "gathering the nodes",
+                "building the edges",
+                "writing the result",
+                "loading the result",
+            ],
+        ),
+        (
+            "in_memory",
+            True,
+            ["decoding the blocks", "collecting the elements", "building the edges"],
+        ),
+    ],
+)
+def test_get_graph_reports_one_progress(engine, simplify, read, fresh_cache, monkeypatch):
+    """get_graph showed the read and the graph as two progresses, the graph's counting
+    steps, and the graph steps ignored the progress of the OSM object (progress=False
+    still drew a bar). One progress from 0 to 100 % covers the read and the graph
+    steps, and progress=False draws no bar."""
+    from pyrosm import OSM, get_data
+    from pyrosm.utils import progress
+
+    started = []
+    real = progress.Steps.start_step
+    monkeypatch.setattr(
+        progress.Steps,
+        "start_step",
+        lambda self, name: started.append(name) or real(self, name),
+    )
+    fp = get_data("test_pbf")
+    seen = []
+    osm = OSM(fp, engine=engine, progress=lambda *report: seen.append(report))
+    osm.get_graph("driving", graph_type="networkx", simplify=simplify)
+    graph = _GRAPH_STEPS[:1] + (["simplifying"] if simplify else []) + _GRAPH_STEPS[1:]
+    assert list(dict.fromkeys(started)) == read + graph + ["building the graph"]
+    done = [d for d, _ in seen]
+    assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)
+
+    bars = []
+    monkeypatch.setattr(progress.Bar, "__init__", lambda self, *a, **k: bars.append(a))
+    OSM(fp, engine=engine, progress=False).get_graph("driving", graph_type="networkx")
+    assert bars == []
