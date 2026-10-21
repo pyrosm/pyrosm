@@ -4837,6 +4837,53 @@ def test_written_files_keep_the_completed_relations(write, tmp_path):
     assert [g.area for g in again.loc[read.index]] == pytest.approx(areas, abs=1e-12)
 
 
+def test_crop_completes_every_version_of_a_relation(tmp_path):
+    """In a history file a relation is kept by its id, so every version of it is written;
+    the crop completes the way members of all of them, also of a version that does not
+    reach into the area."""
+    import numpy as np
+
+    from pyrosm.pbf_export import _iter_decoded_blocks, crop_pbf, write_pbf_from_records
+
+    corners = [(0, 0), (0.01, 0), (0.01, 0.01), (0, 0.01)]
+    squares = (0, 0.02, 0.04)
+    nodes = {
+        "id": np.arange(1, 13, dtype=np.int64),
+        "lon": np.array([24.90 + dx + x for dx in squares for x, _ in corners]),
+        "lat": np.array([60.10 + y for _ in squares for _, y in corners]),
+        "version": np.ones(12, dtype=np.int64),
+        "timestamp": np.full(12, 1600000000, dtype=np.int64),
+        "changeset": np.zeros(12, dtype=np.int64),
+        "tags": [None] * 12,
+    }
+    ways = [
+        {"id": 10 + i, "refs": [s, s + 1, s + 2, s + 3, s], "version": 1, "tags": {}}
+        for i, s in enumerate((1, 5, 9))
+    ]
+    relations = [
+        {"id": 20, "members": members, "version": version, "timestamp": 1600000000 + version,
+         "changeset": 0, "tags": {"type": "multipolygon", "building": "yes"}}
+        for version, members in (
+            (1, [("way", 10, "outer"), ("way", 11, "outer")]),
+            (2, [("way", 12, "outer")]),
+        )
+    ]
+    source = write_pbf_from_records(
+        nodes, ways, relations, str(tmp_path / "history.osh.pbf"), (24.9, 60.1, 24.95, 60.11)
+    )
+    out = crop_pbf(
+        source,
+        str(tmp_path / "crop.osh.pbf"),
+        bounding_box=[24.899, 60.099, 24.911, 60.111],
+        complete_relations=True,
+        progress=False,
+    )
+    kept_ways = np.concatenate(
+        [ways["id"] for _, _, ways, _ in _iter_decoded_blocks(out) if ways is not None]
+    )
+    assert sorted(kept_ways.tolist()) == [10, 11, 12]
+
+
 def test_bounding_box_write_keeps_the_relations_of_the_box(tmp_path):
     """write_pbf of a read with a bounding box wrote every relation of the whole file,
     most of them without a member in the written file. It writes the relations with a
