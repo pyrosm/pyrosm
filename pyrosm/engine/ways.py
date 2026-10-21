@@ -937,9 +937,9 @@ _NODE_FIELDS = {
     "lon": np.float64,
     "lat": np.float64,
     "visible": np.bool_,
-    "version": np.int64,
-    "timestamp": np.int64,
-    "changeset": np.int64,
+    "version": np.int32,
+    "timestamp": np.uint32,
+    "changeset": np.int32,
 }
 
 

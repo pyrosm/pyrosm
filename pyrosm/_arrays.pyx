@@ -5,10 +5,13 @@ from rapidjson import dumps
 from geopandas import GeoSeries
 
 cdef get_dtype(key):
+    """The dtype of the column ``key`` in the in-memory reader's arrays (``object`` for a
+    tag)."""
     dtypes = {"id": np.int64,
               "version": np.int32,
               "changeset": np.int32,
               "timestamp": np.uint32,
+              "visible": np.bool_,
               "lon": np.float64,
               "lat": np.float64,
               "tags": object,

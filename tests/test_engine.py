@@ -2972,11 +2972,12 @@ def test_osm_engine_validation_and_unsupported_combos(helsinki_pbf):
 
 def test_osm_workers_validation(test_pbf):
     # The constructor-level worker count must be a positive integer, "auto", or None.
-    for bad in (0, -1, 1.5, True, "2", "bogus"):
+    for bad in (0, -1, 1.5, True, "2", "bogus", np.int64(0)):
         with pytest.raises(ValueError, match="workers"):
             OSM(test_pbf, workers=bad, engine="in_memory")
     assert OSM(test_pbf, engine="in_memory").workers is None
     assert OSM(test_pbf, workers=2, engine="in_memory").workers == 2
+    assert type(OSM(test_pbf, workers=np.int64(2), engine="in_memory").workers) is int
     assert OSM(test_pbf, workers="auto", engine="in_memory").workers == "auto"
     assert OSM(test_pbf, workers="AUTO", engine="in_memory").workers == "auto"  # normalized
 

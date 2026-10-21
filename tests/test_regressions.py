@@ -383,6 +383,7 @@ def test_get_network_without_custom_filter_unchanged():
         "tags",
         "timestamp",
         "version",
+        "visible",
     ]
     assert edges.attrs["network_type"] == "driving"
 
@@ -2189,7 +2190,7 @@ def test_parse_joins_block_arrays_in_each_keys_dtype():
         "timestamp": ("uint32", [5, 6, 5]),
         "changeset": ("int32", [7, 8, 7]),
         "lon": ("float64", [24.5, 24.6, 24.5]),
-        "visible": ("object", [True, False, True]),
+        "visible": ("bool", [True, False, True]),
         "tags": ("object", [tags[0], None, tags[0]]),
     }
     assert list(joined) == list(expected)
@@ -2197,7 +2198,6 @@ def test_parse_joins_block_arrays_in_each_keys_dtype():
         assert joined[key].dtype == dtype
         assert joined[key].tolist() == values
     assert joined["tags"][0] is tags[0] and joined["tags"][2] is tags[0]
-    assert all(type(value) is bool for value in joined["visible"])
     with pytest.raises(AssertionError):
         concatenate_dicts_of_arrays([{"id": np.array([1]), "lon": np.array([1.0, 2.0])}])
 
@@ -3188,8 +3188,11 @@ def test_driving_network_leaves_out_ways_cars_cannot_use(engine):
 @pytest.mark.parametrize("run", ["crop", "merge"])
 def test_crop_and_merge_take_auto_workers(run, tmp_path, monkeypatch):
     """``workers="auto"``, the default, chooses a worker count for crops and merges as it
-    does for out-of-core reads, and writes the same file as ``workers=1``; an unknown value
-    raises ``ValueError``. ``"auto"`` was compared with ``1`` and raised ``TypeError``."""
+    does for out-of-core reads, and writes the same file as ``workers=1``, as a NumPy
+    integer does; an unknown value raises ``ValueError``. ``"auto"`` was compared with
+    ``1`` and raised ``TypeError``, and a NumPy integer was refused."""
+    import numpy as np
+
     import pyrosm.engine.pool as pool
     import pyrosm.pbf_export as pbf_export
     from pyrosm import get_data, merge_pbf
@@ -3220,6 +3223,8 @@ def test_crop_and_merge_take_auto_workers(run, tmp_path, monkeypatch):
     assert Path(runs[run](tmp_path / "par.osm.pbf", workers="auto")).read_bytes() == expected
     assert Path(runs[run](tmp_path / "default.osm.pbf")).read_bytes() == expected
     assert opened == [2, 2]
+    numpy_workers = runs[run](tmp_path / "numpy.osm.pbf", workers=np.int64(2))
+    assert Path(numpy_workers).read_bytes() == expected and opened == [2, 2, 2]
     with pytest.raises(ValueError, match="'workers' should be"):
         runs[run](tmp_path / "bad.osm.pbf", workers="many")
 
@@ -3394,7 +3399,7 @@ def test_write_pbf_merges_the_rows_of_an_element(case, tmp_path):
         return
     nodes, edges = osm.get_network("driving", nodes=True)
     def tag_keys(tags):
-        return [key for key in json.loads(tags or "{}") if key != "visible"]
+        return list(json.loads(tags)) if isinstance(tags, str) else []
 
     usable = edges["maxspeed"].notna() & edges["tags"].map(tag_keys).astype(bool)
     segments = edges[usable].groupby("id").size()
@@ -5316,3 +5321,91 @@ def test_unsimplified_edges_run_from_u_to_v(network_type):
     for u, v, data in graph.edges(data=True):
         line = data["geometry"].coords
         assert line[0] == at(u) and line[-1] == at(v)
+
+
+@pytest.mark.parametrize(
+    "call, name",
+    [
+        (lambda osm: osm.get_buildings(extra_attributes="name"), "extra_attributes"),
+        (lambda osm: osm.get_buildings(tags_to_keep="name"), "tags_to_keep"),
+        (
+            lambda osm: osm.get_data_by_custom_criteria(
+                {"highway": True}, tags_as_columns="name"
+            ),
+            "tags_as_columns",
+        ),
+        (
+            lambda osm: osm.get_data_by_custom_criteria(
+                {"highway": True}, tags_to_keep=["name", 1]
+            ),
+            "tags_to_keep",
+        ),
+        (lambda osm: osm.get_graph("driving", tags_to_keep="name"), "tags_to_keep"),
+    ],
+)
+def test_tag_list_errors_name_the_parameter_given(call, name):
+    """A tag list that is not a list of strings was refused as 'tags_as_columns', a
+    parameter most of the methods do not have; the error names the parameter given."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"), progress=False)
+    with pytest.raises(ValueError, match=f"'{name}' should be"):
+        call(osm)
+
+
+@pytest.mark.parametrize(
+    "method, kwargs",
+    [
+        ("get_pois", {}),
+        ("get_network", {}),
+        (
+            "get_data_by_custom_criteria",
+            {
+                "custom_filter": {"amenity": True},
+                "keep_ways": False,
+                "keep_relations": False,
+            },
+        ),
+    ],
+)
+def test_both_engines_give_visible_and_the_metadata_the_same_dtypes(method, kwargs):
+    """Out-of-core node rows had int64 ``version``, ``timestamp`` and ``changeset`` where
+    the in-memory reader has int32, uint32 and int32, the in-memory ``visible`` was an
+    object column, and the ways of reads without a ``visible`` column held it in the JSON
+    ``tags``. Both engines give the same columns with the same dtypes, and ``visible`` is
+    a bool column of every read, never a key of ``tags``."""
+    from pyrosm import OSM, get_data
+
+    frames = [
+        getattr(OSM(get_data("helsinki_pbf"), engine=engine, progress=False), method)(
+            **kwargs
+        )
+        for engine in ("in_memory", "out_of_core")
+    ]
+    dtypes = [list(frame.dtypes.astype(str).items()) for frame in frames]
+    assert dtypes[0] == dtypes[1]
+    for frame in frames:
+        assert frame["visible"].dtype == bool
+        assert not frame["tags"].fillna("").str.contains('"visible"').any()
+
+
+def test_box_reads_leave_out_tag_columns_of_rows_outside_the_box():
+    """With a box and ``complete_relations``, the in-memory reader read the boundary
+    Honkasuo, which lies outside the box, left it out by the box, and kept its
+    ``start_date`` column with no value. Both engines give the same columns, none of them
+    empty."""
+    from pyrosm import OSM, get_data
+
+    box = [24.85, 60.15, 25.05, 60.25]
+    frames = [
+        OSM(
+            get_data("helsinki_region_pbf"),
+            engine=engine,
+            bounding_box=box,
+            complete_relations=True,
+            progress=False,
+        ).get_boundaries()
+        for engine in ("in_memory", "out_of_core")
+    ]
+    assert list(frames[0].columns) == list(frames[1].columns)
+    assert not [c for c in frames[0].columns if frames[0][c].isna().all()]

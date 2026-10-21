@@ -153,7 +153,7 @@ def test_get_data_by_geocoding(monkeypatch, tmp_path):
     "options, message",
     [
         ({"strategy": "fast"}, "strategy must be"),
-        ({"workers": 0}, "workers must be"),
+        ({"workers": 0}, "'workers' should be"),
         ({"must_cover": box(0, 0, 1, 1).buffer(-1)}, "must_cover is empty"),
         ({"progress": "yes"}, "progress must be"),
         ({"crop": "bbox"}, "crop must be"),

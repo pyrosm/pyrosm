@@ -25,7 +25,6 @@ import hashlib
 import io
 import json
 import logging
-import numbers
 import os
 import re
 import time
@@ -57,7 +56,7 @@ from pyrosm.exceptions import (
     ExtractDownloadError,
     ExtractNotFoundError,
 )
-from pyrosm.utils import _file_identity, check_bounds
+from pyrosm.utils import _file_identity, check_bounds, validate_workers
 from pyrosm.utils.progress import stepping, validate_progress
 from pyrosm.utils.download import (
     _CHUNK,
@@ -1297,16 +1296,7 @@ def _get_area(
         )
     if isinstance(crop, str) and crop != "polygon":
         raise ValueError('crop must be True, False or "polygon"; got %r.' % (crop,))
-    if isinstance(workers, str) and workers.lower() == "auto":
-        workers = "auto"
-    elif workers is not None and (
-        isinstance(workers, bool)
-        or not isinstance(workers, numbers.Integral)
-        or workers < 1
-    ):
-        raise ValueError(
-            'workers must be an integer of at least 1 or "auto"; got %r.' % (workers,)
-        )
+    workers = validate_workers(workers)
     parts = None if must_cover is None else _must_cover_parts(must_cover)
     geom = _area_geometry(area() if callable(area) else area)
     if crop == "polygon" and geom.geom_type not in ("Polygon", "MultiPolygon"):

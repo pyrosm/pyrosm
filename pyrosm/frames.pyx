@@ -241,11 +241,16 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
             bounding_box = box(*bounding_box)
         # Filter data spatially
         orig_cols = list(gdf.columns)
+        with_values = [
+            c for c in dict.fromkeys(tags_as_columns) if c in gdf and gdf[c].notna().any()
+        ]
         filter_gdf = gpd.GeoDataFrame({"geometry": [bounding_box]},
                                       crs="epsg:4326",
                                       index=[0])
         gdf = gpd.sjoin(gdf, filter_gdf, how="inner")
         gdf = gdf[orig_cols].reset_index(drop=True)
+        # Leave out the tag columns that only rows outside the box had
+        gdf = gdf.drop(columns=[c for c in with_values if gdf[c].isna().all()])
 
         if node_attr is not None:
             # Keep every node referenced by the kept (whole) edges, including

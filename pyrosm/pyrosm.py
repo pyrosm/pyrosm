@@ -1616,7 +1616,7 @@ class OSM:
         """
         validate_graph_type(graph_type)
         if tags_to_keep is not None:
-            validate_tags_as_columns(tags_to_keep)
+            validate_tags_as_columns(tags_to_keep, "tags_to_keep")
             tags_to_keep = list(tags_to_keep) + [
                 tag
                 for tag in graph_tags(

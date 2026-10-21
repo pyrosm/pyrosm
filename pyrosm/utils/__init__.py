@@ -163,20 +163,28 @@ def feature_columns(keys, missing=()):
 
 
 def read_tag_columns(
-    base_tags, extra_attributes=None, tags_to_keep=None, filter_keys=()
+    base_tags,
+    extra_attributes=None,
+    tags_to_keep=None,
+    filter_keys=(),
+    tags_name="tags_to_keep",
 ):
     """The tag columns of a read: ``tags_to_keep``, by default ``base_tags``, then the
     ``filter_keys`` of the read's filter it lacks, so the key each row was selected by is
-    a column, then ``extra_attributes``. Validated, and a new list: the caller's lists do
-    not change."""
+    a column, then ``extra_attributes``, and ``visible`` when they lack it, so the
+    element's field is a column of every read and never a key of the JSON ``tags``.
+    Validated (an error names ``tags_to_keep`` by ``tags_name``, the parameter it was
+    given as), and a new list: the caller's lists do not change."""
     columns = list(base_tags)
     if tags_to_keep is not None:
-        validate_tags_as_columns(tags_to_keep)
+        validate_tags_as_columns(tags_to_keep, tags_name)
         columns = list(tags_to_keep)
     columns += [key for key in dict.fromkeys(filter_keys) if key not in columns]
     if extra_attributes is not None:
-        validate_tags_as_columns(extra_attributes)
+        validate_tags_as_columns(extra_attributes, "extra_attributes")
         columns += list(extra_attributes)
+    if "visible" not in columns:
+        columns.append("visible")
     return columns
 
 
@@ -194,9 +202,15 @@ def custom_read_columns(custom_filter, osm_keys_to_keep, tags_as_columns, tags_t
             "Give 'tags_to_keep' or 'tags_as_columns', not both: they name the same "
             "columns."
         )
-    requested = tags_to_keep if tags_to_keep is not None else tags_as_columns
+    requested, name = (
+        (tags_to_keep, "tags_to_keep")
+        if tags_to_keep is not None
+        else (tags_as_columns, "tags_as_columns")
+    )
     if custom_filter is None:
-        return read_tag_columns(Conf.tags._every_feature_columns(), None, requested)
+        return read_tag_columns(
+            Conf.tags._every_feature_columns(), None, requested, tags_name=name
+        )
     keys = list(custom_filter.keys())
     keys += (
         [osm_keys_to_keep]
@@ -204,7 +218,7 @@ def custom_read_columns(custom_filter, osm_keys_to_keep, tags_as_columns, tags_t
         else osm_keys_to_keep or []
     )
     return read_tag_columns(
-        feature_columns(custom_filter.keys()) or keys, None, requested, keys
+        feature_columns(custom_filter.keys()) or keys, None, requested, keys, name
     )
 
 
@@ -231,16 +245,18 @@ def validate_osm_keys(osm_keys):
             raise ValueError(_ID_FILTER_KEY_ERROR)
 
 
-def validate_tags_as_columns(tags_as_columns):
+def validate_tags_as_columns(tags_as_columns, name="tags_as_columns"):
+    """Raise ``ValueError``, naming the parameter ``name``, unless ``tags_as_columns`` is
+    a list of strings."""
     if not isinstance(tags_as_columns, list):
         raise ValueError(
-            f"'tags_as_columns' should be a list. "
+            f"'{name}' should be a list. "
             f"Got {tags_as_columns} of type {type(tags_as_columns)}."
         )
     for col in tags_as_columns:
         if not isinstance(col, str):
             raise ValueError(
-                f"All tags listed in 'tags_as_columns' should be strings. "
+                f"All tags listed in '{name}' should be strings. "
                 f"Got {col} of type {type(col)}."
             )
 
@@ -451,15 +467,22 @@ def default_workers(workers):
 
 
 def validate_workers(workers):
-    if isinstance(workers, str):
-        if workers.lower() != "auto":
-            raise ValueError("'workers' should be a positive integer, 'auto', or None.")
+    """``workers`` as the readers, crops, merges and downloads take it: None, ``"auto"``
+    (in any case) or an integer of at least 1 (a NumPy integer too, returned as ``int``).
+    Raises ``ValueError`` for any other value."""
+    if workers is None:
+        return None
+    if isinstance(workers, str) and workers.lower() == "auto":
         return "auto"
-    if workers is not None and (
-        not isinstance(workers, int) or isinstance(workers, bool) or workers < 1
+    if (
+        isinstance(workers, bool)
+        or not isinstance(workers, numbers.Integral)
+        or workers < 1
     ):
-        raise ValueError("'workers' should be a positive integer, 'auto', or None.")
-    return workers
+        raise ValueError(
+            f"'workers' should be a positive integer, 'auto', or None; got {workers!r}."
+        )
+    return int(workers)
 
 
 def validate_node_gdf(nodes):

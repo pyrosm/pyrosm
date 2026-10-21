@@ -1,4 +1,5 @@
-"""Public out-of-core readers (one per layer). Each indexes the file's blobs, decodes them
+"""The out-of-core readers (one per layer), internals of the engine behind ``OSM``
+(see :mod:`pyrosm.engine`). Each indexes the file's blobs, decodes them
 into shards selecting the layer's elements (and, for point layers, the matching
 nodes), then collects and assembles (or streams to GeoParquet) the requested layer. A
 ``bounding_box`` restricts the read to that area."""

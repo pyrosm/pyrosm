@@ -782,10 +782,10 @@ def test_get_data_by_area_accepts_area_forms(monkeypatch, area):
             {"crop": "polygon"},
             "Polygon or MultiPolygon",
         ),
-        (box(*HELSINKI), {"workers": 0}, "workers must be an integer"),
-        (box(*HELSINKI), {"workers": 1.5}, "workers must be an integer"),
-        (box(*HELSINKI), {"workers": True}, "workers must be an integer"),
-        (box(*HELSINKI), {"workers": "many"}, "workers must be an integer"),
+        (box(*HELSINKI), {"workers": 0}, "'workers' should be"),
+        (box(*HELSINKI), {"workers": 1.5}, "'workers' should be"),
+        (box(*HELSINKI), {"workers": True}, "'workers' should be"),
+        (box(*HELSINKI), {"workers": "many"}, "'workers' should be"),
     ],
 )
 def test_get_data_by_area_rejects_bad_options(area, options, message):

@@ -41,7 +41,7 @@ def test_filter_network_by_walking(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (237, 18)
+    assert gdf.shape == (237, 19)
 
     required_cols = [
         "bridge",
@@ -80,7 +80,7 @@ def test_filter_network_by_driving(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (171, 16)
+    assert gdf.shape == (171, 17)
 
     required_cols = [
         "bridge",
@@ -118,7 +118,7 @@ def test_filter_network_by_driving_with_service_roads(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (199, 18)
+    assert gdf.shape == (199, 19)
 
     required_cols = [
         "bridge",
@@ -158,7 +158,7 @@ def test_filter_network_by_cycling(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (289, 20)
+    assert gdf.shape == (289, 21)
 
     required_cols = [
         "bicycle",
@@ -200,7 +200,7 @@ def test_filter_network_by_all(test_pbf):
     assert isinstance(gdf, GeoDataFrame)
 
     # Test shape
-    assert gdf.shape == (331, 22)
+    assert gdf.shape == (331, 23)
 
     required_cols = [
         "access",
@@ -277,7 +277,7 @@ def test_parse_network_with_bbox(test_pbf):
 
     # Test shape (#236: edges crossing the bbox edge are now returned complete
     # rather than cut, so boundary-crossing edges are included)
-    assert gdf.shape == (71, 18)
+    assert gdf.shape == (71, 19)
 
     required_cols = [
         "bridge",
@@ -326,7 +326,7 @@ def test_parse_network_with_shapely_bbox(test_pbf):
 
     # Test shape (#236: edges crossing the bbox edge are now returned complete
     # rather than cut, so boundary-crossing edges are included)
-    assert gdf.shape == (71, 18)
+    assert gdf.shape == (71, 19)
 
     required_cols = [
         "bridge",
@@ -453,7 +453,7 @@ def test_getting_nodes_and_edges(test_pbf):
     assert isinstance(nodes.loc[0, "geometry"], Point)
 
     # Test shape
-    assert edges.shape == (1025, 20)
+    assert edges.shape == (1025, 21)
     assert nodes.shape == (977, 9)
 
     # Edges should have "u" and "v" columns
@@ -492,7 +492,7 @@ def test_getting_nodes_and_edges_with_bbox(test_pbf):
     # #199: the nodes frame now retains every endpoint referenced by the kept
     # edges, including boundary endpoints just outside the box, so the
     # nodes/edges pair stays consistent for graph export.)
-    assert edges.shape == (278, 20)
+    assert edges.shape == (278, 21)
     assert nodes.shape == (281, 9)
 
     # Edges should have "u" and "v" columns
@@ -524,7 +524,7 @@ def test_reading_network_from_osh(helsinki_history_pbf):
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], LineString)
-    assert gdf.shape == (171, 21)
+    assert gdf.shape == (171, 22)
 
     required_cols = ["highway", "id", "timestamp", "version", "geometry"]
 
@@ -584,9 +584,9 @@ def test_osh_network_does_not_leak_empty_tag_columns(helsinki_history_pbf):
     phantom = [c for c in gdf.columns if c != "geometry" and gdf[c].isna().all()]
     assert phantom == [], f"empty tag columns leaked into OSH output: {phantom}"
 
-    # The column set must stay lean (21 since the latest version of each way is taken
-    # whole (#379); 24 before that, 25 before the network-filter fix and 27 with the
+    # The column set must stay lean (22 with the ``visible`` column; 21 since the latest
+    # version of each way is taken whole (#379); 24 before that, 25 before the network-filter fix and 27 with the
     # #248 NA-leak bug). The row count dropped by one with the OSMnx-parity filters
     # (#369), by one more with #379, as a way lost its highway tag before 2010, and by
     # 33 ways that were deleted before 2010.
-    assert gdf.shape == (171, 21)
+    assert gdf.shape == (171, 22)
