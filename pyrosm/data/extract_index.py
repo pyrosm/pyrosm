@@ -955,8 +955,8 @@ def get_data_by_area(
         only a line naming the file is printed. ``False`` shows nothing. A callable is called
         as ``progress(written, total)`` after each chunk of each download, with the bytes
         written so far and the file size, ``None`` when the server does not give it.
-        The crop or merge shows its progress the same way (see :func:`pyrosm.merge_pbf`); a
-        callable is then called with the bytes of the extracts read in each pass.
+        The crop or merge shows its progress the same way; a callable is then called
+        with the percentage of the crop or merge done (see :func:`pyrosm.merge_pbf`).
 
     Returns
     -------

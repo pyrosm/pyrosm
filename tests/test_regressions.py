@@ -3807,3 +3807,56 @@ def test_get_network_plain_dict_filter_keeps_its_matches(engine):
     assert ids[0] == ids[1] == ids[2] and len(ids[0]) > 0
     others = osm.get_network(custom_filter=forms[0], filter_type="exclude")
     assert "footway" not in set(others["highway"]) and not set(others["id"]) & set(ids[0])
+
+
+def test_progress_of_several_passes_keeps_moving(monkeypatch):
+    """A bar of several passes was reset at each pass, which restarted its 2-second
+    delay, so it stood at 0 % through passes shorter than that, and a long step without
+    reports looked frozen. Steps report one progress from 0 to 100 % that names the
+    current step and never goes back, also when the steps to come change; a reset bar
+    keeps its start time; and an open bar is redrawn while no report comes."""
+    import time
+
+    from tqdm import std
+
+    from pyrosm.utils import progress
+
+    calls = []
+    steps = progress.Steps(lambda *call: calls.append(call), "Cropping x", {"b": 3.0})
+    steps.plan(["a", "b"])  # a takes 25 %, b 75 %
+    steps.start_step("a")(50, 100)
+    steps.plan(["c", "d"])  # the rest, from 12.5 %, in two equal steps
+    steps.start_step("c")(1, 1)
+    steps.start_step("a")(0, 1)  # not planned: it takes the rest, and nothing goes back
+    steps.finish()
+    done = [d for d, _ in calls]
+    assert done[:3] == [0.0, 12.5, 56.2] and done[-1] == 100.0 and done == sorted(done)
+    assert all(total == 100 for _, total in calls)
+
+    monkeypatch.setattr(progress, "_bar_class", lambda: (std.tqdm, False))
+    monkeypatch.setattr(progress, "_clock", iter([0.0, 5.0, 6.0]).__next__)
+    bar = progress.Bar("Cropping x", delay=2.0, unit="%")
+    steps = progress.Steps(bar, "Cropping x")
+    steps.start_step("finding the ways")(1, 2)
+    assert bar.bar.desc.startswith("Cropping x: finding the ways")
+    started = bar.bar.start_t
+    bar(10, 100)  # back: a reset after the delay keeps the start time
+    assert bar.bar.start_t == started
+    bar.close()
+
+    refreshed = []
+
+    class Counted(std.tqdm):
+        def refresh(self, *args, **kwargs):
+            refreshed.append(True)
+            return super().refresh(*args, **kwargs)
+
+    monkeypatch.setattr(progress, "_bar_class", lambda: (Counted, False))
+    monkeypatch.setattr(progress, "_clock", time.monotonic)
+    monkeypatch.setattr(progress, "_REDRAW_SECONDS", 0.01)
+    bar = progress.Bar("Cropping x", unit="%")
+    bar(1, 100)
+    before = len(refreshed)
+    time.sleep(0.2)
+    bar.close()
+    assert len(refreshed) > before

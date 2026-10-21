@@ -257,8 +257,8 @@ def get_data_by_bbox(
         only a line naming the file is printed. ``False`` shows nothing. A callable is called
         as ``progress(written, total)`` after each chunk, with the bytes written so far and
         the file size, ``None`` when the server does not give it.
-        The crop shows its progress the same way (see :class:`pyrosm.OSM`); a
-        callable is then called with the bytes of the extract read in each pass.
+        The crop shows its progress the same way; a callable is then called with the
+        percentage of the crop done (see :func:`pyrosm.crop_pbf`).
 
     Returns
     -------

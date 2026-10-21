@@ -1323,8 +1323,8 @@ class OSM:
             current (faster, slightly larger) in-place crop.
 
         The crop shows its progress as this object's ``progress`` says (see
-        :class:`OSM`), counting the bytes of the source file read in each pass over
-        it; a crop makes two or more.
+        :func:`pyrosm.crop_pbf`): one bar, or ``progress(done, 100)`` calls, from 0 to
+        100 % over the whole crop.
 
         Returns
         -------
