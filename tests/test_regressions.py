@@ -4066,3 +4066,69 @@ def test_write_pbf_reports_progress_through_its_steps(tmp_path, monkeypatch, par
     assert seen == []
     with pytest.raises(ValueError, match="progress must be"):
         osm.write_pbf(buildings, str(tmp_path / "refused.osm.pbf"), progress="yes")
+
+
+@pytest.mark.parametrize("keep_metadata", [True, False])
+def test_write_pbf_reads_rows_and_nodes_as_columns(tmp_path, monkeypatch, keep_metadata):
+    """write_pbf went through the frame with iterrows() and copied every node of the
+    file with one call each: 33 s for the buildings of Helsinki (17 s now). The rows
+    and the nodes are read as columns, also without metadata, and the written file
+    holds the same elements."""
+    import geopandas as gpd
+
+    import pyrosm.pbf_writer as writer
+    from pyrosm import OSM, get_data
+
+    osm = OSM(
+        get_data("test_pbf"),
+        engine="in_memory",
+        keep_metadata=keep_metadata,
+        progress=False,
+    )
+    buildings = osm.get_buildings()
+
+    def refused(*args, **kwargs):
+        raise AssertionError("one Python call per row")
+
+    added = []
+    add_node = writer._RecordBuilder.add_node
+    monkeypatch.setattr(gpd.GeoDataFrame, "iterrows", refused)
+    monkeypatch.setattr(
+        writer._RecordBuilder,
+        "add_node",
+        lambda self, *node: added.append(node) or add_node(self, *node),
+    )
+    path = osm.write_pbf(buildings, str(tmp_path / "out.osm.pbf"))
+    assert added == []
+    written = OSM(path, engine="in_memory", progress=False).get_buildings()
+    assert sorted(written["id"]) == sorted(buildings["id"])
+
+
+def test_write_pbf_copies_the_nodes_of_any_store():
+    """The copy of the nodes as arrays writes what the copy one node at a time wrote: a
+    repeated id in each of its rows, edited in each, and large integer metadata exactly
+    where some nodes have none."""
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    import pyrosm.pbf_writer as writer
+    from pyrosm.node_lookup import NodeLocations
+
+    store = NodeLocations(
+        {
+            "id": np.array([7, 7, 8]),
+            "lon": [1.0, 1.0, 2.0],
+            "lat": [3.0, 3.0, 4.0],
+            "changeset": np.array([9007199254740993, None, 5], dtype=object),
+            "tags": np.array([None, {"a": "b"}, None], dtype=object),
+        }
+    )
+    plan = SimpleNamespace(
+        removed_nodes=set(), node_coords={7: (5.0, 6.0)}, node_tags={8: {"c": "d"}}
+    )
+    builder = writer._RecordBuilder()
+    writer._add_base_nodes(builder, store, {}, plan)
+    assert builder.node_ids == [7, 7, 8] and builder.lons == [5.0, 5.0, 2.0]
+    assert builder.css == [9007199254740993, 0, 5] and builder.vers == [1, 1, 1]
+    assert builder.ntags == [None, {"a": "b"}, {"c": "d"}]

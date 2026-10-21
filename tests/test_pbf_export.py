@@ -2280,7 +2280,7 @@ def test_write_pbf_metadata_preserved(helsinki_pbf, tmp_path):
 
 def test_write_pbf_row_tags_strips_members():
     import pandas as pd
-    from pyrosm.pbf_writer import _row_tags
+    from pyrosm.pbf_writer import _frame_tags
 
     row = pd.Series(
         {
@@ -2291,7 +2291,7 @@ def test_write_pbf_row_tags_strips_members():
             "geometry": None,
         }
     )
-    tags = _row_tags(row, ["route"])
+    tags = _frame_tags(pd.DataFrame([row]), ["route"])[0]
     assert "members" not in tags  # relation-member metadata is not an OSM tag
     assert tags.get("network") == "ncn"
     assert tags.get("route") == "bicycle"
@@ -2383,7 +2383,7 @@ def test_write_pbf_osmium_counts_additions(helsinki_pbf, tmp_path):
 # ---------------------------------------------------------------------------
 def test_pbf_writer_tag_helpers():
     import pandas as pd
-    from pyrosm.pbf_writer import _row_tags, _record_tags, _tag_key, _is_missing
+    from pyrosm.pbf_writer import _frame_tags, _record_tags, _tag_key, _is_missing
 
     # JSON-string tags: members + empty key stripped, real tags kept.
     row = pd.Series(
@@ -2395,7 +2395,7 @@ def test_pbf_writer_tag_helpers():
             "geometry": None,
         }
     )
-    tags = _row_tags(row, ["highway"])
+    tags = _frame_tags(pd.DataFrame([row]), ["highway"])[0]
     assert tags["highway"] == "residential" and tags["surface"] == "asphalt"
     assert "members" not in tags and "" not in tags
 
@@ -2409,7 +2409,7 @@ def test_pbf_writer_tag_helpers():
             "geometry": None,
         }
     )
-    assert _row_tags(row2, ["highway"])["highway"] == "path"
+    assert _frame_tags(pd.DataFrame([row2]), ["highway"])[0]["highway"] == "path"
 
     assert _tag_key("") is None
     assert _tag_key(5) == "5"
@@ -2533,7 +2533,7 @@ def test_pbf_writer_reproject_and_normalize_helpers():
 
 def test_pbf_writer_tag_edge_cases():
     import pandas as pd
-    from pyrosm.pbf_writer import _row_tags, _record_tags
+    from pyrosm.pbf_writer import _frame_tags, _record_tags
 
     # A None-valued column removes its tag, also when the JSON tags hold it.
     row = pd.Series(
@@ -2546,7 +2546,8 @@ def test_pbf_writer_tag_edge_cases():
             "geometry": None,
         }
     )
-    assert _row_tags(row, ["highway", "ref"]) == {"highway": "path"}
+    tags = _frame_tags(pd.DataFrame([row]), ["highway", "ref"])
+    assert tags == [{"highway": "path"}]
 
     rec = {
         "id": 1,

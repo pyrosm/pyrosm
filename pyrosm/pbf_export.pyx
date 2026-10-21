@@ -2608,14 +2608,20 @@ cdef _emit_relation_block(out, rel_batch):
     _write_blob(out, "OSMData", block)
 
 
+# The time of writing a way, and a relation, in times of writing a node (Helsinki).
+_WAY_WRITE_COST = 16
+_RELATION_WRITE_COST = 50
+
+
 cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds, progress=None):
     """Serialize node/way/relation records to a valid PBF at `output_path`.
 
     `nodes` is a dict of aligned arrays (id/lat/lon/version/timestamp/changeset and
     an object array `tags`); `ways`/`relations` are lists of record dicts. `bounds`
     is (xmin, ymin, xmax, ymax) for the header bbox. `progress(done, total)`, when
-    given, gets the elements written after each block, and the total once the file is
-    closed.
+    given, gets the work done after each block (a node counting 1, a way
+    `_WAY_WRITE_COST` and a relation `_RELATION_WRITE_COST`), and the total once the file
+    is closed.
     """
     ids = np.ascontiguousarray(nodes["id"], dtype=np.int64)
     order = np.argsort(ids, kind="stable")
@@ -2631,7 +2637,8 @@ cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds, progre
     cdef int n = len(ids)
     cdef int i = 0
     cdef int j
-    cdef Py_ssize_t total = n + len(ways) + len(relations)
+    cdef Py_ssize_t way_work = _WAY_WRITE_COST * len(ways)
+    cdef Py_ssize_t total = n + way_work + _RELATION_WRITE_COST * len(relations)
     with open(output_path, "wb") as out:
         _write_header(out, bounds)
         while i < n:
@@ -2648,15 +2655,15 @@ cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds, progre
             j = min(i + _MAX_GROUP, len(ways))
             _emit_way_block(out, ways[i:j])
             i = j
-            if progress is not None and n + i < total:
-                progress(n + i, total)
+            if progress is not None and n + _WAY_WRITE_COST * i < total:
+                progress(n + _WAY_WRITE_COST * i, total)
         i = 0
         while i < len(relations):
             j = min(i + _MAX_GROUP, len(relations))
             _emit_relation_block(out, relations[i:j])
             i = j
-            if progress is not None and n + len(ways) + i < total:
-                progress(n + len(ways) + i, total)
+            if progress is not None and n + way_work + _RELATION_WRITE_COST * i < total:
+                progress(n + way_work + _RELATION_WRITE_COST * i, total)
     if progress is not None:
         progress(total, total)
     return output_path

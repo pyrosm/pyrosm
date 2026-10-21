@@ -103,6 +103,19 @@ cdef class NodeLocations:
         rec["id"] = node
         return rec
 
+    @property
+    def ids(self):
+        """The node ids, one per row of the store."""
+        return self._ids
+
+    def values_at(self, name, rows):
+        """The stored values of the column ``name`` at ``rows``, as they are, or None
+        when the store has no such column."""
+        column = self._columns.get(name)
+        if column is None:
+            return None
+        return column[rows] if isinstance(column, NodeTags) else np.asarray(column)[rows]
+
     def __contains__(self, key):
         return self._id2idx.contains(key)
 
