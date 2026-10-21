@@ -4838,9 +4838,9 @@ def test_written_files_keep_the_completed_relations(write, tmp_path):
 
 
 def test_crop_completes_every_version_of_a_relation(tmp_path):
-    """In a history file a relation is kept by its id, so every version of it is written;
-    the crop completes the way members of all of them, also of a version that does not
-    reach into the area."""
+    """A crop keeps a relation by its id, so a file with several records of one relation
+    (its versions) gets every record written; the crop completes the way members of all
+    of them, also of a record that does not reach into the area."""
     import numpy as np
 
     from pyrosm.pbf_export import _iter_decoded_blocks, crop_pbf, write_pbf_from_records
@@ -4869,11 +4869,11 @@ def test_crop_completes_every_version_of_a_relation(tmp_path):
         )
     ]
     source = write_pbf_from_records(
-        nodes, ways, relations, str(tmp_path / "history.osh.pbf"), (24.9, 60.1, 24.95, 60.11)
+        nodes, ways, relations, str(tmp_path / "versions.osm.pbf"), (24.9, 60.1, 24.95, 60.11)
     )
     out = crop_pbf(
         source,
-        str(tmp_path / "crop.osh.pbf"),
+        str(tmp_path / "crop.osm.pbf"),
         bounding_box=[24.899, 60.099, 24.911, 60.111],
         complete_relations=True,
         progress=False,
