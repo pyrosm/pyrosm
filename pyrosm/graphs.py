@@ -350,10 +350,11 @@ def graph_tables(
     progress=None,
 ):
     """The nodes and edges of a graph as GeoDataFrames, as the graph exporters build it: the
-    edges directed (see :func:`get_directed_edges`), simplified when ``simplify`` and, unless
-    ``retain_all``, only the connected part kept. Edges with an end node that is not among
-    ``nodes`` are left out. The parameters are those of
-    :func:`to_networkx`, also ``progress``."""
+    edges directed (see :func:`get_directed_edges`), unless ``retain_all`` only their
+    largest connected part kept, and simplified when ``simplify``, as when the connected
+    part is kept before simplifying (as OSMnx does). Edges with an end node that is not
+    among ``nodes`` are left out; nodes and edges are numbered from 0. The parameters are
+    those of :func:`to_networkx`, also ``progress``."""
     with _steps(
         "Preparing the graph tables", step_shares(simplify, retain_all), progress
     ) as step:
@@ -394,7 +395,9 @@ def _tables(
     ``oneway`` and ``reversed`` (see :func:`_osmnx_flags`) in their own columns.
 
     With ``simplify``, the directed edges are row numbers of ``edges`` and a direction each
-    (:func:`directed_rows`), and only the simplified edges become rows of a new table.
+    (:func:`directed_rows`), and only the simplified edges become rows of a new table. The
+    connected part is found on the simplified graph; when it leaves out edges, the
+    directed edges between the nodes of the edges kept are simplified again.
     ``simplify_kwargs`` are the optional parameters of :func:`simplify_graph`
     (``edge_attrs_differ``, ``node_attrs_include``, ``remove_rings``, ``track_merged``,
     ``length_cols``, ``edge_attr_aggs``). ``nodes`` and ``edges`` may also be the readers of a network read
@@ -435,27 +438,50 @@ def _tables(
         )
     if simplify:
         step("simplifying")
-        simplified = _simplify_rows(
-            nodes,
-            edges,
-            rows,
-            swapped,
-            from_id_col=from_id_col,
-            to_id_col=to_id_col,
-            directions=_osmnx_flags(rows, swapped) if osmnx_flags else None,
-            **(simplify_kwargs or {}),
-        )
-        if isinstance(edges, _WayEdges):
-            nodes.release()
-            edges.release()
-        nodes, edges = simplified
+        flags = _osmnx_flags(rows, swapped) if osmnx_flags else {}
+
+        def simplified(kept):
+            return _simplify_rows(
+                nodes,
+                edges,
+                rows[kept],
+                swapped[kept],
+                from_id_col=from_id_col,
+                to_id_col=to_id_col,
+                directions={name: values[kept] for name, values in flags.items()},
+                with_chains=True,
+                **(simplify_kwargs or {}),
+            )
+
+        graph_nodes, graph_edges, chains = simplified(np.arange(len(rows)))
+    else:
+        graph_nodes, graph_edges = nodes, edges
     # Keep only strongly connected component if not specifically requested otherwise
     if not retain_all:
         step("keeping the largest connected part")
-        nodes, edges = get_connected_edges(
-            nodes, edges, from_id_col, to_id_col, node_id_col
+        connected_nodes, connected_edges = get_connected_edges(
+            graph_nodes, graph_edges, from_id_col, to_id_col, node_id_col
         )
-    return nodes, edges.reset_index(drop=True)
+        if simplify and len(connected_edges) < len(graph_edges):
+            # A node of a removed edge may now join two edges of one street. Simplify
+            # again the directed edges between the nodes of the edges kept, as when the
+            # connected part is kept before simplifying (as OSMnx does).
+            ids = connected_nodes[node_id_col]
+            kept = graph_edges[from_id_col].isin(ids) & graph_edges[to_id_col].isin(ids)
+            in_kept = np.concatenate(
+                [chains[k] for k in np.flatnonzero(kept.to_numpy())]
+            )
+            from_ids, to_ids = edges.values(from_id_col), edges.values(to_id_col)
+            u = np.where(swapped, to_ids[rows], from_ids[rows])
+            v = np.where(swapped, from_ids[rows], to_ids[rows])
+            connected = np.union1d(u[in_kept], v[in_kept])
+            positions = np.flatnonzero(np.isin(u, connected) & np.isin(v, connected))
+            connected_nodes, connected_edges, _ = simplified(positions)
+        graph_nodes, graph_edges = connected_nodes, connected_edges
+    if simplify and isinstance(edges, _WayEdges):
+        nodes.release()
+        edges.release()
+    return graph_nodes.reset_index(drop=True), graph_edges.reset_index(drop=True)
 
 
 def to_networkx(

@@ -5278,3 +5278,41 @@ def test_node_attrs_include_finds_node_tags():
             graph_type="networkx",
             simplify_kwargs={"node_attrs_include": ["no_such_tag"]},
         )
+
+
+@pytest.mark.parametrize("network_type", ["driving", "cycling"])
+def test_default_graphs_are_fully_simplified(network_type):
+    """A graph was simplified first and its largest connected part kept afterwards, so a
+    node whose side street the second step removed was left between two edges of one
+    street. Graphs are fully simplified also where that step removes edges, in both
+    readers."""
+    from pyrosm import OSM, get_data
+    from pyrosm.graph_simplify import simplify_graph
+    from pyrosm.graphs import graph_tables
+
+    osm = OSM(get_data("helsinki_pbf"), engine="in_memory", progress=False)
+    nodes, edges = osm.get_network(network_type, nodes=True)
+    graph_nodes, graph_edges = graph_tables(nodes, edges, network_type=network_type)
+    assert len(simplify_graph(graph_nodes, graph_edges)[0]) == len(graph_nodes)
+    read = OSM(get_data("helsinki_pbf"), progress=False)
+    graph = read.get_graph(network_type, graph_type="networkx")
+    assert set(graph) == set(graph_nodes["id"])
+
+
+@pytest.mark.parametrize("network_type", ["driving", "walking"])
+def test_unsimplified_edges_run_from_u_to_v(network_type):
+    """In a graph built with simplify=False, an edge that runs against the node order of
+    its way kept the way's line, which started at its v node. Every edge's line runs
+    from its u node to its v node."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), engine="in_memory", progress=False)
+    nodes, edges = osm.get_network(network_type, nodes=True)
+    graph = osm.to_graph(nodes, edges, graph_type="networkx", simplify=False)
+
+    def at(node):
+        return pytest.approx((graph.nodes[node]["x"], graph.nodes[node]["y"]), abs=1e-7)
+
+    for u, v, data in graph.edges(data=True):
+        line = data["geometry"].coords
+        assert line[0] == at(u) and line[-1] == at(v)

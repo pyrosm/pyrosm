@@ -796,7 +796,7 @@ def test_pandana_weights_are_summed_along_merged_chains(export, module):
 )
 def test_graph_tables_match_the_directed_table(network_type, change, options):
     """graph_tables reads the directed edges as row numbers of the edge table; its tables are
-    those of get_directed_edges + simplify_graph + get_connected_edges, which copy the
+    those of get_directed_edges + get_connected_edges + simplify_graph, which copy the
     directed edges into a table of their own first."""
     import warnings
 
@@ -825,8 +825,8 @@ def test_graph_tables_match_the_directed_table(network_type, change, options):
         directed_nodes, directed = get_directed_edges(
             nodes.copy(), edges.copy(), **options
         )
-        want = get_connected_edges(
-            *simplify_graph(directed_nodes, directed, **simplify_kwargs)
+        want = simplify_graph(
+            *get_connected_edges(directed_nodes, directed), **simplify_kwargs
         )
     for got_frame, want_frame in zip(got, want):
         geometry = got_frame.geometry.name

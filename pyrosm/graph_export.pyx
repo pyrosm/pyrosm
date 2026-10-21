@@ -4,6 +4,7 @@ from collections import Counter
 from itertools import chain, compress
 from pyrosm.graph_simplify import _value_objects
 import geopandas as gpd
+import shapely
 import pandas as pd
 import numpy as np
 
@@ -220,6 +221,18 @@ cpdef directed_rows(edges, direction, direction_suffix, force_bidirectional,
     return rows, swapped
 
 
+cdef _with_lines_reversed(edges):
+    """``edges`` with the line of each row (its active geometry, when it has one)
+    reversed."""
+    if not isinstance(edges, gpd.GeoDataFrame) or edges._geometry_column_name not in edges:
+        return edges
+    name = edges.geometry.name
+    edges[name] = gpd.GeoSeries(
+        shapely.reverse(edges.geometry.values), index=edges.index, crs=edges.crs
+    )
+    return edges
+
+
 cpdef generate_directed_edges(edges,
                               direction,
                               direction_suffix,
@@ -236,13 +249,16 @@ cpdef generate_directed_edges(edges,
     (oneway=yes + oneway:bicycle=no -> two-way for bikes).
 
     If 'force_bidirectional=True' travel to both direction is allowed for all edges.
+
+    An edge travelled against its way gets the way's line reversed, so every line runs
+    from the edge's from-node to its to-node.
     """
     if force_bidirectional:
         # Flip from/to values
-        edges_dir2 = edges.copy(deep=True).rename(
+        edges_dir2 = _with_lines_reversed(edges.copy(deep=True).rename(
             columns={to_id_col: from_id_col,
                      from_id_col: to_id_col}
-        )
+        ))
         return pd.concat([edges, edges_dir2], ignore_index=True)
 
     # ========================================
@@ -255,14 +271,18 @@ cpdef generate_directed_edges(edges,
 
     edge_cnt = len(edges)
     twoway_edges = edges.loc[~oneway_mask].copy()
-    twoway_edges_dir2 = twoway_edges.copy(deep=True).rename(columns={to_id_col: from_id_col, from_id_col: to_id_col})
+    twoway_edges_dir2 = _with_lines_reversed(
+        twoway_edges.copy(deep=True).rename(columns={to_id_col: from_id_col, from_id_col: to_id_col})
+    )
     twoway_edges_dir2.index = np.arange(edge_cnt, edge_cnt + len(twoway_edges))
 
     against_edges = edges.loc[oneway_mask & against_mask].copy()
     along_edges = edges.loc[oneway_mask & ~against_mask].copy()  # Nothing needs to be done for these
 
     # Flip the from/to ids for against edges
-    against_edges = against_edges.rename(columns={from_id_col: to_id_col, to_id_col: from_id_col})
+    against_edges = _with_lines_reversed(
+        against_edges.rename(columns={from_id_col: to_id_col, to_id_col: from_id_col})
+    )
 
     # Stack everything (keep order)
     return pd.concat([along_edges, against_edges, twoway_edges, twoway_edges_dir2])
