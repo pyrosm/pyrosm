@@ -2846,9 +2846,10 @@ cpdef write_pbf_from_records(nodes, ways, relations, output_path, bounds, progre
     """Serialize node/way/relation records to a valid PBF at `output_path`, sorted by type
     then id, replacing `output_path` only once the file is complete.
 
-    `nodes` is a dict of aligned arrays (id/lat/lon, an object array `tags` and, when the
-    nodes have metadata, version/timestamp/changeset); `ways`/`relations` are lists of
-    record dicts, whose `version`, `timestamp` and `changeset` are written when given.
+    `nodes` is a dict of aligned arrays (id/lat/lon, an object array `tags` and,
+    optionally, version/timestamp/changeset; a node whose three are all 0 is written
+    without metadata); `ways`/`relations` are lists of record dicts, whose `version`,
+    `timestamp` and `changeset` are written when given.
     `bounds` is (xmin, ymin, xmax, ymax) for the header bbox. `progress(done, total)`, when
     given, gets the work done after each block (a node counting 1, a way
     `_WAY_WRITE_COST` and a relation `_RELATION_WRITE_COST`), and the total once the file
@@ -2873,6 +2874,7 @@ def _write_records(nodes, ways, relations, bounds, progress, path):
             np.ascontiguousarray(nodes[name], dtype=np.int64)[order]
             for name in ("version", "timestamp", "changeset")
         ]
+        has_meta = (meta[0] != 0) | (meta[1] != 0) | (meta[2] != 0)
     tags_arr = nodes["tags"]
     tags_ordered = [tags_arr[i] for i in order]
     ways = sorted(ways, key=itemgetter("id"))
@@ -2887,9 +2889,16 @@ def _write_records(nodes, ways, relations, bounds, progress, path):
         _write_header(out, bounds, sorted_output=True)
         while i < n:
             j = min(i + _MAX_GROUP, n)
+            if meta is not None:
+                # A block's DenseInfo is all or nothing: end the block where the nodes
+                # with metadata and those without it meet.
+                change = np.flatnonzero(has_meta[i:j] != has_meta[i])
+                if len(change):
+                    j = i + int(change[0])
             _emit_node_block(
                 out, ids[i:j], lat_raw[i:j], lon_raw[i:j],
-                None if meta is None else [values[i:j] for values in meta],
+                [values[i:j] for values in meta] if meta is not None and has_meta[i]
+                else None,
                 tags_ordered[i:j],
             )
             i = j

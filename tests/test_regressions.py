@@ -4130,7 +4130,7 @@ def test_write_pbf_copies_the_nodes_of_any_store():
     builder = writer._RecordBuilder()
     writer._add_base_nodes(builder, store, {}, plan)
     assert builder.node_ids == [7, 7, 8] and builder.lons == [5.0, 5.0, 2.0]
-    assert builder.css == [9007199254740993, 0, 5] and builder.vers == [1, 1, 1]
+    assert builder.css == [9007199254740993, 0, 5] and builder.vers == [0, 0, 0]
     assert builder.ntags == [None, {"a": "b"}, {"c": "d"}]
 
 
@@ -5047,10 +5047,10 @@ def test_write_pbf_writes_new_elements_in_order(tmp_path):
     assert way_ids[0] < 0 and way_ids == sorted(way_ids)
 
 
-def _metadata_source(path):
+def _metadata_source(path, mixed=False):
     """A PBF with a building relation (id 20) of two square ways: way 10 (changeset 88)
     on nodes 1-4 and way 11 (changeset 99) on nodes 5-8, 0.02 degrees east; the nodes
-    have changeset 77."""
+    have changeset 77, or when ``mixed`` nodes 5-8 have no metadata."""
     import numpy as np
 
     from pyrosm.pbf_export import write_pbf_from_records
@@ -5065,6 +5065,9 @@ def _metadata_source(path):
         "changeset": np.full(8, 77, dtype=np.int64),
         "tags": [None] * 8,
     }
+    if mixed:
+        for name in ("version", "timestamp", "changeset"):
+            nodes[name][4:] = 0
     ways = [
         {"id": 10 + i, "refs": [s, s + 1, s + 2, s + 3, s], "version": 2,
          "timestamp": 1600000000, "changeset": changeset, "tags": {}}
@@ -5083,16 +5086,18 @@ def _metadata_source(path):
     )
 
 
-@pytest.mark.parametrize("read", ["whole", "no node metadata", "box, complete relations"])
+@pytest.mark.parametrize(
+    "read", ["whole", "no node metadata", "box, complete relations", "mixed nodes"]
+)
 def test_write_pbf_writes_the_metadata_it_read(read, tmp_path):
     """write_pbf wrote every way with changeset 0 and, for nodes read with
     keep_metadata=False, invented version 1, timestamp 1970 and changeset 0. It writes
     the metadata it read, also for the member ways a read with complete_relations adds,
-    and none where none was read."""
+    and none where none was read, node by node."""
     from pyrosm import OSM
     from pyrosm.pbfreader import iter_decoded_blocks
 
-    source = _metadata_source(tmp_path / "source.osm.pbf")
+    source = _metadata_source(tmp_path / "source.osm.pbf", mixed=read == "mixed nodes")
     options = {
         "whole": {},
         "no node metadata": {"keep_metadata": False},
@@ -5100,6 +5105,7 @@ def test_write_pbf_writes_the_metadata_it_read(read, tmp_path):
             "bounding_box": [24.899, 60.099, 24.911, 60.111],
             "complete_relations": True,
         },
+        "mixed nodes": {},
     }[read]
     osm = OSM(source, engine="in_memory", **options)
     out = osm.write_pbf(osm.get_buildings(), str(tmp_path / "out.osm.pbf"))
@@ -5110,8 +5116,14 @@ def test_write_pbf_writes_the_metadata_it_read(read, tmp_path):
         if block_ways is not None:
             ways.update(zip(block_ways["id"].tolist(), block_ways["changeset"].tolist()))
     assert ways == {10: 88, 11: 99}
-    changesets = [c for n in nodes for c in n["changeset"].tolist()]
-    assert changesets == ([] if read == "no node metadata" else [77] * 8)
+    with_metadata = [
+        (i, c)
+        for block in nodes
+        if len(block["changeset"])
+        for i, c in zip(block["id"].tolist(), block["changeset"].tolist())
+    ]
+    expected = {"no node metadata": [], "mixed nodes": [(i, 77) for i in range(1, 5)]}
+    assert with_metadata == expected.get(read, [(i, 77) for i in range(1, 9)])
 
 
 def test_write_pbf_of_a_history_read_keeps_the_way_changesets(tmp_path):
@@ -5178,13 +5190,12 @@ def test_interrupted_writes_leave_the_earlier_file(write, tmp_path):
         run(stop)
     assert [p.name for p in tmp_path.iterdir()] == ["out.osm.pbf"]
     assert out.read_bytes() == b"earlier"
-    # A complete write replaces the file and keeps its permissions, read-only ones too.
-    for mode in (0o640, 0o444):
+    # A complete write replaces the file and keeps its permissions (POSIX), read-only ones
+    # too.
+    for mode in (0o640, 0o444) if os.name != "nt" else (0o666,):
         out.chmod(mode)
         run(False)
-        assert out.stat().st_size > 1000
-        if os.name != "nt":
-            assert out.stat().st_mode & 0o777 == mode
+        assert out.stat().st_size > 1000 and out.stat().st_mode & 0o777 == mode
     out.chmod(0o644)
 
 

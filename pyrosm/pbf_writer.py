@@ -1008,8 +1008,6 @@ class _RecordBuilder:
     def __init__(self):
         self.node_ids, self.lats, self.lons = [], [], []
         self.vers, self.tss, self.css, self.ntags = [], [], [], []
-        # False when the source nodes were read without metadata: none is written.
-        self.node_meta = True
         self.ways = []
         self.rels = []
         self._now = int(time.time())
@@ -1112,20 +1110,16 @@ class _RecordBuilder:
 
     def node_payload(self):
         """The nodes as the arrays :func:`~pyrosm.pbf_export.write_pbf_from_records`
-        takes, without metadata when the source nodes had none."""
-        payload = {
+        takes; a source node read without metadata has zeros for it."""
+        return {
             "id": np.asarray(self.node_ids, dtype=np.int64),
             "lat": np.asarray(self.lats, dtype=np.float64),
             "lon": np.asarray(self.lons, dtype=np.float64),
+            "version": np.asarray(self.vers, dtype=np.int64),
+            "timestamp": np.asarray(self.tss, dtype=np.int64),
+            "changeset": np.asarray(self.css, dtype=np.int64),
             "tags": self.ntags,
         }
-        if self.node_meta:
-            payload.update(
-                version=np.asarray(self.vers, dtype=np.int64),
-                timestamp=np.asarray(self.tss, dtype=np.int64),
-                changeset=np.asarray(self.css, dtype=np.int64),
-            )
-        return payload
 
     def bounds(self):
         if not self.lons:  # empty subset -> degenerate header bbox
@@ -1181,14 +1175,11 @@ def _add_base_nodes(builder, node_coordinates, poi_tags, plan, keep=None):
         tags[i] = t if isinstance(t, dict) else None
     for i, t in _rows_of(ids, plan.node_tags):
         tags[i] = t
-    versions = node_coordinates.values_at("version", rows)
-    if versions is None:
-        builder.node_meta = False
     builder.add_nodes(
         ids,
         lat,
         lon,
-        _int_values(versions, 1, len(ids)),
+        _int_values(node_coordinates.values_at("version", rows), 0, len(ids)),
         _int_values(node_coordinates.values_at("timestamp", rows), 0, len(ids)),
         _int_values(node_coordinates.values_at("changeset", rows), 0, len(ids)),
         tags,

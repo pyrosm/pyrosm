@@ -377,17 +377,18 @@ def write_atomic_path(path, write):
     next to it, ``<name>.<random>.part``.
 
     The temporary file replaces ``path`` only when ``write`` returns, so readers never see
-    a partial file, and takes the permissions of the ``path`` it replaces; it is removed
-    when ``write`` fails.
+    a partial file, and takes the permissions of the ``path`` it replaces (on POSIX); it is
+    removed when ``write`` fails.
     """
     path = Path(path)
     partial = _new_partial(path)
     try:
         write(partial)
-        try:
-            shutil.copymode(path, partial)
-        except FileNotFoundError:
-            pass
+        if os.name != "nt":
+            try:
+                shutil.copymode(path, partial)
+            except FileNotFoundError:
+                pass
         Path(partial).replace(path)
     except BaseException:
         Path(partial).unlink(missing_ok=True)
