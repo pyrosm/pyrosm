@@ -1323,11 +1323,10 @@ def write_geodataframe_to_pbf(
     start_step(steps, _APPLYING)
 
     relations = relations or {}
-    changesets = {}
-    if way_changesets is not None:
-        ids, values = way_changesets
-        known = values != 0
-        changesets = dict(zip(ids[known].tolist(), values[known].tolist()))
+    no_changesets = (np.empty(0, dtype=np.int64),) * 2
+    ids, values = no_changesets if way_changesets is None else way_changesets
+    known = values != 0
+    changesets = dict(zip(ids[known].tolist(), values[known].tolist()))
     way_records = list(way_records) + list(relation_member_ways or [])
     frames = _reproject_to_wgs84(_as_frames(data))
 
