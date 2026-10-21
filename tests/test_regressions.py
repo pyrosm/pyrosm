@@ -4761,6 +4761,7 @@ def test_clear_downloads_removes_the_file_given_and_partial_files(tmp_path, monk
         downloads / "bbox_1_2_3_4.osm.pbf",
         downloads / "bbox_1_2_3_4.osm.pbf.sources",
         downloads / "estonia-latest.osm.pbf.x8y9z0.part",
+        downloads / "monaco-latest.osm.pbf.copy.osm.pbf.ab12cd34.part",
         downloads / "geofabrik" / "index-v1.json",
     ]
     for file in files:
@@ -4769,7 +4770,8 @@ def test_clear_downloads_removes_the_file_given_and_partial_files(tmp_path, monk
     assert OSM.clear_downloads(own / "monaco-latest.osm.pbf") == 1
     assert files[0].exists() and not files[1].exists()
     assert OSM.clear_downloads("monaco-latest.osm.pbf") == 2
-    assert OSM.clear_downloads() == 2
+    assert files[-2].exists()
+    assert OSM.clear_downloads() == 3
     left = [p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*") if p.is_file()]
     assert left == ["pyrosm/geofabrik/index-v1.json"]
     with pytest.raises(ValueError, match="removes .osm.pbf and .osh.pbf files only"):

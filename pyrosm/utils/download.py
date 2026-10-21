@@ -419,6 +419,10 @@ def list_downloads():
     return sorted(str(p) for p in directory.glob("*.pbf") if p.is_file())
 
 
+# The suffix `write_atomic` gives the partial file of `<name>`: `.<random>.part`.
+_PARTIAL_SUFFIX = re.compile(r"\.[A-Za-z0-9_]+\.part")
+
+
 def sources_record(path):
     """The file beside ``path`` that records the files it was cropped or merged from."""
     return Path(os.fspath(path) + ".sources")
@@ -428,7 +432,11 @@ def _remove_download(path):
     """Remove the file ``path``, the partial files of its interrupted downloads and its
     record (see :func:`sources_record`); returns the number of PBF and partial files
     removed."""
-    partials = path.parent.glob(glob.escape(path.name) + ".*.part")
+    partials = [
+        p
+        for p in path.parent.glob(glob.escape(path.name) + ".*.part")
+        if _PARTIAL_SUFFIX.fullmatch(p.name[len(path.name) :])
+    ]
     removed = [p for p in (path, *partials) if p.is_file()]
     for file in removed:
         file.unlink()
