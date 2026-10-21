@@ -5178,8 +5178,11 @@ def test_interrupted_writes_leave_the_earlier_file(write, tmp_path):
         run(stop)
     assert [p.name for p in tmp_path.iterdir()] == ["out.osm.pbf"]
     assert out.read_bytes() == b"earlier"
-    # A complete write replaces the file and keeps its permissions.
-    run(False)
-    assert out.stat().st_size > 1000
-    if os.name != "nt":
-        assert out.stat().st_mode & 0o777 == 0o640
+    # A complete write replaces the file and keeps its permissions, read-only ones too.
+    for mode in (0o640, 0o444):
+        out.chmod(mode)
+        run(False)
+        assert out.stat().st_size > 1000
+        if os.name != "nt":
+            assert out.stat().st_mode & 0o777 == mode
+    out.chmod(0o644)

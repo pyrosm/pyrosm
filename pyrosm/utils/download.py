@@ -361,7 +361,7 @@ def get_file_size(file_name, size_type=UNIT.MB):
 
 def _new_partial(path):
     """A new, empty file ``<name>.<random>.part`` next to ``path``, with the permissions a
-    new file gets (or those of ``path`` when it exists)."""
+    new file gets."""
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     while True:
         partial = path.with_name("%s.%s.part" % (path.name, secrets.token_hex(4)))
@@ -369,8 +369,6 @@ def _new_partial(path):
             os.close(os.open(partial, flags, 0o666))
         except FileExistsError:
             continue
-        if path.exists():
-            shutil.copymode(path, partial)
         return partial
 
 
@@ -379,12 +377,17 @@ def write_atomic_path(path, write):
     next to it, ``<name>.<random>.part``.
 
     The temporary file replaces ``path`` only when ``write`` returns, so readers never see
-    a partial file; it is removed when ``write`` fails.
+    a partial file, and takes the permissions of the ``path`` it replaces; it is removed
+    when ``write`` fails.
     """
     path = Path(path)
     partial = _new_partial(path)
     try:
         write(partial)
+        try:
+            shutil.copymode(path, partial)
+        except FileNotFoundError:
+            pass
         Path(partial).replace(path)
     except BaseException:
         Path(partial).unlink(missing_ok=True)
