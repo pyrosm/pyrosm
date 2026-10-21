@@ -9,7 +9,6 @@ import pyrosm
 import pyrosm.data.extract_index as ei
 import pyrosm.data.geofabrik_index as gi
 from pyrosm import get_data_by_bbox
-from pyrosm.exceptions import ExtractNotFoundError
 
 HELSINKI = [24.93, 60.16, 24.96, 60.18]
 BBBIKE_URL = "https://download.bbbike.org/osm/bbbike/Helsinki/Helsinki.osm.pbf"
@@ -96,24 +95,17 @@ def test_bbox_filename_format():
 @pytest.mark.parametrize(
     "bbox, error, match",
     [
-        ([1, 2, 3], ValueError, "4 values"),
-        ([1, 2, 0, 3], ValueError, "minx <= maxx"),
+        ([1, 2, 3], ValueError, "should be four numbers"),
+        ([1, 2, 0, 3], ValueError, "minx < maxx"),
         ([float("-inf"), 0, float("inf"), 1], ValueError, "finite"),
         ("not-a-bbox", ValueError, "should be"),
+        ([200.0, 0.0, 210.0, 5.0], ValueError, "lon/lat range"),
     ],
 )
 def test_errors(monkeypatch, bbox, error, match):
     monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: _found())
     with pytest.raises(error, match=match):
         get_data_by_bbox(bbox, download=False)
-
-
-def test_out_of_range_bbox_warns(monkeypatch):
-    # Longitude 200 is off the map: it warns about the range and finds no extract.
-    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: _found())
-    with pytest.warns(UserWarning, match="lon/lat range"):
-        with pytest.raises(ExtractNotFoundError):
-            get_data_by_bbox([200.0, 0.0, 210.0, 5.0], download=False)
 
 
 # -- snapshot / index --

@@ -57,7 +57,7 @@ from pyrosm.exceptions import (
     ExtractDownloadError,
     ExtractNotFoundError,
 )
-from pyrosm.utils import _file_identity
+from pyrosm.utils import _file_identity, check_bounds
 from pyrosm.utils.progress import stepping, validate_progress
 from pyrosm.utils.download import (
     _CHUNK,
@@ -997,11 +997,7 @@ def _area_geometry(area):
         geom = _bbox_to_polygon(area)
     if geom.is_empty:
         raise ValueError("The area is empty.")
-    minx, miny, maxx, maxy = _bbox_to_polygon(geom).bounds
-    if minx == maxx or miny == maxy:
-        raise ValueError(
-            "The area must have a width and a height; got %s." % geom.geom_type
-        )
+    check_bounds(geom.bounds, "The area (%s)" % geom.geom_type)
     return geom
 
 

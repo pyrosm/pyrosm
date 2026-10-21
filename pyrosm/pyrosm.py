@@ -133,10 +133,12 @@ class OSM:
     filepath : str
         Filepath to input OSM dataset (``*.osm.pbf``)
 
-    bounding_box : list | shapely geometry
-        Filtering OSM data spatially is allowed by passing a
-        bounding box either as a list `[minx, miny, maxx, maxy]` or
-        as a Shapely Polygon/MultiPolygon or closed LineString/LinearRing.
+    bounding_box : list | tuple | numpy.ndarray | shapely geometry | GeoDataFrame | GeoSeries
+        Filtering OSM data spatially is allowed by passing a bounding box in lon/lat:
+        four numbers `[minx, miny, maxx, maxy]` (a list, tuple or array, such as a
+        GeoDataFrame's `total_bounds`), a Shapely Polygon/MultiPolygon or closed
+        LineString/LinearRing, or a GeoDataFrame/GeoSeries (its geometries together,
+        reprojected to lon/lat). Every function that takes a bounding box takes these.
 
     keep_metadata : bool (default: True)
         Whether to keep the OSM element metadata columns (`timestamp`,
@@ -263,32 +265,9 @@ class OSM:
         if "osh.pbf" in self.filepath.lower():
             self._osh_file = True
 
-        if bounding_box is None:
-            self.bounding_box = None
-        elif type(bounding_box) in self.allowed_bbox_types:
-            # Ensures bounding box is a closed geometry
-            # (+ attempts to close MultiLineStrings)
-            self.bounding_box = validate_bounding_box(bounding_box)
-        elif isinstance(bounding_box, list):
-            if not len(bounding_box) == 4:
-                raise ValueError(
-                    "When passing bounding box as a list it should contain 4 coordinates: "
-                    "[minx, miny, maxx, maxy]."
-                )
-            minx, miny, maxx, maxy = bounding_box
-            if minx >= maxx or miny >= maxy:
-                raise ValueError(
-                    "Invalid bounding box {bbox}: expected [minx, miny, maxx, maxy] with "
-                    "minx < maxx and miny < maxy. Please double-check the order of the "
-                    "coordinates (they may be swapped/inverted).".format(
-                        bbox=bounding_box
-                    )
-                )
-            self.bounding_box = bounding_box
-        else:
-            raise ValueError(
-                "bounding_box should be a list, Shapely Polygon or a Shapely LinearRing."
-            )
+        self.bounding_box = (
+            None if bounding_box is None else validate_bounding_box(bounding_box)
+        )
 
         self.conf = Conf
         self.keep_node_info = keep_node_info

@@ -1370,8 +1370,8 @@ def test_merge_pbf_rejects_bad_input(
     "case, match",
     [
         ("box and polygon", "not both"),
-        ("line", "non-empty Shapely Polygon"),
-        ("empty polygon", "non-empty Shapely Polygon"),
+        ("line", "not a closed geometry"),
+        ("empty polygon", "should be four numbers"),
     ],
 )
 def test_merge_pbf_rejects_bad_polygon(helsinki_pbf, case, match):

@@ -4908,3 +4908,97 @@ def test_bounding_box_write_keeps_the_relations_of_the_box(tmp_path):
     text = {"id": [1, 2], "members": [{"member_id": [5], "member_type": ["way"]}] * 2}
     assert _relations_with_members(text, [5], [7]) == set()
     assert _relations_with_members(text, [], [5]) == {1, 2}
+
+
+@pytest.mark.parametrize(
+    "form",
+    ["list", "tuple", "array", "polygon", "GeoDataFrame", "GeoSeries", "projected", "no CRS"],
+)
+def test_bounding_box_forms(form):
+    """Each function took its own bounding-box forms: OSM() refused a tuple, an array
+    and a GeoDataFrame, crop_pbf failed on them with unrelated errors, and
+    get_data_by_bbox read a projected GeoDataFrame's metres as degrees. One check takes
+    every form, a GeoDataFrame or GeoSeries in lon/lat."""
+    import geopandas as gpd
+    import numpy as np
+    from shapely.geometry import box
+
+    from pyrosm.utils import validate_bounding_box
+
+    bounds = [24.94, 60.165, 24.945, 60.17]
+    gdf = gpd.GeoDataFrame(geometry=[box(*bounds)], crs=4326)
+    given = {
+        "list": bounds,
+        "tuple": tuple(bounds),
+        "array": np.array(bounds),
+        "polygon": box(*bounds),
+        "GeoDataFrame": gdf,
+        "GeoSeries": gdf.geometry,
+        "projected": gdf.to_crs(3067),
+        "no CRS": gdf.set_crs(None, allow_override=True),
+    }[form]
+    checked = validate_bounding_box(given)
+    got = checked if isinstance(checked, list) else list(checked.bounds)
+    assert got == pytest.approx(bounds, abs=1e-6)
+
+
+def test_every_function_takes_a_geodataframe_box(tmp_path, monkeypatch):
+    """OSM(), the out-of-core readers, crop_pbf, merge_pbf and get_data_by_bbox all take
+    a GeoDataFrame as the box, and read or crop what its bounds give."""
+    import geopandas as gpd
+    from shapely.geometry import box
+
+    import pyrosm.data.extract_index as ei
+    from pyrosm import OSM, get_data, get_data_by_bbox, merge_pbf
+    from pyrosm.pbf_export import crop_pbf
+
+    fp = get_data("helsinki_pbf")
+    bounds = [24.94, 60.165, 24.945, 60.17]
+    gdf = gpd.GeoDataFrame(geometry=[box(*bounds)], crs=4326)
+    ids = sorted(OSM(fp, bounding_box=bounds).get_buildings()["id"])
+    for engine in ("in_memory", "out_of_core"):
+        read = OSM(fp, bounding_box=gdf, engine=engine).get_buildings()
+        assert sorted(read["id"]) == ids
+    crop = crop_pbf(fp, str(tmp_path / "crop.osm.pbf"), bounding_box=gdf, progress=False)
+    merged = merge_pbf([fp], str(tmp_path / "merged.osm.pbf"), polygon=gdf, progress=False)
+    for written in (crop, merged):
+        assert set(ids) <= set(OSM(written).get_buildings()["id"])
+    searched = []
+    monkeypatch.setattr(ei, "find_extracts", lambda geom, **k: searched.append(geom) or [])
+    with pytest.raises(Exception):
+        get_data_by_bbox(gdf, download=False)
+    assert list(searched[0].bounds) == pytest.approx(bounds)
+
+
+@pytest.mark.parametrize("merge", [False, True])
+@pytest.mark.parametrize(
+    "bounding_box, problem",
+    [
+        ([24.95, 60.16, 24.93, 60.17], "minx < maxx"),
+        ([385000, 6672000, 386000, 6673000], "lon/lat range"),
+        ((24.93, 60.16, 24.95), "should be four numbers"),
+        ([10.0, 50.0, 10.1, 50.1], "No node of"),
+    ],
+)
+def test_crops_refuse_unusable_boxes_and_warn_when_empty(
+    bounding_box, problem, merge, tmp_path
+):
+    """crop_pbf and merge_pbf wrote an empty file, without a word, for an inverted box,
+    one in metres or one outside the data, and failed with unrelated errors on others.
+    They refuse a box OSM() refuses and warn when they keep no node."""
+    from pyrosm import get_data, merge_pbf
+    from pyrosm.pbf_export import crop_pbf
+
+    fp, out = get_data("helsinki_pbf"), str(tmp_path / "out.osm.pbf")
+
+    def write():
+        if merge:
+            return merge_pbf([fp], out, bounding_box=bounding_box, progress=False)
+        return crop_pbf(fp, out, bounding_box=bounding_box, progress=False)
+
+    if problem == "No node of":
+        with pytest.warns(UserWarning, match="No node of Helsinki.osm.pbf lies in"):
+            write()
+    else:
+        with pytest.raises(ValueError, match=problem):
+            write()

@@ -12,15 +12,13 @@ import functools
 import gzip
 import json
 import tempfile
-import warnings
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
 import geopandas as gpd
-import numpy as np
 from shapely.geometry import box
-from shapely.geometry.base import BaseGeometry
 
+from pyrosm.utils import validate_bounding_box
 from pyrosm.utils.download import _TIMEOUT
 
 _INDEX_PATH = Path(__file__).parent / "geofabrik_index.geojson.gz"
@@ -85,41 +83,10 @@ def _load_index():
 
 
 def _bbox_to_polygon(bbox):
-    if isinstance(bbox, (gpd.GeoDataFrame, gpd.GeoSeries)):
-        bounds = bbox.total_bounds
-    elif isinstance(bbox, BaseGeometry):
-        # Use the geometry's envelope, i.e. its true bounding box.
-        bounds = bbox.bounds
-    elif isinstance(bbox, (list, tuple, np.ndarray)):
-        bounds = list(bbox)
-        if len(bounds) != 4:
-            raise ValueError(
-                "A bounding box given as a list/tuple/array must have 4 values "
-                "[minx, miny, maxx, maxy]. Got %d." % len(bounds)
-            )
-    else:
-        raise ValueError(
-            "'bbox' should be a list/tuple/array [minx, miny, maxx, maxy], a "
-            "Shapely geometry, or a GeoDataFrame/GeoSeries. Got %r." % type(bbox)
-        )
-
-    minx, miny, maxx, maxy = (float(v) for v in bounds)
-    if not np.isfinite((minx, miny, maxx, maxy)).all():
-        raise ValueError(
-            "Bounding box coordinates must be finite; got "
-            "(minx, miny, maxx, maxy)=%s." % ((minx, miny, maxx, maxy),)
-        )
-    if not (minx <= maxx and miny <= maxy):
-        raise ValueError(
-            "Invalid bounding box (minx, miny, maxx, maxy)=%s; expected "
-            "minx <= maxx and miny <= maxy." % ((minx, miny, maxx, maxy),)
-        )
-    if not (-180 <= minx and maxx <= 180 and -90 <= miny and maxy <= 90):
-        warnings.warn(
-            "Bounding box %s lies outside the WGS84 lon/lat range; coordinates "
-            "should be in EPSG:4326 (lon/lat)." % ((minx, miny, maxx, maxy),)
-        )
-    return box(minx, miny, maxx, maxy)
+    """The box of ``bbox`` (any form :func:`~pyrosm.utils.validate_bounding_box` takes; a
+    geometry's envelope) as a Polygon."""
+    checked = validate_bounding_box(bbox, "bbox")
+    return box(*(checked if isinstance(checked, list) else checked.bounds))
 
 
 def _fmt_coord(value):

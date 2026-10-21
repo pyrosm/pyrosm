@@ -1,5 +1,16 @@
+import numbers
+
+import numpy as np
+import shapely
 from shapely import ops
-from shapely.geometry import MultiLineString, Polygon, MultiPolygon, box
+from shapely.geometry import (
+    LinearRing,
+    LineString,
+    MultiLineString,
+    MultiPolygon,
+    Polygon,
+    box,
+)
 from pyrosm.exceptions import PBFNotImplemented
 import functools
 import inspect
@@ -285,19 +296,76 @@ def validate_boundary_type(boundary_type):
     return boundary_type
 
 
-def validate_bounding_box(geom):
-    if type(geom) in [Polygon, MultiPolygon]:
-        return geom
+_BOX_FORMS = (
+    "four numbers [minx, miny, maxx, maxy] (a list, tuple or array, such as a "
+    "GeoDataFrame's total_bounds), a Shapely Polygon or MultiPolygon, or a GeoDataFrame "
+    "or GeoSeries"
+)
 
-    elif isinstance(geom, MultiLineString):
-        geom = ops.linemerge(geom)
 
-    if not geom.is_closed:
+def check_bounds(bounds, name="bounding_box"):
+    """Refuse the ``(minx, miny, maxx, maxy)`` of the argument ``name`` with
+    ``ValueError`` when they are not finite, lie outside lon/lat or leave no width or no
+    height."""
+    minx, miny, maxx, maxy = bounds
+    if not np.isfinite(bounds).all():
+        raise ValueError("%s must have finite coordinates; got %s." % (name, bounds))
+    if minx > maxx or miny > maxy:
         raise ValueError(
-            "Provided bounding box is not a closed geometry. "
-            "Ensure that you pass a Polygon or LinearRing."
+            "Invalid %s %s: expected [minx, miny, maxx, maxy] with minx < maxx and "
+            "miny < maxy. Please double-check the order of the coordinates (they may be "
+            "swapped/inverted)." % (name, list(bounds))
         )
-    return Polygon(geom)
+    if minx == maxx or miny == maxy:
+        raise ValueError(
+            "%s must have a width and a height: expected [minx, miny, maxx, maxy] with "
+            "minx < maxx and miny < maxy; got %s." % (name, list(bounds))
+        )
+    if not (-180 <= minx and maxx <= 180 and -90 <= miny and maxy <= 90):
+        raise ValueError(
+            "%s %s lies outside the lon/lat range; its coordinates must be longitudes "
+            "and latitudes (EPSG:4326)." % (name, list(bounds))
+        )
+
+
+def validate_bounding_box(bounding_box, name="bounding_box"):
+    """``bounding_box`` as pyrosm reads by it, in lon/lat: the list ``[minx, miny, maxx,
+    maxy]`` for four numbers (a list, tuple or array, such as a GeoDataFrame's
+    ``total_bounds``), else a Polygon or MultiPolygon: a Shapely Polygon or MultiPolygon
+    as it is, a closed LineString, LinearRing or MultiLineString made a Polygon, the
+    geometries of a GeoDataFrame or GeoSeries united, in lon/lat. Raises ``ValueError``
+    for any other value and for bounds :func:`check_bounds` refuses; ``name`` names the
+    argument in the messages."""
+    if isinstance(bounding_box, (gpd.GeoDataFrame, gpd.GeoSeries)):
+        if bounding_box.crs is not None:
+            bounding_box = bounding_box.to_crs("EPSG:4326")
+        bounding_box = shapely.union_all(bounding_box.geometry.values)
+    if isinstance(bounding_box, (list, tuple, np.ndarray)):
+        values = list(np.asarray(bounding_box, dtype=object).ravel())
+        if len(values) != 4 or not all(
+            isinstance(v, numbers.Real) and not isinstance(v, bool) for v in values
+        ):
+            raise ValueError(
+                "%s should be %s; got %r." % (name, _BOX_FORMS, bounding_box)
+            )
+        bounds = [float(v) for v in values]
+        check_bounds(bounds, name)
+        return bounds
+    if isinstance(bounding_box, MultiLineString):
+        bounding_box = ops.linemerge(bounding_box)
+    if isinstance(bounding_box, (LineString, LinearRing)):
+        if not bounding_box.is_closed:
+            raise ValueError(
+                "%s is not a closed geometry. Ensure that you pass a Polygon or "
+                "LinearRing." % name
+            )
+        bounding_box = Polygon(bounding_box)
+    if not isinstance(bounding_box, (Polygon, MultiPolygon)) or bounding_box.is_empty:
+        raise ValueError(
+            "%s should be %s; got %r." % (name, _BOX_FORMS, type(bounding_box).__name__)
+        )
+    check_bounds(bounding_box.bounds, name)
+    return bounding_box
 
 
 def validate_input_file(filepath):

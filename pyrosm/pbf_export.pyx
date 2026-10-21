@@ -67,7 +67,12 @@ from pyrosm._arrays import _offsets_from_lengths
 from pyrosm.engine.pool import _PoolStartError, _ordered_map
 from pyrosm.int64_hash cimport Int64Set, SortedInt64Set, _set_has, kh_i64set_t
 from pyrosm._log import timed
-from pyrosm.utils import _file_identity, default_workers, validate_workers
+from pyrosm.utils import (
+    _file_identity,
+    default_workers,
+    validate_bounding_box,
+    validate_workers,
+)
 from pyrosm.utils.progress import stepping, validate_progress
 from pyrosm.zlib_blob import zlib_compress
 from pyrosm.primitive_block_decoder import (
@@ -92,35 +97,41 @@ _RELATIONS = 2
 # ---------------------------------------------------------------------------
 # Bounding box
 # ---------------------------------------------------------------------------
-cdef _bounds_from_bbox(bounding_box):
-    """Return (xmin, ymin, xmax, ymax) from a list or shapely (Multi)Polygon."""
-    if bounding_box is None:
-        raise ValueError(
-            "Cropping a PBF requires a bounding box. Construct the OSM object "
-            "with `OSM(filepath, bounding_box=...)` before calling `to_pbf()`."
-        )
-    if isinstance(bounding_box, (list, tuple)):
-        xmin, ymin, xmax, ymax = bounding_box
-        return float(xmin), float(ymin), float(xmax), float(ymax)
-    # shapely geometry -> use its envelope (matches how OSM() filters by bbox)
-    xmin, ymin, xmax, ymax = bounding_box.bounds
-    return float(xmin), float(ymin), float(xmax), float(ymax)
+cdef _bounds(region):
+    """``(xmin, ymin, xmax, ymax)`` of a checked box: four numbers, or a geometry's
+    envelope (matches how OSM() filters by bbox)."""
+    if isinstance(region, list):
+        return tuple(region)
+    return tuple(float(v) for v in region.bounds)
 
 
 cdef _region(bounding_box, polygon):
     """The crop region: its box ``(xmin, ymin, xmax, ymax)`` and the prepared polygon
-    to crop to, or None to crop to the box. A polygon's box is its envelope."""
+    to crop to, or None to crop to the box. Both take any form
+    :func:`~pyrosm.utils.validate_bounding_box` takes; a polygon's box is its
+    envelope."""
     if polygon is None:
-        return _bounds_from_bbox(bounding_box), None
+        if bounding_box is None:
+            raise ValueError("Give a bounding box or a polygon to crop to.")
+        return _bounds(validate_bounding_box(bounding_box)), None
     if bounding_box is not None:
         raise ValueError("Give either a bounding box or a polygon to crop to, not both.")
-    if getattr(polygon, "geom_type", None) not in ("Polygon", "MultiPolygon") or \
-            polygon.is_empty:
-        raise ValueError(
-            "The polygon to crop to must be a non-empty Shapely Polygon or "
-            "MultiPolygon; got %r." % (polygon,)
+    polygon = validate_bounding_box(polygon, "polygon")
+    if isinstance(polygon, list):
+        from shapely.geometry import box
+
+        polygon = box(*polygon)
+    return _bounds(polygon), _prepared(polygon.wkb)
+
+
+cdef _warn_if_empty(kept_nodes, sources, bounds):
+    """Warn when no node of the files `sources` lies in the area of the box `bounds`, so
+    the written file is empty."""
+    if len(kept_nodes) == 0:
+        warnings.warn(
+            "No node of %s lies in the area %s; the written file holds no elements."
+            % (", ".join(Path(p).name for p in sources), list(bounds))
         )
-    return _bounds_from_bbox(polygon), _prepared(polygon.wkb)
 
 
 def _prepared(wkb):
@@ -1921,7 +1932,10 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
                workers=None, compact=False, repack=False, polygon=None, progress=None,
                complete_relations=False):
     """Crop `source_path` by `bounding_box`, or by the Shapely (Multi)Polygon
-    `polygon`, writing a valid PBF to `output_path`.
+    `polygon`, writing a valid PBF to `output_path`. Both take any form
+    :class:`pyrosm.OSM` takes for its bounding box (a GeoDataFrame or GeoSeries is
+    united and reprojected to lon/lat); an unusable box is refused as ``OSM`` refuses it,
+    and a crop that keeps no node warns.
 
     With `complete_relations`, a relation kept for a way member in the area also keeps
     its other way members and their nodes, as ``OSM(complete_relations=True)`` reads it,
@@ -1987,6 +2001,7 @@ def _select_and_write(source_path, output_path, region, keep_relations, compact,
     kept_nodes, kept_ways, kept_rel = _select(
         [source_path], region, keep_relations, pool, progress, complete_relations
     )
+    _warn_if_empty(kept_nodes, [source_path], bounds)
     kept_ways, kept_rel = kept_ways[0], kept_rel[0]
     if repack:
         _repack_write(
@@ -3745,11 +3760,12 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
         Where to write the merged PBF. When ``None`` (default) a temporary file
         is created in the system temp directory and its path returned.
 
-    bounding_box : list or shapely geometry, optional
-        ``[minx, miny, maxx, maxy]`` in lon/lat, or a ``Polygon``/``MultiPolygon``,
-        which is cropped by its envelope. The output's header bounding box is
-        this box (the polygon's envelope with ``polygon``), or else the union of
-        the inputs' header boxes.
+    bounding_box : list | tuple | numpy.ndarray | shapely geometry | GeoDataFrame | GeoSeries, optional
+        The box in lon/lat, in any form :class:`pyrosm.OSM` takes: four numbers
+        ``[minx, miny, maxx, maxy]``, or a geometry or GeoDataFrame, which is cropped by
+        its envelope. The output's header bounding box is this box (the polygon's
+        envelope with ``polygon``), or else the union of the inputs' header boxes. A
+        box that ``OSM`` refuses is refused, and a merge that keeps no node warns.
 
     keep_relations : bool
         When ``True`` (default) relations are written (with ``bounding_box`` or
@@ -3766,7 +3782,7 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
         ``if __name__ == "__main__":`` guard, or one read from stdin), the merge runs
         in one process and warns.
 
-    polygon : shapely Polygon or MultiPolygon, optional
+    polygon : shapely Polygon or MultiPolygon | GeoDataFrame | GeoSeries, optional
         The area to crop to, in lon/lat, in place of ``bounding_box``: a node is
         kept when it lies inside the polygon or on its boundary. The output's
         header bounding box is the polygon's envelope.
@@ -3844,6 +3860,7 @@ cdef _merge(sources, output_path, bounding_box, keep_relations, workers, polygon
             _merge_select, (sources, region, keep_relations, progress), workers,
             sources, region, False,
         )
+        _warn_if_empty(kept_nodes, sources, bounds)
         kept = (
             _to_sorted_set(kept_nodes),
             _to_set(_unique_concat(kept_ways)),

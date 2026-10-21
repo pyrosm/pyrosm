@@ -2,45 +2,13 @@
 coordinates, and read back the in-box node ids spilled per shard."""
 
 import numpy as np
-from shapely.geometry import (
-    Polygon,
-    MultiPolygon,
-    MultiLineString,
-    LineString,
-    LinearRing,
-)
-
 from pyrosm.utils import validate_bounding_box
-
-_ALLOWED_BBOX_TYPES = (Polygon, MultiPolygon, MultiLineString, LineString, LinearRing)
 
 
 def _normalize_bounding_box(bounding_box):
-    """Validate and normalise a bounding box exactly as ``OSM.__init__`` does, so the
-    out-of-core engine accepts the same inputs and raises the same errors: a Shapely
-    geometry is closed via ``validate_bounding_box``; a list must hold
-    ``[minx, miny, maxx, maxy]`` with minx < maxx and miny < maxy."""
-    if bounding_box is None:
-        return None
-    if type(bounding_box) in _ALLOWED_BBOX_TYPES:
-        return validate_bounding_box(bounding_box)
-    if isinstance(bounding_box, list):
-        if not len(bounding_box) == 4:
-            raise ValueError(
-                "When passing bounding box as a list it should contain 4 coordinates: "
-                "[minx, miny, maxx, maxy]."
-            )
-        minx, miny, maxx, maxy = bounding_box
-        if minx >= maxx or miny >= maxy:
-            raise ValueError(
-                "Invalid bounding box {bbox}: expected [minx, miny, maxx, maxy] with "
-                "minx < maxx and miny < maxy. Please double-check the order of the "
-                "coordinates (they may be swapped/inverted).".format(bbox=bounding_box)
-            )
-        return bounding_box
-    raise ValueError(
-        "bounding_box should be a list, Shapely Polygon or a Shapely LinearRing."
-    )
+    """``bounding_box`` checked and normalised as ``OSM.__init__`` does (see
+    :func:`~pyrosm.utils.validate_bounding_box`); ``None`` stays ``None``."""
+    return None if bounding_box is None else validate_bounding_box(bounding_box)
 
 
 def _bbox_bounds(bounding_box):
