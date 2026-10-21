@@ -67,7 +67,8 @@ def _strongly_connected_components(list_of_nodes, node_successors):
 def largest_component(node_ids, from_ids, to_ids):
     """The ids of the nodes of the largest strongly connected component of the nodes
     ``node_ids`` and the directed edges ``from_ids[i]`` -> ``to_ids[i]``, as an array.
-    Edges with an end that is not among ``node_ids`` are left out.
+    Edges with an end that is not among ``node_ids`` are left out; without nodes the
+    array is empty.
     """
     node_ids = np.asarray(node_ids)
     from_ids, to_ids = np.asarray(from_ids), np.asarray(to_ids)
@@ -76,7 +77,9 @@ def largest_component(node_ids, from_ids, to_ids):
     for from_id, to_id in zip(from_ids[known].tolist(), to_ids[known].tolist()):
         node_successors[from_id].append(to_id)
     scc = max(
-        _strongly_connected_components(node_ids.tolist(), node_successors), key=len
+        _strongly_connected_components(node_ids.tolist(), node_successors),
+        key=len,
+        default=(),
     )
     return np.fromiter(scc, dtype=node_ids.dtype, count=len(scc))
 
