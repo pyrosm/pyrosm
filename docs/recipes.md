@@ -90,7 +90,8 @@ stage runs.
 The `area` key says what to download, as exactly one of:
 
 - `bbox: [minx, miny, maxx, maxy]`, in longitude and latitude;
-- `place: "Kallio, Helsinki"`, a place name, turned into an area with {func}`pyrosm.geocode`;
+- `place: "Kallio, Helsinki"`, a place name, turned into an area with {func}`pyrosm.geocode`
+  (with the `headers` and `timeout` of `extract`);
 - `file: area.gpkg`, a GeoPackage, GeoJSON or GeoParquet file whose geometries make up the
   area (with `layer: name` for one layer of a GeoPackage);
 - `name: helsinki_pbf`, a dataset name of {func}`pyrosm.get_data`.
@@ -189,8 +190,8 @@ and the graph but keeps the extract.
 
 An extract stage is reused as long as the recipe is unchanged, even when the provider has
 published newer data since. To download again, run with `--force` (in Python,
-`force=True`), which reruns every stage, or set `update: true` in `extract`, which reruns the
-extract stage every time.
+`force=True`), which reruns every stage and downloads the extract again, or set
+`update: true` in `extract`, which reruns the extract stage every time.
 
 ## Pins
 

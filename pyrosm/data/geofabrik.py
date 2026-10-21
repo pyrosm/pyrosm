@@ -1,5 +1,5 @@
 # BASE
-URL = "http://download.geofabrik.de/"
+URL = "https://download.geofabrik.de/"
 suffix = "-latest.osm.pbf"
 africa_url = "africa/"
 asia_url = "asia/"

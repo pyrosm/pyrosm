@@ -4,8 +4,11 @@ contains it, or a smaller set of extracts merged into one file.
 Public entry points: :func:`find_extracts` lists the candidates, :func:`get_data_by_area`
 downloads the best one. Candidates come from three providers:
 
-- Geofabrik, from the vendored ``geofabrik_index.geojson.gz``;
-- BBBike city extracts, from the vendored ``bbbike_index.geojson.gz``;
+- Geofabrik, from the vendored ``geofabrik_index.geojson.gz``, or with ``update=True`` from
+  its ``index-v1.json``, fetched and cached next to the downloads;
+- BBBike city extracts, from the vendored ``bbbike_index.geojson.gz``, or with
+  ``update=True`` from BBBike's list of cities, fetched and cached next to the downloads
+  with the boundary of each city the vendored copy does not have;
 - Movisda administrative areas and 1°/10° grid tiles, from the index files published at
   https://osm.download.movisda.io (fetched and cached next to the downloads; when the grid
   index cannot be fetched and nothing is cached, the copy vendored as
@@ -24,6 +27,7 @@ import json
 import logging
 import numbers
 import os
+import re
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -45,6 +49,8 @@ from pyrosm.data.geofabrik_index import (
     _default_target_dir,
     extract_file_name,
 )
+from pyrosm.data.geofabrik_index import _INDEX_URL as _GEOFABRIK_INDEX_URL
+from pyrosm.data.geofabrik_index import _features_to_gdf
 from pyrosm.data.geofabrik_index import _load_index as _load_geofabrik_index
 from pyrosm.exceptions import (
     DownloadError,
@@ -68,6 +74,7 @@ from pyrosm.utils.download import (
 )
 
 _BBBIKE_INDEX_PATH = Path(__file__).parent / "bbbike_index.geojson.gz"
+_BBBIKE_URL = "https://download.bbbike.org/osm/bbbike"
 _MOVISDA_GRID_PATH = Path(__file__).parent / "movisda_grid_index.geojson.gz"
 _MOVISDA_URL = "https://osm.download.movisda.io"
 _MOVISDA_INDEXES = {
@@ -113,19 +120,111 @@ def _candidate_frame(provider, ids, names, urls, sizes, geometry):
     )
 
 
-def _geofabrik_extracts(update=False):
-    gdf = _load_geofabrik_index(update)
+def _read_geofabrik_index(data):
+    """Geofabrik's index (the bytes of ``index-v1.json``) as a frame with a ``pbf`` column.
+
+    Raises ``ValueError`` when it cannot be read.
+    """
+    try:
+        gdf = _features_to_gdf(json.loads(data)["features"])
+        if gdf.empty or gdf["pbf"].isna().all():
+            raise ValueError("it lists no extracts")
+        return gdf
+    except Exception as e:
+        raise ValueError("could not read Geofabrik's index (%s)" % e) from e
+
+
+def _geofabrik_extracts(directory, update=False, net=None):
+    """Geofabrik's extracts as candidate rows, from pyrosm's copy of its index or, with
+    ``update``, from the index fetched anew and kept in ``<directory>/geofabrik``. When it
+    cannot be fetched, the kept copy is used, or else pyrosm's, with a warning."""
+    gdf = _load_geofabrik_index()
+    if update:
+        try:
+            path = _cached_index(
+                _GEOFABRIK_INDEX_URL,
+                Path(directory) / "geofabrik" / "index-v1.json",
+                update,
+                check=_read_geofabrik_index,
+                net=net,
+            )
+            gdf = _read_geofabrik_index(path.read_bytes())
+        except (*_FETCH_ERRORS, ValueError) as e:
+            warnings.warn(
+                "Geofabrik's index is unavailable (%s); using pyrosm's copy of it from "
+                "%s." % (e, gdf.attrs["snapshot_date"])
+            )
     names = gdf["name"].fillna(gdf["id"])
     return _candidate_frame(
         "Geofabrik", gdf["id"], names, gdf["pbf"], [None] * len(gdf), gdf.geometry
     )
 
 
-def _bbbike_extracts():
+def _parse_poly(text):
+    """Parse an Osmosis ``.poly`` file into GeoJSON MultiPolygon coordinates.
+
+    Sections whose name starts with ``!`` are holes of the preceding outer ring.
+    """
+    polygons = []
+    lines = [line.strip() for line in text.splitlines()][1:]
+    i = 0
+    while i < len(lines) and lines[i] != "END":
+        section = lines[i]
+        ring = []
+        i += 1
+        while lines[i] != "END":
+            lon, lat = (float(v) for v in lines[i].split())
+            ring.append([lon, lat])
+            i += 1
+        i += 1
+        if ring[0] != ring[-1]:
+            ring.append(ring[0])
+        if section.startswith("!"):
+            polygons[-1].append(ring)
+        else:
+            polygons.append([ring])
+    return polygons
+
+
+def _bbbike_boundary(data):
+    """The boundary of a BBBike city (the bytes of its ``.poly`` file) as a MultiPolygon.
+
+    Raises ``ValueError`` when it cannot be read.
+    """
+    try:
+        boundary = shape(
+            {"type": "MultiPolygon", "coordinates": _parse_poly(data.decode())}
+        )
+        if boundary.is_empty:
+            raise ValueError("it has no polygon")
+        return boundary
+    except Exception as e:
+        raise ValueError("could not read the boundary (%s)" % e) from e
+
+
+def _bbbike_cities(data):
+    """The cities BBBike's download page (its bytes) lists.
+
+    Raises ``ValueError`` when the page lists fewer than 200 cities or not Berlin, as a page
+    other than the listing would.
+    """
+    cities = sorted(set(re.findall(r'href="([A-Za-z][^"/]*)/"', data.decode())))
+    if len(cities) < 200 or "Berlin" not in cities:
+        raise ValueError("BBBike's page lists only %d cities" % len(cities))
+    return cities
+
+
+def _bbbike_extracts(directory, update=False, net=None):
+    """BBBike's city extracts as candidate rows, from pyrosm's copy of its list of cities or,
+    with ``update``, from the list fetched anew and kept in ``<directory>/bbbike``: a city
+    BBBike no longer lists is left out, and the boundary of a city pyrosm's copy does not
+    have is fetched and kept. When the list cannot be fetched, the kept copy is used, or
+    else pyrosm's, with a warning."""
     global _bbbike_cache
     if _bbbike_cache is None:
         with gzip.open(_BBBIKE_INDEX_PATH, "rt", encoding="utf-8") as f:
-            gdf = gpd.GeoDataFrame.from_features(json.load(f)["features"])
+            collection = json.load(f)
+        gdf = gpd.GeoDataFrame.from_features(collection["features"])
         _bbbike_cache = _candidate_frame(
             "BBBike",
             gdf["id"],
@@ -134,7 +233,40 @@ def _bbbike_extracts():
             [None] * len(gdf),
             gdf.geometry,
         )
-    return _bbbike_cache
+        _bbbike_cache.attrs["snapshot_date"] = collection["bbbike_snapshot_date"]
+    if not update:
+        return _bbbike_cache
+    folder = Path(directory) / "bbbike"
+    try:
+        path = _cached_index(
+            _BBBIKE_URL + "/", folder / "cities.html", update, _bbbike_cities, net
+        )
+        cities = _bbbike_cities(path.read_bytes())
+    except (*_FETCH_ERRORS, ValueError) as e:
+        warnings.warn(
+            "BBBike's list of cities is unavailable (%s); using pyrosm's copy of it from "
+            "%s." % (e, _bbbike_cache.attrs["snapshot_date"])
+        )
+        return _bbbike_cache
+    known = _bbbike_cache[_bbbike_cache["id"].isin(cities)]
+    new, boundaries = [], []
+    for city in sorted(set(cities) - set(known["id"])):
+        url = "%s/%s/%s.poly" % (_BBBIKE_URL, city, city)
+        try:
+            poly = _cached_index(
+                url, folder / (city + ".poly"), False, _bbbike_boundary, net
+            )
+            boundaries.append(_bbbike_boundary(poly.read_bytes()))
+            new.append(city)
+        except (*_FETCH_ERRORS, ValueError) as e:
+            warnings.warn("Could not read %s (%s); leaving %s out." % (url, e, city))
+    if not new:
+        return known
+    urls = ["%s/%s/%s.osm.pbf" % (_BBBIKE_URL, c, c) for c in new]
+    found = _candidate_frame("BBBike", new, new, urls, [None] * len(new), boundaries)
+    return gpd.GeoDataFrame(
+        pd.concat([known, found], ignore_index=True), crs="EPSG:4326"
+    )
 
 
 def _tile_id(bounds):
@@ -368,7 +500,7 @@ def _vendored_geofabrik_sizes():
     global _vendored_sizes_cache
     if _vendored_sizes_cache is not None:
         return _vendored_sizes_cache
-    gdf = _load_geofabrik_index(False).reindex(columns=["pbf", "bytes", "bytes_date"])
+    gdf = _load_geofabrik_index().reindex(columns=["pbf", "bytes", "bytes_date"])
     _vendored_sizes_cache = {
         url: (int(size), day)
         for url, size, day in zip(gdf["pbf"], gdf["bytes"], gdf["bytes_date"])
@@ -468,15 +600,17 @@ def find_extracts(
         When ``True``, list only the extracts that contain the whole area (or ``must_cover``).
 
     update : bool
-        When ``True``, refresh the provider indexes and download sizes.
+        When ``True``, refresh the provider indexes (Geofabrik's index, BBBike's list of
+        cities and Movisda's indexes) and the download sizes. When an index cannot be
+        fetched, its cached copy, or else the copy vendored with pyrosm, is used with a
+        warning.
 
     directory : str, optional
         Directory for the cached provider indexes and download sizes. ``None`` (default) uses
         the pyrosm temp directory, as :func:`get_data_by_area` does.
 
     headers : dict, optional
-        Extra HTTP headers for the Movisda index and size requests, e.g. a ``User-Agent``
-        (not for the refresh of the vendored Geofabrik index with ``update=True``).
+        Extra HTTP headers for the index and size requests, e.g. a ``User-Agent``.
 
     timeout : float | tuple
         Seconds to wait for a server, for the connect and each read, or a ``(connect, read)``
@@ -530,7 +664,10 @@ def find_extracts(
         timed=True,
     ) as steps:
         indexes = steps.start_step(_READING_INDEXES)
-        frames = [_geofabrik_extracts(update), _bbbike_extracts()]
+        frames = [
+            _geofabrik_extracts(directory, update, net),
+            _bbbike_extracts(directory, update, net),
+        ]
         try:
             frames.append(_movisda_extracts(directory, update, net, indexes))
         except _LocalWriteError as e:
@@ -1054,9 +1191,8 @@ def get_data_by_area(
         ``"smallest_total"`` set.
 
     headers, timeout, opener
-        Network options for the Movisda index, size and download requests, as for
-        :func:`find_extracts`. The refresh of the vendored Geofabrik index (``update=True``)
-        does not use them.
+        Network options for the index, size and download requests, as for
+        :func:`find_extracts`.
 
     strategy : str
         ``"single"`` (default): the smallest extract that contains the area.

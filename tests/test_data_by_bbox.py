@@ -1,10 +1,9 @@
-import json
 from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
 import pytest
-from shapely.geometry import box, mapping
+from shapely.geometry import box
 
 import pyrosm
 import pyrosm.data.extract_index as ei
@@ -13,7 +12,6 @@ from pyrosm import get_data_by_bbox
 from pyrosm.exceptions import ExtractNotFoundError
 
 HELSINKI = [24.93, 60.16, 24.96, 60.18]
-FINLAND_URL = "https://download.geofabrik.de/europe/finland-latest.osm.pbf"
 BBBIKE_URL = "https://download.bbbike.org/osm/bbbike/Helsinki/Helsinki.osm.pbf"
 
 
@@ -129,52 +127,8 @@ def test_vendored_snapshot_integrity():
         assert col in gdf.columns
 
 
-def test_update_reads_live_index_schema(monkeypatch):
-    # Simulate Geofabrik's live index (download links nested under "urls", as the
-    # vendored snapshot is not) without hitting the network.
-    fc = {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "geometry": mapping(box(20, 59, 31, 71)),  # covers Helsinki
-                "properties": {
-                    "id": "finland",
-                    "parent": "europe",
-                    "name": "Finland",
-                    "urls": {"pbf": FINLAND_URL},
-                },
-            }
-        ],
-    }
-
-    class _FakeResponse:
-        def __init__(self, data):
-            self._data = data
-
-        def read(self):
-            return self._data
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-    monkeypatch.setattr(
-        "urllib.request.urlopen",
-        lambda url, context=None: _FakeResponse(json.dumps(fc).encode()),
-    )
-    assert gi._load_index(update=True).set_index("id").loc["finland", "pbf"] == FINLAND_URL
-
-
 def test_data_module_getattr_rejects_unknown():
     import pyrosm.data
 
     with pytest.raises(AttributeError):
         pyrosm.data.this_attribute_does_not_exist
-
-
-@pytest.mark.live_download
-def test_update_fetches_live_index():
-    assert gi._load_index(update=True).set_index("id").loc["finland", "pbf"] == FINLAND_URL

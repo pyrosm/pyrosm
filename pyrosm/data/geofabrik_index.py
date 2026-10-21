@@ -7,6 +7,7 @@ polygon and PBF URL. Refresh the snapshot with ``scripts/update_extract_indexes.
 """
 
 import collections
+import email.utils
 import functools
 import gzip
 import json
@@ -20,7 +21,7 @@ import numpy as np
 from shapely.geometry import box
 from shapely.geometry.base import BaseGeometry
 
-from pyrosm.utils.download import _TIMEOUT, open_url
+from pyrosm.utils.download import _TIMEOUT
 
 _INDEX_PATH = Path(__file__).parent / "geofabrik_index.geojson.gz"
 _INDEX_URL = "https://download.geofabrik.de/index-v1.json"
@@ -68,16 +69,18 @@ def extract_file_name(url, name=None):
     return name or path.name
 
 
-def _load_index(update=False):
+def _load_index():
+    """pyrosm's copy of Geofabrik's index (read once), with the day Geofabrik published it
+    as ``attrs["snapshot_date"]``."""
     global _index_cache
-    if update:
-        with open_url(_INDEX_URL) as response:
-            collection = json.loads(response.read())
-        return _features_to_gdf(collection["features"])
     if _index_cache is None:
         with gzip.open(_INDEX_PATH, "rt", encoding="utf-8") as f:
             collection = json.load(f)
         _index_cache = _features_to_gdf(collection["features"])
+        published = email.utils.parsedate_to_datetime(
+            collection["geofabrik_snapshot_date"]
+        )
+        _index_cache.attrs["snapshot_date"] = published.date().isoformat()
     return _index_cache
 
 

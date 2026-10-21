@@ -4616,3 +4616,129 @@ def test_area_wrappers_get_the_data_as_get_data_by_area(wrapper, tmp_path, monke
         assert geocoded == [{"base_url": gc._NOMINATIM_URL, "user_agent": None, **net}]
         assert "polygon" in crops[0]
         assert Path(out) == tmp_path / "area_helsinki.osm.pbf"
+
+
+def test_update_refreshes_the_indexes_with_a_fallback(tmp_path, monkeypatch):
+    """find_extracts(update=True) fetched Geofabrik's index without a timeout, retry or
+    fallback, and did not keep it, and BBBike's list of cities was never refreshed. Both
+    are now fetched with the network options, kept next to the downloads, and replaced by
+    the kept copy, or else pyrosm's own, with a warning when they cannot be fetched."""
+    import io
+    import json
+    from urllib.error import URLError
+
+    from shapely.geometry import Point, box, mapping
+
+    import pyrosm.data.extract_index as ei
+    import pyrosm.utils.download as dl
+
+    bbbike = "https://download.bbbike.org/osm/bbbike"
+    finland = "https://download.geofabrik.de/europe/finland-latest.osm.pbf"
+    feature = {
+        "type": "Feature",
+        "geometry": mapping(box(20, 59, 32, 71)),
+        "properties": {"id": "finland-new", "name": "Finland", "urls": {"pbf": finland}},
+    }
+    cities = [c for c in ei._bbbike_extracts(None)["id"] if c != "Basel"]
+    poly = "Newtown\n1\n 24 60\n 25 60\n 25 61\n 24 61\nEND\nEND\n"
+    pages = {
+        "https://download.geofabrik.de/index-v1.json": json.dumps(
+            {"type": "FeatureCollection", "features": [feature]}
+        ),
+        bbbike + "/": "".join(
+            '<a href="%s/">' % c for c in cities + ["Newtown", "Broken"]
+        ),
+        bbbike + "/Newtown/Newtown.poly": poly,
+        bbbike + "/Broken/Broken.poly": "not a boundary",
+    }
+    timeouts, online = [], [True]
+
+    class Response(io.BytesIO):
+        headers = {}
+
+    def fake(url, method="GET", headers=None, timeout=None, opener=None):
+        timeouts.append(timeout)
+        if not online[0]:
+            raise URLError("down")
+        return Response(pages[url].encode())
+
+    monkeypatch.setattr(dl, "open_url", fake)
+    net = dl._Net(None, 5, None)
+    with pytest.warns(UserWarning, match="leaving Broken out"):
+        found = [
+            ei._geofabrik_extracts(tmp_path, True, net),
+            ei._bbbike_extracts(tmp_path, True, net),
+        ]
+    assert set(timeouts) == {5}
+    online[0] = False
+    with pytest.warns(UserWarning, match="Could not refresh|leaving Broken out"):
+        kept = [
+            ei._geofabrik_extracts(tmp_path, True, net),
+            ei._bbbike_extracts(tmp_path, True, net),
+        ]
+    for geofabrik, cities_found in (found, kept):
+        assert list(zip(geofabrik["id"], geofabrik["url"])) == [("finland-new", finland)]
+        ids = set(cities_found["id"])
+        assert "Newtown" in ids and not {"Basel", "Broken"} & ids
+        newtown = cities_found[cities_found["id"] == "Newtown"].iloc[0]
+        assert newtown.url == bbbike + "/Newtown/Newtown.osm.pbf"
+        assert newtown.geometry.covers(Point(24.5, 60.5))
+    with pytest.warns(UserWarning, match="using pyrosm's copy") as caught:
+        geofabrik = ei._geofabrik_extracts(tmp_path / "other", True, net)
+        cities_found = ei._bbbike_extracts(tmp_path / "other", True, net)
+    assert len(caught) == 2 and len(geofabrik) > 500
+    assert cities_found is ei._bbbike_extracts(None)
+    # A list with no new city.
+    online[0] = True
+    pages[bbbike + "/"] = "".join('<a href="%s/">' % c for c in cities)
+    assert set(ei._bbbike_extracts(tmp_path / "third", True, net)["id"]) == set(cities)
+
+
+def test_recipe_force_downloads_again_and_geocodes_with_its_options(
+    tmp_path, monkeypatch
+):
+    """pyrosm run --force reran the extract stage on the extract an earlier run had
+    downloaded, and a recipe's place was geocoded without the headers and timeout of its
+    extract section. --force now downloads again, and the geocoding takes those options."""
+    import functools
+
+    from shapely.geometry import box
+
+    import pyrosm.data.extract_index as ei
+    import pyrosm.data.geocoding as gc
+    from pyrosm import recipes
+
+    seen = []
+
+    class Stop(Exception):
+        pass
+
+    @functools.wraps(ei.get_data_by_area)
+    def get_data_by_area(area, output_path=None, **keywords):
+        seen.append(keywords)
+        raise Stop()
+
+    monkeypatch.setattr(ei, "get_data_by_area", get_data_by_area)
+    monkeypatch.setattr(
+        gc, "geocode", lambda place, **net: seen.append(net) or box(24.9, 60.1, 25, 60.2)
+    )
+    recipe = tmp_path / "recipe.yaml"
+    recipe.write_text(
+        "recipe: pyrosm\n"
+        "extract: {area: {place: Kallio}, headers: {User-Agent: app/1}, timeout: 20}\n"
+        "outputs: {extract: a.osm.pbf}\n"
+    )
+    for force in (False, True):
+        with pytest.raises(Stop):
+            recipes.run(recipe, force=force)
+    net = {"headers": {"User-Agent": "app/1"}, "timeout": 20}
+    assert seen == [net, net, net, dict(net, update=True)]
+
+
+def test_get_data_downloads_over_https():
+    """get_data downloaded every Geofabrik extract over plain HTTP, so anything on the way
+    could change the file. Its Geofabrik and BBBike downloads use https."""
+    from pyrosm.data import _resolve_dataset
+
+    for name in ("finland", "usa/georgia", "greater_london", "helsinki"):
+        assert _resolve_dataset(name)[1]["url"].startswith("https://download.")

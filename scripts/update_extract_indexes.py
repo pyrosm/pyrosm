@@ -45,11 +45,12 @@ import email.utils
 
 import certifi
 
+from pyrosm.data.extract_index import _BBBIKE_URL as BBBIKE_URL
+from pyrosm.data.extract_index import _bbbike_cities, _parse_poly
 from pyrosm.utils.download import _content_length
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "pyrosm" / "data"
 GEOFABRIK_URL = "https://download.geofabrik.de/index-v1.json"
-BBBIKE_URL = "https://download.bbbike.org/osm/bbbike"
 MOVISDA_GRID_URL = "https://osm.download.movisda.io/grid/grid-latest.geojson"
 USER_AGENT = "pyrosm index update (+https://github.com/pyrosm/pyrosm)"
 
@@ -210,37 +211,14 @@ def geofabrik():
     )
 
 
-def parse_poly(text):
-    """Parse an Osmosis ``.poly`` file into GeoJSON MultiPolygon coordinates.
-
-    Sections whose name starts with ``!`` are holes of the preceding outer ring.
-    """
-    polygons = []
-    lines = [line.strip() for line in text.splitlines()][1:]
-    i = 0
-    while i < len(lines) and lines[i] != "END":
-        section = lines[i]
-        ring = []
-        i += 1
-        while lines[i] != "END":
-            lon, lat = (float(v) for v in lines[i].split())
-            ring.append([lon, lat])
-            i += 1
-        i += 1
-        if ring[0] != ring[-1]:
-            ring.append(ring[0])
-        if section.startswith("!"):
-            polygons[-1].append(ring)
-        else:
-            polygons.append([ring])
-    return polygons
-
-
 def bbbike():
+    """Write ``bbbike_index.geojson.gz`` from BBBike's list of cities and the boundary of
+    each city."""
     listing, _ = fetch(BBBIKE_URL + "/")
-    cities = sorted(set(re.findall(r'href="([A-Za-z][^"/]*)/"', listing.decode())))
-    if len(cities) < 200 or "Berlin" not in cities:
-        sys.exit("The BBBike listing lists only %d cities; not writing." % len(cities))
+    try:
+        cities = _bbbike_cities(listing)
+    except ValueError as e:
+        sys.exit("%s; not writing." % e)
     features = []
     for city in cities:
         time.sleep(0.2)
@@ -250,7 +228,7 @@ def bbbike():
                 "type": "Feature",
                 "geometry": {
                     "type": "MultiPolygon",
-                    "coordinates": parse_poly(poly.decode()),
+                    "coordinates": _parse_poly(poly.decode()),
                 },
                 "properties": {
                     "id": city,
