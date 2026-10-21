@@ -62,6 +62,7 @@ from pyrosm.utils.download import (
     _call_local,
     _content_length,
     _retry,
+    copy_atomic,
     download_dir,
     write_atomic,
 )
@@ -867,18 +868,24 @@ def _area_geometry(area):
 
 
 def _write_area_file(
-    area, sources, crop, output_path, directory, workers=1, progress=None
+    area, sources, crop, output_path, directory, workers=1, progress=None, update=False
 ):
     """The file for :class:`AreaExtract`: the one extract, cropped to the area's bounding box
     when ``crop`` (to the area itself when ``crop="polygon"``); several extracts merged (and
-    cropped) with :func:`pyrosm.merge_pbf`. The crop or merge shows its progress as
-    ``progress`` says.
+    cropped) with :func:`pyrosm.merge_pbf`. Without ``crop``, one extract is itself the file,
+    or is copied to ``output_path`` when given. The crop or merge shows its progress as
+    ``progress`` says. A file pyrosm names after the area (no ``output_path``) is used
+    again, unless ``update``, while its record says it was made from these extracts as they
+    are now and it is unchanged since.
     """
     from pyrosm.pbf_export import crop_pbf, merge_pbf
 
     paths = [s.path for s in sources]
     if not crop and len(paths) == 1:
-        return paths[0]
+        if output_path is None:
+            return paths[0]
+        copy_atomic(paths[0], output_path)
+        return os.fspath(output_path)
     region = {}
     if crop == "polygon":
         region["polygon"] = area
@@ -890,14 +897,51 @@ def _write_area_file(
         urls = "\n".join(s.url for s in sources).encode()
         name = "merged_%s.osm.pbf" % hashlib.sha1(urls).hexdigest()[:12]
     target = output_path or str(_default_target_dir(directory) / name)
+    if output_path is None and not update and _made_from(target, paths):
+        return target
     Path(target).resolve().parent.mkdir(parents=True, exist_ok=True)
     if len(paths) == 1:
-        return crop_pbf(paths[0], target, workers=workers, progress=progress, **region)
-    return merge_pbf(paths, target, workers=workers, progress=progress, **region)
+        written = crop_pbf(
+            paths[0], target, workers=workers, progress=progress, **region
+        )
+    else:
+        written = merge_pbf(paths, target, workers=workers, progress=progress, **region)
+    if output_path is None:
+        _record_made_from(written, paths)
+    return written
+
+
+def _record_file(path):
+    """The file beside ``path`` that records the files it was cropped or merged from."""
+    return Path(os.fspath(path) + ".sources")
+
+
+def _identities(path, sources):
+    """The identities (see :func:`~pyrosm.utils._file_identity`) of the file ``path`` and
+    of the files ``sources`` it was made from, as kept in its record."""
+    return {
+        "file": list(_file_identity(path)),
+        "sources": [[os.fspath(s), *_file_identity(s)] for s in sources],
+    }
+
+
+def _record_made_from(path, sources):
+    """Record that the file ``path``, as it is now, was made from ``sources``."""
+    record = json.dumps(_identities(path, sources)).encode()
+    write_atomic(_record_file(path), lambda out_file: out_file.write(record))
+
+
+def _made_from(path, sources):
+    """Whether the file ``path`` was made from the files ``sources`` as they are now, and
+    is unchanged since (see :func:`_record_made_from`)."""
+    try:
+        return json.loads(_record_file(path).read_text()) == _identities(path, sources)
+    except (OSError, ValueError):
+        return False
 
 
 def _write_with_provenance(
-    area, sources, crop, output_path, directory, workers=1, progress=None
+    area, sources, crop, output_path, directory, workers=1, progress=None, update=False
 ):
     """Write the area's file (:func:`_write_area_file`) and read the provenance of it and of
     its sources afterwards, so they describe the bytes that were used. When a source changed
@@ -908,7 +952,7 @@ def _write_with_provenance(
     for _ in range(3):
         before = [_file_identity(s.path) for s in sources]
         path = _write_area_file(
-            area, sources, crop, output_path, directory, workers, progress
+            area, sources, crop, output_path, directory, workers, progress, update
         )
         written = _file_identity(path)
         provenance = {p: _provenance(p) for p in {path, *(s.path for s in sources)}}
@@ -969,19 +1013,23 @@ def get_data_by_area(
         cropped file, named ``bbox_<minx>_<miny>_<maxx>_<maxy>.osm.pbf``. With ``"polygon"``,
         crop it to the area itself, which must be a (Multi)Polygon: a node is kept when it
         lies inside the area or on its boundary, and a way that has a kept node is kept
-        whole. The file is named ``area_<hash of the area>.osm.pbf``. When ``False``, return
-        the full extract.
+        whole. The file is named ``area_<hash of the area>.osm.pbf``. A cropped file of these
+        names is used again instead of cropping anew while it and the extracts it was cropped
+        from are unchanged. When ``False``, return the full extract.
 
     update : bool
-        When ``True``, re-download the extract and refresh the provider indexes and sizes.
+        When ``True``, re-download the extract, refresh the provider indexes and sizes, and
+        crop again.
 
     directory : str, optional
         Directory for the downloads, the provider indexes and the cropped file. ``None``
         (default) uses a pyrosm temp directory.
 
     output_path : str, optional
-        Path for the file pyrosm writes (overrides the automatic name): the cropped file, or
-        with ``crop=False`` the merged file of a ``"smallest_total"`` set.
+        Path for the file pyrosm writes (overrides the automatic name), cropped anew on
+        every call: the cropped file, or with ``crop=False`` a copy of the extract (a hard
+        link where the file system allows one) or the merged file of a
+        ``"smallest_total"`` set.
 
     headers, timeout, opener
         Network options for the Movisda index, size and download requests, as for
@@ -1125,7 +1173,7 @@ def get_data_by_area(
             download_seconds = time.perf_counter() - start
             start = time.perf_counter()
             path, provenance = _write_with_provenance(
-                geom, sources, crop, output_path, directory, workers, progress
+                geom, sources, crop, output_path, directory, workers, progress, update
             )
             merged = len(sources) > 1
             total = [s.bytes for s in sources]

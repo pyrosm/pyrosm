@@ -4417,3 +4417,91 @@ def test_empty_box_warns_once_in_either_engine(engine, fresh_cache):
         assert osm.get_buildings() is None
     messages = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
     assert messages == ["Could not find any building elements for given area."]
+
+
+def test_area_crop_is_used_again(tmp_path, monkeypatch):
+    """get_data_by_area cropped again on every call, so each call wrote a new file and
+    the result cache filled with copies, and crop=False ignored output_path for one
+    extract. A file pyrosm names after the area is used again while it is newer than its
+    extract; update=True, a newer extract or an explicit output_path crop again, and
+    crop=False copies the extract to output_path."""
+    import os
+    import shutil
+
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import box
+
+    import pyrosm
+    import pyrosm.data.extract_index as ei
+    import pyrosm.pbf_export
+    from pyrosm import get_data
+
+    area = [24.93, 60.16, 24.96, 60.18]
+    source = tmp_path / "bbbike_Helsinki.osm.pbf"
+    shutil.copy(get_data("helsinki_pbf"), source)
+    os.utime(source, (1e9, 1e9))
+    found = gpd.GeoDataFrame(
+        {
+            "provider": ["BBBike"],
+            "id": ["Helsinki"],
+            "name": ["Helsinki"],
+            "url": ["https://b/Helsinki/Helsinki.osm.pbf"],
+            "bytes": pd.array([50], dtype="Int64"),
+            "contains": [True],
+        },
+        geometry=[box(*area)],
+        crs="EPSG:4326",
+    )
+    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: found)
+    monkeypatch.setattr("pyrosm.utils.download.download", lambda *a, **k: str(source))
+    crops = []
+    crop_pbf = pyrosm.pbf_export.crop_pbf
+    monkeypatch.setattr(
+        pyrosm.pbf_export,
+        "crop_pbf",
+        lambda *a, **k: crops.append(a[1]) or crop_pbf(*a, **k),
+    )
+
+    def read(**options):
+        return pyrosm.get_data_by_area(
+            area, directory=tmp_path, progress=False, **options
+        ).path
+
+    first = read()
+    assert read() == first and len(crops) == 1
+    read(update=True)
+    os.utime(source)
+    read()
+    assert len(crops) == 3
+    # Another extract for the same box, or a crop changed since it was written.
+    other = tmp_path / "geofabrik_finland.osm.pbf"
+    shutil.copy(source, other)
+    monkeypatch.setattr("pyrosm.utils.download.download", lambda *a, **k: str(other))
+    read()
+    os.utime(first)
+    read()
+    assert read() == first and len(crops) == 5
+    own = str(tmp_path / "own.osm.pbf")
+    assert read(output_path=own) == read(output_path=own) == own and len(crops) == 7
+
+    copied = tmp_path / "copied.osm.pbf"
+    assert read(crop=False, output_path=str(copied)) == str(copied)
+    assert copied.read_bytes() == other.read_bytes() and len(crops) == 7
+
+    # A copy where the file system has no hard links, and none left when it fails too.
+    import pyrosm.utils.download as dl
+
+    dl.copy_atomic(copied, copied)
+    no_links = tmp_path / "no_links"
+
+    def refused(*args):
+        raise OSError("refused")
+
+    monkeypatch.setattr(dl.os, "link", refused)
+    dl.copy_atomic(source, no_links / "copy.osm.pbf")
+    assert (no_links / "copy.osm.pbf").read_bytes() == source.read_bytes()
+    monkeypatch.setattr(dl.shutil, "copyfile", refused)
+    with pytest.raises(OSError, match="refused"):
+        dl.copy_atomic(source, no_links / "failed.osm.pbf")
+    assert [p.name for p in no_links.iterdir()] == ["copy.osm.pbf"]

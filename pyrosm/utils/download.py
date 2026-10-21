@@ -2,7 +2,9 @@ import email.utils
 import enum
 import http.client
 import logging
+import os
 import re
+import shutil
 import ssl
 import tempfile
 import time
@@ -372,6 +374,32 @@ def write_atomic(path, write):
         Path(partial).replace(path)
     except BaseException:
         Path(partial).unlink(missing_ok=True)
+        raise
+
+
+def copy_atomic(source, path):
+    """Make ``path`` a copy of the file ``source``: a hard link to it where the file system
+    allows one, else a copy of its bytes. ``path`` is replaced only once the copy is
+    complete (see :func:`write_atomic`); nothing is done when it is ``source`` already.
+    """
+    path = Path(path)
+    if path.exists() and os.path.samefile(source, path):
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, partial = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".part", dir=path.parent
+    )
+    os.close(fd)
+    partial = Path(partial)
+    try:
+        partial.unlink()
+        try:
+            os.link(source, partial)
+        except OSError:
+            shutil.copyfile(source, partial)
+        partial.replace(path)
+    except BaseException:
+        partial.unlink(missing_ok=True)
         raise
 
 

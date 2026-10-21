@@ -110,7 +110,7 @@ def test_download_progress_covers_the_crop(pyrosm_logger, tmp_path, monkeypatch)
     for crop in (
         lambda: get_data_by_bbox(bounds, directory=tmp_path, progress=report),
         lambda: ei._write_with_provenance(
-            box(*bounds), [source], True, None, tmp_path, 1, report
+            box(*bounds), [source], True, None, tmp_path / "area", 1, report
         ),
     ):
         own.clear()
