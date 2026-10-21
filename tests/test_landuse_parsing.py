@@ -16,7 +16,6 @@ def helsinki_pbf():
 
 def test_parsing_landuse_with_defaults(test_pbf):
     from pyrosm import OSM
-    from pyrosm.landuse import get_landuse_data
     from geopandas import GeoDataFrame
     import pyproj
     from pyrosm._arrays import concatenate_dicts_of_arrays

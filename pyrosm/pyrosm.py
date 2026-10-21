@@ -50,9 +50,7 @@ from shapely.geometry import (
     MultiLineString,
 )
 from pyrosm.boundary import get_boundary_data
-from pyrosm.buildings import get_building_data
-from pyrosm.landuse import get_landuse_data
-from pyrosm.natural import get_natural_data
+from pyrosm.layers import get_layer_data
 from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
@@ -421,6 +419,66 @@ class OSM:
         planned.update(shares)
         return read_steps(self.filepath, self.progress, planned)
 
+    def _drop_node_lists(self, gdf):
+        """``gdf`` without its ``nodes`` column (each row's list of node ids, which file
+        formats cannot store) unless ``keep_node_info`` is set."""
+        if not self.keep_node_info and gdf is not None and "nodes" in gdf.columns:
+            gdf = gdf.drop("nodes", axis=1)
+        return gdf
+
+    def _read_layer(
+        self,
+        layer,
+        result_name,
+        engine_reader,
+        custom_filter,
+        extra_attributes,
+        tags_to_keep,
+        timestamp,
+        with_nodes=True,
+    ):
+        """The elements of the layer ``layer`` (an OSM key, such as ``"building"``) for
+        :meth:`get_buildings`, :meth:`get_landuse` and :meth:`get_natural`: read by
+        ``engine_reader`` with the out-of-core engine, else in memory (without nodes
+        unless ``with_nodes``), with a warning naming ``result_name`` when nothing
+        matches."""
+        if self._use_engine(timestamp):
+            gdf = self._read_engine(
+                engine_reader,
+                custom_filter=custom_filter,
+                extra_attributes=extra_attributes,
+                tags_to_keep=tags_to_keep,
+            )
+            if gdf is None:
+                warn_empty_result(result_name)
+            return gdf
+
+        read_filter = _require_layer_key(custom_filter, layer)
+        tags_as_columns = read_tag_columns(
+            getattr(self.conf.tags, layer),
+            extra_attributes,
+            tags_to_keep,
+            read_filter.keys(),
+        )
+        with self._read_steps(timestamp, _LAYER_SHARES) as steps:
+            self._read_pbf(timestamp, steps)
+            gdf = get_layer_data(
+                layer,
+                result_name,
+                self._nodes if with_nodes else None,
+                self._node_coordinates,
+                self._way_records,
+                self._relations,
+                tags_as_columns,
+                custom_filter,
+                self.bounding_box,
+                keep_metadata=self.keep_metadata,
+                relation_member_ways=self._relation_member_ways,
+                complete_relations=self.complete_relations,
+                steps=steps,
+            )
+        return self._drop_node_lists(gdf)
+
     def _get_network_filter(self, net_type):
         """Resolve a predefined network type to its filter, raising for an unknown one."""
         return get_osm_filter(net_type)
@@ -609,11 +667,7 @@ class OSM:
                 steps=steps,
             )
 
-        # Do not keep node information unless specifically asked for
-        # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and edges is not None:
-            if "nodes" in edges.columns:
-                edges = edges.drop("nodes", axis=1)
+        edges = self._drop_node_lists(edges)
 
         # In case both edges and nodes are requested
         if nodes:
@@ -671,43 +725,16 @@ class OSM:
         `https://wiki.openstreetmap.org/wiki/Key:building <https://wiki.openstreetmap.org/wiki/Key:building>`__
 
         """
-        if self._use_engine(timestamp):
-            gdf = self._read_engine(
-                engine_backend.get_buildings,
-                custom_filter=custom_filter,
-                extra_attributes=extra_attributes,
-                tags_to_keep=tags_to_keep,
-            )
-            if gdf is None:
-                warn_empty_result("buildings")
-            return gdf
-
-        read_filter = _require_layer_key(custom_filter, "building")
-        tags_as_columns = read_tag_columns(
-            self.conf.tags.building, extra_attributes, tags_to_keep, read_filter.keys()
+        return self._read_layer(
+            "building",
+            "buildings",
+            engine_backend.get_buildings,
+            custom_filter,
+            extra_attributes,
+            tags_to_keep,
+            timestamp,
+            with_nodes=False,
         )
-
-        with self._read_steps(timestamp, _LAYER_SHARES) as steps:
-            self._read_pbf(timestamp, steps)
-            gdf = get_building_data(
-                self._node_coordinates,
-                self._way_records,
-                self._relations,
-                tags_as_columns,
-                custom_filter,
-                self.bounding_box,
-                keep_metadata=self.keep_metadata,
-                relation_member_ways=self._relation_member_ways,
-                complete_relations=self.complete_relations,
-                steps=steps,
-            )
-
-        # Do not keep node information unless specifically asked for
-        # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and gdf is not None:
-            if "nodes" in gdf.columns:
-                gdf = gdf.drop("nodes", axis=1)
-        return gdf
 
     @logged()
     @records_read(lambda args: _require_layer_key(args["custom_filter"], "landuse"))
@@ -760,45 +787,15 @@ class OSM:
         `https://wiki.openstreetmap.org/wiki/Key:landuse <https://wiki.openstreetmap.org/wiki/Key:landuse>`__
 
         """
-
-        if self._use_engine(timestamp):
-            gdf = self._read_engine(
-                engine_backend.get_landuse,
-                custom_filter=custom_filter,
-                extra_attributes=extra_attributes,
-                tags_to_keep=tags_to_keep,
-            )
-            if gdf is None:
-                warn_empty_result("landuse")
-            return gdf
-
-        read_filter = _require_layer_key(custom_filter, "landuse")
-        tags_as_columns = read_tag_columns(
-            self.conf.tags.landuse, extra_attributes, tags_to_keep, read_filter.keys()
+        return self._read_layer(
+            "landuse",
+            "landuse",
+            engine_backend.get_landuse,
+            custom_filter,
+            extra_attributes,
+            tags_to_keep,
+            timestamp,
         )
-
-        with self._read_steps(timestamp, _LAYER_SHARES) as steps:
-            self._read_pbf(timestamp, steps)
-            gdf = get_landuse_data(
-                self._nodes,
-                self._node_coordinates,
-                self._way_records,
-                self._relations,
-                tags_as_columns,
-                custom_filter,
-                self.bounding_box,
-                keep_metadata=self.keep_metadata,
-                relation_member_ways=self._relation_member_ways,
-                complete_relations=self.complete_relations,
-                steps=steps,
-            )
-
-        # Do not keep node information unless specifically asked for
-        # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and gdf is not None:
-            if "nodes" in gdf.columns:
-                gdf = gdf.drop("nodes", axis=1)
-        return gdf
 
     @logged()
     @records_read(lambda args: _require_layer_key(args["custom_filter"], "natural"))
@@ -851,45 +848,15 @@ class OSM:
         `https://wiki.openstreetmap.org/wiki/Key:natural <https://wiki.openstreetmap.org/wiki/Key:natural>`__
 
         """
-
-        if self._use_engine(timestamp):
-            gdf = self._read_engine(
-                engine_backend.get_natural,
-                custom_filter=custom_filter,
-                extra_attributes=extra_attributes,
-                tags_to_keep=tags_to_keep,
-            )
-            if gdf is None:
-                warn_empty_result("natural")
-            return gdf
-
-        read_filter = _require_layer_key(custom_filter, "natural")
-        tags_as_columns = read_tag_columns(
-            self.conf.tags.natural, extra_attributes, tags_to_keep, read_filter.keys()
+        return self._read_layer(
+            "natural",
+            "natural",
+            engine_backend.get_natural,
+            custom_filter,
+            extra_attributes,
+            tags_to_keep,
+            timestamp,
         )
-
-        with self._read_steps(timestamp, _LAYER_SHARES) as steps:
-            self._read_pbf(timestamp, steps)
-            gdf = get_natural_data(
-                self._nodes,
-                self._node_coordinates,
-                self._way_records,
-                self._relations,
-                tags_as_columns,
-                custom_filter,
-                self.bounding_box,
-                keep_metadata=self.keep_metadata,
-                relation_member_ways=self._relation_member_ways,
-                complete_relations=self.complete_relations,
-                steps=steps,
-            )
-
-        # Do not keep node information unless specifically asked for
-        # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and gdf is not None:
-            if "nodes" in gdf.columns:
-                gdf = gdf.drop("nodes", axis=1)
-        return gdf
 
     @logged()
     @records_read(
@@ -1007,12 +974,7 @@ class OSM:
                 steps=steps,
             )
 
-        # Do not keep node information unless specifically asked for
-        # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and gdf is not None:
-            if "nodes" in gdf.columns:
-                gdf = gdf.drop("nodes", axis=1)
-        return gdf
+        return self._drop_node_lists(gdf)
 
     @logged()
     @records_read(lambda args: _poi_filter(args["custom_filter"]))
@@ -1130,12 +1092,7 @@ class OSM:
                 steps=steps,
             )
 
-        # Do not keep node information unless specifically asked for
-        # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and gdf is not None:
-            if "nodes" in gdf.columns:
-                gdf = gdf.drop("nodes", axis=1)
-        return gdf
+        return self._drop_node_lists(gdf)
 
     @logged()
     @records_read(_custom_read_filter)
@@ -1312,12 +1269,7 @@ class OSM:
                 steps=steps,
             )
 
-        # Do not keep node information unless specifically asked for
-        # (they are in a list, and can cause issues when saving the files)
-        if not self.keep_node_info and gdf is not None:
-            if "nodes" in gdf.columns:
-                gdf = gdf.drop("nodes", axis=1)
-        return gdf
+        return self._drop_node_lists(gdf)
 
     def to_pbf(
         self,
