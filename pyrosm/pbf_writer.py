@@ -1300,6 +1300,7 @@ def write_geodataframe_to_pbf(
     steps=None,
     relation_member_ways=None,
     bounded=False,
+    way_changesets=None,
 ):
     """Write `data` (+ the cached dataset) to a valid PBF at `output_path`.
 
@@ -1310,7 +1311,8 @@ def write_geodataframe_to_pbf(
     ``complete_relations`` holds; they are written as ways of the cache. With `bounded`
     (a read with a bounding box, whose `relations` are those of the whole file), the
     whole-cache write keeps only the relations with a member node or way in the cache,
-    and those `data` edits.
+    and those `data` edits. `way_changesets` are the ``(ids, changesets)`` arrays of the
+    source ways, written as their changesets.
 
     When ``subset_only`` is True, only the elements present in `data` are written
     (matched by ``osm_type``+``id``), together with the references they need to stay
@@ -1330,11 +1332,11 @@ def write_geodataframe_to_pbf(
     start_step(steps, _APPLYING)
 
     relations = relations or {}
-    way_changesets = {}
-    if hasattr(way_records, "changeset"):
-        way_changesets = dict(
-            zip(way_records.ids.tolist(), way_records.changeset.tolist())
-        )
+    changesets = {}
+    if way_changesets is not None:
+        ids, values = way_changesets
+        known = values != 0
+        changesets = dict(zip(ids[known].tolist(), values[known].tolist()))
     way_records = list(way_records) + list(relation_member_ways or [])
     frames = _reproject_to_wgs84(_as_frames(data))
 
@@ -1380,7 +1382,7 @@ def write_geodataframe_to_pbf(
     for nid, lon, lat, tags in edits.new_nodes:
         builder.add_new_node(nid, lon, lat, tags)
     start_step(steps, _WAYS)
-    _add_base_ways(builder, way_records, plan, keep_ways, way_changesets)
+    _add_base_ways(builder, way_records, plan, keep_ways, changesets)
     for wid, refs, tags in new_ways:
         builder.add_new_way(wid, refs, tags)
     start_step(steps, _RELATIONS)

@@ -5,6 +5,7 @@ import http.client
 import logging
 import os
 import re
+import secrets
 import shutil
 import ssl
 import tempfile
@@ -358,6 +359,21 @@ def get_file_size(file_name, size_type=UNIT.MB):
     return round(convert_unit(size, size_type), 2)
 
 
+def _new_partial(path):
+    """A new, empty file ``<name>.<random>.part`` next to ``path``, with the permissions a
+    new file gets (or those of ``path`` when it exists)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    while True:
+        partial = path.with_name("%s.%s.part" % (path.name, secrets.token_hex(4)))
+        try:
+            os.close(os.open(partial, flags, 0o666))
+        except FileExistsError:
+            continue
+        if path.exists():
+            shutil.copymode(path, partial)
+        return partial
+
+
 def write_atomic_path(path, write):
     """Write ``path`` by calling ``write(partial)`` with the path of a new temporary file
     next to it, ``<name>.<random>.part``.
@@ -366,10 +382,7 @@ def write_atomic_path(path, write):
     a partial file; it is removed when ``write`` fails.
     """
     path = Path(path)
-    fd, partial = tempfile.mkstemp(
-        prefix=path.name + ".", suffix=".part", dir=path.parent
-    )
-    os.close(fd)
+    partial = _new_partial(path)
     try:
         write(partial)
         Path(partial).replace(path)

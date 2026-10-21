@@ -286,6 +286,7 @@ class OSM:
         self._way_records = None
         self._relations = None
         self._relation_member_ways = None
+        self._way_changesets = None
 
         # Timestamp
         self._current_timestamp = None
@@ -344,6 +345,7 @@ class OSM:
                 relations,
                 node_coordinates,
                 relation_member_ways,
+                way_changesets,
             ) = parse_osm_data(
                 self.filepath,
                 bounding_box,
@@ -359,6 +361,7 @@ class OSM:
         self._relations = relations
         self._node_coordinates = node_coordinates
         self._relation_member_ways = relation_member_ways
+        self._way_changesets = way_changesets
 
     def _read_pbf(self, timestamp=None, steps=None):
         """Parse the file for ``timestamp`` unless it is parsed for it already, in the
@@ -1557,6 +1560,7 @@ class OSM:
                 steps=steps,
                 relation_member_ways=self._relation_member_ways,
                 bounded=self.bounding_box is not None,
+                way_changesets=self._way_changesets,
             )
 
     @logged("network_type", "graph_type", "simplify", count=False)

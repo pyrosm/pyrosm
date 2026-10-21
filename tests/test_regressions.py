@@ -2119,7 +2119,7 @@ def test_history_read_with_a_bounding_box_returns_the_state_in_the_box():
 
     fp = get_data("helsinki_test_history_pbf")
     when = datetime_to_unix_time(pd.to_datetime("2014-01-01", utc=True))
-    nodes, ways, _, _, _ = parse_osm_data(fp, None, False, None)
+    nodes, ways, _, _, _, _ = parse_osm_data(fp, None, False, None)
     columns = ("id", "timestamp", "visible", "lon", "lat")
     node_versions = pd.DataFrame({c: np.asarray(nodes[c]) for c in columns})
     state = node_versions[node_versions["timestamp"] <= when]
@@ -2138,7 +2138,7 @@ def test_history_read_with_a_bounding_box_returns_the_state_in_the_box():
         if in_box.intersection(refs)
     }
 
-    got_nodes, got_ways, _, _, _ = parse_osm_data(fp, [xmin, ymin, xmax, ymax], False, when)
+    got_nodes, got_ways, _, _, _, _ = parse_osm_data(fp, [xmin, ymin, xmax, ymax], False, when)
     got = pd.DataFrame({c: np.asarray(got_nodes[c]) for c in ("id", "lon", "lat")})
     expected = inside[["id", "lon", "lat"]]
     pd.testing.assert_frame_equal(
@@ -5048,50 +5048,102 @@ def test_write_pbf_writes_new_elements_in_order(tmp_path):
 
 
 def _metadata_source(path):
-    """A PBF with one building (way 10, changeset 88) on four nodes (changeset 77)."""
+    """A PBF with a building relation (id 20) of two square ways: way 10 (changeset 88)
+    on nodes 1-4 and way 11 (changeset 99) on nodes 5-8, 0.02 degrees east; the nodes
+    have changeset 77."""
     import numpy as np
 
     from pyrosm.pbf_export import write_pbf_from_records
 
+    corners = [(0, 0), (0.01, 0), (0.01, 0.01), (0, 0.01)]
     nodes = {
-        "id": np.arange(1, 5, dtype=np.int64),
-        "lon": np.array([24.90, 24.91, 24.91, 24.90]),
-        "lat": np.array([60.10, 60.10, 60.11, 60.11]),
-        "version": np.full(4, 3, dtype=np.int64),
-        "timestamp": np.full(4, 1600000000, dtype=np.int64),
-        "changeset": np.full(4, 77, dtype=np.int64),
-        "tags": [None] * 4,
+        "id": np.arange(1, 9, dtype=np.int64),
+        "lon": np.array([24.90 + dx + x for dx in (0, 0.02) for x, _ in corners]),
+        "lat": np.array([60.10 + y for _ in (0, 0.02) for _, y in corners]),
+        "version": np.full(8, 3, dtype=np.int64),
+        "timestamp": np.full(8, 1600000000, dtype=np.int64),
+        "changeset": np.full(8, 77, dtype=np.int64),
+        "tags": [None] * 8,
     }
-    way = {
-        "id": 10,
-        "refs": [1, 2, 3, 4, 1],
-        "version": 2,
+    ways = [
+        {"id": 10 + i, "refs": [s, s + 1, s + 2, s + 3, s], "version": 2,
+         "timestamp": 1600000000, "changeset": changeset, "tags": {}}
+        for i, (s, changeset) in enumerate(((1, 88), (5, 99)))
+    ]
+    relation = {
+        "id": 20,
+        "members": [("way", 10, "outer"), ("way", 11, "outer")],
+        "version": 1,
         "timestamp": 1600000000,
-        "changeset": 88,
-        "tags": {"building": "yes"},
+        "changeset": 66,
+        "tags": {"type": "multipolygon", "building": "yes"},
     }
-    return write_pbf_from_records(nodes, [way], [], str(path), (24.9, 60.1, 24.91, 60.11))
+    return write_pbf_from_records(
+        nodes, ways, [relation], str(path), (24.9, 60.1, 24.93, 60.11)
+    )
 
 
-@pytest.mark.parametrize("keep_metadata", [True, False])
-def test_write_pbf_writes_the_metadata_it_read(keep_metadata, tmp_path):
+@pytest.mark.parametrize("read", ["whole", "no node metadata", "box, complete relations"])
+def test_write_pbf_writes_the_metadata_it_read(read, tmp_path):
     """write_pbf wrote every way with changeset 0 and, for nodes read with
     keep_metadata=False, invented version 1, timestamp 1970 and changeset 0. It writes
-    the metadata it read and none where none was read."""
+    the metadata it read, also for the member ways a read with complete_relations adds,
+    and none where none was read."""
     from pyrosm import OSM
     from pyrosm.pbfreader import iter_decoded_blocks
 
-    osm = OSM(_metadata_source(tmp_path / "source.osm.pbf"), keep_metadata=keep_metadata)
+    source = _metadata_source(tmp_path / "source.osm.pbf")
+    options = {
+        "whole": {},
+        "no node metadata": {"keep_metadata": False},
+        "box, complete relations": {
+            "bounding_box": [24.899, 60.099, 24.911, 60.111],
+            "complete_relations": True,
+        },
+    }[read]
+    osm = OSM(source, engine="in_memory", **options)
     out = osm.write_pbf(osm.get_buildings(), str(tmp_path / "out.osm.pbf"))
-    nodes = ways = None
+    nodes, ways = [], {}
     for _, _, block_nodes, block_ways, _ in iter_decoded_blocks(out):
-        nodes = block_nodes if block_nodes is not None else nodes
-        ways = block_ways if block_ways is not None else ways
-    assert (ways["version"].tolist(), ways["changeset"].tolist()) == ([2], [88])
-    if keep_metadata:
-        assert nodes["changeset"].tolist() == [77] * 4
-    else:
-        assert len(nodes["version"]) == len(nodes["timestamp"]) == 0
+        if block_nodes is not None:
+            nodes.append(block_nodes)
+        if block_ways is not None:
+            ways.update(zip(block_ways["id"].tolist(), block_ways["changeset"].tolist()))
+    assert ways == {10: 88, 11: 99}
+    changesets = [c for n in nodes for c in n["changeset"].tolist()]
+    assert changesets == ([] if read == "no node metadata" else [77] * 8)
+
+
+def test_write_pbf_of_a_history_read_keeps_the_way_changesets(tmp_path):
+    """A write of a history read gives each way the changeset of the version read."""
+    import warnings
+
+    import numpy as np
+
+    from pyrosm import OSM, get_data
+    from pyrosm.pbfreader import iter_decoded_blocks
+
+    def ways_of(path):
+        return [w for _, _, _, w, _ in iter_decoded_blocks(path) if w is not None]
+
+    fp = get_data("helsinki_test_history_pbf")
+    latest = {}
+    for ways in ways_of(fp):
+        for i, version, changeset in zip(
+            ways["id"].tolist(), ways["version"].tolist(), ways["changeset"].tolist()
+        ):
+            if version >= latest.get(i, (0, 0))[0]:
+                latest[i] = (version, changeset)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        osm = OSM(fp, engine="in_memory")
+        out = osm.write_pbf(osm.get_buildings(), str(tmp_path / "out.osm.pbf"))
+    written = [
+        (i, c)
+        for ways in ways_of(out)
+        for i, c in zip(ways["id"].tolist(), ways["changeset"].tolist())
+    ]
+    assert written and np.all([latest[i][1] == c for i, c in written])
 
 
 @pytest.mark.parametrize("write", ["crop", "crop in parallel", "write_pbf"])
@@ -5100,6 +5152,8 @@ def test_interrupted_writes_leave_the_earlier_file(write, tmp_path):
     truncated file that read as a smaller valid one, and a failed crop without
     output_path left its temporary file. They write next to it and replace it when the
     file is complete."""
+    import os
+
     from pyrosm import OSM, get_data
     from pyrosm.pbf_export import crop_pbf
 
@@ -5111,12 +5165,21 @@ def test_interrupted_writes_leave_the_earlier_file(write, tmp_path):
         if done > total * 0.97:
             raise KeyboardInterrupt
 
-    with pytest.raises(KeyboardInterrupt):
+    def run(progress):
         if write == "write_pbf":
             osm = OSM(fp, engine="in_memory", progress=False)
-            osm.write_pbf(osm.get_buildings(), str(out), progress=stop)
+            osm.write_pbf(osm.get_buildings(), str(out), progress=progress)
         else:
             workers = 2 if write.endswith("parallel") else 1
-            crop_pbf(fp, str(out), bounding_box=box, workers=workers, progress=stop)
+            crop_pbf(fp, str(out), bounding_box=box, workers=workers, progress=progress)
+
+    out.chmod(0o640)
+    with pytest.raises(KeyboardInterrupt):
+        run(stop)
     assert [p.name for p in tmp_path.iterdir()] == ["out.osm.pbf"]
     assert out.read_bytes() == b"earlier"
+    # A complete write replaces the file and keeps its permissions.
+    run(False)
+    assert out.stat().st_size > 1000
+    if os.name != "nt":
+        assert out.stat().st_mode & 0o777 == 0o640
