@@ -662,22 +662,37 @@ def _collect_edits(
     return edits
 
 
-def _relations_with_members(relations, node_ids, way_ids):
+def _relations_with_members(relations, node_ids, way_ids, chunk=10_000):
     """The ids of the ``relations`` with a member node in ``node_ids`` or a member way in
-    ``way_ids`` (arrays of ids)."""
+    ``way_ids`` (arrays of ids), looked up ``chunk`` relations at a time."""
     if "id" not in relations or len(relations["id"]) == 0:
         return set()
-    members = relations["members"]
-    ids = np.concatenate([np.asarray(m["member_id"], dtype=np.int64) for m in members])
-    types = np.concatenate([np.asarray(m["member_type"]).astype("U") for m in members])
-    hits = ((types == "node") & np.isin(ids, node_ids)) | (
-        (types == "way") & np.isin(ids, way_ids)
-    )
-    offsets = np.concatenate(
-        [[0], np.cumsum([len(m["member_id"]) for m in members])]
-    ).astype(np.int64)
-    found = _any_member(hits, offsets)
-    return set(np.asarray(relations["id"], dtype=np.int64)[found].tolist())
+    node_ids, way_ids = np.unique(node_ids), np.unique(way_ids)
+    found = []
+    for start in range(0, len(relations["id"]), chunk):
+        members = relations["members"][start : start + chunk]
+        ids = np.concatenate(
+            [np.asarray(m["member_id"], dtype=np.int64) for m in members]
+        )
+        types = np.concatenate([_member_types(m["member_type"]) for m in members])
+        hits = ((types == b"n") & np.isin(ids, node_ids)) | (
+            (types == b"w") & np.isin(ids, way_ids)
+        )
+        offsets = np.concatenate(
+            [[0], np.cumsum([len(m["member_id"]) for m in members])]
+        ).astype(np.int64)
+        found.append(_any_member(hits, offsets))
+    kept = np.concatenate(found)
+    return set(np.asarray(relations["id"], dtype=np.int64)[kept].tolist())
+
+
+def _member_types(types):
+    """The first letter of each member type (``b"n"``, ``b"w"`` or ``b"r"``), whether the
+    types are bytes or text."""
+    types = np.asarray(types)
+    if types.dtype.kind == "U":
+        types = np.char.encode(types, "ascii")
+    return types.astype("S1")
 
 
 def _subset_keep_sets(node_edits, way_edits, rel_edits, way_refs, relations):

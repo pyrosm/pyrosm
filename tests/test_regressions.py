@@ -4858,3 +4858,6 @@ def test_bounding_box_write_keeps_the_relations_of_the_box(tmp_path):
 
     assert relation_ids(written) == relation_ids(cropped) < relation_ids(fp)
     assert _relations_with_members({}, [], []) == set()
+    text = {"id": [1, 2], "members": [{"member_id": [5], "member_type": ["way"]}] * 2}
+    assert _relations_with_members(text, [5], [7]) == set()
+    assert _relations_with_members(text, [], [5]) == {1, 2}
