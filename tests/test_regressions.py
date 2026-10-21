@@ -4789,6 +4789,7 @@ def test_dataset_names_take_every_spelling_and_get_suggestions():
     assert _resolve_dataset("Rio-de-Janeiro")[1]["url"].endswith("/RiodeJaneiro.osm.pbf")
     for name, hint in (
         ("finlnd", "'finland'"),
+        ("test_pb", "'test_pbf'"),
         ("asia/georgia", "'europe/georgia' or 'usa/georgia'"),
     ):
         with pytest.raises(ValueError, match="Did you mean") as info:

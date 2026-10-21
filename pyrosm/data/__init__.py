@@ -250,7 +250,7 @@ def _unknown_dataset(dataset, name):
         if close:
             break
     else:
-        names = sorted(set(sources._all_sources))
+        names = sorted({*sources._all_sources, *_package_files, *_static_sources})
         close = difflib.get_close_matches(name.strip().replace(" ", "_"), names, n=3)
     message = "The dataset '%s' is not available." % dataset
     if close:
