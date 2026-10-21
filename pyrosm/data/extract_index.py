@@ -70,6 +70,7 @@ from pyrosm.utils.download import (
     _retry,
     copy_atomic,
     download_dir,
+    sources_record,
     write_atomic,
 )
 
@@ -1058,11 +1059,6 @@ def _write_area_file(
     return written
 
 
-def _record_file(path):
-    """The file beside ``path`` that records the files it was cropped or merged from."""
-    return Path(os.fspath(path) + ".sources")
-
-
 def _identities(path, sources, cut):
     """The record of the file ``path`` cut to the region ``cut`` from the files
     ``sources``: the identities (see :func:`~pyrosm.utils._file_identity`) of the file and
@@ -1078,14 +1074,14 @@ def _record_made_from(path, sources, cut):
     """Record that the file ``path``, as it is now, was cut to ``cut`` (the hash of the
     crop region by its kind, empty without a crop) from ``sources``."""
     record = json.dumps(_identities(path, sources, cut)).encode()
-    write_atomic(_record_file(path), lambda out_file: out_file.write(record))
+    write_atomic(sources_record(path), lambda out_file: out_file.write(record))
 
 
 def _made_from(path, sources, cut):
     """Whether the file ``path`` was cut to ``cut`` from the files ``sources`` as they are
     now, and is unchanged since (see :func:`_record_made_from`)."""
     try:
-        record = json.loads(_record_file(path).read_text())
+        record = json.loads(sources_record(path).read_text())
         return record == _identities(path, sources, cut)
     except (OSError, ValueError):
         return False

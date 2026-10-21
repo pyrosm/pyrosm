@@ -1,5 +1,6 @@
 import email.utils
 import enum
+import glob
 import http.client
 import logging
 import os
@@ -418,25 +419,47 @@ def list_downloads():
     return sorted(str(p) for p in directory.glob("*.pbf") if p.is_file())
 
 
-def clear_downloads(filepath=None):
-    """Remove PBF files downloaded by ``get_data`` from the default download directory
-    (``<tempdir>/pyrosm``). With no ``filepath`` every downloaded ``*.pbf`` there is removed; with
-    a ``filepath`` (a path or a bare filename) only that file is removed. The out-of-core ``cache``
-    subdirectory and the bundled package data are left untouched. Returns the number of files
+def sources_record(path):
+    """The file beside ``path`` that records the files it was cropped or merged from."""
+    return Path(os.fspath(path) + ".sources")
+
+
+def _remove_download(path):
+    """Remove the file ``path``, the partial files of its interrupted downloads and its
+    record (see :func:`sources_record`); returns the number of PBF and partial files
     removed."""
+    partials = path.parent.glob(glob.escape(path.name) + ".*.part")
+    removed = [p for p in (path, *partials) if p.is_file()]
+    for file in removed:
+        file.unlink()
+    sources_record(path).unlink(missing_ok=True)
+    return len(removed)
+
+
+def clear_downloads(filepath=None):
+    """Remove PBF files downloaded or cropped into the default download directory
+    (``<tempdir>/pyrosm``), with the partial files of interrupted downloads and the records
+    of the crops. With no ``filepath`` every ``*.pbf`` file there is removed; with a bare
+    file name, the file of that name there; with a path, exactly that file. ``filepath``
+    must name a ``.osm.pbf`` or ``.osh.pbf`` file. The out-of-core ``cache``, the provider
+    indexes and the bundled package data are left untouched. Returns the number of PBF and
+    partial files removed."""
     directory = download_dir()
+    if filepath is not None:
+        name = os.fspath(filepath)
+        if not name.lower().endswith((".osm.pbf", ".osh.pbf")):
+            raise ValueError(
+                "clear_downloads removes .osm.pbf and .osh.pbf files only; got %r."
+                % (name,)
+            )
+        bare = os.path.basename(name) == name
+        return _remove_download(directory / name if bare else Path(name))
     if not directory.is_dir():
         return 0
-    if filepath is None:
-        targets = sorted(p for p in directory.glob("*.pbf") if p.is_file())
-    else:
-        target = directory / Path(filepath).name
-        targets = [target] if target.is_file() else []
-    removed = 0
-    for path in targets:
-        path.unlink()
-        removed += 1
-    return removed
+    stems = {p.name for p in directory.glob("*.pbf")}
+    stems |= {p.name.rsplit(".", 2)[0] for p in directory.glob("*.pbf.*.part")}
+    stems |= {p.name[: -len(".sources")] for p in directory.glob("*.pbf.sources")}
+    return sum(_remove_download(directory / stem) for stem in sorted(stems))
 
 
 def download(

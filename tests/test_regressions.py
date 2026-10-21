@@ -4742,3 +4742,65 @@ def test_get_data_downloads_over_https():
 
     for name in ("finland", "usa/georgia", "greater_london", "helsinki"):
         assert _resolve_dataset(name)[1]["url"].startswith("https://download.")
+
+
+def test_clear_downloads_removes_the_file_given_and_partial_files(tmp_path, monkeypatch):
+    """clear_downloads(path) removed the file of that name in the download folder and kept
+    the file at the path, and the partial files of interrupted downloads were never
+    removed. A path removes exactly that file, a bare name the downloaded one, each with
+    its partial files and crop record, and only PBF files can be named."""
+    import pyrosm.utils.download as dl
+    from pyrosm import OSM
+
+    downloads, own = tmp_path / "pyrosm", tmp_path / "my_data"
+    monkeypatch.setattr(dl, "download_dir", lambda: downloads)
+    files = [
+        downloads / "monaco-latest.osm.pbf",
+        own / "monaco-latest.osm.pbf",
+        downloads / "monaco-latest.osm.pbf.k2j3h4.part",
+        downloads / "bbox_1_2_3_4.osm.pbf",
+        downloads / "bbox_1_2_3_4.osm.pbf.sources",
+        downloads / "estonia-latest.osm.pbf.x8y9z0.part",
+        downloads / "geofabrik" / "index-v1.json",
+    ]
+    for file in files:
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(b"x")
+    assert OSM.clear_downloads(own / "monaco-latest.osm.pbf") == 1
+    assert files[0].exists() and not files[1].exists()
+    assert OSM.clear_downloads("monaco-latest.osm.pbf") == 2
+    assert OSM.clear_downloads() == 2
+    left = [p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*") if p.is_file()]
+    assert left == ["pyrosm/geofabrik/index-v1.json"]
+    with pytest.raises(ValueError, match="removes .osm.pbf and .osh.pbf files only"):
+        OSM.clear_downloads(files[-1])
+
+
+def test_dataset_names_take_every_spelling_and_get_suggestions():
+    """An unknown dataset name listed about 800 names in no order, and a region-qualified
+    name did not take the spellings a bare name takes. The error names the closest
+    datasets, and both forms take spaces, dashes and underscores."""
+    from pyrosm.data import _resolve_dataset
+
+    for name in ("usa/new york", "USA / New-York", "usa/new_york"):
+        assert _resolve_dataset(name)[1]["url"].endswith("/us/new-york-latest.osm.pbf")
+    assert _resolve_dataset("Rio-de-Janeiro")[1]["url"].endswith("/RiodeJaneiro.osm.pbf")
+    for name, hint in (
+        ("finlnd", "'finland'"),
+        ("asia/georgia", "'europe/georgia' or 'usa/georgia'"),
+    ):
+        with pytest.raises(ValueError, match="Did you mean") as info:
+            _resolve_dataset(name)
+        assert hint in str(info.value) and len(str(info.value)) < 200
+
+
+def test_get_data_knows_every_bbbike_city():
+    """get_data lacked three cities (Damaskus, LosAngeles, Minsk) that BBBike lists and
+    get_data_by_area finds. Every city of pyrosm's BBBike index is a get_data dataset."""
+    from pyrosm.data import _resolve_dataset
+    from pyrosm.data.extract_index import _bbbike_extracts
+
+    cities = _bbbike_extracts(None)
+    for city, url in zip(cities["id"], cities["url"]):
+        name = "NewYorkCity" if city == "NewYork" else city
+        assert _resolve_dataset("cities/" + name)[1]["url"] == url

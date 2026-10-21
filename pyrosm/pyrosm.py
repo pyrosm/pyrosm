@@ -1984,21 +1984,29 @@ class OSM:
 
     @staticmethod
     def clear_downloads(filepath=None):
-        """Remove PBF files downloaded by ``get_data`` from the default download directory
-        (``<tempdir>/pyrosm``). The result cache and the bundled package datasets are left
-        untouched.
+        """Remove PBF files downloaded or cropped into the default download directory
+        (``<tempdir>/pyrosm``), with the partial files that interrupted downloads leave and
+        the records kept beside crops. The result cache, the provider indexes and the
+        bundled package datasets are left untouched.
 
         Parameters
         ----------
 
         filepath : str | os.PathLike (optional)
-            A downloaded file's path or bare filename to remove just that file; when ``None``
-            (default) every downloaded ``*.pbf`` in the directory is removed.
+            A ``.osm.pbf`` or ``.osh.pbf`` file to remove, with its partial files: a path
+            removes exactly that file, a bare file name the file of that name in the download
+            directory. When ``None`` (default) every ``*.pbf`` file in the download directory
+            is removed.
 
         Returns
         -------
         int
-            The number of files removed.
+            The number of PBF and partial files removed.
+
+        Raises
+        ------
+        ValueError
+            If ``filepath`` does not name a ``.osm.pbf`` or ``.osh.pbf`` file.
         """
         from pyrosm.utils.download import clear_downloads
 
