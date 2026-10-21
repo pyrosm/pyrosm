@@ -5208,3 +5208,69 @@ def test_partial_file_names_skip_taken_ones(tmp_path, monkeypatch):
     (tmp_path / "x.osm.pbf.taken.part").write_bytes(b"other")
     assert dl._new_partial(tmp_path / "x.osm.pbf").name == "x.osm.pbf.fresh.part"
     assert (tmp_path / "x.osm.pbf.taken.part").read_bytes() == b"other"
+
+
+@pytest.mark.parametrize("simplify", [True, False])
+def test_networkx_graphs_carry_the_osmnx_booleans(simplify, tmp_path):
+    """NetworkX graphs kept oneway as the OSM text and had no reversed, so OSMnx could
+    not load a saved graph. With osmnx_compatible they carry oneway and reversed as
+    booleans (a list where the ways of a simplified edge differ), the OSM text as
+    oneway_tag."""
+    osmnx = pytest.importorskip("osmnx")
+    from pyrosm import OSM, get_data
+
+    graph = OSM(get_data("helsinki_pbf"), progress=False).get_graph(
+        "driving", graph_type="networkx", simplify=simplify
+    )
+
+    def booleans(value):
+        values = value if isinstance(value, list) else [value]
+        return all(type(v) is bool for v in values)
+
+    edges = list(graph.edges(data=True))
+    assert all(booleans(d["oneway"]) and booleans(d["reversed"]) for *_, d in edges)
+    assert {d["oneway"] for *_, d in edges} == {True, False}
+    assert all(graph.has_edge(v, u) for u, v, d in edges if d["oneway"] is False)
+    assert "yes" in {d.get("oneway_tag") for *_, d in edges}
+    osmnx.save_graphml(graph, tmp_path / "graph.graphml")
+    loaded = osmnx.load_graphml(tmp_path / "graph.graphml")
+    assert loaded.number_of_edges() == graph.number_of_edges()
+
+
+def test_node_attrs_include_finds_node_tags():
+    """simplify_kwargs node_attrs_include looked only at node columns, and the network's
+    node tags are in their tags, so naming a tag kept no node. It finds node tags too,
+    in both engines, and warns about a name no node has."""
+    import json
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), engine="in_memory", progress=False)
+    nodes, edges = osm.get_network("driving", nodes=True)
+    signals = {
+        i
+        for i, tags in zip(nodes["id"], nodes["tags"])
+        if isinstance(tags, dict) and tags.get("highway") == "traffic_signals"
+    }
+    full = osm.to_graph(nodes, edges, graph_type="networkx", simplify=False)
+    signals &= set(full)
+    keep = {"node_attrs_include": ["highway"]}
+    default = osm.to_graph(nodes, edges, graph_type="networkx")
+    graph = osm.to_graph(nodes, edges, graph_type="networkx", simplify_kwargs=keep)
+    assert signals - set(default) and signals <= set(graph)
+    engine = OSM(get_data("helsinki_pbf"), progress=False)
+    engine_graph = engine.get_graph("driving", graph_type="networkx", simplify_kwargs=keep)
+    assert set(engine_graph) == set(graph)
+    # Tags as JSON text, as a frame read back from a file holds them.
+    text = nodes.assign(
+        tags=[json.dumps(t) if isinstance(t, dict) else t for t in nodes["tags"]]
+    )
+    text_graph = osm.to_graph(text, edges, graph_type="networkx", simplify_kwargs=keep)
+    assert set(text_graph) == set(graph)
+    with pytest.warns(UserWarning, match="named 'no_such_tag'"):
+        osm.to_graph(
+            nodes,
+            edges,
+            graph_type="networkx",
+            simplify_kwargs={"node_attrs_include": ["no_such_tag"]},
+        )

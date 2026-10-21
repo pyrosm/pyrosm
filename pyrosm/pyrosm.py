@@ -1814,7 +1814,9 @@ class OSM:
             ``osmid``, the nodes get ``x``/``y`` from their geometry, in the CRS of the
             frames, in place of ``lon``/``lat``, and node ``tags`` are stored as a JSON
             string. The node ``osmid`` is the key of the node in the graph and is not
-            repeated as a node attribute.
+            repeated as a node attribute. The edges get OSMnx's ``oneway`` and
+            ``reversed`` booleans, and the OSM text of the ``oneway`` tag is
+            ``oneway_tag`` (see :func:`pyrosm.graphs.to_networkx`).
             NOTE: Only applicable with "networkx" graph type.
 
         pandana_weights : list
@@ -1840,7 +1842,8 @@ class OSM:
             Keyword arguments forwarded to ``pyrosm.graph_simplify.simplify_graph``
             when ``simplify=True``, e.g. ``edge_attrs_differ`` (the columns whose change
             stops a merge; ``None`` merges across every change, as OSMnx does by
-            default), ``node_attrs_include`` (keep the listed nodes as endpoints),
+            default), ``node_attrs_include`` (keep the nodes with a value for one of the listed node
+            columns or tags as endpoints),
             ``remove_rings``, ``track_merged``, ``length_cols`` or ``edge_attr_aggs``.
 
         progress : bool | callable | None (default: None)

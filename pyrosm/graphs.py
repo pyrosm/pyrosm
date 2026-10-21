@@ -25,6 +25,7 @@ from pyrosm.config import Conf
 from pyrosm.config.osm_filters import _UNKNOWN_NETWORK_TYPE, normalize_network_type
 from rapidjson import dumps
 import contextlib
+import numpy as np
 import pandas as pd
 import warnings
 
@@ -96,8 +97,10 @@ def get_directed_edges(
     node_id_col="id",
     force_bidirectional=False,
     network_type=None,
+    osmnx_flags=False,
 ):
-    """Prepares the edges and nodes for exporting to different graphs."""
+    """Prepares the edges and nodes for exporting to different graphs; with
+    ``osmnx_flags`` the directed edges get the columns of :func:`_osmnx_flags`."""
     direction, direction_suffix, both_ways = _direction_rules(
         nodes,
         edges,
@@ -110,6 +113,11 @@ def get_directed_edges(
     )
     edges = edges.copy()
     nodes = nodes.copy()
+    flags = None
+    if osmnx_flags:
+        flags = _osmnx_flags(
+            *directed_rows(edges, direction, direction_suffix, both_ways)
+        )
     edges = generate_directed_edges(
         edges,
         direction,
@@ -118,7 +126,28 @@ def get_directed_edges(
         to_id_col,
         force_bidirectional=both_ways,
     )
+    for name, values in (flags or {}).items():
+        edges[name] = pd.Series(values.tolist(), index=edges.index, dtype=object)
     return nodes, edges
+
+
+# The columns of the OSMnx ``oneway`` and ``reversed`` of directed edges, named apart
+# from the OSM tags of those names until the export renames them.
+_OSMNX_ONEWAY = "osmnx:oneway"
+_OSMNX_REVERSED = "osmnx:reversed"
+
+
+def _osmnx_flags(rows, swapped):
+    """The OSMnx ``oneway`` and ``reversed`` of the directed edges ``rows``/``swapped``
+    (see :func:`~pyrosm.graph_export.directed_rows`), by column: an edge is one-way when
+    its row is travelled one way only, and reversed when it runs against its node order.
+    """
+    rows = np.asarray(rows)
+    counts = np.bincount(rows) if len(rows) else np.zeros(0, dtype=np.int64)
+    return {
+        _OSMNX_ONEWAY: counts[rows] == 1,
+        _OSMNX_REVERSED: np.asarray(swapped, dtype=bool),
+    }
 
 
 def _direction_rules(
@@ -357,10 +386,12 @@ def _tables(
     simplify,
     simplify_kwargs,
     step,
+    osmnx_flags=False,
 ):
     """:func:`graph_tables`, reporting the start of each step to ``step(name)``. Edges whose
     end nodes are not among ``nodes`` are left out (see :func:`_edges_between`), and the
-    edges returned are numbered from 0.
+    edges returned are numbered from 0. With ``osmnx_flags`` the edges get the OSMnx
+    ``oneway`` and ``reversed`` (see :func:`_osmnx_flags`) in their own columns.
 
     With ``simplify``, the directed edges are row numbers of ``edges`` and a direction each
     (:func:`directed_rows`), and only the simplified edges become rows of a new table.
@@ -400,6 +431,7 @@ def _tables(
             node_id_col,
             force_bidirectional,
             network_type,
+            osmnx_flags,
         )
     if simplify:
         step("simplifying")
@@ -410,6 +442,7 @@ def _tables(
             swapped,
             from_id_col=from_id_col,
             to_id_col=to_id_col,
+            directions=_osmnx_flags(rows, swapped) if osmnx_flags else None,
             **(simplify_kwargs or {}),
         )
         if isinstance(edges, _WayEdges):
@@ -497,7 +530,11 @@ def to_networkx(
         ``osmid``, the nodes get ``x``/``y`` from their geometry, in the CRS of the frames,
         in place of ``lon``/``lat``, and node ``tags`` are stored as a JSON string. The node ``osmid`` is the key of the node in the graph and is not
         repeated as a node attribute. No ``key`` edge attribute is added; an edge column
-        named ``key`` is renamed to ``key_tag``.
+        named ``key`` is renamed to ``key_tag``. The edges get OSMnx's ``oneway`` and
+        ``reversed`` booleans: ``oneway`` when the edge can be travelled only in its own
+        direction (by the rule the graph is directed by), ``reversed`` when it runs against
+        the node order of its way (a simplified edge whose ways differ gets the list of
+        their values, as in OSMnx); the OSM text of the ``oneway`` tag is ``oneway_tag``.
 
     progress : bool | callable | None (default: None)
         How the export shows its progress: ``None`` follows
@@ -530,14 +567,22 @@ def to_networkx(
             simplify,
             simplify_kwargs,
             step,
+            osmnx_compatible,
         )
 
         if osmnx_compatible:
             # OSMnx carries the parallel-edge key in the graph structure, not as an
             # edge attribute, and an attribute named 'key' collides with it. Surface
-            # a tag with that name as 'key_tag' instead (as is done for 'id').
-            if "key" in edges.columns:
-                edges = edges.rename(columns={"key": "key_tag"})
+            # a tag with that name as 'key_tag' instead (as is done for 'id'), and the
+            # oneway and reversed tags as 'oneway_tag' and 'reversed_tag', as the
+            # graph's own booleans take their names.
+            edges = edges.rename(
+                columns={
+                    "key": "key_tag",
+                    "oneway": "oneway_tag",
+                    "reversed": "reversed_tag",
+                }
+            ).rename(columns={_OSMNX_ONEWAY: "oneway", _OSMNX_REVERSED: "reversed"})
 
             # Follow the naming convention of OSMnx
             nodes = _xy_from_geometry(nodes.rename(columns={node_id_col: "osmid"}))
