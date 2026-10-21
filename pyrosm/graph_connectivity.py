@@ -1,15 +1,6 @@
 from collections import defaultdict
 
-
-def _get_node_successors(edges, from_id_col, to_id_col):
-    edge_cnt = len(edges)
-    node_successors = defaultdict(list)
-    from_ids = edges[from_id_col].to_list()
-    to_ids = edges[to_id_col].to_list()
-
-    for i in range(0, edge_cnt):
-        node_successors[from_ids[i]].append(to_ids[i])
-    return node_successors
+import numpy as np
 
 
 def _strongly_connected_components(list_of_nodes, node_successors):
@@ -73,11 +64,27 @@ def _strongly_connected_components(list_of_nodes, node_successors):
                         scc_queue.append(v)
 
 
+def largest_component(node_ids, from_ids, to_ids):
+    """The ids of the nodes of the largest strongly connected component of the nodes
+    ``node_ids`` and the directed edges ``from_ids[i]`` -> ``to_ids[i]``, as an array.
+    """
+    node_successors = defaultdict(list)
+    for from_id, to_id in zip(
+        np.asarray(from_ids).tolist(), np.asarray(to_ids).tolist()
+    ):
+        node_successors[from_id].append(to_id)
+    node_ids = np.asarray(node_ids)
+    scc = max(
+        _strongly_connected_components(node_ids.tolist(), node_successors), key=len
+    )
+    return np.fromiter(scc, dtype=node_ids.dtype, count=len(scc))
+
+
 def get_connected_edges(nodes, edges, from_id_col="u", to_id_col="v", node_id_col="id"):
     """Filters the network data (directed) to include only connected edges and nodes."""
-    node_successors = _get_node_successors(edges, from_id_col, to_id_col)
-    node_ids = nodes[node_id_col].to_list()
-    scc = max(_strongly_connected_components(node_ids, node_successors), key=len)
+    scc = largest_component(
+        nodes[node_id_col].to_numpy(), edges[from_id_col], edges[to_id_col]
+    )
     # Filter nodes and edges accordingly
     n = nodes[nodes[node_id_col].isin(scc)]
     e = edges[(edges[from_id_col].isin(scc)) & (edges[to_id_col].isin(scc))]

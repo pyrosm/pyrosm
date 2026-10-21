@@ -780,6 +780,7 @@ def test_pandana_weights_are_summed_along_merged_chains(export, module):
         ("driving", None, {"force_bidirectional": True}),
         ("driving", "no oneway column", {}),
         ("driving", "odd index, reversed geometries", {}),
+        ("driving", "one one-way edge", {}),
         (
             "driving",
             None,
@@ -797,7 +798,8 @@ def test_pandana_weights_are_summed_along_merged_chains(export, module):
 def test_graph_tables_match_the_directed_table(network_type, change, options):
     """graph_tables reads the directed edges as row numbers of the edge table; its tables are
     those of get_directed_edges + get_connected_edges + simplify_graph, which copy the
-    directed edges into a table of their own first."""
+    directed edges into a table of their own first. A single one-way edge leaves one node
+    and no edge."""
     import warnings
 
     import shapely
@@ -811,6 +813,8 @@ def test_graph_tables_match_the_directed_table(network_type, change, options):
     nodes, edges = osm.get_network(nodes=True, network_type=network_type)
     if change == "no oneway column":
         edges = edges.drop(columns="oneway")
+    elif change == "one one-way edge":
+        edges = edges[edges["oneway"] == "yes"].head(1)
     elif change is not None:
         edges.index = (np.arange(len(edges)) * 3) // 2
         flip = np.arange(len(edges)) % 4 == 0

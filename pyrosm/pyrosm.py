@@ -1750,7 +1750,7 @@ class OSM:
 
         The export shows its progress as ``progress`` says: by default a bar on stderr
         once it has run 2 seconds, from 0 to 100 % with the step it is in (directing the
-        edges, simplifying, keeping the largest connected part, building the graph) in
+        edges, keeping the largest connected part, simplifying, building the graph) in
         its label, cleared at the end, or without a terminal one line with the time it
         took.
 

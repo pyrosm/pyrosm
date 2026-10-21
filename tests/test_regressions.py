@@ -4188,7 +4188,7 @@ def test_get_graph_reports_one_progress(engine, simplify, read, fresh_cache, mon
     seen = []
     osm = OSM(fp, engine=engine, progress=lambda *report: seen.append(report))
     osm.get_graph("driving", graph_type="networkx", simplify=simplify)
-    graph = _GRAPH_STEPS[:1] + (["simplifying"] if simplify else []) + _GRAPH_STEPS[1:]
+    graph = _GRAPH_STEPS + (["simplifying"] if simplify else [])
     assert list(dict.fromkeys(started)) == read + graph + ["building the graph"]
     done = [d for d, _ in seen]
     assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)

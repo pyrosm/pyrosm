@@ -709,7 +709,6 @@ def _simplify_rows(
     track_merged=False,
     edge_attr_aggs=None,
     directions=None,
-    with_chains=False,
 ):
     """:func:`simplify_graph` of the directed edges ``rows``/``swapped`` of the edges that
     ``edges`` reads (a :class:`_TableEdges` or :class:`_WayEdges`), with the nodes that
@@ -719,17 +718,14 @@ def _simplify_rows(
     :func:`pyrosm.graph_export.directed_rows` gives them. Every column is read through the
     row numbers, so the directed edges are never copied into a table; only the simplified
     edges are. ``directions`` maps a column name to a boolean of each directed edge,
-    which each simplified edge gets by :func:`_chain_flags`. With ``with_chains`` a third
-    item gives each simplified edge the positions of the directed edges it is made of.
-    """
+    which each simplified edge gets by :func:`_chain_flags`."""
     structural = (from_id_col, to_id_col, edges.geometry_name)
     if track_merged:
         structural += ("merged_edges",)
     aggregations = _edge_aggregations(edge_attr_aggs, tuple(length_cols), structural)
     m = len(rows)
     if m == 0:
-        found = nodes.table(), edges.rows(rows)
-        return (*found, []) if with_chains else found
+        return nodes.table(), edges.rows(rows)
 
     from_ids = edges.values(from_id_col)
     to_ids = edges.values(to_id_col)
@@ -813,8 +809,7 @@ def _simplify_rows(
     if n_chains == 0:
         # Nothing survived (e.g. a pure endpoint-free ring with remove_rings=True):
         # return empty node/edge frames preserving the input schema and CRS.
-        found = nodes.empty(), edges.rows(rows[:0])
-        return (*found, []) if with_chains else found
+        return nodes.empty(), edges.rows(rows[:0])
 
     # First/last node (factor) of each chain -> original node id.
     first_pos = chain_ptr[:-1]
@@ -919,6 +914,4 @@ def _simplify_rows(
     kept_ids = uniques[kept_factors]
     out_nodes = nodes.rows(kept_ids)
 
-    if with_chains:
-        return out_nodes, out, np.split(chain_edge_ids, chain_ptr[1:-1])
     return out_nodes, out

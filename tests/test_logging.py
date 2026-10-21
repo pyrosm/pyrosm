@@ -135,7 +135,7 @@ def test_graph_export_reports_its_steps(pyrosm_logger, monkeypatch):
     )
     calls = []
     enable_logging(progress=lambda done, total: calls.append((done, total)))
-    tables = ["directing the edges", "simplifying", "keeping the largest connected part"]
+    tables = ["directing the edges", "keeping the largest connected part", "simplifying"]
     for export, steps in (
         (
             lambda: OSM.to_graph(nodes, edges, graph_type="networkx"),

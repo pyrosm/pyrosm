@@ -6,7 +6,7 @@ from pyrosm.graph_export import (
     directed_rows,
     generate_directed_edges,
 )
-from pyrosm.graph_connectivity import get_connected_edges
+from pyrosm.graph_connectivity import get_connected_edges, largest_component
 from pyrosm.graph_simplify import (
     EDGE_ATTRS_DIFFER,
     _TableEdges,
@@ -34,7 +34,7 @@ import warnings
 _STEP_SHARES = {
     "directing the edges": 0.1,
     "simplifying": 1.2,
-    "keeping the largest connected part": 0.35,
+    "keeping the largest connected part": 2.0,
 }
 _BUILDING_STEPS = {
     "igraph": ("building the graph", 1.1),
@@ -48,10 +48,10 @@ def step_shares(simplify, retain_all, graph_type=None):
     """The shares of the steps of making a graph's tables, and of building the graph of
     ``graph_type`` when given."""
     names = ["directing the edges"]
-    if simplify:
-        names.append("simplifying")
     if not retain_all:
         names.append("keeping the largest connected part")
+    if simplify:
+        names.append("simplifying")
     shares = {name: _STEP_SHARES[name] for name in names}
     if graph_type is not None:
         name, share = _BUILDING_STEPS[graph_type]
@@ -395,9 +395,8 @@ def _tables(
     ``oneway`` and ``reversed`` (see :func:`_osmnx_flags`) in their own columns.
 
     With ``simplify``, the directed edges are row numbers of ``edges`` and a direction each
-    (:func:`directed_rows`), and only the simplified edges become rows of a new table. The
-    connected part is found on the simplified graph; when it leaves out edges, the
-    directed edges between the nodes of the edges kept are simplified again.
+    (:func:`directed_rows`), and only the simplified edges become rows of a new table; the
+    largest connected part of the directed edges is kept before they are simplified.
     ``simplify_kwargs`` are the optional parameters of :func:`simplify_graph`
     (``edge_attrs_differ``, ``node_attrs_include``, ``remove_rings``, ``track_merged``,
     ``length_cols``, ``edge_attr_aggs``). ``nodes`` and ``edges`` may also be the readers of a network read
@@ -437,50 +436,42 @@ def _tables(
             osmnx_flags,
         )
     if simplify:
-        step("simplifying")
         flags = _osmnx_flags(rows, swapped) if osmnx_flags else {}
-
-        def simplified(kept):
-            return _simplify_rows(
-                nodes,
-                edges,
-                rows[kept],
-                swapped[kept],
-                from_id_col=from_id_col,
-                to_id_col=to_id_col,
-                directions={name: values[kept] for name, values in flags.items()},
-                with_chains=True,
-                **(simplify_kwargs or {}),
-            )
-
-        graph_nodes, graph_edges, chains = simplified(np.arange(len(rows)))
-    else:
-        graph_nodes, graph_edges = nodes, edges
-    # Keep only strongly connected component if not specifically requested otherwise
-    if not retain_all:
-        step("keeping the largest connected part")
-        connected_nodes, connected_edges = get_connected_edges(
-            graph_nodes, graph_edges, from_id_col, to_id_col, node_id_col
-        )
-        if simplify and len(connected_edges) < len(graph_edges):
-            # A node of a removed edge may now join two edges of one street. Simplify
-            # again the directed edges between the nodes of the edges kept, as when the
-            # connected part is kept before simplifying (as OSMnx does).
-            ids = connected_nodes[node_id_col]
-            kept = graph_edges[from_id_col].isin(ids) & graph_edges[to_id_col].isin(ids)
-            in_kept = np.concatenate(
-                [chains[k] for k in np.flatnonzero(kept.to_numpy())]
-            )
+        component = None
+        if not retain_all:
+            # Keep the largest connected part of the directed edges first, so the graph
+            # is simplified once the edges it leaves out are gone (as OSMnx does).
+            step("keeping the largest connected part")
             from_ids, to_ids = edges.values(from_id_col), edges.values(to_id_col)
             u = np.where(swapped, to_ids[rows], from_ids[rows])
             v = np.where(swapped, from_ids[rows], to_ids[rows])
-            connected = np.union1d(u[in_kept], v[in_kept])
-            positions = np.flatnonzero(np.isin(u, connected) & np.isin(v, connected))
-            connected_nodes, connected_edges, _ = simplified(positions)
-        graph_nodes, graph_edges = connected_nodes, connected_edges
-    if simplify and isinstance(edges, _WayEdges):
-        nodes.release()
-        edges.release()
+            component = largest_component(nodes.ids(), u, v)
+            kept = np.isin(u, component) & np.isin(v, component)
+            rows, swapped = rows[kept], swapped[kept]
+            flags = {name: values[kept] for name, values in flags.items()}
+        step("simplifying")
+        graph_nodes, graph_edges = _simplify_rows(
+            nodes,
+            edges,
+            rows,
+            swapped,
+            from_id_col=from_id_col,
+            to_id_col=to_id_col,
+            directions=flags,
+            **(simplify_kwargs or {}),
+        )
+        if component is not None and len(rows) == 0:
+            graph_nodes = nodes.rows(component)
+        if isinstance(edges, _WayEdges):
+            nodes.release()
+            edges.release()
+    elif not retain_all:
+        step("keeping the largest connected part")
+        graph_nodes, graph_edges = get_connected_edges(
+            nodes, edges, from_id_col, to_id_col, node_id_col
+        )
+    else:
+        graph_nodes, graph_edges = nodes, edges
     return graph_nodes.reset_index(drop=True), graph_edges.reset_index(drop=True)
 
 
