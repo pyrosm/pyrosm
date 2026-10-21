@@ -82,7 +82,7 @@ logger = logging.getLogger(__name__)
 # times of reads of Paris (242 MB) and of the Helsinki history sample.
 _PARSE_SHARES = {
     DECODING: 1.0,
-    SELECTING_VERSIONS: 13.0,
+    SELECTING_VERSIONS: 0.1,
     COMPLETING_RELATIONS: 1.0,
     COMPLETING_WAYS: 1.0,
 }
@@ -176,11 +176,9 @@ class OSM:
         process and warns -- but it is not parallel.
 
         History reads -- an `.osh.pbf` file, or any feature call with a
-        `timestamp` -- are served by the in-memory reader with either engine:
-        selecting the latest version of each element at/before the timestamp uses
-        pyrosm's `get_latest_version`, which pandas evaluates eagerly over the whole
-        multi-version frame, so history is read in memory. `write_pbf` also reads
-        the file in memory with either engine.
+        `timestamp` -- are served by the in-memory reader with either engine, which
+        chooses the latest version of each element at/before the timestamp from all
+        its versions. `write_pbf` also reads the file in memory with either engine.
 
     keep_node_info : bool (default: False)
         Whether to keep the `nodes` column -- the ordered member node ids of each
@@ -327,11 +325,9 @@ class OSM:
 
     def _use_engine(self, timestamp):
         """Whether the out-of-core engine handles this read. History reads -- an ``.osh.pbf``
-        file, or an explicit ``timestamp`` -- route to the in-memory reader instead: selecting
-        the latest version of each element at/before the timestamp is pyrosm's per-id
-        ``get_latest_version`` (each element's last version, taken whole), which pandas
-        evaluates eagerly over the whole materialised multi-version frame, so history is
-        read in memory."""
+        file, or an explicit ``timestamp`` -- route to the in-memory reader instead, which
+        chooses each element's last version at/before the timestamp, taken whole, from all
+        its versions."""
         return self.engine == "out_of_core" and timestamp is None and not self._osh_file
 
     def _read_engine(self, reader, with_relations=True, **kwargs):

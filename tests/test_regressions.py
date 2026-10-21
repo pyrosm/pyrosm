@@ -3991,3 +3991,36 @@ def test_read_progress_covers_the_whole_read(
     assert list(dict.fromkeys(started)) == steps
     done = [d for d, _ in seen]
     assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)
+
+
+def test_history_ways_are_chosen_without_a_frame_of_their_records(monkeypatch):
+    """A history read put every version of every way into one table with a column for
+    each tag key of the file (1,211 columns for 10 tags per way in the Helsinki sample)
+    and cleaned it again: 21 of the 23 s of a read. The versions are chosen from the
+    ways' ids and deletion flags, and each way is its last version's record as read."""
+    import pandas as pd
+
+    import pyrosm.pbfreader as reader
+    from pyrosm import get_data
+    from pyrosm.utils import datetime_to_unix_time
+
+    fp = get_data("helsinki_test_history_pbf")
+    when = datetime_to_unix_time(pd.to_datetime("2014-01-01", utc=True))
+    latest = {}
+    for way in reader.parse_osm_data(fp, None, False, None)[1]:
+        if way["timestamp"] <= when:
+            latest[way["id"]] = way
+    expected = [way for _, way in sorted(latest.items()) if way["visible"]]
+
+    class NoRecordFrames:
+        def __getattr__(self, name):
+            return getattr(pd, name)
+
+        @staticmethod
+        def DataFrame(data=None, *args, **kwargs):
+            assert not isinstance(data, list), "a frame of way records"
+            return pd.DataFrame(data, *args, **kwargs)
+
+    monkeypatch.setattr(reader, "pd", NoRecordFrames())
+    ways = reader.parse_osm_data(fp, None, False, when)[1]
+    assert ways == expected and len(ways) > 0

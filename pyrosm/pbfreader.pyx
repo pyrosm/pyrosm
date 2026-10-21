@@ -7,7 +7,7 @@ from pyrosm.data_filter cimport (
     get_nodeid_lookup_khash,
     nodes_for_way_exist_khash,
     get_latest_version,
-    clean_empty_values_from_ways,
+    latest_version_rows,
 )
 from pyrosm.utils import valid_header_block
 from pyrosm.utils.progress import (
@@ -320,24 +320,20 @@ cdef _parse_osm_data(
 
     # Keep each element's state at the timestamp if filter is used
     if unix_time_filter is not None:
-        select = start_step(steps, SELECTING_VERSIONS)
+        start_step(steps, SELECTING_VERSIONS)
         nodes_df = get_latest_version(create_df(all_nodes))
-        ways_df = get_latest_version(pd.DataFrame(all_ways.records()))
+        all_ways = all_ways.records(latest_version_rows(all_ways.ids, all_ways.visible))
         relations_df = get_latest_version(relations_df)
-        if select is not None:
-            select(1, 2)
         if bounding_box is not None:
             xmin, ymin, xmax, ymax = bounding_box
             inside = nodes_df["lon"].between(xmin, xmax) & nodes_df["lat"].between(ymin, ymax)
             nodes_df = nodes_df.loc[inside]
-            if len(ways_df) > 0:
+            if len(all_ways) > 0:
                 node_lookup = get_nodeid_lookup_khash([{"id": nodes_df["id"].values}])
-                ways_df = ways_df.loc[
-                    [nodes_for_way_exist_khash(ids, node_lookup) for ids in ways_df["nodes"]]
+                all_ways = [
+                    way for way in all_ways
+                    if nodes_for_way_exist_khash(way["nodes"], node_lookup)
                 ]
-
-        # DataFrame structure produces unnecesary None values that needs to be cleaned
-        all_ways = clean_empty_values_from_ways(ways_df.to_dict(orient="records"))
         all_nodes = {col: nodes_df[col].values for col in nodes_df.columns}
 
     # Keys with numpy arrays
@@ -385,13 +381,12 @@ cdef _parse_osm_data(
                     completed.add(
                         ways, strings, _way_mask(ways, None, unix_time_filter, missing)
                     )
-            completed_relation_ways = completed.build().records()
-            if unix_time_filter is not None and len(completed_relation_ways) > 0:
-                # Mirror the OSH latest-version selection applied to all_ways above.
-                cw_df = get_latest_version(pd.DataFrame(completed_relation_ways))
-                completed_relation_ways = clean_empty_values_from_ways(
-                    cw_df.to_dict(orient="records")
-                )
+            completed = completed.build()
+            rows = None
+            if unix_time_filter is not None:
+                # The same latest-version selection as for all_ways above.
+                rows = latest_version_rows(completed.ids, completed.visible)
+            completed_relation_ways = completed.records(rows)
 
     # Complete the geometries of ways that straddle the bounding box (#236). A way is
     # kept when >=1 of its nodes is inside the box, but the box-filtered node parse
