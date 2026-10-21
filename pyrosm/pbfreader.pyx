@@ -1,5 +1,4 @@
 import os
-import warnings
 from libc.stdint cimport int64_t
 from pyrosm.tagparser cimport tounicode
 from pyrosm._arrays cimport concatenate_dicts_of_arrays
@@ -304,16 +303,11 @@ cdef _parse_osm_data(
     relations_df = create_df(concatenate_dicts_of_arrays(all_relations))
 
     # If no nodes were parsed there is no 'id' column. Without any nodes the ways cannot
-    # be georeferenced anyway, so return an empty result. (A swapped/inverted bounding box
-    # is rejected earlier with a ValueError at OSM() construction; reaching here means the
-    # bounding box is well-formed but does not overlap this PBF's data extent.)
+    # be georeferenced anyway, so return an empty result, which the feature reads warn
+    # about. (A swapped/inverted bounding box is rejected earlier with a ValueError at
+    # OSM() construction; reaching here means the bounding box is well-formed but does
+    # not overlap this PBF's data extent.)
     if "id" not in all_nodes:
-        warnings.warn(
-            "The given bounding box did not contain any OSM nodes, so no data could be "
-            "parsed. It likely does not overlap the data extent of this PBF file.",
-            UserWarning,
-            stacklevel=2,
-        )
         return {}, [], {}, {}, []
     if tags_builder is not None:
         all_nodes = _with_tags(all_nodes, tags_builder.build())

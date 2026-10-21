@@ -19,6 +19,7 @@ to their union when a bounding box or a polygon is given.
 """
 
 import contextlib
+import logging
 import os
 import shutil
 import tempfile
@@ -65,6 +66,7 @@ from pyrosm.engine.blobs import (
 from pyrosm._arrays import _offsets_from_lengths
 from pyrosm.engine.pool import _PoolStartError, _ordered_map
 from pyrosm.int64_hash cimport Int64Set, SortedInt64Set, _set_has, kh_i64set_t
+from pyrosm._log import timed
 from pyrosm.utils import _file_identity, default_workers, validate_workers
 from pyrosm.utils.progress import stepping, validate_progress
 from pyrosm.zlib_blob import zlib_compress
@@ -72,6 +74,8 @@ from pyrosm.primitive_block_decoder import (
     BLOCK_COUNTS, check_batch_starts, decode_batch_nogil, decode_elements,
     decode_primitive_block, element_layout,
 )
+
+logger = logging.getLogger(__name__)
 
 DIV = 1000000000
 
@@ -1884,7 +1888,9 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     _read_header(source_path)
 
     name = Path(source_path).name
-    with stepping(
+    with timed(
+        logger, "crop_pbf", logging.INFO, file=name, output=Path(output_path).name
+    ) as fields, stepping(
         progress, "Cropping %s" % name, _CROP_SHARES, delay=2.0, leave=False, timed=True
     ) as steps:
         _with_pool(
@@ -1893,6 +1899,7 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
              _ReadProgress(steps, [source_path])),
             workers, [source_path], region, compact,
         )
+        fields["megabytes"] = os.path.getsize(output_path) / 1e6
     return output_path
 
 
@@ -3630,13 +3637,18 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
     validate_progress(progress)
     workers = default_workers(validate_workers(workers))
     name = Path(sources[0]).name if len(sources) == 1 else "%d files" % len(sources)
-    with stepping(
+    with timed(
+        logger, "merge_pbf", logging.INFO, files=",".join([Path(p).name for p in sources])
+    ) as fields, stepping(
         progress, "Merging %s" % name, _MERGE_SHARES, delay=2.0, leave=False, timed=True
     ) as steps:
-        return _merge(
+        merged = _merge(
             sources, output_path, bounding_box, keep_relations, workers, polygon,
             _ReadProgress(steps, sources),
         )
+        fields["output"] = Path(merged).name
+        fields["megabytes"] = os.path.getsize(merged) / 1e6
+    return merged
 
 
 cdef _merge(sources, output_path, bounding_box, keep_relations, workers, polygon,

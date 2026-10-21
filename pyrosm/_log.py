@@ -45,12 +45,14 @@ def enable_logging(level="INFO", to_file=None, progress=True):
         A file to append the messages to instead of writing them to stderr.
 
     progress : bool | callable (default: True)
-        The progress of reads, crops, merges and downloads whose own ``progress`` is not given,
-        and of graph exports (``OSM.to_graph`` and :mod:`pyrosm.graphs`): ``True`` shows a bar
-        on stderr (see :class:`pyrosm.OSM`), ``False`` shows nothing, and a callable is called
-        as ``progress(done, total)``, for a graph export with the steps done and the steps.
-        Without a call to this function, progress is shown as with ``True``.
-        ``enable_logging("WARNING", progress=False)`` silences both.
+        The progress of reads, writes, crops, merges, searches for extracts, downloads and
+        graph exports (``OSM.to_graph`` and :mod:`pyrosm.graphs`) whose own ``progress`` is
+        not given: ``True`` shows a bar on stderr (see :class:`pyrosm.OSM`), ``False`` shows
+        nothing, and a callable is called as ``progress(done, 100)`` with the percentage
+        done, or for a download as ``progress(written, total)`` with its bytes. Without a
+        call to this function, progress is shown as with ``True``.
+        ``enable_logging("WARNING", progress=False)`` turns the progress off without turning
+        on the log messages.
 
     Returns
     -------

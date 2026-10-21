@@ -1346,7 +1346,7 @@ class OSM:
             current (faster, slightly larger) in-place crop.
 
         The crop shows its progress as this object's ``progress`` says (see
-        :func:`pyrosm.crop_pbf`): one bar, or ``progress(done, 100)`` calls, from 0 to
+        :func:`pyrosm.pbf_export.crop_pbf`): one bar, or ``progress(done, 100)`` calls, from 0 to
         100 % over the whole crop.
 
         Returns
@@ -1537,7 +1537,13 @@ class OSM:
             self._set_current_time(None)
             shares = self._parse_shares()
         shares.update(WRITE_SHARES)
-        with stepping(
+        with timed(
+            logger,
+            "write_pbf",
+            logging.INFO,
+            output=Path(output_path).name,
+            subset_only=subset_only,
+        ), stepping(
             self.progress if progress is None else progress,
             "Writing %s" % Path(output_path).name,
             shares,

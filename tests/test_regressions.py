@@ -4313,3 +4313,107 @@ def test_index_download_keeps_its_failures(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="stop"):
         ei.find_extracts(box(24.9, 60.15, 25.0, 60.2), directory=tmp_path, progress=stop)
     assert len(calls) == 1
+
+
+def test_crops_merges_and_writes_log_a_line(tmp_path, caplog, monkeypatch):
+    """Every read logs a line, but crops, merges and writes logged nothing. Each logs one
+    INFO line with its files, its output and the seconds it took."""
+    import logging
+
+    from pyrosm import OSM, get_data, merge_pbf
+    from pyrosm.pbf_export import crop_pbf
+
+    monkeypatch.setattr(logging.getLogger("pyrosm"), "propagate", True)
+    caplog.set_level(logging.INFO, logger="pyrosm")
+    fp = get_data("test_pbf")
+    crop_pbf(
+        fp,
+        str(tmp_path / "crop.osm.pbf"),
+        bounding_box=[26.94, 60.525, 26.96, 60.535],
+        progress=False,
+    )
+    merge_pbf([fp], str(tmp_path / "merged.osm.pbf"), progress=False)
+    osm = OSM(fp, engine="in_memory", progress=False)
+    osm.write_pbf(osm.get_buildings(), str(tmp_path / "written.osm.pbf"))
+    messages = [r.getMessage() for r in caplog.records if r.name.startswith("pyrosm")]
+    lines = {message.split()[0]: message for message in messages}
+    ops = [message.split()[0] for message in messages]
+    assert [ops.count(op) for op in ("crop_pbf", "merge_pbf", "write_pbf")] == [1, 1, 1]
+    assert "file=test.osm.pbf" in lines["crop_pbf"]
+    assert "output=crop.osm.pbf" in lines["crop_pbf"]
+    assert "files=test.osm.pbf " in lines["merge_pbf"]
+    assert "output=merged.osm.pbf" in lines["merge_pbf"]
+    assert "output=written.osm.pbf" in lines["write_pbf"]
+    assert all("seconds=" in lines[op] for op in ("crop_pbf", "merge_pbf", "write_pbf"))
+
+
+def test_read_from_the_cache_warns_as_its_build(fresh_cache, tmp_path):
+    """A bounding-box read warned that relations reach beyond the box only when it was
+    built; the same read served from the cache gave no warning. It gives the warnings
+    of the build again. The record follows its result: a rebuild without warnings
+    removes it, an unreadable one gives nothing, and builds running at once in two
+    threads each record only their own warnings."""
+    import threading
+    import warnings
+
+    from pyrosm import OSM, get_data
+    from pyrosm.engine import cache
+    from pyrosm.utils import recording_warnings, warn_recorded
+
+    fp = get_data("helsinki_pbf")
+    for read in ("built", "from the cache"):
+        with pytest.warns(UserWarning, match="extend beyond the bounding box"):
+            OSM(fp, bounding_box=[24.93, 60.16, 24.95, 60.18], progress=False).get_buildings()
+
+    path = tmp_path / "result.parquet"
+    cache._keep_warnings(path, ["old"])
+    cache._keep_warnings(path, [])
+    assert not cache._warnings_file(path).exists()
+    with pytest.raises(TypeError):
+        cache._keep_warnings(path, [object()])
+    assert list(tmp_path.iterdir()) == []
+    cache._warnings_file(path).write_text("{not json")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        cache._warn_again(path)
+    assert caught == []
+
+    both = threading.Barrier(2)
+    recorded = {}
+
+    def build(name):
+        with recording_warnings() as messages:
+            both.wait()
+            warn_recorded(name)
+            both.wait()
+        recorded[name] = messages
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        threads = [threading.Thread(target=build, args=(name,)) for name in "ab"]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    assert recorded == {"a": ["a"], "b": ["b"]}
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_empty_box_warns_once_in_either_engine(engine, fresh_cache):
+    """A bounding box without data gave the in-memory engine two warnings and the
+    out-of-core engine one. Both give the same single warning."""
+    import warnings
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(
+        get_data("test_pbf"),
+        engine=engine,
+        bounding_box=[0.0, 0.0, 0.01, 0.01],
+        progress=False,
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert osm.get_buildings() is None
+    messages = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
+    assert messages == ["Could not find any building elements for given area."]

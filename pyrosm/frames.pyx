@@ -1,4 +1,3 @@
-import warnings
 import pandas as pd
 import geopandas as gpd
 import numpy as np
@@ -12,6 +11,7 @@ from pyrosm.relations import prepare_relations
 from shapely.geometry import box
 from pyrosm.data_filter import get_mask_by_osmid, _filter_array_dict_by_indices_or_mask
 from pyrosm.distance import calculate_line_lengths, segment_lengths
+from pyrosm.utils import warn_recorded
 from pyrosm.utils.progress import (
     BUILDING_EDGES,
     BUILDING_RELATIONS,
@@ -179,12 +179,11 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
     if bounding_box is not None and not complete_relations:
         n_straddling = _count_straddling_relations(relations, relation_ways)
         if n_straddling > 0:
-            warnings.warn(
+            warn_recorded(
                 f"{n_straddling} relation(s) extend beyond the bounding box and were "
                 f"returned with incomplete geometry (some member ways fall outside "
                 f"the box). Pass complete_relations=True to OSM(...) to fetch their "
                 f"full member set.",
-                UserWarning,
                 stacklevel=2,
             )
 
