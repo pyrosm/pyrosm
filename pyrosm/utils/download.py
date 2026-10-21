@@ -379,8 +379,9 @@ def write_atomic(path, write):
 
 def copy_atomic(source, path):
     """Make ``path`` a copy of the file ``source``: a hard link to it where the file system
-    allows one, else a copy of its bytes. ``path`` is replaced only once the copy is
-    complete (see :func:`write_atomic`); nothing is done when it is ``source`` already.
+    allows one, else a copy of its bytes and permissions. ``path`` is replaced only once the
+    copy is complete (see :func:`write_atomic`); nothing is done when it is ``source``
+    already.
     """
     path = Path(path)
     if path.exists() and os.path.samefile(source, path):
@@ -396,7 +397,7 @@ def copy_atomic(source, path):
         try:
             os.link(source, partial)
         except OSError:
-            shutil.copyfile(source, partial)
+            shutil.copy(source, partial)
         partial.replace(path)
     except BaseException:
         partial.unlink(missing_ok=True)

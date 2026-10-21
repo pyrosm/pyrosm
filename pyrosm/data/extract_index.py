@@ -875,8 +875,8 @@ def _write_area_file(
     cropped) with :func:`pyrosm.merge_pbf`. Without ``crop``, one extract is itself the file,
     or is copied to ``output_path`` when given. The crop or merge shows its progress as
     ``progress`` says. A file pyrosm names after the area (no ``output_path``) is used
-    again, unless ``update``, while its record says it was made from these extracts as they
-    are now and it is unchanged since.
+    again, unless ``update``, while its record says it was cut to this region from these
+    extracts as they are now and it is unchanged since.
     """
     from pyrosm.pbf_export import crop_pbf, merge_pbf
 
@@ -897,7 +897,8 @@ def _write_area_file(
         urls = "\n".join(s.url for s in sources).encode()
         name = "merged_%s.osm.pbf" % hashlib.sha1(urls).hexdigest()[:12]
     target = output_path or str(_default_target_dir(directory) / name)
-    if output_path is None and not update and _made_from(target, paths):
+    cut = {key: hashlib.sha1(geom.wkb).hexdigest() for key, geom in region.items()}
+    if output_path is None and not update and _made_from(target, paths, cut):
         return target
     Path(target).resolve().parent.mkdir(parents=True, exist_ok=True)
     if len(paths) == 1:
@@ -907,7 +908,7 @@ def _write_area_file(
     else:
         written = merge_pbf(paths, target, workers=workers, progress=progress, **region)
     if output_path is None:
-        _record_made_from(written, paths)
+        _record_made_from(written, paths, cut)
     return written
 
 
@@ -916,26 +917,30 @@ def _record_file(path):
     return Path(os.fspath(path) + ".sources")
 
 
-def _identities(path, sources):
-    """The identities (see :func:`~pyrosm.utils._file_identity`) of the file ``path`` and
-    of the files ``sources`` it was made from, as kept in its record."""
+def _identities(path, sources, cut):
+    """The record of the file ``path`` cut to the region ``cut`` from the files
+    ``sources``: the identities (see :func:`~pyrosm.utils._file_identity`) of the file and
+    of the sources, and the region."""
     return {
         "file": list(_file_identity(path)),
         "sources": [[os.fspath(s), *_file_identity(s)] for s in sources],
+        "cut": cut,
     }
 
 
-def _record_made_from(path, sources):
-    """Record that the file ``path``, as it is now, was made from ``sources``."""
-    record = json.dumps(_identities(path, sources)).encode()
+def _record_made_from(path, sources, cut):
+    """Record that the file ``path``, as it is now, was cut to ``cut`` (the hash of the
+    crop region by its kind, empty without a crop) from ``sources``."""
+    record = json.dumps(_identities(path, sources, cut)).encode()
     write_atomic(_record_file(path), lambda out_file: out_file.write(record))
 
 
-def _made_from(path, sources):
-    """Whether the file ``path`` was made from the files ``sources`` as they are now, and
-    is unchanged since (see :func:`_record_made_from`)."""
+def _made_from(path, sources, cut):
+    """Whether the file ``path`` was cut to ``cut`` from the files ``sources`` as they are
+    now, and is unchanged since (see :func:`_record_made_from`)."""
     try:
-        return json.loads(_record_file(path).read_text()) == _identities(path, sources)
+        record = json.loads(_record_file(path).read_text())
+        return record == _identities(path, sources, cut)
     except (OSError, ValueError):
         return False
 

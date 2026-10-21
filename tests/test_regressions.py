@@ -4422,9 +4422,10 @@ def test_empty_box_warns_once_in_either_engine(engine, fresh_cache):
 def test_area_crop_is_used_again(tmp_path, monkeypatch):
     """get_data_by_area cropped again on every call, so each call wrote a new file and
     the result cache filled with copies, and crop=False ignored output_path for one
-    extract. A file pyrosm names after the area is used again while it is newer than its
-    extract; update=True, a newer extract or an explicit output_path crop again, and
-    crop=False copies the extract to output_path."""
+    extract. A file pyrosm names after the area is used again while it, its extract and
+    the area are unchanged; update=True, a newer or other extract, another area of the same
+    name or an explicit output_path crop again, and crop=False copies the extract to
+    output_path."""
     import os
     import shutil
 
@@ -4463,9 +4464,9 @@ def test_area_crop_is_used_again(tmp_path, monkeypatch):
         lambda *a, **k: crops.append(a[1]) or crop_pbf(*a, **k),
     )
 
-    def read(**options):
+    def read(where=area, **options):
         return pyrosm.get_data_by_area(
-            area, directory=tmp_path, progress=False, **options
+            where, directory=tmp_path, progress=False, **options
         ).path
 
     first = read()
@@ -4482,12 +4483,14 @@ def test_area_crop_is_used_again(tmp_path, monkeypatch):
     os.utime(first)
     read()
     assert read() == first and len(crops) == 5
+    # A box that differs from the area only beyond the five decimals of the name.
+    assert read([24.93, 60.16, 24.96, 60.180001]) == first and len(crops) == 6
     own = str(tmp_path / "own.osm.pbf")
-    assert read(output_path=own) == read(output_path=own) == own and len(crops) == 7
+    assert read(output_path=own) == read(output_path=own) == own and len(crops) == 8
 
     copied = tmp_path / "copied.osm.pbf"
     assert read(crop=False, output_path=str(copied)) == str(copied)
-    assert copied.read_bytes() == other.read_bytes() and len(crops) == 7
+    assert copied.read_bytes() == other.read_bytes() and len(crops) == 8
 
     # A copy where the file system has no hard links, and none left when it fails too.
     import pyrosm.utils.download as dl
@@ -4499,9 +4502,11 @@ def test_area_crop_is_used_again(tmp_path, monkeypatch):
         raise OSError("refused")
 
     monkeypatch.setattr(dl.os, "link", refused)
+    source.chmod(0o600)
     dl.copy_atomic(source, no_links / "copy.osm.pbf")
     assert (no_links / "copy.osm.pbf").read_bytes() == source.read_bytes()
-    monkeypatch.setattr(dl.shutil, "copyfile", refused)
+    assert (no_links / "copy.osm.pbf").stat().st_mode == source.stat().st_mode
+    monkeypatch.setattr(dl.shutil, "copy", refused)
     with pytest.raises(OSError, match="refused"):
         dl.copy_atomic(source, no_links / "failed.osm.pbf")
     assert [p.name for p in no_links.iterdir()] == ["copy.osm.pbf"]
