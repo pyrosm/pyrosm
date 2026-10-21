@@ -5002,3 +5002,19 @@ def test_crops_refuse_unusable_boxes_and_warn_when_empty(
     else:
         with pytest.raises(ValueError, match=problem):
             write()
+
+
+def test_merge_of_files_without_nodes_warns(tmp_path):
+    """A merge without a box warns, as a crop does, when the file it writes holds no
+    node."""
+    import numpy as np
+
+    from pyrosm import merge_pbf
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    columns = ("id", "lat", "lon", "version", "timestamp", "changeset")
+    nodes = {name: np.empty(0, dtype=np.int64) for name in columns}
+    nodes.update(lat=np.empty(0), lon=np.empty(0), tags=[])
+    empty = write_pbf_from_records(nodes, [], [], str(tmp_path / "empty.osm.pbf"), (0, 0, 1, 1))
+    with pytest.warns(UserWarning, match="empty.osm.pbf hold no node"):
+        merge_pbf([empty], str(tmp_path / "merged.osm.pbf"), progress=False)

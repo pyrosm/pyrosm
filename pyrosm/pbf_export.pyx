@@ -124,14 +124,17 @@ cdef _region(bounding_box, polygon):
     return _bounds(polygon), _prepared(polygon.wkb)
 
 
-cdef _warn_if_empty(kept_nodes, sources, bounds):
-    """Warn when no node of the files `sources` lies in the area of the box `bounds`, so
-    the written file is empty."""
-    if len(kept_nodes) == 0:
-        warnings.warn(
-            "No node of %s lies in the area %s; the written file holds no elements."
-            % (", ".join(Path(p).name for p in sources), list(bounds))
+cdef _warn_empty(sources, bounds):
+    """Warn that the file written from the files `sources` holds no node: none lies in
+    the area of the box `bounds`, or with `bounds` None, the files hold none."""
+    names = ", ".join(Path(p).name for p in sources)
+    if bounds is None:
+        message = "%s hold no node; the written file holds no elements." % names
+    else:
+        message = "No node of %s lies in the area %s; the written file holds no elements." % (
+            names, list(bounds)
         )
+    warnings.warn(message)
 
 
 def _prepared(wkb):
@@ -2001,7 +2004,8 @@ def _select_and_write(source_path, output_path, region, keep_relations, compact,
     kept_nodes, kept_ways, kept_rel = _select(
         [source_path], region, keep_relations, pool, progress, complete_relations
     )
-    _warn_if_empty(kept_nodes, [source_path], bounds)
+    if len(kept_nodes) == 0:
+        _warn_empty([source_path], bounds)
     kept_ways, kept_rel = kept_ways[0], kept_rel[0]
     if repack:
         _repack_write(
@@ -3409,6 +3413,7 @@ cdef class _RepackWriter:
     cdef object out
     cdef list node_chunks
     cdef long node_count
+    cdef readonly long nodes_written
     cdef list way_buf
     cdef long way_count
     cdef list rel_buf
@@ -3418,6 +3423,7 @@ cdef class _RepackWriter:
         self.out = out
         self.node_chunks = []
         self.node_count = 0
+        self.nodes_written = 0
         self.way_buf = []
         self.way_count = 0
         self.rel_buf = []
@@ -3439,6 +3445,7 @@ cdef class _RepackWriter:
             self._flush_nodes()
         self.node_chunks.append(chunk)
         self.node_count += len(chunk[0])
+        self.nodes_written += len(chunk[0])
         while self.node_count >= _MAX_GROUP:
             self._emit_full_node_block()
 
@@ -3860,7 +3867,6 @@ cdef _merge(sources, output_path, bounding_box, keep_relations, workers, polygon
             _merge_select, (sources, region, keep_relations, progress), workers,
             sources, region, False,
         )
-        _warn_if_empty(kept_nodes, sources, bounds)
         kept = (
             _to_sorted_set(kept_nodes),
             _to_set(_unique_concat(kept_ways)),
@@ -3885,6 +3891,9 @@ cdef _merge(sources, output_path, bounding_box, keep_relations, workers, polygon
             for kind in (_NODES, _WAYS, _RELATIONS):
                 _merge_kind(inputs, kind, kept[kind], won[kind], writer)
             writer.close()
+        if writer.nodes_written == 0:
+            boxed = bounding_box is not None or polygon is not None
+            _warn_empty(sources, bounds if boxed else None)
         changed = [
             p for p, before in zip(sources, fingerprints) if _fingerprint(p) != before
         ]
