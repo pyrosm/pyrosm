@@ -5186,3 +5186,14 @@ def test_interrupted_writes_leave_the_earlier_file(write, tmp_path):
         if os.name != "nt":
             assert out.stat().st_mode & 0o777 == mode
     out.chmod(0o644)
+
+
+def test_partial_file_names_skip_taken_ones(tmp_path, monkeypatch):
+    """A partial file is created under a name nothing else holds."""
+    import pyrosm.utils.download as dl
+
+    names = iter(["taken", "fresh"])
+    monkeypatch.setattr(dl.secrets, "token_hex", lambda n: next(names))
+    (tmp_path / "x.osm.pbf.taken.part").write_bytes(b"other")
+    assert dl._new_partial(tmp_path / "x.osm.pbf").name == "x.osm.pbf.fresh.part"
+    assert (tmp_path / "x.osm.pbf.taken.part").read_bytes() == b"other"
