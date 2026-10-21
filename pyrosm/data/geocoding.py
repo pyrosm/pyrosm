@@ -108,8 +108,10 @@ def geocode(query, polygon=True, base_url=_NOMINATIM_URL, user_agent=None):
 
 
 def _slug_filename(text):
+    """The name of the file cropped to the place ``text``: ``area_`` and the place in
+    lower case, so it never replaces a downloaded extract named after the place."""
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return "%s.osm.pbf" % (slug or "place")
+    return "area_%s.osm.pbf" % (slug or "place")
 
 
 def get_data_by_geocoding(
@@ -137,7 +139,8 @@ def get_data_by_geocoding(
     crop : bool
         When ``True`` (default), crop the downloaded extract to the place and
         return the cropped file, named after the query (e.g.
-        ``brighton-and-hove-uk.osm.pbf``). When ``False``, return the full extract.
+        ``area_brighton-and-hove-uk.osm.pbf``). When ``False``, return the full
+        extract.
 
     download : bool
         When ``True`` (default), download the covering extract. When ``False``,

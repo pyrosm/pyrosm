@@ -2105,9 +2105,8 @@ def test_engine_custom_criteria_keep_other_tags_false_minimal(helsinki_pbf):
 
 
 def test_engine_custom_criteria_keep_other_tags_false_value_filter(helsinki_pbf):
-    # A value filter whose key is NOT a requested column still filters correctly: the filter
-    # key is resolved so the value filter works, then dropped (no 'tags' and no filter-key
-    # column in the result).
+    # A value filter whose key is NOT a requested column still filters correctly, and the
+    # filter key is a column too, so the rows show what they matched (no 'tags' column).
     flt = {"amenity": ["restaurant", "cafe", "pub"]}
     minimal = get_data_by_custom_criteria(
         helsinki_pbf, custom_filter=flt, tags_as_columns=["name"], keep_other_tags=False
@@ -2116,7 +2115,7 @@ def test_engine_custom_criteria_keep_other_tags_false_value_filter(helsinki_pbf)
     assert minimal is not None and len(minimal) > 0
     assert set(minimal["id"]) == set(ref["id"])  # the value filter still selects the same rows
     assert "tags" not in minimal.columns
-    assert "amenity" not in minimal.columns
+    assert set(minimal["amenity"]) == {"restaurant", "cafe", "pub"}
     assert "name" in minimal.columns
 
 
@@ -2379,15 +2378,15 @@ def test_engine_boundaries_custom_filter_adds_boundary_key(helsinki_region_pbf):
     _assert_full_parity(mine, ref)
 
 
-def test_engine_boundaries_name_without_name_column_raises(helsinki_pbf, monkeypatch):
-    # name= on a result that has no 'name' column raises, as the in-memory reader does.
+def test_engine_boundaries_name_without_name_column_is_none(helsinki_pbf, monkeypatch):
+    # name= on a result that has no 'name' column finds nothing, as the in-memory
+    # reader does.
     from shapely.geometry import Point
     from pyrosm.engine import readers
 
     fake = gpd.GeoDataFrame({"id": [1]}, geometry=[Point(0, 0)])
     monkeypatch.setattr(readers, "_get_layer", lambda *a, **k: fake)
-    with pytest.raises(ValueError, match="Could not filter by name"):
-        readers.get_boundaries(helsinki_pbf, name="x")
+    assert readers.get_boundaries(helsinki_pbf, name="x") is None
 
 
 def test_engine_boundaries_name_with_output_raises(helsinki_pbf, tmp_path):

@@ -43,6 +43,7 @@ from pyrosm.data.geofabrik_index import (
     _bbox_filename,
     _bbox_to_polygon,
     _default_target_dir,
+    extract_file_name,
 )
 from pyrosm.data.geofabrik_index import _load_index as _load_geofabrik_index
 from pyrosm.exceptions import (
@@ -1024,7 +1025,10 @@ def get_data_by_area(
                     extract.bytes / 1e6 if pd.notna(extract.bytes) else "unknown"
                 ),
             )
-            filename = "%s_%s" % (extract.provider.lower(), Path(extract.url).name)
+            filename = "%s_%s" % (
+                extract.provider.lower(),
+                extract_file_name(extract.url),
+            )
             try:
                 path = _download_file(
                     extract.url, filename, update, directory, progress=progress, **net

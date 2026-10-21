@@ -68,15 +68,20 @@ def get_boundary_data(
     if gdf is None:
         return None
 
-    # Filter by name
-    # (use Pandas for filtering, which allows using 'contains' more easily)
     if name is not None:
-        if "name" not in gdf.columns:
-            raise ValueError(
-                "Could not filter by name from given area. "
-                "Any of the OSM elements did not have a name tag."
-            )
-        gdf = gdf.dropna(subset=["name"])
-        gdf = gdf.loc[gdf["name"].str.contains(name)].reset_index(drop=True).copy()
-
+        gdf = boundaries_named(gdf, name)
+        if gdf is None:
+            warn_empty_result("boundaries")
     return gdf
+
+
+def boundaries_named(gdf, name):
+    """The rows of the boundaries ``gdf`` whose ``name`` contains the text ``name``,
+    ignoring case, or None when none does."""
+    if "name" not in gdf.columns:
+        return None
+    names = gdf["name"]
+    named = names.notna() & names.str.contains(name, case=False, regex=False)
+    if not named.any():
+        return None
+    return gdf.loc[named.to_numpy()].reset_index(drop=True).copy()

@@ -2298,7 +2298,7 @@ def test_write_pbf_row_tags_strips_members():
             "geometry": None,
         }
     )
-    tags = _row_tags(row, "geometry")
+    tags = _row_tags(row, ["route"])
     assert "members" not in tags  # relation-member metadata is not an OSM tag
     assert tags.get("network") == "ncn"
     assert tags.get("route") == "bicycle"
@@ -2402,7 +2402,7 @@ def test_pbf_writer_tag_helpers():
             "geometry": None,
         }
     )
-    tags = _row_tags(row, "geometry")
+    tags = _row_tags(row, ["highway"])
     assert tags["highway"] == "residential" and tags["surface"] == "asphalt"
     assert "members" not in tags and "" not in tags
 
@@ -2416,7 +2416,7 @@ def test_pbf_writer_tag_helpers():
             "geometry": None,
         }
     )
-    assert _row_tags(row2, "geometry")["highway"] == "path"
+    assert _row_tags(row2, ["highway"])["highway"] == "path"
 
     assert _tag_key("") is None
     assert _tag_key(5) == "5"
@@ -2542,19 +2542,18 @@ def test_pbf_writer_tag_edge_cases():
     import pandas as pd
     from pyrosm.pbf_writer import _row_tags, _record_tags
 
-    # None-valued column and empty-name column are both skipped.
+    # A None-valued column removes its tag, also when the JSON tags hold it.
     row = pd.Series(
         {
             "osm_type": "way",
             "id": 1,
             "highway": "path",
             "ref": None,
-            "": "x",
-            "tags": None,
+            "tags": '{"ref": "A1"}',
             "geometry": None,
         }
     )
-    assert _row_tags(row, "geometry") == {"highway": "path"}
+    assert _row_tags(row, ["highway", "ref"]) == {"highway": "path"}
 
     rec = {
         "id": 1,

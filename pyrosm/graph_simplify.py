@@ -31,6 +31,10 @@ from pyrosm.distance import segment_lengths
 from pyrosm.frames import network_node_frame
 from pyrosm.geometry import segment_lines
 
+# The edge attributes a simplified edge has one value of by default: its speed limit and
+# its road class (a node where they change stays).
+EDGE_ATTRS_DIFFER = ("maxspeed", "highway")
+
 try:
     from pyrosm._simplify_walk import walk_chains as _cython_walk_chains
 except Exception:  # pragma: no cover - exercised only before the extension is built
@@ -314,7 +318,7 @@ def simplify_graph(
     to_id_col="v",
     node_id_col="id",
     length_cols=("length",),
-    edge_attrs_differ=("maxspeed", "highway"),
+    edge_attrs_differ=EDGE_ATTRS_DIFFER,
     node_attrs_include=None,
     remove_rings=True,
     track_merged=False,
@@ -658,7 +662,7 @@ def _simplify_rows(
     from_id_col="u",
     to_id_col="v",
     length_cols=("length",),
-    edge_attrs_differ=("maxspeed", "highway"),
+    edge_attrs_differ=EDGE_ATTRS_DIFFER,
     node_attrs_include=None,
     remove_rings=True,
     track_merged=False,

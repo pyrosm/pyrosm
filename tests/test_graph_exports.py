@@ -847,32 +847,6 @@ def test_to_graph_raises_when_backend_missing(
             osm.to_graph(nodes, edges, graph_type=graph_type)
 
 
-def test_graph_export_skips_edges_with_missing_nodes(test_pbf):
-    """#272 — the igraph/networkx builders skip edges whose endpoint node is
-    absent from the nodes frame (KeyError -> continue) instead of failing. This
-    is the "data was cropped manually" branch; the builders are exercised
-    directly with a real network minus one referenced node, since the public
-    to_graph pipeline reconciles nodes/edges before they reach the builders."""
-    from pyrosm import OSM
-    from pyrosm.graph_export import _create_igraph, _create_nxgraph
-
-    osm = OSM(test_pbf)
-    nodes, edges = osm.get_network(nodes=True)
-
-    # Drop a node referenced by an edge -> dangling endpoint the builder skips.
-    referenced = set(edges["u"]) | set(edges["v"])
-    drop_id = next(i for i in nodes["id"].tolist() if i in referenced)
-    nodes_missing = nodes[nodes["id"] != drop_id].reset_index(drop=True)
-
-    pytest.importorskip("igraph")
-    ig = _create_igraph(nodes_missing, edges, "u", "v", "id")
-    assert ig is not None
-
-    pytest.importorskip("networkx")
-    nxg = _create_nxgraph(nodes_missing, edges, "u", "v", "id")
-    assert nxg is not None
-
-
 @pytest.mark.parametrize(
     "modname,flag",
     [
@@ -1004,6 +978,7 @@ def test_get_graph_is_the_exported_network(request, graph_type, osm_kwargs, kwar
     """get_graph builds the graph that to_graph builds from get_network(nodes=True)."""
     import warnings
     from pyrosm import OSM
+    from pyrosm.graphs import graph_tags
 
     if graph_type in ("pandarm", "pandana"):
         pytest.importorskip(graph_type)
@@ -1019,6 +994,17 @@ def test_get_graph_is_the_exported_network(request, graph_type, osm_kwargs, kwar
     )
     read = {k: v for k, v in kwargs.items() if k in read_keys}
     export = {k: v for k, v in kwargs.items() if k not in read_keys}
+    if "tags_to_keep" in read:  # get_graph also reads the tags the graph is built from
+        added = graph_tags(
+            export.get("direction", "oneway"),
+            read["network_type"],
+            export.get("force_bidirectional", False),
+            export.get("simplify", True),
+            export.get("simplify_kwargs"),
+        )
+        read["tags_to_keep"] = read["tags_to_keep"] + [
+            tag for tag in added if tag not in read["tags_to_keep"]
+        ]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         nodes, edges = OSM(pbf, **osm_kwargs).get_network(nodes=True, **read)

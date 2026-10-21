@@ -3323,7 +3323,7 @@ def test_write_pbf_warns_when_elements_lose_the_tag_they_were_read_by(
     named = buildings[["id", "osm_type", "name", "geometry"]]
     delete = None
     if case == "only_name":
-        frame = named
+        frame = [named, named.copy()]  # an element in two frames is counted once
     elif case == "note_gone":
         frame = named.copy()
         frame.attrs.clear()
@@ -3358,3 +3358,452 @@ def test_write_pbf_warns_when_elements_lose_the_tag_they_were_read_by(
         assert len(lost) == 1 and expected in str(lost[0].message), lost
         assert lost[0].filename == __file__  # it points at the user's call
 
+
+
+@pytest.mark.parametrize(
+    "case", ["one_segment", "segment_cleared", "several_ways", "conflict", "layers"]
+)
+def test_write_pbf_merges_the_rows_of_an_element(case, tmp_path):
+    """``write_pbf`` wrote an element that is in several rows from its last row, so a
+    change in one segment of a way, or in the first of two layers holding an element,
+    was lost. A change in some rows is written for the whole element, with a warning
+    when other rows of the same frame keep the old value; different new values raise."""
+    import json
+    import warnings
+
+    import pandas as pd
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    out = str(tmp_path / "out.osm.pbf")
+    if case == "layers":
+        buildings, pois = osm.get_buildings(), osm.get_pois()
+        both = buildings.merge(pois[["osm_type", "id"]]).iloc[0]
+        element = (both["osm_type"], both["id"])
+        edited = (buildings["osm_type"] == element[0]) & (buildings["id"] == element[1])
+        buildings.loc[edited, "building"] = "edited"
+        ids = buildings[["id", "osm_type", "geometry"]]  # keeps the element's own tags
+        for frames in ([buildings, pois, ids], [ids, pois, buildings]):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                osm.write_pbf(frames, out, subset_only=True)
+            assert not [w for w in caught if "rows" in str(w.message)]
+            written = OSM(out).get_buildings().set_index(["osm_type", "id"])
+            assert written.loc[element, "building"] == "edited"
+        return
+    nodes, edges = osm.get_network("driving", nodes=True)
+    def tag_keys(tags):
+        return [key for key in json.loads(tags or "{}") if key != "visible"]
+
+    usable = edges["maxspeed"].notna() & edges["tags"].map(tag_keys).astype(bool)
+    segments = edges[usable].groupby("id").size()
+    way = segments[segments >= 3].index[0]
+    rows = edges.index[edges["id"] == way]
+    if case == "several_ways":
+        for other in segments[segments >= 3].index[:4]:
+            edges.loc[edges.index[edges["id"] == other][0], "maxspeed"] = "80"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            osm.write_pbf([nodes, edges], out)
+        message = str(caught[0].message)
+        assert len(caught) == 1 and message.startswith("4 tags were changed"), caught
+        assert message.endswith("rows) and 1 more.")
+        return
+    if case == "conflict":
+        edges.loc[rows[0], "maxspeed"], edges.loc[rows[1], "maxspeed"] = "80", "60"
+        with pytest.raises(ValueError, match="different new values"):
+            osm.write_pbf([nodes, edges], out)
+        return
+    if case == "one_segment":
+        edges.loc[rows[0], "maxspeed"] = "80"
+    else:  # removed from a column and from the JSON tags of one segment
+        edges.loc[rows[0], "maxspeed"] = None
+        other_tags = json.loads(edges.loc[rows[0], "tags"])
+        removed = tag_keys(edges.loc[rows[0], "tags"])[0]
+        del other_tags[removed]
+        edges.loc[rows[0], "tags"] = json.dumps(other_tags)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        osm.write_pbf([nodes, edges], out)
+    partial = [w for w in caught if "rows" in str(w.message)]
+    assert len(partial) == 1, partial
+    assert partial[0].filename == __file__  # it points at the user's call
+    written = OSM(out).get_network("driving").set_index("id").loc[way]
+    if case == "one_segment":
+        message = f"of way {way} was changed in 1 of its {len(rows)} rows"
+        assert message in str(partial[0].message)
+        assert written["maxspeed"] == "80"
+    else:
+        assert str(partial[0].message).startswith("2 tags were changed")
+        assert pd.isna(written["maxspeed"])
+        assert removed not in json.loads(written["tags"])
+
+
+@pytest.mark.parametrize("read", ["network", "network_segments", "length_column"])
+def test_write_pbf_writes_the_mapper_tags_not_pyrosm_columns(read, tmp_path):
+    """``write_pbf`` wrote a network's end node ids ``u`` and ``v`` as tags, dropped a
+    way's own ``length`` and ``members`` tags and wrote a tag keyed ``id`` as
+    ``id_tag``. It writes the way's tags as mapped, without the columns pyrosm
+    computes."""
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    osmium = pytest.importorskip("osmium")
+    tags = {
+        "highway": "residential",
+        "id": "W-9",
+        "length": "25",
+        "members": "1",
+        "u": "x",
+    }
+    nodes = {
+        "id": np.array([1, 2, 3], dtype=np.int64),
+        "lon": np.array([24.940, 24.941, 24.942]),
+        "lat": np.array([60.170, 60.171, 60.170]),
+        "version": np.ones(3, dtype=np.int64),
+        "timestamp": np.full(3, 1600000000, dtype=np.int64),
+        "changeset": np.zeros(3, dtype=np.int64),
+        "tags": [None, None, None],
+    }
+    way = {"id": 10, "refs": [1, 2, 3], "version": 1, "timestamp": 1600000000}
+    source = write_pbf_from_records(
+        nodes,
+        [dict(way, tags=tags)],
+        [],
+        str(tmp_path / "source.osm.pbf"),
+        (24.94, 60.17, 24.942, 60.171),
+    )
+    osm = OSM(source)
+    if read == "network":
+        frame = osm.get_network("all")
+    elif read == "network_segments":
+        frame = list(osm.get_network("all", nodes=True))
+    else:
+        frame = osm.get_data_by_custom_criteria(
+            {"highway": True}, tags_as_columns=["highway", "length", "u"]
+        )
+        assert frame[["length", "u"]].values.tolist() == [["25", "x"]]
+    out = str(tmp_path / "out.osm.pbf")
+    osm.write_pbf(frame, out)
+    written = {}
+    for element in osmium.FileProcessor(out):
+        if element.is_way():
+            written[element.id] = {t.k: t.v for t in element.tags}
+    assert written == {10: tags}
+
+
+def test_to_pbf_crops_to_the_polygon_with_the_objects_workers(tmp_path, monkeypatch):
+    """``OSM(bounding_box=polygon).to_pbf()`` cropped to the polygon's bounding
+    rectangle, so the file held features outside the polygon that reading with it
+    leaves out, and it ignored ``OSM(workers=...)``. It crops to the polygon with the
+    object's workers, and reading the file returns the features of the read."""
+    from shapely.geometry import Polygon
+
+    import pyrosm.pbf_export
+    from pyrosm import OSM, get_data
+
+    crop_pbf = pyrosm.pbf_export.crop_pbf
+    workers = []
+
+    def recording_crop(*args, **kwargs):
+        workers.append(kwargs["workers"])
+        return crop_pbf(*args, **kwargs)
+
+    monkeypatch.setattr(pyrosm.pbf_export, "crop_pbf", recording_crop)
+    triangle = Polygon([(24.935, 60.165), (24.945, 60.165), (24.935, 60.170)])
+    osm = OSM(get_data("helsinki_pbf"), bounding_box=triangle, workers=2)
+    read = osm.get_buildings()
+    cropped = OSM(osm.to_pbf(str(tmp_path / "triangle.osm.pbf"))).get_buildings()
+    assert workers == [2]
+    assert sorted(zip(cropped["osm_type"], cropped["id"])) == sorted(
+        zip(read["osm_type"], read["id"])
+    )
+
+
+def test_extracts_with_the_same_file_name_download_to_their_own_files(tmp_path):
+    """``get_data("usa/georgia")`` and ``get_data("europe/georgia")`` both saved
+    ``georgia-latest.osm.pbf``, so the second returned the first one's file, and the
+    Geofabrik downloads of ``get_data_by_bbox`` and ``get_data_by_area`` shared the name
+    too. A file name that several extracts have gets the extract's region in front."""
+    import io
+
+    from pyrosm import get_data
+    from pyrosm.data.geofabrik_index import extract_file_name
+
+    class Response(io.BytesIO):
+        status = 200
+
+        def __init__(self, url):
+            super().__init__(url.encode())
+            self.headers = {"Content-Length": str(len(url))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+
+    class Opener:
+        def open(self, request, timeout=None):
+            return Response(request.full_url)
+
+    paths = [
+        Path(get_data(name, directory=tmp_path, opener=Opener(), progress=False))
+        for name in ("usa/georgia", "europe/georgia")
+    ]
+    assert [p.name for p in paths] == [
+        "us-georgia-latest.osm.pbf",
+        "europe-georgia-latest.osm.pbf",
+    ]
+    urls = [p.read_bytes().decode() for p in paths]  # each file holds its own download
+    assert urls[0].endswith("download.geofabrik.de/north-america/us/georgia-latest.osm.pbf")
+    assert urls[1].endswith("download.geofabrik.de/europe/georgia-latest.osm.pbf")
+    finland = "https://download.geofabrik.de/europe/finland-latest.osm.pbf"
+    assert extract_file_name(finland) == "finland-latest.osm.pbf"
+
+
+@pytest.mark.parametrize("graph_type", ["networkx", "igraph", "pandarm"])
+def test_graph_exports_hold_the_given_nodes_and_edges(graph_type):
+    """Graph exports went wrong for frames edited before the export. With nodes cropped
+    to an area, igraph gave edges another edge's attributes and pandarm failed; with
+    edges filtered (index gaps), pandarm got extra edges and wrong weights; projected
+    frames gave nodes lon/lat ``x``/``y`` in a projected graph; a node id column named
+    ``node_id`` gave igraph no edges and was ignored by pandarm. Each graph holds the
+    edges between the given nodes, in the frames' CRS."""
+    pytest.importorskip(graph_type)
+    from shapely.geometry import box
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    nodes, edges = osm.get_network("walking", nodes=True)
+    edges = edges[edges["highway"] != "footway"]  # leaves gaps in the index
+    lon, lat = nodes["lon"], nodes["lat"]
+    area = box(lon.quantile(0.25), lat.quantile(0.25), lon.median(), lat.median())
+    nodes = nodes[nodes.within(area)].rename(columns={"id": "node_id"})
+    nodes = nodes.assign(x=nodes["lon"], y=nodes["lat"])  # degrees, as lon/lat
+    nodes, edges = nodes.to_crs(3067), edges.to_crs(3067)
+    inside = edges["u"].isin(nodes["node_id"]) & edges["v"].isin(nodes["node_id"])
+    # A walking network is two-way: each edge between the given nodes, both ways.
+    count, length = 2 * int(inside.sum()), 2 * edges.loc[inside, "length"].sum()
+    graph = osm.to_graph(
+        nodes,
+        edges,
+        graph_type=graph_type,
+        node_id_col="node_id",
+        retain_all=True,
+        simplify=False,
+    )
+    x = dict(zip(nodes["node_id"], nodes.geometry.x))
+    if graph_type == "networkx":
+        assert graph.number_of_edges() == count
+        weights = [d["length"] for _, _, d in graph.edges(data=True)]
+        assert all(d["x"] == x[node] for node, d in graph.nodes(data=True))
+    elif graph_type == "igraph":
+        ids = graph.vs["node_id"]
+        assert graph.ecount() == count
+        assert all((ids[e.source], ids[e.target]) == (e["u"], e["v"]) for e in graph.es)
+        weights = graph.es["length"]
+    else:
+        assert len(graph.edges_df) == count
+        weights = graph.edges_df["length"]
+        assert (graph.nodes_df["x"] == graph.nodes_df.index.map(x)).all()
+    assert sum(weights) == pytest.approx(length)
+
+
+def test_history_read_without_timestamp_parses_once(monkeypatch):
+    """Reading a history file without a timestamp took a new "now" on every call, so
+    every call parsed the file again and warned again, and ``keep_other_tags=False``
+    failed asking for the out-of-core engine already in use. The object chooses "now"
+    once and warns once, at the user's call, and the error names history reads."""
+    import warnings
+
+    import pyrosm.pyrosm
+    from pyrosm import OSM, get_data
+
+    parse = pyrosm.pyrosm.parse_osm_data
+    parses = []
+
+    def counting_parse(*args, **kwargs):
+        parses.append(kwargs["unix_time_filter"])
+        return parse(*args, **kwargs)
+
+    monkeypatch.setattr(pyrosm.pyrosm, "parse_osm_data", counting_parse)
+    osm = OSM(get_data("helsinki_test_history_pbf"))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        first, second = osm.get_buildings(), osm.get_buildings()
+    implicit = [w for w in caught if "without user-defined timestamp" in str(w.message)]
+    assert len(parses) == 1 and parses[0] is not None
+    assert len(implicit) == 1 and implicit[0].filename == __file__
+    assert len(first) == len(second)
+    with pytest.raises(ValueError, match="not supported for history reads"):
+        osm.get_data_by_custom_criteria({"building": True}, keep_other_tags=False)
+
+
+@pytest.mark.parametrize(
+    "network_type, tags_to_keep, simplify",
+    [("driving", ["name"], True), ("cycling", ["name", "oneway"], False)],
+)
+def test_get_graph_with_tags_to_keep_builds_the_default_graph(
+    network_type, tags_to_keep, simplify
+):
+    """``get_graph(tags_to_keep=...)`` read only the listed tags, so a driving graph
+    without ``oneway`` was two-way everywhere, a cycling graph without
+    ``oneway:bicycle`` lost the one-way streets open to cycling both ways, and the
+    simplification merged edges across changes of ``maxspeed`` and ``highway``. The tags
+    the graph is built from are always read, so the graph is the default one."""
+    pytest.importorskip("networkx")
+    from pyrosm import OSM, get_data
+    from pyrosm.graphs import direction_tags
+
+    osm = OSM(get_data("helsinki_pbf"))
+    options = dict(graph_type="networkx", simplify=simplify, retain_all=True)
+    expected = osm.get_graph(network_type, **options)
+    graph = osm.get_graph(network_type, tags_to_keep=tags_to_keep, **options)
+    assert sorted(graph.edges()) == sorted(expected.edges())
+    assert direction_tags("oneway", network_type) == {
+        "driving": ["oneway", "junction"],
+        "cycling": ["oneway", "oneway:bicycle", "junction"],
+    }[network_type]
+    assert direction_tags("oneway", "walking") == []  # every edge is two-way
+
+
+@pytest.mark.parametrize("engine", ["out_of_core", "in_memory"])
+def test_osm_keys_to_keep_alone_keeps_the_elements_with_the_keys(engine):
+    """``get_data_by_custom_criteria(osm_keys_to_keep=...)`` without a ``custom_filter``
+    returned every element of the file. The keys are the first level of filtering, so
+    only the elements with one of them are returned, whatever ``filter_type`` says."""
+    import warnings
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"), engine=engine)
+    buildings = sorted(zip(*osm.get_buildings()[["osm_type", "id"]].values.T))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for filter_type in ("keep", "exclude"):
+            read = osm.get_data_by_custom_criteria(
+                osm_keys_to_keep="building", filter_type=filter_type
+            )
+            assert sorted(zip(*read[["osm_type", "id"]].values.T)) == buildings
+            # The read notes the key it selected by (see write_pbf's lost-tag warning).
+            assert "building" in str(read.attrs["pyrosm_read"]["filter"])
+
+
+@pytest.mark.parametrize("engine", ["out_of_core", "in_memory"])
+def test_get_boundaries_finds_the_name_as_plain_text(engine, tmp_path):
+    """``get_boundaries(name=...)`` matched the name as a case-sensitive regular
+    expression, so "Frankfurt (Oder)" was never found and "(" raised an error, and no
+    match gave an empty frame without a warning. The name is plain text, case is ignored,
+    and no match gives None with the usual warning."""
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    corners = [(0, 0), (0.01, 0), (0.01, 0.01), (0, 0.01)]
+    lon = [24.90 + x for x in (0, 0.02) for x, _ in corners]
+    lat = [60.10 + y for _ in (0, 0.02) for _, y in corners]
+    nodes = {
+        "id": np.arange(1, 9, dtype=np.int64),
+        "lon": np.array(lon),
+        "lat": np.array(lat),
+        "version": np.ones(8, dtype=np.int64),
+        "timestamp": np.full(8, 1600000000, dtype=np.int64),
+        "changeset": np.zeros(8, dtype=np.int64),
+        "tags": [None] * 8,
+    }
+    ways = [
+        {"id": 10 + i, "refs": refs, "version": 1, "timestamp": 1600000000, "tags": {}}
+        for i, refs in enumerate(([1, 2, 3, 4, 1], [5, 6, 7, 8, 5]))
+    ]
+    relations = [
+        {
+            "id": 20 + i,
+            "members": [("way", 10 + i, "outer")],
+            "version": 1,
+            "timestamp": 1600000000,
+            "changeset": 0,
+            "tags": {"type": "boundary", "boundary": "administrative", "name": name},
+        }
+        for i, name in enumerate(("Frankfurt (Oder)", "Kamppi"))
+    ]
+    path = write_pbf_from_records(
+        nodes,
+        ways,
+        relations,
+        str(tmp_path / "boundaries.osm.pbf"),
+        (24.9, 60.1, 24.93, 60.13),
+    )
+    osm = OSM(path, engine=engine)
+    assert osm.get_boundaries(name="frankfurt (oder)")["name"].tolist() == [
+        "Frankfurt (Oder)"
+    ]
+    assert osm.get_boundaries(name="(")["name"].tolist() == ["Frankfurt (Oder)"]
+    assert osm.get_boundaries(name="KAMP")["name"].tolist() == ["Kamppi"]
+    with pytest.warns(UserWarning, match="Could not find any boundaries"):
+        assert osm.get_boundaries(name="Helsinki") is None
+
+
+@pytest.mark.parametrize("engine", ["out_of_core", "in_memory"])
+def test_readers_keep_the_key_they_select_by_as_a_column(engine):
+    """With ``tags_to_keep``, the readers left out the key they select by, so a row did
+    not show what it was; ``get_data_by_custom_criteria`` had no ``tags_to_keep``, and in
+    memory it added ``extra_attributes`` to the caller's ``tags_as_columns`` list. Every
+    reader keeps its filter's keys as columns and leaves the caller's lists as they are."""
+    import warnings
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), engine=engine)
+    columns = ["name"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        reads = {
+            "building": osm.get_buildings(tags_to_keep=columns),
+            "amenity": osm.get_pois(
+                custom_filter={"amenity": ["cafe"]}, tags_to_keep=columns
+            ),
+            "highway": osm.get_network(tags_to_keep=columns),
+            "landuse": osm.get_landuse(tags_to_keep=columns),
+            "shop": osm.get_data_by_custom_criteria({"shop": True}, tags_to_keep=columns),
+            "cuisine": osm.get_data_by_custom_criteria(
+                {"cuisine": True},
+                tags_as_columns=columns,
+                extra_attributes=["opening_hours"],
+            ),
+        }
+    for key, frame in reads.items():
+        assert frame[key].notna().all(), key
+        assert "name" in frame.columns
+    assert columns == ["name"]
+    with pytest.raises(ValueError, match="not both"):
+        osm.get_data_by_custom_criteria(
+            {"shop": True}, tags_as_columns=columns, tags_to_keep=columns
+        )
+
+
+@pytest.mark.parametrize("engine", ["out_of_core", "in_memory"])
+def test_get_network_plain_dict_filter_keeps_its_matches(engine):
+    """``get_network(custom_filter={"highway": ["footway"]})`` returned every way but the
+    footways, while the same filter as a regular expression or a bracket filter, and a
+    plain dict in every other reader, keeps the matches. Every form keeps them;
+    ``filter_type="exclude"`` gives the other ways."""
+    import re
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"), engine=engine)
+    forms = (
+        {"highway": ["footway"]},
+        {"highway": [re.compile("^footway$")]},
+        '["highway"="footway"]',
+    )
+    ids = [sorted(osm.get_network(custom_filter=form)["id"]) for form in forms]
+    assert ids[0] == ids[1] == ids[2] and len(ids[0]) > 0
+    others = osm.get_network(custom_filter=forms[0], filter_type="exclude")
+    assert "footway" not in set(others["highway"]) and not set(others["id"]) & set(ids[0])

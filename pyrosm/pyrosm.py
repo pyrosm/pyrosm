@@ -9,6 +9,10 @@ from pyrosm.filter_compiler import CompiledFilter
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm.frames import create_nodes_gdf
 from pyrosm.utils import (
+    custom_read_columns,
+    feature_columns,
+    keys_as_filter,
+    read_tag_columns,
     validate_custom_filter,
     validate_osm_keys,
     validate_tags_as_columns,
@@ -42,6 +46,7 @@ from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
 from pyrosm.graphs import (
+    graph_tags,
     record_network_type,
     to_networkx,
     to_igraph,
@@ -54,29 +59,13 @@ from pyrosm.graphs import (
 from pyrosm import engine as engine_backend
 from pyrosm.engine.readers import (
     _boundary_filter,
+    _network_filter_type,
     _poi_filter,
     _require_layer_key,
     graph_network,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _network_filter_type(custom_filter, filter_type):
-    """``(custom_filter, filter_type)`` of a ``get_network`` call, validated: with a filter,
-    ``filter_type`` defaults to ``"keep"`` for an advanced filter and ``"exclude"`` for a
-    plain dict; without one it is ``"exclude"`` (the network type's own filter applies).
-    """
-    if custom_filter is None:
-        return None, "exclude"
-    custom_filter = validate_custom_filter(custom_filter)
-    if filter_type is None:
-        return custom_filter, (
-            "keep" if isinstance(custom_filter, CompiledFilter) else "exclude"
-        )
-    if isinstance(filter_type, str) and filter_type.lower() in ("keep", "exclude"):
-        return custom_filter, filter_type.lower()
-    raise ValueError("'filter_type' -parameter should be either 'keep' or 'exclude'. ")
 
 
 def _network_read_filter(args):
@@ -91,9 +80,12 @@ def _network_read_filter(args):
 
 def _custom_read_filter(args):
     """The filter a ``get_data_by_custom_criteria`` call selects its elements by (see
-    :func:`pyrosm.utils.records_read`): its ``custom_filter`` with ``filter_type="keep"``;
+    :func:`pyrosm.utils.records_read`): its ``custom_filter`` with ``filter_type="keep"``,
+    or the keys of ``osm_keys_to_keep`` alone (see :func:`pyrosm.utils.keys_as_filter`);
     ``None`` for an exclude filter or a read of every element."""
-    custom_filter, filter_type = args["custom_filter"], args["filter_type"]
+    custom_filter, filter_type = keys_as_filter(
+        args["custom_filter"], args["osm_keys_to_keep"], args["filter_type"]
+    )
     if custom_filter is None or filter_type.lower() != "keep":
         return None
     return validate_custom_filter(custom_filter)
@@ -290,6 +282,8 @@ class OSM:
         # Timestamp
         self._current_timestamp = None
         self._timestamp_changed = False
+        # The current time a history read without a timestamp uses, chosen once
+        self._implicit_now = None
 
         bbox = self.bounding_box
         if isinstance(bbox, list):
@@ -383,6 +377,10 @@ class OSM:
         return get_osm_filter(net_type)
 
     def _set_current_time(self, timestamp):
+        """Set the time a history read selects each element's version at: ``timestamp``,
+        or, for a history file read without one, the current UTC time chosen at the first
+        such read (with a warning). A changed time makes :meth:`_read_pbf` parse again.
+        """
         unix_time = None
         if timestamp is not None:
             unix_time = get_unix_time(timestamp, self._osh_file)
@@ -393,11 +391,13 @@ class OSM:
                 self._current_timestamp = unix_time
                 self._timestamp_changed = True
 
-        # In case OSH file is used but no timestamp is provided, use current UTC time
+        # In case OSH file is used but no timestamp is provided, use the current UTC
+        # time, chosen once for this object so that later reads reuse the parsed data
         elif self._osh_file:
-            unix_time = get_unix_time(pd.Timestamp.now(tz="UTC"), True)
-            self._set_current_time(unix_time)
-            warn_about_timestamp_not_set(unix_time)
+            if self._implicit_now is None:
+                self._implicit_now = get_unix_time(pd.Timestamp.now(tz="UTC"), True)
+                warn_about_timestamp_not_set(self._implicit_now)
+            self._set_current_time(self._implicit_now)
 
     @logged("network_type", "nodes")
     @records_read(_network_read_filter)
@@ -473,9 +473,10 @@ class OSM:
 
         filter_type : str (optional)
             Whether `custom_filter` should `'keep'` or `'exclude'` the matching ways. Only
-            consulted when `custom_filter` is given. When omitted it defaults to `'keep'` for
-            a regex/bracket (advanced) filter and `'exclude'` for a plain-dict filter; the
-            predefined `network_type` filters are always applied as `'exclude'`.
+            consulted when `custom_filter` is given. When omitted it defaults to `'keep'`,
+            as in every other reader and for every form of the filter (a plain dict, a
+            regex or a bracket filter); the predefined `network_type` filters are always
+            applied as `'exclude'`.
 
         timestamp: str | datetime | int
             If provided, the data from given moment of time will be returned. The time should be provided in UTC.
@@ -526,27 +527,21 @@ class OSM:
         # Get filter (also validates network_type, which still drives the graph
         # semantics even when a custom_filter is provided)
         network_filter = self._get_network_filter(network_type)
-        tags_as_columns = list(self.conf.tags.highway)
         # Predefined networks select ways by 'highway'; an advanced custom filter selects by
         # its own positive keys (so railway/cycleway networks work).
         network_osm_keys = "highway"
-
-        if tags_to_keep is not None:
-            validate_tags_as_columns(tags_to_keep)
-            tags_as_columns = list(tags_to_keep)
+        column_keys = ["highway"]
 
         if custom_filter is not None:
             network_filter = custom_filter
-            # Expose the filter keys as columns too (e.g. 'bicycle', 'service').
-            for key in custom_filter.keys():
-                if key not in tags_as_columns:
-                    tags_as_columns.append(key)
+            # The filter keys are columns too (e.g. 'bicycle', 'service').
+            column_keys = custom_filter.keys()
             if advanced_filter:
                 network_osm_keys = list(custom_filter.positive_keys)
 
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        tags_as_columns = read_tag_columns(
+            self.conf.tags.highway, extra_attributes, tags_to_keep, column_keys
+        )
 
         # Read pbf
         self._read_pbf(timestamp)
@@ -637,16 +632,10 @@ class OSM:
                 warn_empty_result("buildings")
             return gdf
 
-        # Default tags to keep as columns
-        tags_as_columns = list(self.conf.tags.building)
-
-        if tags_to_keep is not None:
-            validate_tags_as_columns(tags_to_keep)
-            tags_as_columns = list(tags_to_keep)
-
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        read_filter = _require_layer_key(custom_filter, "building")
+        tags_as_columns = read_tag_columns(
+            self.conf.tags.building, extra_attributes, tags_to_keep, read_filter.keys()
+        )
 
         self._read_pbf(timestamp)
 
@@ -734,16 +723,10 @@ class OSM:
 
         self._read_pbf(timestamp)
 
-        # Default tags to keep as columns
-        tags_as_columns = list(self.conf.tags.landuse)
-
-        if tags_to_keep is not None:
-            validate_tags_as_columns(tags_to_keep)
-            tags_as_columns = list(tags_to_keep)
-
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        read_filter = _require_layer_key(custom_filter, "landuse")
+        tags_as_columns = read_tag_columns(
+            self.conf.tags.landuse, extra_attributes, tags_to_keep, read_filter.keys()
+        )
 
         gdf = get_landuse_data(
             self._nodes,
@@ -830,16 +813,10 @@ class OSM:
 
         self._read_pbf(timestamp)
 
-        # Default tags to keep as columns
-        tags_as_columns = list(self.conf.tags.natural)
-
-        if tags_to_keep is not None:
-            validate_tags_as_columns(tags_to_keep)
-            tags_as_columns = list(tags_to_keep)
-
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        read_filter = _require_layer_key(custom_filter, "natural")
+        tags_as_columns = read_tag_columns(
+            self.conf.tags.natural, extra_attributes, tags_to_keep, read_filter.keys()
+        )
 
         gdf = get_natural_data(
             self._nodes,
@@ -898,7 +875,9 @@ class OSM:
               - `"all"`
 
         name : str (optional)
-            Name of the administrative area that will be searched for.
+            Name of the administrative area that will be searched for: the boundaries
+            whose name contains this text, ignoring case (``"vuori"`` finds
+            ``"Punavuori"``), or None with a warning when no name does.
 
         custom_filter : dict (optional)
             Additional filter for what kind of boundary to parse: it narrows the boundaries
@@ -955,16 +934,10 @@ class OSM:
 
         self._read_pbf(timestamp)
 
-        # Default tags to keep as columns
-        tags_as_columns = list(self.conf.tags.boundary)
-
-        if tags_to_keep is not None:
-            validate_tags_as_columns(tags_to_keep)
-            tags_as_columns = list(tags_to_keep)
-
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        read_filter = _boundary_filter(custom_filter, boundary_type)
+        tags_as_columns = read_tag_columns(
+            self.conf.tags.boundary, extra_attributes, tags_to_keep, read_filter.keys()
+        )
 
         gdf = get_boundary_data(
             self._node_coordinates,
@@ -1082,23 +1055,12 @@ class OSM:
 
         self._read_pbf(timestamp)
 
-        # Default tags to keep as columns
-        tags_as_columns = []
-        for k in custom_filter.keys():
-            try:
-                tags_as_columns += getattr(self.conf.tags, k)
-            except AttributeError:
-                tags_as_columns += self.conf.tags._basic_tags
-            except Exception as e:
-                raise e
-
-        if tags_to_keep is not None:
-            validate_tags_as_columns(tags_to_keep)
-            tags_as_columns = list(tags_to_keep)
-
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        tags_as_columns = read_tag_columns(
+            feature_columns(custom_filter.keys(), self.conf.tags._basic_tags),
+            extra_attributes,
+            tags_to_keep,
+            custom_filter.keys(),
+        )
 
         gdf = get_poi_data(
             self._nodes,
@@ -1134,6 +1096,7 @@ class OSM:
         extra_attributes=None,
         keep_other_tags=True,
         timestamp=None,
+        tags_to_keep=None,
     ):
         """
         Parse OSM data based on custom criteria.
@@ -1147,19 +1110,23 @@ class OSM:
             key/value filtering (tagged nodes, ways, and relations); standalone
             ways with no tags are dropped. Reading everything is memory-heavy on
             large extracts, so prefer a pre-filtered PBF and/or a bounding box.
-            ``filter_type`` is ignored in this mode. A tag keyed ``id`` is filtered
+            ``filter_type`` is ignored in this mode. With ``osm_keys_to_keep``, the
+            elements with one of those keys are returned. A tag keyed ``id`` is filtered
             as ``id_tag``, the column it is returned in; ``id`` is the element's OSM id
             and not a filter key.
 
         osm_keys_to_keep : str | list
-            A filter to specify which OSM keys should be kept.
+            The keys an element must have one of to be returned: the first level of
+            filtering, before ``custom_filter``.
 
         filter_type : str
             "keep" | "exclude"
             Whether the filters should be used to keep or exclude the data from OSM.
 
         tags_as_columns : list
-            Which tags should be kept as columns in the resulting GeoDataFrame.
+            Which tags should be kept as columns in the resulting GeoDataFrame. The keys
+            of the filter (and of ``osm_keys_to_keep``) are always columns too, so each
+            row shows what it was selected by.
 
         keep_nodes : bool
             Whether or not the nodes should be kept in the resulting GeoDataFrame if they are found.
@@ -1178,7 +1145,8 @@ class OSM:
             columns and the rest are kept in a JSON ``tags`` column. ``False`` resolves only
             the requested tags (``tags_as_columns`` plus the filter keys) and drops the JSON
             ``tags`` column, so the read does minimal tag work. Only supported by the
-            out-of-core engine (``OSM(..., engine='out_of_core')``).
+            out-of-core engine (``OSM(..., engine='out_of_core')``), and not for history
+            reads (an ``.osh.pbf`` file or a ``timestamp``), which use the in-memory reader.
 
         timestamp: str | datetime | int
             If provided, the data from given moment of time will be returned. The time should be provided in UTC.
@@ -1190,12 +1158,20 @@ class OSM:
             but not newer (records having exactly the selected timestamp will be kept). In case only a date is given,
             the time will represent midnight of the given day, such as "2021-01-01 00:00:00".
 
+        tags_to_keep : list (optional)
+            The name the other readers give ``tags_as_columns``: the tags kept as columns.
+            Give one of the two.
+
         """
 
         # custom_filter=None means "return everything": keep every tagged element
         # with no key/value filtering (issue #113). There is nothing to keep or exclude
         # by value then, so filter_type is ignored; it is pinned to a valid no-op so a
         # caller-supplied value cannot reject the request.
+        validate_osm_keys(osm_keys_to_keep)
+        custom_filter, filter_type = keys_as_filter(
+            custom_filter, osm_keys_to_keep, filter_type
+        )
         keep_all = custom_filter is None
         if keep_all:
             filter_type = "keep"
@@ -1221,6 +1197,7 @@ class OSM:
                 keep_relations=keep_relations,
                 extra_attributes=extra_attributes,
                 keep_other_tags=keep_other_tags,
+                tags_to_keep=tags_to_keep,
             )
             if gdf is None:
                 warn_empty_result("custom")
@@ -1230,6 +1207,11 @@ class OSM:
         # reader resolves every tag once and caches it for reuse across layers, so it cannot
         # honour the minimal-tags mode.
         if keep_other_tags is False:
+            if self.engine == "out_of_core":
+                raise ValueError(
+                    "keep_other_tags=False is not supported for history reads (an "
+                    ".osh.pbf file or a timestamp), which use the in-memory reader."
+                )
             raise ValueError(
                 "keep_other_tags=False is only supported by the out-of-core engine; "
                 "construct OSM(..., engine='out_of_core')."
@@ -1243,32 +1225,15 @@ class OSM:
         if isinstance(osm_keys_to_keep, str):
             osm_keys_to_keep = [osm_keys_to_keep]
 
-        # Tags to keep as columns
-        if tags_as_columns is None:
-            if keep_all:
-                # No key filter to derive columns from: expose the default columns
-                # of every known feature, so common tags become columns and the
-                # rest land in the JSON 'tags' column.
-                tags_as_columns = self.conf.tags._every_feature_columns()
-            else:
-                tags_as_columns = []
-                for k in custom_filter.keys():
-                    try:
-                        tags_as_columns += getattr(self.conf.tags, k)
-                    except Exception:
-                        pass
-                # If tags weren't available in conf, store keys as columns by
-                # default (all other tags will be stored in 'tags' column as JSON)
-                if len(tags_as_columns) == 0:
-                    tags_as_columns = list(custom_filter.keys())
-
-        else:
-            # Validate tags
-            validate_tags_as_columns(tags_as_columns)
-
-        if extra_attributes is not None:
-            validate_tags_as_columns(extra_attributes)
-            tags_as_columns += extra_attributes
+        tags_as_columns = read_tag_columns(
+            custom_read_columns(
+                None if keep_all else custom_filter,
+                osm_keys_to_keep,
+                tags_as_columns,
+                tags_to_keep,
+            ),
+            extra_attributes,
+        )
 
         self._read_pbf(timestamp)
 
@@ -1315,10 +1280,9 @@ class OSM:
         so geometries are not cut at the box edge. The crop streams the source
         file blob-by-blob and never loads it fully into memory.
 
-        A ``Polygon``/``MultiPolygon`` ``bounding_box`` is cropped by its envelope
-        (bounding rectangle), matching how ``OSM()`` itself filters by a polygon
-        bounding box, so a cropped-and-reread file matches reading the source with
-        the same ``bounding_box``.
+        A ``Polygon``/``MultiPolygon`` ``bounding_box`` crops to the polygon itself,
+        as ``OSM()`` reads by it, so reading the cropped file returns the features
+        that reading the source with the same ``bounding_box`` does.
 
         Parameters
         ----------
@@ -1332,9 +1296,10 @@ class OSM:
             written; when ``False`` no relations are written.
 
         workers : int | str
-            Number of threads for the CPU-heavy per-block work. By default (``None``,
-            as ``"auto"``) the count is chosen as an out-of-core read does for a file of
-            this size; ``1`` runs sequentially. Every count produces a byte-identical
+            Number of threads for the CPU-heavy per-block work. By default (``None``)
+            the ``workers`` of this ``OSM`` object; when that is not set either, the
+            count is chosen as an out-of-core read does for a file of this size (as
+            ``"auto"``); ``1`` runs sequentially. Every count produces a byte-identical
             output. With ``PYROSM_DECODE_BACKEND=processes`` they are worker processes,
             one by default; when those cannot run (on macOS and Windows: a script
             without an ``if __name__ == "__main__":`` guard, or one read from stdin), the
@@ -1374,15 +1339,18 @@ class OSM:
                 "object with `OSM(filepath, bounding_box=...)` before calling "
                 "`to_pbf()`."
             )
+        region = {"bounding_box": self.bounding_box}
+        if isinstance(self.bounding_box, (Polygon, MultiPolygon)):
+            region = {"polygon": self.bounding_box}
         return crop_pbf(
             self.filepath,
             output_path,
-            self.bounding_box,
             keep_relations=keep_relations,
-            workers=workers,
+            workers=self.workers if workers is None else workers,
             compact=compact,
             repack=repack,
             progress=self.progress,
+            **region,
         )
 
     def write_pbf(
@@ -1408,6 +1376,13 @@ class OSM:
         added as new elements synthesized from their geometry (with negative ids).
         A frame without tag columns (only ``id``, ``osm_type``, the geometry and other
         structural columns) changes no tags: the elements it matches keep their own.
+        The columns ``get_network`` computes (``u``, ``v`` and the numeric ``length``)
+        are not tags, and ``id_tag``, the column of a tag keyed ``id``, is written as
+        ``id``. An element in several rows, such as a way split into segments by
+        ``get_network(nodes=True)`` or an element in two frames, gets each tag from its
+        rows: a value changed or removed in only some of them is written for the whole
+        element (with a ``UserWarning`` when other rows of the same frame keep the old
+        value), and rows giving a tag different new values raise ``ValueError``.
         When elements lose the tag their read selected them by, e.g. buildings written
         without a ``building`` column, a ``UserWarning`` says how many and which reader
         will no longer find them in the written file.
@@ -1573,7 +1548,11 @@ class OSM:
         ----------
 
         network_type, extra_attributes, custom_filter, filter_type, tags_to_keep, timestamp
-            As in :meth:`get_network`.
+            As in :meth:`get_network`. With ``tags_to_keep``, the tags the graph is built
+            from are read too: those of its edges' directions (``oneway`` and
+            ``junction``, and ``oneway:bicycle`` for cycling) and, with ``simplify``, the
+            ``edge_attrs_differ`` tags (by default ``maxspeed`` and ``highway``), so the
+            graph is the same and only carries fewer attributes.
 
         graph_type, direction, force_bidirectional, retain_all, osmnx_compatible, pandana_weights, simplify, simplify_kwargs
             As in :meth:`to_graph`.
@@ -1585,6 +1564,19 @@ class OSM:
         None when the network is empty.
         """
         validate_graph_type(graph_type)
+        if tags_to_keep is not None:
+            validate_tags_as_columns(tags_to_keep)
+            tags_to_keep = list(tags_to_keep) + [
+                tag
+                for tag in graph_tags(
+                    direction,
+                    network_type,
+                    force_bidirectional,
+                    simplify,
+                    simplify_kwargs,
+                )
+                if tag not in tags_to_keep
+            ]
         if simplify and self._use_engine(timestamp):
             nodes, edges = self._read_engine(
                 graph_network,
@@ -1728,8 +1720,9 @@ class OSM:
         osmnx_compatible : bool (default True)
             if True, modifies the edge and node-attribute naming to be compatible with OSMnx
             (allows utilizing all OSMnx functionalities): the node/edge id is renamed to
-            ``osmid``, node ``lat``/``lon`` to ``y``/``x``, and node ``tags`` are stored as a
-            JSON string. The node ``osmid`` is the key of the node in the graph and is not
+            ``osmid``, the nodes get ``x``/``y`` from their geometry, in the CRS of the
+            frames, in place of ``lon``/``lat``, and node ``tags`` are stored as a JSON
+            string. The node ``osmid`` is the key of the node in the graph and is not
             repeated as a node attribute.
             NOTE: Only applicable with "networkx" graph type.
 
