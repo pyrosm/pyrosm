@@ -25,6 +25,7 @@ from shapely.geometry import box, shape
 
 from pyrosm._log import log_event
 from pyrosm.utils.download import _FETCH_ERRORS, _retry, open_url
+from pyrosm.utils.progress import validate_progress
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +182,7 @@ def get_data_by_geocoding(
     """
     from pyrosm.data.geofabrik_index import _download_optionally_crop
 
+    validate_progress(progress)
     geom = geocode(query, base_url=base_url, user_agent=user_agent)
     cropped_name = _slug_filename(query)
     return _download_optionally_crop(

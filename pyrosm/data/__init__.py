@@ -27,6 +27,7 @@ from pyrosm.data.geofabrik import (
 )
 from pyrosm.data.bbbike import Cities
 from pyrosm.utils import warn_future
+from pyrosm.utils.progress import validate_progress
 
 __all__ = [
     "available",
@@ -286,6 +287,7 @@ def get_data(
         as ``progress(written, total)`` after each chunk, with the bytes written so far and
         the file size, ``None`` when the server does not give it.
     """
+    validate_progress(progress)
     kind, found = _resolve_dataset(dataset)
     if kind == "package":
         return found

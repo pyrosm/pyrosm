@@ -470,29 +470,41 @@ def test_download_with_caller_options(tmp_path):
     [
         (
             [_Served(_BODY, 200, {"Content-Length": "100"})],
-            [(30, 100), (60, 100), (90, 100), (100, 100)],
+            [(0, 100), (30, 100), (60, 100), (90, 100), (100, 100)],
         ),
-        ([_Served(_BODY, 200, {})], [(30, None), (60, None), (90, None), (100, None)]),
+        (
+            [_Served(_BODY, 200, {})],
+            [(0, None), (30, None), (60, None), (90, None), (100, None)],
+        ),
         # A resumed download counts on from the bytes it kept, a restarted one from 0.
         (
             [
                 _Served(_BODY, 200, {**_STRONG, "Content-Length": "100"}, 40),
                 _Served(_BODY[40:], 206, {"Content-Range": "bytes 40-99/100"}),
             ],
-            [(30, 100), (40, 100), (70, 100), (100, 100)],
+            [(0, 100), (30, 100), (40, 100), (70, 100), (100, 100)],
         ),
         (
             [
                 _Served(_BODY, 200, {"Content-Length": "100"}, 40),
                 _Served(_BODY, 200, {"Content-Length": "100"}),
             ],
-            [(30, 100), (40, 100), (30, 100), (60, 100), (90, 100), (100, 100)],
+            [
+                (0, 100),
+                (30, 100),
+                (40, 100),
+                (0, 100),
+                (30, 100),
+                (60, 100),
+                (90, 100),
+                (100, 100),
+            ],
         ),
     ],
 )
 def test_download_reports_progress(tmp_path, monkeypatch, capsys, served, calls):
-    """A progress callback gets the bytes written and the file size after each chunk, and
-    replaces pyrosm's own bar."""
+    """A progress callback gets the bytes written and the file size when the server starts
+    sending the file and after each chunk, and replaces pyrosm's own bar."""
     from pyrosm.utils import download as dl
 
     monkeypatch.setattr(dl, "_CHUNK", 30)

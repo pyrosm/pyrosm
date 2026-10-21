@@ -23,6 +23,7 @@ from shapely.geometry.base import BaseGeometry
 
 from pyrosm._log import log_event
 from pyrosm.utils.download import open_url
+from pyrosm.utils.progress import validate_progress
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +272,7 @@ def get_data_by_bbox(
     ValueError
         If no single extract fully covers ``bbox``.
     """
+    validate_progress(progress)
     geom = _bbox_to_polygon(bbox)
     cropped_name = _bbox_filename(geom.bounds)
     return _download_optionally_crop(

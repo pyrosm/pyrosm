@@ -4197,3 +4197,119 @@ def test_get_graph_reports_one_progress(engine, simplify, read, fresh_cache, mon
     monkeypatch.setattr(progress.Bar, "__init__", lambda self, *a, **k: bars.append(a))
     OSM(fp, engine=engine, progress=False).get_graph("driving", graph_type="networkx")
     assert bars == []
+
+
+def test_find_extracts_reports_reading_the_indexes(tmp_path, monkeypatch):
+    """On first use find_extracts downloaded Movisda's indexes (29 MB, 8 s for an area
+    in Helsinki) without a sign, and took no progress. It reports reading the indexes,
+    by their bytes, and then the extract sizes, from 0 to 100 %."""
+    from urllib.error import URLError
+
+    from shapely.geometry import box
+
+    import pyrosm.data.extract_index as ei
+    from pyrosm import find_extracts
+    from pyrosm.utils import progress
+
+    def cached_index(url, path, update=False, check=None, net=None, progress=None):
+        if "/admin/" in url:
+            # A server that gives no size, and no copy to take one from.
+            for received in (0, 5, 10):
+                progress(received, None)
+            raise URLError("down")
+        for received in (0, 5, 10):
+            progress(received, 10)
+        return ei._MOVISDA_GRID_PATH
+
+    def download_sizes(urls, directory, update=False, net=None, fallback=None, progress=None):
+        progress(0, 1)
+        progress(1, 1)
+        return {}
+
+    monkeypatch.setattr(ei, "_cached_index", cached_index)
+    monkeypatch.setattr(ei, "_download_sizes", download_sizes)
+    started = []
+    real = progress.Steps.start_step
+    monkeypatch.setattr(
+        progress.Steps,
+        "start_step",
+        lambda self, name: started.append(name) or real(self, name),
+    )
+    seen = []
+    with pytest.warns(UserWarning, match="administrative index is unavailable"):
+        find_extracts(
+            box(24.9, 60.15, 25.0, 60.2),
+            directory=tmp_path,
+            progress=lambda *report: seen.append(report),
+        )
+    assert started == ["reading the extract indexes", "reading the extract sizes"]
+    done = [d for d, _ in seen]
+    assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)
+    assert len(set(done)) > 4
+
+
+@pytest.mark.parametrize(
+    "function, place",
+    [
+        ("get_data", "test_pbf"),
+        ("get_data_by_bbox", [24.9, 60.15, 25.0, 60.2]),
+        ("get_data_by_geocoding", "Helsinki"),
+        ("get_data_by_area", [24.9, 60.15, 25.0, 60.2]),
+        ("find_extracts", [24.9, 60.15, 25.0, 60.2]),
+    ],
+)
+def test_download_functions_refuse_an_invalid_progress_first(
+    function, place, monkeypatch
+):
+    """A progress that is not True, False, None or a function was refused only when the
+    first download started: after the extract indexes or the geocoding request, and
+    never for a file bundled with pyrosm. Every download function refuses it before
+    any request."""
+    import pyrosm
+    import pyrosm.data.geocoding as geocoding
+    import pyrosm.utils.download as dl
+
+    def no_request(*args, **kwargs):
+        pytest.fail("a request was sent")
+
+    monkeypatch.setattr(dl._Net, "open", no_request)
+    monkeypatch.setattr(geocoding, "open_url", no_request)
+    with pytest.raises(ValueError, match="progress must be"):
+        getattr(pyrosm, function)(place, progress="yes")
+
+
+def test_index_download_keeps_its_failures(tmp_path, monkeypatch):
+    """Reading an index in chunks for its progress must not hide two failures: an index
+    that stops short of its Content-Length is fetched again, and left out when it keeps
+    failing, and an error of the progress function reaches the caller of find_extracts
+    unchanged, after one request."""
+    import io
+
+    from shapely.geometry import box
+
+    import pyrosm.data.extract_index as ei
+    import pyrosm.utils.download as dl
+
+    class Response(io.BytesIO):
+        headers = {"Content-Length": "10"}
+
+    calls = []
+
+    def short(url, method="GET", headers=None, timeout=None, opener=None):
+        calls.append(url)
+        return Response(b"abc")
+
+    monkeypatch.setattr(dl, "open_url", short)
+    monkeypatch.setattr(dl, "_sleep", lambda seconds: None)
+    with pytest.raises(OSError, match="stopped after 3 of 10 bytes"):
+        ei._cached_index("https://x/index.geojson", tmp_path / "index.geojson")
+    assert len(calls) == dl._ATTEMPTS
+
+    def stop(done, total):
+        if done > 0:
+            raise ValueError("stop")
+
+    calls.clear()
+    with pytest.raises(ValueError, match="stop"):
+        ei.find_extracts(box(24.9, 60.15, 25.0, 60.2), directory=tmp_path, progress=stop)
+    assert len(calls) == 1

@@ -138,8 +138,16 @@ def test_cached_index(
         response = response()
     monkeypatch.setattr(dl, "open_url", _fake_open_url([response], calls))
 
+    seen = []
+
     def cached_index():
-        return ei._cached_index("https://x/index.geojson", path, update, check)
+        return ei._cached_index(
+            "https://x/index.geojson",
+            path,
+            update,
+            check,
+            progress=lambda *report: seen.append(report),
+        )
 
     if content is None:
         with pytest.raises((OSError, ValueError)):
@@ -155,6 +163,9 @@ def test_cached_index(
         assert calls[0][2] == sent
     if requested and not warns:
         assert time.time() - meta_path.stat().st_mtime < 60
+    if content != b"old":
+        # A new copy reports its download, from 0 bytes to all of them.
+        assert seen[0][0] == 0 and seen[-1][0] == len(content)
 
 
 def _index(**props):
@@ -249,9 +260,13 @@ def test_download_sizes(tmp_path, monkeypatch):
     responses = [size("0100")] + bad
     urls = ["https://%s" % c for c in "abcdefg"]
     monkeypatch.setattr(dl, "open_url", _fake_open_url(responses, calls))
+    done = []
     with pytest.warns(UserWarning) as record:
-        sizes = ei._download_sizes(urls, tmp_path)
+        sizes = ei._download_sizes(
+            urls, tmp_path, progress=lambda *report: done.append(report)
+        )
     assert sizes == {"https://a": 100} and len(record) == 6
+    assert done == [(i, len(urls)) for i in range(len(urls) + 1)]
     assert [c[1] for c in calls] == ["HEAD"] * 9
 
     # A size is reused for a week, then asked again; update=True always asks, and a
@@ -457,7 +472,7 @@ def test_movisda_extracts_fall_back(
     real = ei._cached_index
     state = {"admin": admin, "grid": grid}
 
-    def cached_index(url, path, update=False, check=None, net=None):
+    def cached_index(url, path, update=False, check=None, net=None, progress=None):
         kind = "admin" if "/admin/" in url else "grid"
         if state[kind] == "down":
             raise DOWN
@@ -465,7 +480,7 @@ def test_movisda_extracts_fall_back(
             path.write_text("not an index")
             path.with_name(path.name + ".etag").unlink()
             return path
-        return real(url, path, update, check, net)
+        return real(url, path, update, check, net, progress)
 
     monkeypatch.setattr(ei, "_cached_index", cached_index)
     with pytest.warns(UserWarning) as record:
@@ -543,7 +558,7 @@ def test_find_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up, contain
 
     nets, fallbacks = [], []
 
-    def movisda_extracts(directory, update=False, net=None):
+    def movisda_extracts(directory, update=False, net=None, progress=None):
         refreshed.append(update)
         nets.append(net)
         if not movisda_up:
@@ -555,7 +570,9 @@ def test_find_extracts_ranked_by_size(tmp_path, monkeypatch, movisda_up, contain
     sizes = {"https://BBBike/Helsinki": 50, "https://BBBike/Espoo": 40}
     asked = []
 
-    def download_sizes(urls, directory, update=False, net=None, fallback=None):
+    def download_sizes(
+        urls, directory, update=False, net=None, fallback=None, progress=None
+    ):
         refreshed.append(update)
         fallbacks.append(fallback)
         nets.append(net)
@@ -719,6 +736,7 @@ def test_get_data_by_area_accepts_area_forms(monkeypatch, area):
         "timeout": 60,
         "opener": None,
         "must_cover": None,
+        "progress": None,
     }
 
 

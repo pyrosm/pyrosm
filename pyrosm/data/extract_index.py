@@ -52,10 +52,14 @@ from pyrosm.exceptions import (
     ExtractNotFoundError,
 )
 from pyrosm.utils import _file_identity
+from pyrosm.utils.progress import stepping, validate_progress
 from pyrosm.utils.download import (
+    _CHUNK,
     _FETCH_ERRORS,
+    _LocalWriteError,
     _TIMEOUT,
     _Net,
+    _call_local,
     _content_length,
     _retry,
     download_dir,
@@ -80,6 +84,12 @@ _SLIVER_M2 = 1.0
 _POINT_RADIUS_M = 1.0
 
 logger = logging.getLogger(__name__)
+
+# The steps of finding the extracts, and their shares from a first use (the indexes not
+# cached yet).
+_READING_INDEXES = "reading the extract indexes"
+_READING_SIZES = "reading the extract sizes"
+_FIND_SHARES = {_READING_INDEXES: 7.7, _READING_SIZES: 0.4}
 
 _bbbike_cache = None
 _vendored_sizes_cache = None
@@ -176,7 +186,7 @@ def _check_movisda_index(data, kind):
         raise ValueError("the response is not a Movisda %s index" % kind)
 
 
-def _cached_index(url, path, update=False, check=None, net=None):
+def _cached_index(url, path, update=False, check=None, net=None, progress=None):
     """Return ``path`` holding the file at ``url``, fetching it when needed.
 
     ``<path>.etag`` records the ETag, size and SHA-256 of the copy, and its time stamp the last
@@ -184,7 +194,9 @@ def _cached_index(url, path, update=False, check=None, net=None):
     is revalidated with its ETag (sent only when the copy's hash matches), so an unchanged file is
     not downloaded again. A new file replaces
     the copy only after ``check(data)`` accepts it; when the server cannot be reached or sends
-    something ``check`` rejects, the copy is kept with a warning.
+    something ``check`` rejects, the copy is kept with a warning. ``progress(received,
+    total)``, when given, follows the download; ``total`` is the size the server gives, or
+    else the size of the copy, or None.
     """
     path = Path(path)
     meta_path = path.with_name(path.name + ".etag")
@@ -203,9 +215,24 @@ def _cached_index(url, path, update=False, check=None, net=None):
     headers = {"If-None-Match": etag} if etag else None
     net = net or _Net()
 
+    report = progress or (lambda received, total: None)
+
     def fetch():
         with net.open(url, headers=headers) as response:
-            return response.read(), response.headers.get("ETag") or ""
+            total = _content_length(response.headers.get("Content-Length"))
+            expected = total if total is not None else meta.get("bytes")
+            chunks, received = [], 0
+            _call_local(report, received, expected)
+            while chunk := response.read(_CHUNK):
+                chunks.append(chunk)
+                received += len(chunk)
+                _call_local(report, received, expected)
+            if total is not None and received != total:
+                raise OSError(
+                    "The download of '%s' stopped after %d of %d bytes."
+                    % (url, received, total)
+                )
+            return b"".join(chunks), response.headers.get("ETag") or ""
 
     try:
         data, new_etag = _retry(fetch)
@@ -274,14 +301,21 @@ def _movisda_index_frame(kind, path):
     return frame
 
 
-def _movisda_extracts(directory, update=False, net=None):
+def _movisda_extracts(directory, update=False, net=None, progress=None):
     """Movisda's administrative areas and grid tiles as candidate rows.
 
     When an index cannot be fetched and no copy is cached, the administrative areas are left
     out and the grid tiles come from pyrosm's vendored copy, each with a warning.
+    ``progress(done, total)``, when given, follows the downloads of the indexes.
     """
     frames = []
-    for kind, rel in _MOVISDA_INDEXES.items():
+    count = len(_MOVISDA_INDEXES)
+    for i, (kind, rel) in enumerate(_MOVISDA_INDEXES.items()):
+
+        def index_progress(received, total, i=i):
+            if total:
+                progress(i + min(received / total, 1.0), count)
+
         try:
             path = _cached_index(
                 "%s/%s" % (_MOVISDA_URL, rel),
@@ -290,6 +324,7 @@ def _movisda_extracts(directory, update=False, net=None):
                 check=lambda data, kind=kind: _check_movisda_index(data, kind)
                 or _movisda_frame(io.BytesIO(data), kind),
                 net=net,
+                progress=None if progress is None else index_progress,
             )
             frames.append(_movisda_index_frame(kind, path))
         except (*_FETCH_ERRORS, ValueError) as e:
@@ -341,13 +376,15 @@ def _vendored_geofabrik_sizes():
     return _vendored_sizes_cache
 
 
-def _download_sizes(urls, directory, update=False, net=None, fallback=None):
+def _download_sizes(
+    urls, directory, update=False, net=None, fallback=None, progress=None
+):
     """Return ``{url: bytes}`` for ``urls``, from a week-long cache or a HEAD request.
 
     When a URL's size cannot be read (the server is down, loops, or sends no valid
     ``Content-Length``), its ``(bytes, day)`` in ``fallback`` is used, with a warning; without
     one the URL is left out of the result, with a warning. Only sizes read from the server are
-    cached.
+    cached. ``progress(done, total)``, when given, gets the URLs done.
     """
     sizes = {}
     net = net or _Net()
@@ -366,7 +403,10 @@ def _download_sizes(urls, directory, update=False, net=None, fallback=None):
             "Geofabrik index on %s." % (url, reason, recorded[1])
         )
 
-    for url in urls:
+    urls = list(urls)
+    for done, url in enumerate(urls):
+        if progress is not None:
+            progress(done, len(urls))
         record = _size_record(directory, url)
         cached = None if update else _cached_size(record, time.time())
         if cached is not None:
@@ -389,6 +429,8 @@ def _download_sizes(urls, directory, update=False, net=None, fallback=None):
         sizes[url] = size
         payload = json.dumps([sizes[url], time.time()]).encode()
         write_atomic(record, lambda out_file: out_file.write(payload))
+    if progress is not None:
+        progress(len(urls), len(urls))
     return sizes
 
 
@@ -401,6 +443,7 @@ def find_extracts(
     timeout=_TIMEOUT,
     opener=None,
     must_cover=None,
+    progress=None,
 ):
     """List the OSM extracts that overlap ``area``, best download first, without downloading.
 
@@ -451,6 +494,13 @@ def find_extracts(
         the streets between stops as well. A GeoDataFrame or GeoSeries in another CRS is
         reprojected to lon/lat.
 
+    progress : bool | callable | None
+        ``None`` (default) follows :func:`pyrosm.enable_logging`, which is ``True`` unless
+        set. ``True`` shows a bar "Finding the extracts" on stderr once the search has run
+        2 seconds, from 0 to 100 % while the extract indexes are downloaded on first use
+        and the sizes are read, ``False`` shows nothing, and a callable is called as
+        ``progress(done, 100)`` with the percentage done.
+
     Returns
     -------
     GeoDataFrame
@@ -462,37 +512,59 @@ def find_extracts(
     Raises
     ------
     ValueError
-        If the area is empty, or has no width or no height, or ``must_cover`` is empty.
+        If the area is empty, or has no width or no height, or ``must_cover`` is empty, or
+        ``progress`` is not ``True``, ``False``, ``None`` or a callable.
     """
+    validate_progress(progress)
     area = _area_geometry(area)
     parts = None if must_cover is None else _must_cover_parts(must_cover)
     directory = Path(directory) if directory is not None else download_dir()
     net = _Net(headers, timeout, opener)
-    frames = [_geofabrik_extracts(update), _bbbike_extracts()]
-    try:
-        frames.append(_movisda_extracts(directory, update, net))
-    except (*_FETCH_ERRORS, ValueError) as e:
-        warnings.warn("Movisda's extract index is unavailable (%s); skipping it." % e)
-    candidates = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs="EPSG:4326")
-    if parts is None:
-        candidates["contains"] = candidates.covers(area)
-    else:
-        candidates["contains"] = True
-        for part in parts:
-            if part is not None:
-                candidates["contains"] &= candidates.covers(part)
-    if contains_only:
-        found = candidates[candidates["contains"]].copy()
-    else:
-        overlaps = candidates.intersects(area) & ~candidates.touches(area)
-        for part in parts or ():
-            if part is not None:
-                overlaps |= candidates.intersects(part)
-        found = candidates[overlaps].copy()
-    unknown = found["bytes"].isna()
-    sizes = _download_sizes(
-        found.loc[unknown, "url"], directory, update, net, _vendored_geofabrik_sizes()
-    )
+    with stepping(
+        progress,
+        "Finding the extracts",
+        _FIND_SHARES,
+        delay=2.0,
+        leave=False,
+        timed=True,
+    ) as steps:
+        indexes = steps.start_step(_READING_INDEXES)
+        frames = [_geofabrik_extracts(update), _bbbike_extracts()]
+        try:
+            frames.append(_movisda_extracts(directory, update, net, indexes))
+        except _LocalWriteError as e:
+            raise e.__cause__
+        except (*_FETCH_ERRORS, ValueError) as e:
+            warnings.warn(
+                "Movisda's extract index is unavailable (%s); skipping it." % e
+            )
+        candidates = gpd.GeoDataFrame(
+            pd.concat(frames, ignore_index=True), crs="EPSG:4326"
+        )
+        if parts is None:
+            candidates["contains"] = candidates.covers(area)
+        else:
+            candidates["contains"] = True
+            for part in parts:
+                if part is not None:
+                    candidates["contains"] &= candidates.covers(part)
+        if contains_only:
+            found = candidates[candidates["contains"]].copy()
+        else:
+            overlaps = candidates.intersects(area) & ~candidates.touches(area)
+            for part in parts or ():
+                if part is not None:
+                    overlaps |= candidates.intersects(part)
+            found = candidates[overlaps].copy()
+        unknown = found["bytes"].isna()
+        sizes = _download_sizes(
+            found.loc[unknown, "url"],
+            directory,
+            update,
+            net,
+            _vendored_geofabrik_sizes(),
+            steps.start_step(_READING_SIZES),
+        )
     found["bytes"] = pd.array(
         [
             sizes.get(url) if pd.isna(size) else int(size)
@@ -955,8 +1027,9 @@ def get_data_by_area(
         only a line naming the file is printed. ``False`` shows nothing. A callable is called
         as ``progress(written, total)`` after each chunk of each download, with the bytes
         written so far and the file size, ``None`` when the server does not give it.
-        The crop or merge shows its progress the same way; a callable is then called
-        with the percentage of the crop or merge done (see :func:`pyrosm.merge_pbf`).
+        The search for the extracts and the crop or merge show their progress the same
+        way; a callable is then called with the percentage of the search (see
+        :func:`find_extracts`) or of the crop or merge done (see :func:`pyrosm.merge_pbf`).
 
     Returns
     -------
@@ -978,6 +1051,7 @@ def get_data_by_area(
     """
     from pyrosm.utils.download import download as _download_file
 
+    validate_progress(progress)
     if strategy not in _STRATEGIES:
         raise ValueError(
             "strategy must be one of %s; got %r." % (", ".join(_STRATEGIES), strategy)
@@ -1008,6 +1082,7 @@ def get_data_by_area(
         update=update,
         directory=directory,
         must_cover=must_cover,
+        progress=progress,
         **net,
     )
     failed, errors = [], []
