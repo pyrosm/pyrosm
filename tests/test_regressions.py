@@ -4807,3 +4807,54 @@ def test_get_data_knows_every_bbbike_city():
     for city, url in zip(cities["id"], cities["url"]):
         name = "NewYorkCity" if city == "NewYork" else city
         assert _resolve_dataset("cities/" + name)[1]["url"] == url
+
+
+@pytest.mark.parametrize(
+    "write", ["to_pbf", "to_pbf in parallel", "write_pbf", "write_pbf subset"]
+)
+def test_written_files_keep_the_completed_relations(write, tmp_path):
+    """With complete_relations=True a read with a bounding box fetches the member ways of
+    the relations reaching into the box, also those outside it, but to_pbf and write_pbf
+    left them out, so the written file read back with other relation geometries. Both
+    write those member ways and their nodes now."""
+    from pyrosm import OSM, get_data
+
+    box = [24.94758, 60.16839, 24.94787, 60.16888]
+    osm = OSM(get_data("helsinki_pbf"), bounding_box=box, complete_relations=True)
+    buildings = osm.get_buildings()
+    out = str(tmp_path / "out.osm.pbf")
+    if write.startswith("to_pbf"):
+        osm.to_pbf(out, workers=2 if write.endswith("parallel") else 1)
+    else:
+        osm.write_pbf(buildings, out, subset_only=write.endswith("subset"))
+
+    def relations(gdf):
+        return gdf[gdf["osm_type"] == "relation"].set_index("id").geometry
+
+    read, again = relations(buildings), relations(OSM(out).get_buildings())
+    assert 1689811 in read.index
+    areas = [g.area for g in read]
+    assert [g.area for g in again.loc[read.index]] == pytest.approx(areas, abs=1e-12)
+
+
+def test_bounding_box_write_keeps_the_relations_of_the_box(tmp_path):
+    """write_pbf of a read with a bounding box wrote every relation of the whole file,
+    most of them without a member in the written file. It writes the relations with a
+    member in the file, as to_pbf does."""
+    from pyrosm import OSM, get_data
+    from pyrosm.pbf_writer import _relations_with_members
+
+    fp = get_data("helsinki_pbf")
+    osm = OSM(fp, bounding_box=[24.94, 60.165, 24.945, 60.17])
+    with pytest.warns(UserWarning, match="extend beyond the bounding box"):
+        buildings = osm.get_buildings()
+    written = osm.write_pbf(buildings, str(tmp_path / "written.osm.pbf"))
+    cropped = osm.to_pbf(str(tmp_path / "cropped.osm.pbf"))
+
+    def relation_ids(path):
+        read = OSM(path)
+        read._read_pbf()
+        return set(read._relations["id"].tolist())
+
+    assert relation_ids(written) == relation_ids(cropped) < relation_ids(fp)
+    assert _relations_with_members({}, [], []) == set()

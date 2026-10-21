@@ -226,12 +226,14 @@ _FINDING_NODES = "finding the nodes in the area"
 _FINDING_WAYS = "finding the ways"
 _CHOOSING_WAYS = "choosing each way's copy"
 _FINDING_RELATIONS = "finding the relations"
+_COMPLETING_RELATIONS = "completing the relations"
 _WRITING = "writing the file"
 _CROP_SHARES = {
     _SELECTING: 1.1,
     _FINDING_NODES: 1.1,
     _FINDING_WAYS: 1.4,
     _FINDING_RELATIONS: 0.4,
+    _COMPLETING_RELATIONS: 1.4,
     _WRITING: 1.0,
 }
 _MERGE_SHARES = {
@@ -404,7 +406,7 @@ cdef _nodes_inside(header, nodes, bounds, polygon):
     return nodes["id"][mask]
 
 
-cdef _any_member(hits, offsets):
+def _any_member(hits, offsets):
     """Whether each element has a hit among its members: `hits` holds one value per
     member, laid out by the elements' CSR `offsets`."""
     counts = np.diff(offsets)
@@ -415,28 +417,47 @@ cdef _any_member(hits, offsets):
     return out
 
 
+cdef _ways_and_nodes(ways, kept):
+    """Ids of the decoded `ways` of a block where `kept` is true, and the nodes of those
+    ways."""
+    return ways["id"][kept], ways["refs"][np.repeat(kept, np.diff(ways["refs_off"]))]
+
+
 cdef _ways_touching(ways, nodes_set):
     """Ids of the decoded `ways` of a block with a node in `nodes_set`, and the nodes of
     those ways."""
     if ways is None:
         return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
-    refs, offsets = ways["refs"], ways["refs_off"]
-    touching = _any_member(_isin(refs, nodes_set), offsets)
-    return ways["id"][touching], refs[np.repeat(touching, np.diff(offsets))]
+    return _ways_and_nodes(ways, _any_member(_isin(ways["refs"], nodes_set), ways["refs_off"]))
 
 
 cdef _relations_touching(relations, nodes_set, ways_set):
     """Ids of the decoded `relations` of a block with a node member in `nodes_set` or a
-    way member in `ways_set`."""
+    way member in `ways_set`, and the way members of those with a way member in
+    `ways_set` (the ways that complete them)."""
+    empty = np.empty(0, dtype=np.int64)
     if relations is None:
-        return np.empty(0, dtype=np.int64)
-    memids, types = relations["memids"], relations["types"]
+        return empty, empty
+    memids, types, offsets = relations["memids"], relations["types"], relations["members_off"]
     hits = np.zeros(len(memids), dtype=bool)
     is_node = types == _MEMBER_NODE
     is_way = types == _MEMBER_WAY
     hits[is_node] = _isin(memids[is_node], nodes_set)
-    hits[is_way] = _isin(memids[is_way], ways_set)
-    return relations["id"][_any_member(hits, relations["members_off"])]
+    way_hits = np.zeros(len(memids), dtype=bool)
+    way_hits[is_way] = _isin(memids[is_way], ways_set)
+    hits |= way_hits
+    reaching = np.repeat(_any_member(way_hits, offsets), np.diff(offsets))
+    return (
+        relations["id"][_any_member(hits, offsets)],
+        np.unique(memids[reaching & is_way]),
+    )
+
+
+cdef _ways_listed(ways, ids_set):
+    """Ids of the decoded `ways` of a block in `ids_set`, and the nodes of those ways."""
+    if ways is None:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+    return _ways_and_nodes(ways, _isin(ways["id"], ids_set))
 
 
 cdef _nodes_inside_file(filepath, region, progress):
@@ -460,17 +481,42 @@ cdef _ways_touching_file(filepath, nodes_in_bbox_set, progress):
 
 
 cdef _relations_touching_file(filepath, kept_nodes_set, kept_ways_set, progress):
-    return np.concatenate([
+    """`_relations_touching` over the blocks of `filepath`: the relation ids and the ways
+    that complete them."""
+    found = [
         _relations_touching(relations, kept_nodes_set, kept_ways_set)
         for _, _, _, relations in _iter_decoded_blocks(filepath, progress)
-    ] or [np.empty(0, dtype=np.int64)])
+    ]
+    return _concat_pairs(found)
+
+
+cdef _concat_pairs(pairs):
+    """The relation ids and the completing ways of `_relations_touching` results, each
+    concatenated (the ways without duplicates)."""
+    empty = np.empty(0, dtype=np.int64)
+    return (
+        np.concatenate([ids for ids, _ in pairs] or [empty]),
+        _unique_concat([ways for _, ways in pairs]),
+    )
+
+
+cdef _ways_listed_file(filepath, ids_set, progress):
+    """`_ways_listed` over the blocks of `filepath`: the way ids and their nodes."""
+    found = [
+        _ways_listed(ways, ids_set)
+        for _, _, ways, _ in _iter_decoded_blocks(filepath, progress)
+    ]
+    return _unique_concat([ids for ids, _ in found]), _unique_concat(
+        [refs for _, refs in found]
+    )
 
 
 cdef _select_one_pass(filepath, region, keep_relations, progress):
     """The crop selection of `filepath` in one pass, as (kept node ids, [kept way ids],
-    [kept relation ids]) like `_select`, for a file whose blocks hold every node before
-    every way and every way before every relation, as a file sorted by type then id
-    does. None when a block breaks that order."""
+    [kept relation ids]) like `_select`, and the ways that complete the kept relations,
+    for a file whose blocks hold every node before every way and every way before every
+    relation, as a file sorted by type then id does. None when a block breaks that
+    order."""
     bounds, polygon = region
     inside, way_ids, way_refs, rel_ids = [], [], [], []
     nodes_set = kept_nodes_set = kept_ways_set = None
@@ -501,11 +547,12 @@ cdef _select_one_pass(filepath, region, keep_relations, progress):
                     _relations_touching(relations, kept_nodes_set, kept_ways_set)
                 )
     empty = np.empty(0, dtype=np.int64)
+    rels, completing = _concat_pairs(rel_ids)
     return (
         _unique_concat(inside + way_refs),
         [np.concatenate(way_ids or [empty])],
-        [np.concatenate(rel_ids or [empty])],
-    )
+        [rels],
+    ), completing
 
 
 cdef _block_way_copies(pblock, candidates, nodes_in_bbox_set):
@@ -1849,9 +1896,15 @@ cdef _refuse_input_as_output(output_path, sources):
 
 
 cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
-               workers=None, compact=False, repack=False, polygon=None, progress=None):
+               workers=None, compact=False, repack=False, polygon=None, progress=None,
+               complete_relations=False):
     """Crop `source_path` by `bounding_box`, or by the Shapely (Multi)Polygon
     `polygon`, writing a valid PBF to `output_path`.
+
+    With `complete_relations`, a relation kept for a way member in the area also keeps
+    its other way members and their nodes, as ``OSM(complete_relations=True)`` reads it,
+    so its geometry is complete in the cropped file (one more pass over the file).
+    Members that are relations are not completed.
 
     Returns the output path. When ``workers > 1`` and the file has enough blocks
     to amortize pool startup (>= ``2 * workers`` OSMData blocks), the parallel
@@ -1896,7 +1949,7 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
         _with_pool(
             _select_and_write,
             (source_path, output_path, region, keep_relations, compact, repack,
-             _ReadProgress(steps, [source_path])),
+             _ReadProgress(steps, [source_path]), complete_relations),
             workers, [source_path], region, compact,
         )
         fields["megabytes"] = os.path.getsize(output_path) / 1e6
@@ -1904,12 +1957,13 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
 
 
 def _select_and_write(source_path, output_path, region, keep_relations, compact, repack,
-              progress, pool):
-    """Select the elements to keep and write `output_path`; in parallel with `pool`.
+              progress, complete_relations, pool):
+    """Select the elements to keep (completing the kept relations with
+    `complete_relations`, see `_select`) and write `output_path`; in parallel with `pool`.
     Each pass over the file is reported to `progress` (a `_ReadProgress`)."""
     bounds = region[0]
     kept_nodes, kept_ways, kept_rel = _select(
-        [source_path], region, keep_relations, pool, progress
+        [source_path], region, keep_relations, pool, progress, complete_relations
     )
     kept_ways, kept_rel = kept_ways[0], kept_rel[0]
     if repack:
@@ -1935,27 +1989,36 @@ def _select_and_write(source_path, output_path, region, keep_relations, compact,
         )
 
 
-cdef _select(sources, region, keep_relations, pool, progress):
+cdef _select(sources, region, keep_relations, pool, progress, complete_relations=False):
     """Run the crop selection stages over one or more PBF files.
 
     Returns the kept node ids of all files together, and a list with the kept way
     ids and a list with the kept relation ids of each file. With several files, a
     way is kept only from the file holding its winning copy (see `_way_winners`).
+    With `complete_relations` (one file only), a relation kept for a kept way member
+    also keeps its other way members and their nodes (see `_complete_relations`).
     With a `pool`, each stage spreads a file's blocks over the workers, which get the
     id sets the stage needs from `pool.broadcast`. Each pass over the files is reported
     to `progress` (a `_ReadProgress`).
     """
+    completing = complete_relations and keep_relations
     if pool is None and len(sources) == 1:
-        progress.plan([_SELECTING, _WRITING])
+        progress.plan(
+            [_SELECTING] + ([_COMPLETING_RELATIONS] if completing else []) + [_WRITING]
+        )
         with progress.one_pass(_SELECTING):
-            selection = _select_one_pass(sources[0], region, keep_relations, progress)
-        if selection is not None:
+            found = _select_one_pass(sources[0], region, keep_relations, progress)
+        if found is not None:
+            selection, ways = found
+            if completing:
+                return _complete_relations(sources[0], selection, ways, pool, progress)
             return selection
 
     progress.plan(
         [_FINDING_NODES, _FINDING_WAYS]
         + ([_CHOOSING_WAYS] if len(sources) > 1 else [])
         + ([_FINDING_RELATIONS] if keep_relations else [])
+        + ([_COMPLETING_RELATIONS] if completing else [])
         + [_WRITING]
     )
     # Stage 1: nodes inside the bbox (or polygon).
@@ -2003,19 +2066,46 @@ cdef _select(sources, region, keep_relations, pool, progress):
         if pool is None:
             kept_nodes_set = _to_set(kept_nodes)
             kept_ways_set = _to_set(all_ways)
-            kept_rel = [
+            found = [
                 _relations_touching_file(p, kept_nodes_set, kept_ways_set, progress)
                 for p in sources
             ]
         else:
-            pool.broadcast("kept_nodes", kept_nodes)
-            pool.broadcast("kept_ways", all_ways)
-            kept_rel = []
+            pool.broadcast("relation_nodes", kept_nodes)
+            pool.broadcast("relation_ways", all_ways)
+            found = []
             for p in sources:
                 payloads = _iter_payloads(p, progress)
-                parts = pool.imap(_worker_relations_touching, payloads)
-                kept_rel.append(_unique_concat(list(parts)))
-    return kept_nodes, kept_ways, kept_rel
+                parts = list(pool.imap(_worker_relations_touching, payloads))
+                ids, ways = _concat_pairs(parts)
+                found.append((np.unique(ids), ways))
+    selection = kept_nodes, kept_ways, [ids for ids, _ in found]
+    if completing:
+        return _complete_relations(sources[0], selection, found[0][1], pool, progress)
+    return selection
+
+
+cdef _complete_relations(source, selection, ways, pool, progress):
+    """`selection` (of the one file `source`) with the `ways` it does not keep yet and
+    their nodes: the way members of the relations it keeps for a kept way member, so
+    those relations are complete in the cropped file."""
+    kept_nodes, kept_ways, kept_rel = selection
+    missing = np.setdiff1d(ways, kept_ways[0])
+    if len(missing) == 0:
+        return selection
+    with progress.one_pass(_COMPLETING_RELATIONS):
+        if pool is None:
+            ids, refs = _ways_listed_file(source, _to_set(missing), progress)
+        else:
+            pool.broadcast("listed_ways", missing)
+            results = list(pool.imap(_worker_ways_listed, _iter_payloads(source, progress)))
+            ids = _unique_concat([found for found, _ in results])
+            refs = _unique_concat([found for _, found in results])
+    return (
+        _unique_concat([kept_nodes, refs]),
+        [np.concatenate([kept_ways[0], ids])],
+        kept_rel,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2147,16 +2237,24 @@ cdef _nodes_inside_block(ctx, data, filepath):
     return np.unique(_nodes_inside(header, nodes, ctx.bounds, ctx.polygon()))
 
 
-cdef _ways_touching_block(ctx, data, filepath):
+cdef _ways_block(ctx, data, filepath, bint listed):
+    """The kept ways of the block `data` and their nodes: with `listed` the ways in the
+    set ``listed_ways`` of the pool's context `ctx`, else those with a node in
+    ``nodes_in_bbox``."""
     _, _, ways, _ = _decode_block(data, filepath)
-    ids, refs = _ways_touching(ways, ctx.get_set("nodes_in_bbox"))
+    if listed:
+        ids, refs = _ways_listed(ways, ctx.get_set("listed_ways"))
+    else:
+        ids, refs = _ways_touching(ways, ctx.get_set("nodes_in_bbox"))
     return ids, np.unique(refs)
 
 
 cdef _relations_touching_block(ctx, data, filepath):
+    """`_relations_touching` of the block `data` with the sets ``relation_nodes`` and
+    ``relation_ways`` of the pool's context `ctx`."""
     _, _, _, relations = _decode_block(data, filepath)
     return _relations_touching(
-        relations, ctx.get_set("kept_nodes"), ctx.get_set("kept_ways")
+        relations, ctx.get_set("relation_nodes"), ctx.get_set("relation_ways")
     )
 
 
@@ -2187,11 +2285,15 @@ def _worker_nodes_inside(payload):
 
 
 def _worker_ways_touching(payload):
-    return _ways_touching_block(_WORKER_CONTEXT, _payload_data(payload), payload[0])
+    return _ways_block(_WORKER_CONTEXT, _payload_data(payload), payload[0], False)
 
 
 def _worker_way_copies(payload):
     return _way_copies_block(_WORKER_CONTEXT, _payload_data(payload), payload[0])
+
+
+def _worker_ways_listed(payload):
+    return _ways_block(_WORKER_CONTEXT, _payload_data(payload), payload[0], True)
 
 
 def _worker_relations_touching(payload):
@@ -2260,20 +2362,35 @@ def _batch_nodes_inside(ctx, payloads, buffer, starts):
 def _batch_ways_touching(ctx, payloads, buffer, starts):
     """`_worker_ways_touching` of each payload of a part of a batch (its blocks in
     ``buffer``), with the pool's context ``ctx``."""
+    return _batch_way_selection(ctx, payloads, buffer, starts, False)
+
+
+def _batch_ways_listed(ctx, payloads, buffer, starts):
+    """`_worker_ways_listed` of each payload of a part of a batch (its blocks in
+    ``buffer``), with the pool's context ``ctx``."""
+    return _batch_way_selection(ctx, payloads, buffer, starts, True)
+
+
+cdef _batch_way_selection(ctx, payloads, buffer, starts, bint listed):
+    """The kept ways of each payload of a part of a batch (its blocks in ``buffer``) and
+    their nodes, as `_ways_block` with ``listed`` selects them."""
     decoded = decode_batch_nogil(buffer, starts, keys=[], all_ways=True)
     counts = decoded["counts"]
     ids, refs, refs_off = decoded["all_id"], decoded["all_refs"], decoded["all_refs_off"]
-    touching = _any_member(_isin(refs, ctx.get_set("nodes_in_bbox")), refs_off)
+    if listed:
+        kept_ways = _isin(ids, ctx.get_set("listed_ways"))
+    else:
+        kept_ways = _any_member(_isin(refs, ctx.get_set("nodes_in_bbox")), refs_off)
     at = _offsets_from_lengths(counts[:, _BC_ALL_WAYS])
     out = []
     for b, payload in enumerate(payloads):
         if counts[b, _BC_STATUS]:
             out.append(
-                _ways_touching_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0])
+                _ways_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0], listed)
             )
             continue
         w0, w1 = at[b], at[b + 1]
-        kept = touching[w0:w1]
+        kept = kept_ways[w0:w1]
         way_refs = refs[refs_off[w0]:refs_off[w1]]
         out.append((
             ids[w0:w1][kept],
@@ -2290,7 +2407,7 @@ def _batch_relations_touching(ctx, payloads, buffer, starts):
     empty = np.empty(0, dtype=np.int64)
     return [
         _relations_touching_block(ctx, buffer[starts[b]:starts[b + 1]], payload[0])
-        if marked[b] else empty
+        if marked[b] else (empty, empty)
         for b, payload in enumerate(payloads)
     ]
 
@@ -2345,6 +2462,7 @@ def _batch_write(ctx, payloads, buffer, starts):
 _BATCHED = {
     _worker_nodes_inside: _batch_nodes_inside,
     _worker_ways_touching: _batch_ways_touching,
+    _worker_ways_listed: _batch_ways_listed,
     _worker_relations_touching: _batch_relations_touching,
     _worker_way_copies: _batch_way_copies,
     _worker_write: _batch_write,

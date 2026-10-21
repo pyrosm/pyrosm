@@ -1316,7 +1316,10 @@ class OSM:
 
         keep_relations : bool
             When ``True`` (default) relations referencing a kept node or way are
-            written; when ``False`` no relations are written.
+            written; when ``False`` no relations are written. With
+            ``complete_relations=True`` (see :class:`OSM`), a relation with a way member
+            in the area is written with all its way members and their nodes, so the
+            cropped file reads back with its complete geometry.
 
         workers : int | str
             Number of threads for the CPU-heavy per-block work. By default (``None``)
@@ -1373,6 +1376,7 @@ class OSM:
             compact=compact,
             repack=repack,
             progress=self.progress,
+            complete_relations=self.complete_relations,
             **region,
         )
 
@@ -1394,7 +1398,9 @@ class OSM:
         GeoDataFrame.
 
         The whole cached dataset (all nodes/ways/relations read from the source)
-        is written. The tag columns of a row (and its JSON ``tags``) are the tags written
+        is written; for a read with a ``bounding_box``, its nodes and ways and the
+        relations with a member among them, and with ``complete_relations=True`` also the
+        member ways outside the box and their nodes. The tag columns of a row (and its JSON ``tags``) are the tags written
         for the matching element (by ``osm_type`` + ``id``), so a tag whose column is
         left out of the frame is not written; rows whose ``id`` is not in the source are
         added as new elements synthesized from their geometry (with negative ids).
@@ -1566,6 +1572,8 @@ class OSM:
                 on_orphan_node=on_orphan_node,
                 on_deleted_member=on_deleted_member,
                 steps=steps,
+                relation_member_ways=self._relation_member_ways,
+                bounded=self.bounding_box is not None,
             )
 
     @logged("network_type", "graph_type", "simplify", count=False)

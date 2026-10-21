@@ -22,7 +22,7 @@ import pandas as pd
 from geopandas import GeoDataFrame
 
 from pyrosm.filter_compiler import CompiledFilter, Condition
-from pyrosm.pbf_export import write_pbf_from_records
+from pyrosm.pbf_export import _any_member, write_pbf_from_records
 from pyrosm.utils import _stacklevel_outside_pyrosm
 from pyrosm.utils.progress import start_step
 from pyrosm.way_store import NodeTags
@@ -662,6 +662,24 @@ def _collect_edits(
     return edits
 
 
+def _relations_with_members(relations, node_ids, way_ids):
+    """The ids of the ``relations`` with a member node in ``node_ids`` or a member way in
+    ``way_ids`` (arrays of ids)."""
+    if "id" not in relations or len(relations["id"]) == 0:
+        return set()
+    members = relations["members"]
+    ids = np.concatenate([np.asarray(m["member_id"], dtype=np.int64) for m in members])
+    types = np.concatenate([np.asarray(m["member_type"]).astype("U") for m in members])
+    hits = ((types == "node") & np.isin(ids, node_ids)) | (
+        (types == "way") & np.isin(ids, way_ids)
+    )
+    offsets = np.concatenate(
+        [[0], np.cumsum([len(m["member_id"]) for m in members])]
+    ).astype(np.int64)
+    found = _any_member(hits, offsets)
+    return set(np.asarray(relations["id"], dtype=np.int64)[found].tolist())
+
+
 def _subset_keep_sets(node_edits, way_edits, rel_edits, way_refs, relations):
     """Closure of the matched elements over the cache, for ``subset_only``.
 
@@ -1249,12 +1267,19 @@ def write_geodataframe_to_pbf(
     on_orphan_node="remove",
     on_deleted_member="drop",
     steps=None,
+    relation_member_ways=None,
+    bounded=False,
 ):
     """Write `data` (+ the cached dataset) to a valid PBF at `output_path`.
 
     `node_coordinates` / `way_records` / `relations` / `nodes` are the caches the
     `OSM` object holds after reading; `data` is a GeoDataFrame or list of them
     whose tag edits are applied by ``osm_type``+``id`` (new rows are synthesized).
+    `relation_member_ways` are the member ways outside the bounding box that a read with
+    ``complete_relations`` holds; they are written as ways of the cache. With `bounded`
+    (a read with a bounding box, whose `relations` are those of the whole file), the
+    whole-cache write keeps only the relations with a member node or way in the cache,
+    and those `data` edits.
 
     When ``subset_only`` is True, only the elements present in `data` are written
     (matched by ``osm_type``+``id``), together with the references they need to stay
@@ -1274,6 +1299,7 @@ def write_geodataframe_to_pbf(
     start_step(steps, _APPLYING)
 
     relations = relations or {}
+    way_records = list(way_records) + list(relation_member_ways or [])
     frames = _reproject_to_wgs84(_as_frames(data))
 
     way_by_id = {w["id"]: w for w in way_records}
@@ -1306,6 +1332,11 @@ def write_geodataframe_to_pbf(
             plan.way_refs,
             relations,
         )
+    elif bounded:
+        way_ids = np.fromiter(way_by_id, dtype=np.int64, count=len(way_by_id))
+        node_ids = np.asarray(node_coordinates.ids, dtype=np.int64)
+        keep_rels = _relations_with_members(relations, node_ids, way_ids)
+        keep_rels |= set(edits.rel_tags)
 
     builder = _RecordBuilder()
     start_step(steps, _NODES)
