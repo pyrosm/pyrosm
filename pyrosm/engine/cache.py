@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 from pyrosm._log import log_event
+from pyrosm.engine.pool import LOADING
 
 logger = logging.getLogger(__name__)
 
@@ -155,18 +156,21 @@ def _temp_in(cache_path):
     return Path(tmp_path)
 
 
-def materialize(cache_path, build):
-    """Populate ``cache_path`` by running ``build(tmp_path)`` -- which writes the result to a
-    unique temp file and returns whether it wrote a non-empty result -- then atomically move it
-    into place. An empty result is recorded with a ``.empty`` marker so an identical later read
-    skips the rebuild. Returns the cached frame read back, or ``None`` for an empty (or
-    already-marked-empty) result."""
+def materialize(cache_path, build, steps):
+    """Populate ``cache_path`` by running ``build(tmp_path)`` -- which writes the result
+    to a unique temp file and returns whether it wrote a non-empty result -- then
+    atomically move it into place. An empty result is recorded with a ``.empty`` marker
+    so an identical later read skips the rebuild. Returns the cached frame read back, or
+    ``None`` for an empty (or already-marked-empty) result; reading it back is the step
+    ``LOADING`` of ``steps`` (a :class:`~pyrosm.utils.progress.Steps`), the only step
+    of a read served from the cache."""
     empty_marker = cache_path.with_name(cache_path.name + ".empty")
     if empty_marker.exists():
         log_event(logger, logging.DEBUG, "cache", status="empty", path=empty_marker)
         return None
     if cache_path.exists():
         log_event(logger, logging.DEBUG, "cache", status="hit", path=cache_path)
+        steps.plan([LOADING])
     else:
         log_event(logger, logging.DEBUG, "cache", status="miss", path=cache_path)
         tmp_path = _temp_in(cache_path)
@@ -178,22 +182,25 @@ def materialize(cache_path, build):
         finally:
             if tmp_path.exists():
                 tmp_path.unlink()
+    steps.start_step(LOADING)
     return read_result(cache_path)
 
 
-def materialize_pair(edges_path, nodes_path, build, read_nodes=read_result):
+def materialize_pair(edges_path, nodes_path, build, steps, read_nodes=read_result):
     """Two-file variant of :func:`materialize` for ``get_network(nodes=True)``'s ``(nodes, edges)``
     tuple: ``build(edges_tmp, nodes_tmp)`` writes both temp files and returns whether the read was
     non-empty; on success both are atomically moved into place, and an empty read records a
     ``.empty`` marker beside ``edges_path``. The node frame is read back with ``read_nodes`` (the
     edge frame with :func:`read_result`). Returns ``(nodes, edges)``, or ``(None, None)`` for an
-    empty (or already-marked-empty) result."""
+    empty (or already-marked-empty) result; reading them back is the step ``LOADING`` of
+    ``steps``."""
     empty_marker = edges_path.with_name(edges_path.name + ".empty")
     if empty_marker.exists():
         log_event(logger, logging.DEBUG, "cache", status="empty", path=empty_marker)
         return None, None
     if edges_path.exists() and nodes_path.exists():
         log_event(logger, logging.DEBUG, "cache", status="hit", path=edges_path)
+        steps.plan([LOADING])
     else:
         log_event(logger, logging.DEBUG, "cache", status="miss", path=edges_path)
         edges_tmp = _temp_in(edges_path)
@@ -208,4 +215,5 @@ def materialize_pair(edges_path, nodes_path, build, read_nodes=read_result):
             for tmp in (edges_tmp, nodes_tmp):
                 if tmp.exists():
                     tmp.unlink()
+    steps.start_step(LOADING)
     return read_nodes(nodes_path), read_result(edges_path)

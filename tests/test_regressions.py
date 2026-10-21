@@ -3884,3 +3884,72 @@ def test_progress_of_several_passes_keeps_moving(monkeypatch):
     wait_for(lambda: len(woken) >= 3)
     bar.close()
     assert len(woken) >= 3 and len(refreshed) == before
+
+
+@pytest.mark.parametrize(
+    "read, steps",
+    [
+        (
+            "buildings",
+            [
+                "indexing the file",
+                "decoding the blocks",
+                "collecting the elements",
+                "building the geometries",
+                "loading the result",
+            ],
+        ),
+        (
+            "network",
+            [
+                "indexing the file",
+                "decoding the blocks",
+                "building the edges",
+                "writing the result",
+                "loading the result",
+            ],
+        ),
+        (
+            "network with nodes",
+            [
+                "indexing the file",
+                "decoding the blocks",
+                "gathering the nodes",
+                "building the edges",
+                "writing the result",
+                "loading the result",
+            ],
+        ),
+        ("cached buildings", ["loading the result"]),
+    ],
+)
+def test_read_progress_covers_the_whole_read(read, steps, fresh_cache, monkeypatch):
+    """An out-of-core read reported only its decoding (12-20 % of a read of Paris), then
+    went silent while it built the geometries, wrote the cache and loaded the result.
+    The whole read is one progress through named steps, from 0 to 100 %; a read served
+    from the cache shows its load."""
+    from pyrosm import OSM, get_data
+    from pyrosm.utils import progress
+
+    fp = get_data("test_pbf")
+    calls = {
+        "buildings": lambda osm: osm.get_buildings(),
+        "network": lambda osm: osm.get_network("driving"),
+        "network with nodes": lambda osm: osm.get_network("driving", nodes=True),
+    }
+    if read == "cached buildings":
+        calls["buildings"](OSM(fp, progress=False))
+    started = []
+    real = progress.Steps.start_step
+
+    def recorded(self, name):
+        started.append(name)
+        return real(self, name)
+
+    monkeypatch.setattr(progress.Steps, "start_step", recorded)
+    seen = []
+    osm = OSM(fp, progress=lambda *report: seen.append(report))
+    calls[read.replace("cached ", "")](osm)
+    assert list(dict.fromkeys(started)) == steps
+    done = [d for d, _ in seen]
+    assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)

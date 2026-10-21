@@ -16,7 +16,9 @@ from pyrosm.engine.collect import (
     _needed_node_ids,
     _result_tag_columns,
 )
+from pyrosm.engine.pool import BUILDING, BUILDING_EDGES, COLLECTING, GATHERING_NODES
 from pyrosm.utils import _compat
+from pyrosm.utils.progress import start_step
 
 
 def _assemble_chunk(
@@ -79,8 +81,12 @@ def _assemble_layer(
     complete_relations=False,
     keep_other_tags=True,
     keep_node_info=False,
+    steps=None,
 ):
-    """Assemble all matching nodes, ways and relations into one in-memory GeoDataFrame."""
+    """Assemble all matching nodes, ways and relations into one in-memory GeoDataFrame,
+    in the steps ``COLLECTING`` and ``BUILDING`` of ``steps`` (a
+    :class:`~pyrosm.utils.progress.Steps`, or None)."""
+    start_step(steps, COLLECTING)
     collected = _collect_layer(
         shard_paths,
         tags_as_columns,
@@ -94,6 +100,7 @@ def _assemble_layer(
     if collected is None:
         return None
     node_features, kept, relations, relation_ways, node_coordinates = collected
+    start_step(steps, BUILDING)
     return _assemble_chunk(
         node_coordinates,
         kept,
@@ -127,12 +134,12 @@ def _network_ways(
     segments,
     bounding_box,
     filepath,
-    progress,
+    steps,
 ):
     """The highway ways a network read keeps, as way arrays, and the coordinate store of
     their nodes: ``(ways, node_coordinates)``, or ``None`` when no way is kept. With
     ``segments`` the store holds the node records (tags + metadata), gathered with a
-    second pass over ``filepath`` that ``progress`` reports (see
+    second pass over ``filepath``, the step ``GATHERING_NODES`` of ``steps`` (see
     :func:`~pyrosm.engine.collect._gather_node_records`); otherwise only the coordinates.
     """
     kept = _network_kept(shard_paths, filter_spec, bounding_box)
@@ -143,7 +150,7 @@ def _network_ways(
             filepath,
             _needed_node_ids(kept, None),
             keep_metadata,
-            progress,
+            start_step(steps, GATHERING_NODES),
             threaded=_is_threaded(shard_paths),
         )
     else:
@@ -160,7 +167,7 @@ def _assemble_network(
     segments,
     bounding_box,
     filepath=None,
-    progress=None,
+    steps=None,
     keep_node_info=False,
 ):
     """Assemble the matching highway ways as a network (LineString edges + a ``length``
@@ -168,10 +175,13 @@ def _assemble_network(
     is the graph-export node frame, only built when ``segments`` is True
     (``get_network(nodes=True)``), from the node records of :func:`_network_ways`. A
     threaded read without ``segments`` gives the edges as an
-    :class:`~pyrosm.engine.ways.ArrowFrame` (see :func:`_network_frame`)."""
+    :class:`~pyrosm.engine.ways.ArrowFrame` (see :func:`_network_frame`). The edges are
+    built in the step ``BUILDING_EDGES`` of ``steps`` (a
+    :class:`~pyrosm.utils.progress.Steps`, or None)."""
     from pyrosm.frames import prepare_geodataframe
 
     if not segments and _compat.HAS_PYARROW and _is_threaded(shard_paths):
+        start_step(steps, BUILDING_EDGES)
         return _network_frame(
             shard_paths,
             tags_as_columns,
@@ -188,11 +198,12 @@ def _assemble_network(
         segments,
         bounding_box,
         filepath,
-        progress,
+        steps,
     )
     if read is None:
         return None, None
     ways, node_coordinates = read
+    start_step(steps, BUILDING_EDGES)
     edges, node_gdf = prepare_geodataframe(
         None,
         node_coordinates,
@@ -248,14 +259,14 @@ def _assemble_graph_network(
     filter_spec,
     bounding_box,
     filepath,
-    progress,
+    steps,
     keep_node_info,
 ):
     """The network of :func:`_assemble_network` with ``segments`` as the readers of graph
     simplification, ``(nodes, edges)``: a :class:`~pyrosm.graph_simplify._StoreNodes` and
     a :class:`~pyrosm.graph_simplify._WayEdges` that read the node and edge tables of
     ``get_network(nodes=True)`` without building them; ``(None, None)`` when there are no
-    edges."""
+    edges. Its steps are those of :func:`_assemble_network` in ``steps``."""
     from shapely import box, intersects
     from pyrosm.engine.cache import missing_as_nan
     from pyrosm.engine.readers import _node_lists
@@ -271,11 +282,12 @@ def _assemble_graph_network(
         True,
         bounding_box,
         filepath,
-        progress,
+        steps,
     )
     if read is None:
         return None, None
     ways, store = read
+    start_step(steps, BUILDING_EDGES)
     ways, segment_counts, start, end, u, v, node_ids, node_rows = (
         create_network_segments(store, ways)
     )

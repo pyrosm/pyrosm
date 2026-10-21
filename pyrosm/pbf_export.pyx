@@ -3634,6 +3634,7 @@ cdef _merge(sources, output_path, bounding_box, keep_relations, workers, polygon
         bounds = _header_bounds(headers)
         kept = (None, None, None if keep_relations else Int64Set())
         won = (None, None, None)
+        progress.plan([_WRITING])
     else:
         region = _region(bounding_box, polygon)
         bounds = region[0]

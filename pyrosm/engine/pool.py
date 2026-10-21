@@ -22,7 +22,45 @@ from pyrosm.engine.decode import (
     _decode_batch_threads,
 )
 from pyrosm.utils import default_workers, warn_future_once
-from pyrosm.utils.progress import reporting
+
+# The steps of an out-of-core read, the names its progress shows, and their shares of
+# the read by kind of read, from the times of reads of Paris (242 MB) on 8 threads.
+INDEXING = "indexing the file"
+DECODING = "decoding the blocks"
+COLLECTING = "collecting the elements"
+BUILDING = "building the geometries"
+GATHERING_NODES = "gathering the nodes"
+BUILDING_EDGES = "building the edges"
+WRITING = "writing the result"
+LOADING = "loading the result"
+LAYER_SHARES = {
+    INDEXING: 0.02,
+    DECODING: 0.12,
+    COLLECTING: 0.21,
+    BUILDING: 0.5,
+    LOADING: 0.16,
+}
+NETWORK_SHARES = {
+    INDEXING: 0.02,
+    DECODING: 0.42,
+    BUILDING_EDGES: 0.4,
+    WRITING: 0.1,
+    LOADING: 0.06,
+}
+NETWORK_NODES_SHARES = {
+    INDEXING: 0.01,
+    DECODING: 0.17,
+    GATHERING_NODES: 0.15,
+    BUILDING_EDGES: 0.26,
+    WRITING: 0.22,
+    LOADING: 0.19,
+}
+GRAPH_SHARES = {
+    INDEXING: 0.01,
+    DECODING: 0.3,
+    GATHERING_NODES: 0.25,
+    BUILDING_EDGES: 0.44,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -408,57 +446,56 @@ def _decode_and_run(
     run,
     bbox_bounds=None,
     requested_tag_keys=None,
-    progress=False,
+    steps=None,
     spill_all_ways=True,
 ):
     """Index + parallel-decode ``filepath`` into a temp shard dir, call
-    ``run(shard_paths, report)`` in this process and clean up. The shared front half of every
-    public read.
+    ``run(shard_paths, steps)`` in this process and clean up. The shared front half of
+    every public read.
 
-    ``progress`` (``True``, ``False`` or a callable, validated by the caller) reports the bytes
-    of the file decoded, out of the bytes indexed (the file size), for the whole read: a bar
-    shown after 2 s and cleared at the end, or the caller's ``progress(done, total)``.
-    ``report`` is that callback (``None`` without progress), for a ``run`` that makes another
-    pass over the file."""
+    ``steps`` (a :class:`~pyrosm.utils.progress.Steps` of the whole read, or None) gets
+    the steps :data:`INDEXING` and :data:`DECODING`, moved by the bytes of the file
+    passed, out of the bytes indexed (the file size); ``run`` reports its own steps to
+    it."""
     name = Path(filepath).name
-    with reporting(
-        progress, "Reading %s" % name, delay=2.0, leave=False, timed=True
-    ) as report:
-        with timed(logger, "index", file=name) as fields:
-            data_blobs, header_bytes = _data_blob_spans(_index_blobs(filepath))
-            fields["blobs"] = len(data_blobs)
-        total = header_bytes + sum(span for _, _, span in data_blobs)
-        workers = default_workers(workers)
-        if isinstance(workers, str) and workers.lower() == "auto":
-            workers = _auto_workers(filepath, len(data_blobs))
-        else:
-            workers = _cap_workers(workers)
-        shard_dir = tempfile.mkdtemp(prefix="pyrosm_ooc_")
+    with timed(logger, "index", file=name) as fields:
+        index = None if steps is None else steps.start_step(INDEXING)
+        data_blobs, header_bytes = _data_blob_spans(_index_blobs(filepath, index))
+        fields["blobs"] = len(data_blobs)
+    total = header_bytes + sum(span for _, _, span in data_blobs)
+    workers = default_workers(workers)
+    if isinstance(workers, str) and workers.lower() == "auto":
+        workers = _auto_workers(filepath, len(data_blobs))
+    else:
+        workers = _cap_workers(workers)
+    shard_dir = tempfile.mkdtemp(prefix="pyrosm_ooc_")
+    try:
+        with timed(logger, "decode", workers=workers, blobs=len(data_blobs)) as fields:
+            shard_paths, pool_ok = _decode_all(
+                filepath,
+                data_blobs,
+                workers,
+                shard_dir,
+                osm_key_bytes,
+                include_nodes,
+                bbox_bounds,
+                requested_tag_keys,
+                (
+                    None
+                    if steps is None
+                    else (steps.start_step(DECODING), header_bytes, total)
+                ),
+                spill_all_ways,
+            )
+            fields["pool"] = pool_ok
+        token = None
+        if _decode_backend() == "threads":
+            token = _READ_THREADS.set(workers)
         try:
-            with timed(
-                logger, "decode", workers=workers, blobs=len(data_blobs)
-            ) as fields:
-                shard_paths, pool_ok = _decode_all(
-                    filepath,
-                    data_blobs,
-                    workers,
-                    shard_dir,
-                    osm_key_bytes,
-                    include_nodes,
-                    bbox_bounds,
-                    requested_tag_keys,
-                    None if report is None else (report, header_bytes, total),
-                    spill_all_ways,
-                )
-                fields["pool"] = pool_ok
-            token = None
-            if _decode_backend() == "threads":
-                token = _READ_THREADS.set(workers)
-            try:
-                with timed(logger, "collect"):
-                    return run(shard_paths, report)
-            finally:
-                if token is not None:
-                    _READ_THREADS.reset(token)
+            with timed(logger, "collect"):
+                return run(shard_paths, steps)
         finally:
-            shutil.rmtree(shard_dir, ignore_errors=True)
+            if token is not None:
+                _READ_THREADS.reset(token)
+    finally:
+        shutil.rmtree(shard_dir, ignore_errors=True)

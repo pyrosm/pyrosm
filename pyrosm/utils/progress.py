@@ -174,13 +174,19 @@ class Bar:
             self.bar.write("%s took %s" % (self.desc, took), file=sys.stderr)
 
 
+def start_step(steps, name):
+    """``steps.start_step(name)`` (see :class:`Steps`), or None without ``steps``."""
+    return None if steps is None else steps.start_step(name)
+
+
 @contextlib.contextmanager
 def stepping(progress, desc, shares=None, **options):
     """The :class:`Steps` of the work described ``desc``, reported as ``progress`` says
-    (see :func:`reporting`, whose ``options`` these are), at 100 % when the work ends.
-    """
+    (see :func:`reporting`, whose ``options`` these are), planned as the steps of
+    ``shares`` in their order, and at 100 % when the work ends."""
     with reporting(progress, desc, unit="%", **options) as report:
         steps = Steps(report, desc, shares)
+        steps.plan(list(steps.shares))
         yield steps
         steps.finish()
 

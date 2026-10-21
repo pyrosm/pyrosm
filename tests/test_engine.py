@@ -374,10 +374,11 @@ def test_engine_run_pool_progress(monkeypatch, case):
 
 
 def test_engine_read_progress(test_pbf, fresh_cache):
-    """The engine reports the bytes of the file decoded, from (0, size) to (size, size), and
-    get_network(nodes=True) reports its second pass over the file too. The header and the data
-    blob spans cover the file exactly; progress values other than True, False or a callable
-    are refused before reading, by OSM and by the engine readers."""
+    """The engine reports the percentage of the whole read done, as (done, 100), from 0
+    to 100 and never back, also through the second pass of get_network(nodes=True). The
+    header and the data blob spans cover the file exactly; progress values other than
+    True, False or a callable are refused before reading, by OSM and by the engine
+    readers."""
     from pathlib import Path
 
     from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
@@ -385,20 +386,14 @@ def test_engine_read_progress(test_pbf, fresh_cache):
     size = Path(test_pbf).stat().st_size
     data, header = _data_blob_spans(_index_blobs(test_pbf))
     assert header + sum(span for _, _, span in data) == size
-    reads = [
-        (get_buildings, 1),
-        (lambda fp, **kw: get_network(fp, nodes=True, **kw), 2),
-    ]
+    reads = [get_buildings, lambda fp, **kw: get_network(fp, nodes=True, **kw)]
     frames = []
-    for read, passes in reads:
+    for read in reads:
         seen = []
         frames.append(read(test_pbf, workers=1, progress=lambda *r: seen.append(r)))
-        assert all(done <= total == size for done, total in seen)
-        starts = [i for i, (done, _) in enumerate(seen) if done == 0]
-        assert len(starts) == passes
-        for start, end in zip(starts, starts[1:] + [len(seen)]):
-            done = [d for d, _ in seen[start:end]]
-            assert done == sorted(done) and done[-1] == size
+        done = [d for d, _ in seen]
+        assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100)
+        assert all(total == 100 for _, total in seen) and done == sorted(done)
     # The frame equals one decoded again without progress (not served from the cache).
     shutil.rmtree(fresh_cache)
     fresh_cache.mkdir()
@@ -413,11 +408,10 @@ def test_engine_read_progress(test_pbf, fresh_cache):
 
 @pytest.mark.parametrize("backend", ["processes", "threads"])
 def test_engine_read_progress_in_parallel(test_pbf, monkeypatch, fresh_cache, backend):
-    """A read in worker processes or on threads reports from (0, size) to (size, size)."""
+    """A read in worker processes or on threads reports from (0, 100) to (100, 100)."""
     import os
     from concurrent.futures import ProcessPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
-    from pathlib import Path
 
     if (os.cpu_count() or 1) < 2:
         pytest.skip("workers=2 runs on one core on a single-core host")
@@ -439,10 +433,9 @@ def test_engine_read_progress_in_parallel(test_pbf, monkeypatch, fresh_cache, ba
     monkeypatch.setattr(pool, "_decode_all", spy)
     seen = []
     get_buildings(test_pbf, workers=2, progress=lambda *report: seen.append(report))
-    size = Path(test_pbf).stat().st_size
     assert ran == [True]
-    assert seen[0] == (0, size) and seen[-1] == (size, size)
-    assert all(done <= total for done, total in seen)
+    assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100)
+    assert [d for d, _ in seen] == sorted(d for d, _ in seen)
 
 
 def test_engine_run_pool_silent_fallback_without_warning(monkeypatch):

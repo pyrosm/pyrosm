@@ -12,7 +12,14 @@ from pyrosm.data_manager import parse_custom_filter
 from pyrosm.filter_compiler import rename_filter_key
 from pyrosm.utils import _compat, default_workers
 from pyrosm.engine.decode import _key_bytes
-from pyrosm.engine.pool import _decode_and_run
+from pyrosm.engine.pool import (
+    GRAPH_SHARES,
+    LAYER_SHARES,
+    NETWORK_NODES_SHARES,
+    NETWORK_SHARES,
+    WRITING,
+    _decode_and_run,
+)
 from pyrosm.engine.bounding_box import _bbox_bounds, _normalize_bounding_box
 from pyrosm.engine.assemble import (
     _assemble_graph_network,
@@ -21,7 +28,7 @@ from pyrosm.engine.assemble import (
 )
 from pyrosm.engine import cache, geoparquet
 from pyrosm.engine.ways import ArrowFrame
-from pyrosm.utils.progress import validate_progress
+from pyrosm.utils.progress import start_step, stepping, validate_progress
 
 # Tags the geometry assembly reads straight from an element's tag dict (not from the exploded
 # columns): ``relations.pyx`` consults ``type`` and ``area`` plus the linestring keys
@@ -39,6 +46,20 @@ _GEOMETRY_TAG_KEYS = (
     "highway",
     "waterway",
 )
+
+
+def _read_steps(filepath, progress, shares):
+    """The :class:`~pyrosm.utils.progress.Steps` of a read of ``filepath`` with the step
+    ``shares``, shown as ``progress`` says: a bar "Reading <file>" after 2 seconds,
+    cleared at the end, or a progress function's ``progress(done, 100)``."""
+    return stepping(
+        progress,
+        "Reading %s" % Path(filepath).name,
+        shares,
+        delay=2.0,
+        leave=False,
+        timed=True,
+    )
 
 
 def _get_layer(
@@ -107,36 +128,63 @@ def _get_layer(
     bounding_box = _normalize_bounding_box(bounding_box)
     bounds = _bbox_bounds(bounding_box)
 
-    # Per-layer result cache: when returning an in-memory frame (not streaming to a user file)
-    # and pyarrow is available, assemble the layer once via the bounded per-call path, write its
-    # result to a deterministic GeoParquet keyed by the read, and reuse that file on any identical
-    # later read instead of re-decoding the PBF. Each layer is cached separately, so memory stays
-    # bounded by one layer. With pyarrow absent the engine returns the in-memory frame (no cache).
-    if output is None and _compat.HAS_PYARROW:
-        key_params = {
-            "filter_spec": filter_spec,
-            "tags_as_columns": tags_as_columns,
-            "keep_metadata": keep_metadata,
-            "include_nodes": include_nodes,
-            "keep_ways": keep_ways,
-            "keep_relations": keep_relations,
-            "bounding_box": bounding_box,
-            "complete_relations": complete_relations,
-            "keep_other_tags": keep_other_tags,
-            "keep_node_info": keep_node_info,
-        }
-        cache_path = cache.result_path(filepath, key_params)
-        result = cache.materialize(
-            cache_path,
-            lambda tmp_path: _decode_and_run(
-                filepath,
-                osm_key_bytes,
-                include_nodes,
-                workers,
-                lambda shard_paths, report: geoparquet._stream_layer_to_parquet(
+    with _read_steps(filepath, progress, LAYER_SHARES) as steps:
+        # Per-layer result cache: when returning an in-memory frame (not streaming to a
+        # user file) and pyarrow is available, assemble the layer once via the bounded
+        # per-call path, write its result to a deterministic GeoParquet keyed by the
+        # read, and reuse that file on any identical later read instead of re-decoding
+        # the PBF. Each layer is cached separately, so memory stays bounded by one
+        # layer. With pyarrow absent the engine returns the in-memory frame (no cache).
+        if output is None and _compat.HAS_PYARROW:
+            key_params = {
+                "filter_spec": filter_spec,
+                "tags_as_columns": tags_as_columns,
+                "keep_metadata": keep_metadata,
+                "include_nodes": include_nodes,
+                "keep_ways": keep_ways,
+                "keep_relations": keep_relations,
+                "bounding_box": bounding_box,
+                "complete_relations": complete_relations,
+                "keep_other_tags": keep_other_tags,
+                "keep_node_info": keep_node_info,
+            }
+            cache_path = cache.result_path(filepath, key_params)
+            result = cache.materialize(
+                cache_path,
+                lambda tmp_path: _decode_and_run(
+                    filepath,
+                    osm_key_bytes,
+                    include_nodes,
+                    workers,
+                    lambda shard_paths, steps: geoparquet._stream_layer_to_parquet(
+                        shard_paths,
+                        tmp_path,
+                        geoparquet._OUTPUT_CHUNK_SIZE,
+                        tags_as_columns,
+                        keep_metadata,
+                        filter_spec,
+                        keep_ways,
+                        keep_relations,
+                        bounding_box,
+                        complete_relations,
+                        keep_other_tags=keep_other_tags,
+                        keep_node_info=keep_node_info,
+                        steps=steps,
+                    ),
+                    bbox_bounds=bounds,
+                    requested_tag_keys=requested_tag_keys,
+                    steps=steps,
+                    spill_all_ways=keep_relations,
+                )
+                is not None,
+                steps=steps,
+            )
+            return _node_lists(result)
+
+        def run(shard_paths, steps):
+            if output is None:
+                return _assemble_layer(
                     shard_paths,
-                    tmp_path,
-                    geoparquet._OUTPUT_CHUNK_SIZE,
                     tags_as_columns,
                     keep_metadata,
                     filter_spec,
@@ -146,20 +194,12 @@ def _get_layer(
                     complete_relations,
                     keep_other_tags=keep_other_tags,
                     keep_node_info=keep_node_info,
-                ),
-                bbox_bounds=bounds,
-                requested_tag_keys=requested_tag_keys,
-                progress=progress,
-                spill_all_ways=keep_relations,
-            )
-            is not None,
-        )
-        return _node_lists(result)
-
-    def run(shard_paths, report):
-        if output is None:
-            return _assemble_layer(
+                    steps=steps,
+                )
+            return geoparquet._stream_layer_to_parquet(
                 shard_paths,
+                output,
+                geoparquet._OUTPUT_CHUNK_SIZE,
                 tags_as_columns,
                 keep_metadata,
                 filter_spec,
@@ -169,34 +209,21 @@ def _get_layer(
                 complete_relations,
                 keep_other_tags=keep_other_tags,
                 keep_node_info=keep_node_info,
+                steps=steps,
             )
-        return geoparquet._stream_layer_to_parquet(
-            shard_paths,
-            output,
-            geoparquet._OUTPUT_CHUNK_SIZE,
-            tags_as_columns,
-            keep_metadata,
-            filter_spec,
-            keep_ways,
-            keep_relations,
-            bounding_box,
-            complete_relations,
-            keep_other_tags=keep_other_tags,
-            keep_node_info=keep_node_info,
-        )
 
-    result = _decode_and_run(
-        filepath,
-        osm_key_bytes,
-        include_nodes,
-        workers,
-        run,
-        bbox_bounds=bounds,
-        requested_tag_keys=requested_tag_keys,
-        progress=progress,
-        spill_all_ways=keep_relations,
-    )
-    return result if output is not None else _node_lists(result)
+        result = _decode_and_run(
+            filepath,
+            osm_key_bytes,
+            include_nodes,
+            workers,
+            run,
+            bbox_bounds=bounds,
+            requested_tag_keys=requested_tag_keys,
+            steps=steps,
+            spill_all_ways=keep_relations,
+        )
+        return result if output is not None else _node_lists(result)
 
 
 def _node_lists(result):
@@ -569,11 +596,13 @@ def _network_filter(network_type):
     return get_osm_filter(network_type)
 
 
-def _write_result_parquet(gdf, path):
-    """Write an assembled frame to ``path`` (a result-cache temp file or an ``output=`` path);
-    a ``None`` (empty read) writes nothing and reports the empty result."""
+def _write_result_parquet(gdf, path, steps=None):
+    """Write an assembled frame to ``path`` (a result-cache temp file or an ``output=``
+    path), the step ``WRITING`` of ``steps`` (a :class:`~pyrosm.utils.progress.Steps`,
+    or None); a ``None`` (empty read) writes nothing and reports the empty result."""
     if gdf is None:
         return False
+    start_step(steps, WRITING)
     if isinstance(gdf, ArrowFrame):
         gdf.write(path)
     else:
@@ -602,24 +631,27 @@ def _read_nodes_parquet(path):
     return gdf
 
 
-def _write_network_pair(result, edges_path, nodes_path):
-    """Write ``get_network(nodes=True)``'s ``(nodes, edges)`` tuple to the two cache files; a
-    ``(None, None)`` (empty read) writes nothing and reports the empty result."""
+def _write_network_pair(result, edges_path, nodes_path, steps=None):
+    """Write ``get_network(nodes=True)``'s ``(nodes, edges)`` tuple to the two cache
+    files, the step ``WRITING`` of ``steps``; a ``(None, None)`` (empty read) writes
+    nothing and reports the empty result."""
     node_gdf, edges = result
     if edges is None:
         return False
+    start_step(steps, WRITING)
     edges.to_parquet(edges_path)
     _write_nodes_parquet(node_gdf, nodes_path)
     return True
 
 
-def _write_network_dir(result, dirpath):
+def _write_network_dir(result, dirpath, steps=None):
     """Write ``get_network(nodes=True, output=dirpath)``'s ``(nodes, edges)`` tuple into
-    ``dirpath`` as ``edges.parquet`` + ``nodes.parquet`` and return ``dirpath``; an empty read
-    writes nothing and returns ``None``."""
+    ``dirpath`` as ``edges.parquet`` + ``nodes.parquet`` and return ``dirpath``, the
+    step ``WRITING`` of ``steps``; an empty read writes nothing and returns ``None``."""
     node_gdf, edges = result
     if edges is None:
         return None
+    start_step(steps, WRITING)
     out = Path(dirpath)
     out.mkdir(parents=True, exist_ok=True)
     edges.to_parquet(out / "edges.parquet")
@@ -674,64 +706,72 @@ def get_network(
     if output is not None:
         _compat.require_pyarrow()
 
-    def assemble(shard_paths, report):
-        edges, node_gdf = _assemble_network(
-            shard_paths,
-            tags_as_columns,
-            keep_metadata,
-            filter_spec,
-            nodes,
-            bounding_box,
-            filepath=filepath,
-            progress=report,
-            keep_node_info=keep_node_info,
-        )
-        return (node_gdf, edges) if nodes else edges
+    shares = NETWORK_NODES_SHARES if nodes else NETWORK_SHARES
+    with _read_steps(filepath, progress, shares) as steps:
 
-    def decode():
-        return _decode_network(
-            filepath, filter_spec, bounding_box, workers, progress, assemble
-        )
+        def assemble(shard_paths, steps):
+            edges, node_gdf = _assemble_network(
+                shard_paths,
+                tags_as_columns,
+                keep_metadata,
+                filter_spec,
+                nodes,
+                bounding_box,
+                filepath=filepath,
+                steps=steps,
+                keep_node_info=keep_node_info,
+            )
+            return (node_gdf, edges) if nodes else edges
 
-    # A user-supplied output writes the result there and returns it: a GeoParquet file for the
-    # edges (nodes=False), or a directory holding edges.parquet + nodes.parquet (nodes=True).
-    if output is not None:
+        def decode():
+            return _decode_network(
+                filepath, filter_spec, bounding_box, workers, steps, assemble
+            )
+
+        # A user-supplied output writes the result there and returns it: a GeoParquet
+        # file for the edges (nodes=False), or a directory holding edges.parquet +
+        # nodes.parquet (nodes=True).
+        if output is not None:
+            if nodes:
+                return _write_network_dir(decode(), output, steps)
+            return output if _write_result_parquet(decode(), output, steps) else None
+
+        # With pyarrow absent there is nowhere to cache, so return the direct in-memory
+        # result (the edges frame, or the (nodes, edges) tuple for nodes=True).
+        if not _compat.HAS_PYARROW:
+            return record_network_type(_node_lists(decode()), network_type)
+
+        # Cache the result to / serve it from a per-read GeoParquet, keyed apart from
+        # the area/point layers via "network". nodes=True is a (nodes, edges) tuple,
+        # cached as two files.
+        key_params = {
+            "network": True,
+            "nodes": nodes,
+            "filter_spec": filter_spec,
+            "tags_as_columns": tags_as_columns,
+            "keep_metadata": keep_metadata,
+            "bounding_box": bounding_box,
+            "keep_node_info": keep_node_info,
+        }
         if nodes:
-            return _write_network_dir(decode(), output)
-        return output if _write_result_parquet(decode(), output) else None
+            edges_path = cache.result_path(filepath, {**key_params, "part": "edges"})
+            nodes_path = cache.result_path(filepath, {**key_params, "part": "nodes"})
+            result = cache.materialize_pair(
+                edges_path,
+                nodes_path,
+                lambda e_tmp, n_tmp: _write_network_pair(decode(), e_tmp, n_tmp, steps),
+                read_nodes=_read_nodes_parquet,
+                steps=steps,
+            )
+            return record_network_type(_node_lists(result), network_type)
 
-    # With pyarrow absent there is nowhere to cache, so return the direct in-memory result (the
-    # edges frame, or the (nodes, edges) tuple for nodes=True).
-    if not _compat.HAS_PYARROW:
-        return record_network_type(_node_lists(decode()), network_type)
-
-    # Cache the result to / serve it from a per-read GeoParquet, keyed apart from the area/point
-    # layers via "network". nodes=True is a (nodes, edges) tuple, cached as two files.
-    key_params = {
-        "network": True,
-        "nodes": nodes,
-        "filter_spec": filter_spec,
-        "tags_as_columns": tags_as_columns,
-        "keep_metadata": keep_metadata,
-        "bounding_box": bounding_box,
-        "keep_node_info": keep_node_info,
-    }
-    if nodes:
-        edges_path = cache.result_path(filepath, {**key_params, "part": "edges"})
-        nodes_path = cache.result_path(filepath, {**key_params, "part": "nodes"})
-        result = cache.materialize_pair(
-            edges_path,
-            nodes_path,
-            lambda e_tmp, n_tmp: _write_network_pair(decode(), e_tmp, n_tmp),
-            read_nodes=_read_nodes_parquet,
+        cache_path = cache.result_path(filepath, key_params)
+        result = cache.materialize(
+            cache_path,
+            lambda tmp_path: _write_result_parquet(decode(), tmp_path, steps),
+            steps=steps,
         )
         return record_network_type(_node_lists(result), network_type)
-
-    cache_path = cache.result_path(filepath, key_params)
-    result = cache.materialize(
-        cache_path, lambda tmp_path: _write_result_parquet(decode(), tmp_path)
-    )
-    return record_network_type(_node_lists(result), network_type)
 
 
 def _network_spec(
@@ -778,10 +818,10 @@ def _network_spec(
     return tags_as_columns, (network_keys, data_filter, filter_type)
 
 
-def _decode_network(filepath, filter_spec, bounding_box, workers, progress, assemble):
-    """``assemble(shard_paths, report)`` over the ways of ``filepath`` with the keys of
+def _decode_network(filepath, filter_spec, bounding_box, workers, steps, assemble):
+    """``assemble(shard_paths, steps)`` over the ways of ``filepath`` with the keys of
     ``filter_spec`` (see :func:`_network_spec`), decoded as
-    :func:`~pyrosm.engine.pool._decode_and_run` does with ``workers`` and ``progress``.
+    :func:`~pyrosm.engine.pool._decode_and_run` does with ``workers`` and ``steps``.
     """
     return _decode_and_run(
         filepath,
@@ -790,7 +830,7 @@ def _decode_network(filepath, filter_spec, bounding_box, workers, progress, asse
         workers,
         assemble,
         bbox_bounds=_bbox_bounds(bounding_box),
-        progress=progress,
+        steps=steps,
         spill_all_ways=False,
     )
 
@@ -819,7 +859,7 @@ def graph_network(
     )
     bounding_box = _normalize_bounding_box(bounding_box)
 
-    def assemble(shard_paths, report):
+    def assemble(shard_paths, steps):
         return _assemble_graph_network(
             shard_paths,
             tags_as_columns,
@@ -827,10 +867,11 @@ def graph_network(
             filter_spec,
             bounding_box,
             filepath,
-            report,
+            steps,
             keep_node_info,
         )
 
-    return _decode_network(
-        filepath, filter_spec, bounding_box, workers, progress, assemble
-    )
+    with _read_steps(filepath, progress, GRAPH_SHARES) as steps:
+        return _decode_network(
+            filepath, filter_spec, bounding_box, workers, steps, assemble
+        )

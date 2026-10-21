@@ -180,15 +180,14 @@ class OSM:
 
     progress : bool | callable | None (default: None)
         `None` follows `pyrosm.enable_logging(progress=...)`, which is `True`
-        unless set. `True` shows a bar on stderr while the file is read, once the read has run
-        2 seconds, and clears it when the read finishes; in Jupyter it is a widget
-        when ipywidgets is installed (`pip install "pyrosm[notebook]"`). Without a
-        terminal, a read that took 2 seconds or more prints one line with the time it
-        took instead. `False` shows nothing. A callable is called as
-        `progress(done, total)` with the bytes of the file read so far and the file
-        size: `(0, total)` when a pass over the file starts and `(total, total)` when
-        it ends, with reports in between. A read can make more than one pass, for
-        example with a `bounding_box`.
+        unless set. `True` shows a bar on stderr while the file is read, once the read
+        has run 2 seconds, from 0 to 100 % over the whole read with its current step in
+        the label (e.g. "Reading Paris.osm.pbf: building the geometries"), and clears it
+        when the read finishes; in Jupyter it is a widget when ipywidgets is installed
+        (`pip install "pyrosm[notebook]"`). Without a terminal, a read that took 2
+        seconds or more prints one line with the time it took instead. `False` shows
+        nothing. A callable is called as `progress(done, 100)` with the percentage of
+        the read done, from 0 to 100 and never back.
     """
 
     allowed_bbox_types = [
