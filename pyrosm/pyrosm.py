@@ -1041,10 +1041,10 @@ class OSM:
 
         >>> from pyrosm.config import Conf
         >>> print("All available OSM keys", Conf.tags.available)
-        All available OSM keys ['aerialway', 'aeroway', 'amenity', 'building', 'craft',
-        'emergency', 'geological', 'highway', 'historic', 'landuse', 'leisure',
-        'natural', 'office', 'power', 'public_transport', 'railway', 'route',
-        'place', 'shop', 'tourism', 'waterway']
+        All available OSM keys ['aerialway', 'aeroway', 'amenity', 'boundary', 'building',
+        'craft', 'emergency', 'geological', 'highway', 'historic', 'landuse', 'leisure',
+        'natural', 'office', 'power', 'public_transport', 'railway', 'route', 'place',
+        'shop', 'tourism', 'waterway']
 
         >>> print("Typical tags associated with tourism:", Conf.tags.tourism)
         ['alpine_hut', 'apartment', 'aquarium', 'artwork', 'attraction', 'camp_pitch',
@@ -1411,12 +1411,16 @@ class OSM:
         network to a new file. Multiple layers can be combined by passing a list
         (``[buildings, network]``); the union of their elements is written.
 
-        Typical use is to modify attributes in pandas and save them back::
+        Typical use is to modify attributes in pandas and save them back (tags are
+        text, so a number is read from them first)::
+
+            import pandas as pd
 
             osm = OSM("data.osm.pbf")
             edges = osm.get_network("driving")
-            edges["maxspeed"] = edges["maxspeed"].fillna(50)
-            edges["travel_time"] = edges["length"] / (edges["maxspeed"] / 3.6)
+            edges["maxspeed"] = edges["maxspeed"].fillna("50")
+            speed = pd.to_numeric(edges["maxspeed"], errors="coerce")  # km/h
+            edges["travel_time"] = edges["length"] / (speed / 3.6)
             osm.write_pbf(edges, "modified.osm.pbf")
 
         Pass ``apply_geometry=True`` and/or ``delete=`` to edit the geometry itself.
