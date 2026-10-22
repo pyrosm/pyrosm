@@ -1330,9 +1330,8 @@ class OSM:
             OSM data is identical to ``repack=False``. Default ``False`` keeps the
             current (faster, slightly larger) in-place crop.
 
-        The crop shows its progress as this object's ``progress`` says (see
-        :func:`pyrosm.pbf_export.crop_pbf`): one bar, or ``progress(done, 100)`` calls, from 0 to
-        100 % over the whole crop.
+        The crop shows its progress as this object's ``progress`` says: one bar, or
+        ``progress(done, 100)`` calls, from 0 to 100 % over the whole crop.
 
         Returns
         -------

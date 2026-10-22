@@ -198,7 +198,7 @@ def get_data_by_geocoding(
         as ``progress(written, total)`` after each chunk, with the bytes written so far and
         the file size, ``None`` when the server does not give it.
         The crop shows its progress the same way; a callable is then called with the
-        percentage of the crop done (see :func:`pyrosm.pbf_export.crop_pbf`).
+        percentage of the crop done.
 
     headers, timeout, opener
         Network options for the geocoding request and for the requests of
