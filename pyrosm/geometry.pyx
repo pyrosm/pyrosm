@@ -10,6 +10,7 @@ from shapely.geometry import MultiPolygon
 from shapely.ops import polygonize
 from shapely import orient_polygons as _orient_polygons
 from shapely import GeometryType, get_type_id
+from pyrosm.config.polygon_features import POLYGON_FEATURES, is_area
 from pyrosm.distance import Unit, haversine
 from pyrosm.node_lookup cimport NodeLocations
 
@@ -390,17 +391,6 @@ cdef create_polygon_geometry(nodes, node_coordinates):
         return None
 
 
-cdef _closed_way_is_polygon(area_value, has_linear_tag):
-    # OSM area semantics for a closed way: an explicit 'area' tag wins
-    # ('area=yes' -> Polygon, 'area=no' -> LineString); otherwise the way is an
-    # area (Polygon) unless it carries a linear-feature tag (highway/barrier/route).
-    if area_value == "yes":
-        return True
-    if area_value == "no":
-        return False
-    return not has_linear_tag
-
-
 # The key of ``way_elements`` that holds, per way, whether its tags make it an area when it
 # is closed (see :func:`tags_make_area`). A tuple, so no tag column can have it; the way
 # frame builder takes it out before it builds the columns.
@@ -409,15 +399,12 @@ AREA_BY_TAGS = ("area by tags",)
 
 cpdef tags_make_area(tag_dicts):
     """Whether the tags of each way make it an area when it is closed, from its tags
-    ``tag_dicts`` (one mapping per way, all of its tags): ``area=yes`` does, ``area=no``
-    does not, otherwise a ``highway``, ``barrier`` or ``route`` tag makes it a line."""
+    ``tag_dicts`` (one mapping per way, all of its tags), by the OSM wiki's polygon
+    features as OSMnx reads them (see :func:`pyrosm.config.polygon_features.is_area`)."""
     cdef Py_ssize_t i, n = len(tag_dicts)
     out = np.empty(n, dtype=bool)
     for i in range(n):
-        tags = tag_dicts[i]
-        out[i] = _closed_way_is_polygon(
-            tags.get("area"), "highway" in tags or "barrier" in tags or "route" in tags
-        )
+        out[i] = is_area(tag_dicts[i])
     return out
 
 cdef _concatenated_ranges(starts, counts):
@@ -565,28 +552,14 @@ cpdef segment_lines(start, end):
     return linestrings(np.stack([start, end], axis=1))
 
 
-cdef _has_linear_tag(highway_arr, barrier_arr, route_arr, int i):
-    # A closed way is linear (and so a LineString, not an area) when it carries a
-    # highway/barrier/route tag -- read from THIS way's own tag values.
-    return (
-        (highway_arr is not None and highway_arr[i] is not None)
-        or (barrier_arr is not None and barrier_arr[i] is not None)
-        or (route_arr is not None and route_arr[i] is not None)
-    )
-
-
 cdef _area_by_tag_columns(way_elements, Py_ssize_t n):
     """:func:`tags_make_area` from the tag columns of ``way_elements``, for ways passed
     without their flags: a tag of the rule that is not a column counts as absent."""
-    highway_arr = way_elements["highway"] if "highway" in way_elements else None
-    barrier_arr = way_elements["barrier"] if "barrier" in way_elements else None
-    route_arr = way_elements["route"] if "route" in way_elements else None
-    area_arr = way_elements["area"] if "area" in way_elements else None
+    columns = {key: way_elements[key] for key in POLYGON_FEATURES if key in way_elements}
     out = np.empty(n, dtype=bool)
     for i in range(n):
-        out[i] = _closed_way_is_polygon(
-            area_arr[i] if area_arr is not None else None,
-            _has_linear_tag(highway_arr, barrier_arr, route_arr, i),
+        out[i] = is_area(
+            {key: values[i] for key, values in columns.items() if values[i] is not None}
         )
     return out
 
@@ -604,7 +577,7 @@ cdef _single_area_geometry(nodes, node_coordinates, bint area_by_tags):
 cdef _create_area_geometries_vectorized(node_coordinates, way_elements, area_by_tags):
     """The geometries of ``way_elements``: the closed-area Polygons built with a single
     batched ``shapely.polygons(linearrings(...))`` call, and the lines (open ways, closed
-    ways tagged linear) with a single ``shapely.linestrings`` call, instead of one call per
+    ways whose tags make no area) with a single ``shapely.linestrings`` call, instead of one call per
     way. A way takes a batched path only when every node is present with valid coordinates
     and it has enough of them (4 for a ring, 2 for a line). Every other way (ways with
     dropped nodes, too-short rings) falls back to the per-way builder. ``area_by_tags``
