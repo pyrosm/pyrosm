@@ -44,6 +44,11 @@ cdef enum:
     # a string's column as a key, when it is not a column index
     C_LEFTOVER = -1
     C_SPECIAL = -2
+    # the rule of a key of the polygon features (see ``area_by_tags``)
+    C_NOT_A_FEATURE = 0
+    C_ALL = 1
+    C_PASSLIST = 2
+    C_BLOCKLIST = 3
 
 FILTER_VALUES = C_FILTER_VALUES
 FILTER_MULTI = C_FILTER_MULTI
@@ -396,51 +401,74 @@ def column_presence(pairs_off, pair_key, column, rows, Py_ssize_t n_columns):
 
 def area_by_tags(pairs_off, pair_key, pair_val, str_off, str_data):
     """Whether the tags of each way make it an area when it is closed, as
-    :func:`pyrosm.geometry.tags_make_area` decides from its tag dict: the way's last
-    ``area`` tag decides when it is ``yes`` or ``no``, otherwise a ``highway``,
-    ``barrier`` or ``route`` tag makes it a line."""
+    :func:`pyrosm.config.polygon_features.is_area` decides from its tag dict: not when its
+    ``area`` tag is ``no``, otherwise when one of its tags is a polygon feature. Of a key
+    that occurs twice, its last value counts, as in the tag dict."""
+    from pyrosm.config.polygon_features import ALL, BLOCKLIST, PASSLIST, POLYGON_FEATURES
+
     pairs_off = _contiguous(pairs_off, np.int64)
     pair_key = _contiguous(pair_key, np.int64)
     pair_val = _contiguous(pair_val, np.int64)
     str_off = _contiguous(str_off, np.int64)
     str_data = _contiguous(str_data, np.uint8)
     _check_store(pairs_off, pair_key, pair_val, str_off, str_data, np.empty(0, np.int64))
-    cdef Py_ssize_t n = pairs_off.shape[0] - 1, i, p, area
+    # The strings of the rule (its keys, their listed values and "no"), and for each string
+    # of the store its index among them, negative for any other string.
+    names = sorted(
+        set(POLYGON_FEATURES).union(*(v for _, v in POLYGON_FEATURES.values()), {"no"})
+    )
+    index = {name: i for i, name in enumerate(names)}
+    _, name_of = string_columns(str_off, str_data, [name.encode() for name in names])
+    cdef Py_ssize_t n_names = len(names)
+    rules = np.zeros(n_names, dtype=np.uint8)
+    listed = np.zeros(n_names * n_names, dtype=np.uint8)  # [key * n_names + value]
+    codes = {ALL: C_ALL, PASSLIST: C_PASSLIST, BLOCKLIST: C_BLOCKLIST}
+    for key, (rule, values) in POLYGON_FEATURES.items():
+        rules[index[key]] = codes[rule]
+        for value in values:
+            listed[index[key] * n_names + index[value]] = 1
+    cdef int32_t area_name = index["area"], no_name = index["no"]
+    cdef Py_ssize_t n = pairs_off.shape[0] - 1, i, p, q
     cdef int64_t* po = _int64_ptr(pairs_off)
     cdef int64_t* pk = _int64_ptr(pair_key)
     cdef int64_t* pv = _int64_ptr(pair_val)
-    cdef int64_t* so = _int64_ptr(str_off)
-    cdef uint8_t* sd = _uint8_ptr(str_data)
+    cdef int32_t* nm = <int32_t*><uintptr_t>name_of.ctypes.data
+    cdef uint8_t* ru = _uint8_ptr(rules)
+    cdef uint8_t* li = _uint8_ptr(listed)
     flags = np.empty(n, dtype=np.uint8)
     cdef uint8_t* out = _uint8_ptr(flags)
-    cdef const uint8_t* s
-    cdef Py_ssize_t length
-    cdef int64_t k
-    cdef bint linear
+    cdef int32_t k, v
+    cdef bint polygon, area_no, later, on_list
     with nogil:
         for i in range(n):
-            area = -1
-            linear = False
+            polygon = False
+            area_no = False
             for p in range(po[i], po[i + 1]):
-                k = pk[p]
-                s = sd + so[k]
-                length = so[k + 1] - so[k]
-                if _equals(s, length, "area"):
-                    area = p
-                elif (_equals(s, length, "highway") or _equals(s, length, "barrier")
-                        or _equals(s, length, "route")):
-                    linear = True
-            if area >= 0:
-                k = pv[area]
-                s = sd + so[k]
-                length = so[k + 1] - so[k]
-                if _equals(s, length, "yes"):
-                    out[i] = 1
+                k = nm[pk[p]]
+                if k < 0 or ru[k] == C_NOT_A_FEATURE:
                     continue
-                if _equals(s, length, "no"):
-                    out[i] = 0
+                later = False
+                for q in range(p + 1, po[i + 1]):
+                    if nm[pk[q]] == k:
+                        later = True
+                        break
+                if later:
                     continue
-            out[i] = not linear
+                v = nm[pv[p]]
+                if k == area_name:
+                    if v == no_name:
+                        area_no = True
+                    else:
+                        polygon = True
+                elif ru[k] == C_ALL:
+                    polygon = True
+                else:
+                    on_list = v >= 0 and li[k * n_names + v]
+                    if (ru[k] == C_PASSLIST and on_list) or (
+                        ru[k] == C_BLOCKLIST and not on_list
+                    ):
+                        polygon = True
+            out[i] = polygon and not area_no
     return flags.view(bool)
 
 

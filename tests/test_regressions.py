@@ -2273,8 +2273,8 @@ def test_result_cache_key_changes_with_its_format(monkeypatch):
 
 def test_line_ways_of_other_layers_are_one_linestring():
     """Outside the network, a way that is not an area is one LineString through its nodes
-    that have valid coordinates: an open way, a closed highway ring and a closed
-    ``area=no`` way alike; a closed way without such tags stays a Polygon."""
+    that have valid coordinates: an open way, a closed highway ring, a closed ``area=no``
+    way and a closed way without an area tag alike; a closed building stays a Polygon."""
     import numpy as np
     import pandas as pd
     from pyrosm.geometry import create_way_geometries
@@ -2292,12 +2292,13 @@ def test_line_ways_of_other_layers_are_one_linestring():
     )
     ring = [1, 2, 3, 4, 1]
     ways = [
-        ([1, 2, 3], None, None, [1, 2, 3], "LineString"),
-        ([1, 2], None, None, [1, 2], "LineString"),
-        (ring, "residential", None, ring, "LineString"),
-        (ring, None, "no", ring, "LineString"),
-        (ring, None, None, ring, "Polygon"),
-        ([1, 99, 3], None, None, [1, 3], "LineString"),
+        ([1, 2, 3], None, None, None, [1, 2, 3], "LineString"),
+        ([1, 2], None, None, None, [1, 2], "LineString"),
+        (ring, "residential", None, None, ring, "LineString"),
+        (ring, None, "no", "yes", ring, "LineString"),
+        (ring, None, None, None, ring, "LineString"),
+        (ring, None, None, "yes", ring, "Polygon"),
+        ([1, 99, 3], None, None, None, [1, 3], "LineString"),
     ]
     nodes = np.empty(len(ways), dtype=object)
     nodes[:] = [np.array(w[0], dtype=np.int64) for w in ways]
@@ -2306,10 +2307,11 @@ def test_line_ways_of_other_layers_are_one_linestring():
         "nodes": nodes,
         "highway": np.array([w[1] for w in ways], dtype=object),
         "area": np.array([w[2] for w in ways], dtype=object),
+        "building": np.array([w[3] for w in ways], dtype=object),
     }
     _, geometries, _, _, _ = create_way_geometries(store, elements, False)
 
-    for geometry, (_, _, _, expected, kind) in zip(geometries, ways):
+    for geometry, (*_, expected, kind) in zip(geometries, ways):
         assert geometry.geom_type == kind
         coords = geometry.exterior.coords if kind == "Polygon" else geometry.coords
         assert [tuple(c) for c in coords] == [xy[n] for n in expected]
@@ -2829,10 +2831,13 @@ def test_reads_decoding_at_the_same_time_keep_their_own_settings(fresh_cache, mo
 def test_area_rule_reads_tags_that_are_not_columns(
     tmp_path, monkeypatch, fresh_cache, engine, backend, chunk_size
 ):
-    """The ``area``, ``highway``, ``barrier`` and ``route`` tags decide whether a closed way
-    is a Polygon also when they are not columns of the read: a building tagged
-    ``area=no`` or ``barrier`` is a LineString, ``area=yes`` keeps a building with a
-    ``highway`` tag a Polygon. The tags stay in the JSON ``tags`` column."""
+    """The OSM wiki's polygon features, as OSMnx reads them, decide whether a closed way is
+    a Polygon, also from tags that are not columns of the read: an area tag such as
+    ``building`` or ``leisure`` makes it one despite a ``barrier``, ``highway`` or
+    ``route`` tag (0.23.0 returned fenced pitches and other fenced areas as LineStrings),
+    while ``area=no`` and a ``natural`` value the list leaves out (``coastline``) make it a
+    line. Of a key given twice, the last value counts. The tags stay in the JSON ``tags``
+    column."""
     import json
 
     osmium = pytest.importorskip("osmium")
@@ -2843,9 +2848,14 @@ def test_area_rule_reads_tags_that_are_not_columns(
     ways = {
         1: ({"building": "yes"}, "Polygon"),
         2: ({"building": "yes", "area": "no"}, "LineString"),
-        3: ({"building": "yes", "barrier": "wall"}, "LineString"),
+        3: ({"building": "yes", "barrier": "wall"}, "Polygon"),
         4: ({"building": "yes", "highway": "pedestrian", "area": "yes"}, "Polygon"),
-        5: ({"building": "yes", "route": "ferry", "area": "unknown"}, "LineString"),
+        5: ({"building": "yes", "route": "ferry", "area": "unknown"}, "Polygon"),
+        6: ({"leisure": "pitch", "barrier": "fence"}, "Polygon"),
+        7: ({"natural": "wood", "barrier": "retaining_wall"}, "Polygon"),
+        8: ({"natural": "coastline"}, "LineString"),
+        9: ([("natural", "wood"), ("natural", "coastline")], "LineString"),
+        10: ([("natural", "coastline"), ("natural", "wood")], "Polygon"),
     }
     path = str(tmp_path / "closed_ways.osm.pbf")
     with osmium.SimpleWriter(path) as writer:
@@ -2861,12 +2871,33 @@ def test_area_rule_reads_tags_that_are_not_columns(
     if chunk_size is not None:
         monkeypatch.setattr(geoparquet, "_OUTPUT_CHUNK_SIZE", chunk_size)
 
-    gdf = OSM(path, engine=engine, workers=1).get_buildings().set_index("id")
+    gdf = (
+        OSM(path, engine=engine, workers=1)
+        .get_data_by_custom_criteria({"building": True, "leisure": True, "natural": True})
+        .set_index("id")
+    )
     assert {w: gdf.geometry[w].geom_type for w in ways} == {
         w: expected for w, (_, expected) in ways.items()
     }
     assert "area" not in gdf.columns
     assert json.loads(gdf.loc[2, "tags"])["area"] == "no"
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_fenced_school_grounds_are_polygons(engine):
+    """The schools of the Helsinki region extract that are not nodes are Polygons and
+    MultiPolygons: 0.23.0 returned the school grounds of way 161966214, tagged
+    ``amenity=school`` and ``barrier=fence``, as a LineString."""
+    from pyrosm import OSM, get_data
+
+    schools = OSM(
+        get_data("helsinki_region_pbf"), engine=engine, progress=False
+    ).get_data_by_custom_criteria({"amenity": ["school"]}, keep_nodes=False)
+    assert schools.geometry.geom_type.value_counts().to_dict() == {
+        "Polygon": 420,
+        "MultiPolygon": 1,
+    }
+    assert schools.set_index("id").geometry[161966214].geom_type == "Polygon"
 
 
 @pytest.mark.parametrize(
