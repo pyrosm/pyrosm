@@ -8,7 +8,7 @@ dependencies:
   # required
   - cython
   - pip
-  - setuptools
+  - setuptools>=77
   - geopandas
   - protobuf>=6.33.5
   - python-rapidjson
