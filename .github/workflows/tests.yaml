@@ -31,7 +31,7 @@ jobs:
         run: python -m flake8 pyrosm
 
   test:
-    name: Run tests (${{ matrix.os }}, ${{ matrix.env }}${{ matrix.backend == 'processes' && ', processes' || '' }})
+    name: Run tests (${{ matrix.os }}, ${{ matrix.env }}${{ matrix.backend == 'processes' && ', processes' || '' }}${{ matrix.compiler == 'conda-clang' && ', conda clang' || '' }})
     needs: lint
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -55,10 +55,18 @@ jobs:
         # worker-process fallback (PYROSM_DECODE_BACKEND=processes).
         backend:
           - threads
+        # The extensions are built with the runner's compiler; one macOS job builds them
+        # with conda-forge's clang, which a conda environment with compilers uses.
+        compiler:
+          - system
         include:
           - os: ubuntu-latest
             env: ci/312-conda.yaml
             backend: processes
+          - os: macos-latest
+            env: ci/314-conda.yaml
+            backend: threads
+            compiler: conda-clang
 
     steps:
       - name: Checkout repository
@@ -68,9 +76,22 @@ jobs:
         uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: ${{ matrix.env }}
+          create-args: ${{ matrix.compiler == 'conda-clang' && 'c-compiler' || '' }}
           auto-activate-base: false
           activate-environment: test
           channel-priority: strict
+
+      - name: Check the compiler
+        if: matrix.compiler == 'conda-clang'
+        shell: bash -l {0}
+        # conda's clang is named <target>-clang, e.g. arm64-apple-darwin20.0.0-clang.
+        run: |
+          echo "CC=$CC"
+          "$CC" --version
+          case "$CC" in
+            *-apple-darwin*-clang) ;;
+            *) echo "CC is not conda-forge's clang"; exit 1 ;;
+          esac
 
       - name: Install pyrosm
         shell: bash -l {0}
