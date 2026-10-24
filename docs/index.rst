@@ -71,7 +71,7 @@ That being said, it is also possible to extract neighborhood level information w
 License
 -------
 
-Pyrosm is licensed under the BSD 3-Clause License (see `license <https://github.com/pyrosm/pyrosm/blob/master/LICENSE>`__).
+Pyrosm is licensed under the BSD 3-Clause License (see `license <https://github.com/pyrosm/pyrosm/blob/main/LICENSE>`__).
 
 Data © `Geofabrik GmbH <http://www.geofabrik.de/>`__, `BBBike <https://download.bbbike.org>`__, `Movisda <https://osm.download.movisda.io>`__ and `OpenStreetMap Contributors <http://www.openstreetmap.org>`__.
 All data from the `OpenStreetMap <https://www.openstreetmap.org>`__ is licensed under the `OpenStreetMap License <https://www.openstreetmap.org/copyright>`__.

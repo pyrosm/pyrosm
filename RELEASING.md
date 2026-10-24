@@ -13,11 +13,11 @@ PyPI, and creates the GitHub release.
    [docs/conf.py](docs/conf.py)) to the new `X.Y.Z`.
 3. Move the `Unreleased` notes under a new `vX.Y.Z` heading in
    [CHANGELOG.md](CHANGELOG.md) and [docs/changelog.rst](docs/changelog.rst).
-4. Merge the above to `master`.
+4. Merge the above to `main`.
 5. Tag and push — the tag must be `v` + the exact `setup.py` version:
 
    ```bash
-   git checkout master && git pull
+   git checkout main && git pull
    git tag vX.Y.Z
    git push origin vX.Y.Z
    ```

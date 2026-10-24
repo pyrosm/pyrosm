@@ -13,7 +13,7 @@ pip install "pyrosm[recipes]"
 ```
 
 The recipes on this page are in the
-[examples/recipes](https://github.com/pyrosm/pyrosm/tree/master/examples/recipes) folder of
+[examples/recipes](https://github.com/pyrosm/pyrosm/tree/main/examples/recipes) folder of
 the repository.
 
 ## A first recipe
