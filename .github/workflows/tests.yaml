@@ -84,14 +84,21 @@ jobs:
       - name: Check the compiler
         if: matrix.compiler == 'conda-clang'
         shell: bash -l {0}
-        # conda's clang is named <target>-clang, e.g. arm64-apple-darwin20.0.0-clang.
+        # setuptools compiles with $CC when it is set (older conda compilers set it),
+        # otherwise with Python's configured CC found on PATH (conda's clang in the
+        # environment's bin); either must be the environment's compiler.
         run: |
-          echo "CC=$CC"
-          "$CC" --version
-          case "$CC" in
-            *-apple-darwin*-clang) ;;
-            *) echo "CC is not conda-forge's clang"; exit 1 ;;
-          esac
+          python - <<'EOF'
+          import os, shlex, shutil, subprocess, sys, sysconfig
+          cc = os.environ.get("CC") or sysconfig.get_config_var("CC")
+          exe = shutil.which(shlex.split(cc)[0])
+          print("compiler: %s -> %s" % (cc, exe))
+          if exe:
+              print(subprocess.run([exe, "--version"], capture_output=True, text=True).stdout)
+          prefix = os.path.realpath(os.environ["CONDA_PREFIX"])
+          if not exe or not os.path.realpath(exe).startswith(prefix + os.sep):
+              sys.exit("The build would not use the compiler of the conda environment.")
+          EOF
 
       - name: Install pyrosm
         shell: bash -l {0}
