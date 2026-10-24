@@ -2,6 +2,10 @@ from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
 from pyrosm.utils import validate_custom_filter, require_layer_key, warn_empty_result
 
+# Values of ``building`` that mark a part of a building (an entrance, a window) or say
+# that a feature is not a building.
+NOT_BUILDINGS = frozenset({"entrance", "window", "no"})
+
 
 def get_layer_data(
     layer,
@@ -63,4 +67,19 @@ def get_layer_data(
         complete_relations=complete_relations,
         steps=steps,
     )
+    return gdf
+
+
+def without_building_parts(gdf):
+    """``gdf``, buildings read with their nodes, without the nodes whose ``building`` value
+    is in :data:`NOT_BUILDINGS`; ``None``, with a warning, when nothing is left."""
+    if gdf is None:
+        return None
+    parts = (gdf["osm_type"] == "node") & gdf["building"].isin(NOT_BUILDINGS)
+    if not parts.any():
+        return gdf
+    gdf = gdf[~parts].reset_index(drop=True)
+    if len(gdf) == 0:
+        warn_empty_result("buildings")
+        return None
     return gdf

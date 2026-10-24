@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- NEW: `get_buildings(keep_nodes=True)` also returns the buildings mapped as single nodes, as Points. Nodes tagged `building=entrance` or `building=window`, parts of a building, and `building=no` are left out, so the result holds only features that represent buildings; `get_data_by_custom_criteria({"building": True})` returns every node tagged `building`. By default `get_buildings()` returns the building ways and relations, as before ([#706](https://github.com/pyrosm/pyrosm/pull/706))
+
 v0.24.0
 -------
 

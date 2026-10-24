@@ -17,6 +17,7 @@ from pyrosm.utils import (
     validate_custom_filter,
     validate_osm_keys,
     validate_tags_as_columns,
+    validate_bool,
     validate_booleans,
     validate_boundary_type,
     validate_bounding_box,
@@ -52,7 +53,7 @@ from shapely.geometry import (
     MultiLineString,
 )
 from pyrosm.boundary import get_boundary_data
-from pyrosm.layers import get_layer_data
+from pyrosm.layers import get_layer_data, without_building_parts
 from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
@@ -436,8 +437,8 @@ class OSM:
     ):
         """The elements of the layer ``layer`` (an OSM key, such as ``"building"``) for
         :meth:`get_buildings`, :meth:`get_landuse` and :meth:`get_natural`: read by
-        ``engine_reader`` with the out-of-core engine, else in memory (without nodes
-        unless ``with_nodes``), with a warning naming ``result_name`` when nothing
+        ``engine_reader`` with the out-of-core engine, else in memory, in both without
+        nodes unless ``with_nodes``, with a warning naming ``result_name`` when nothing
         matches."""
         if self._use_engine(timestamp):
             gdf = self._read_engine(
@@ -445,6 +446,7 @@ class OSM:
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
+                keep_nodes=with_nodes,
             )
             if gdf is None:
                 warn_empty_result(result_name)
@@ -679,9 +681,11 @@ class OSM:
         extra_attributes=None,
         timestamp=None,
         tags_to_keep=None,
+        keep_nodes=False,
     ):
         """
-        Parses buildings from OSM.
+        Parses buildings from OSM: the building ways and relations, and with ``keep_nodes``
+        the buildings mapped as single nodes.
 
         Parameters
         ----------
@@ -714,6 +718,14 @@ class OSM:
             but not newer (records having exactly the selected timestamp will be kept). In case only a date is given,
             the time will represent midnight of the given day, such as "2021-01-01 00:00:00".
 
+        keep_nodes : bool (default: False)
+            When True, the buildings mapped as single nodes are returned too, as Points.
+            Nodes tagged ``building=entrance`` or ``building=window`` mark a part of a
+            building and ``building=no`` says that a feature is not one, so they are left
+            out: the result holds only features that represent buildings.
+            ``get_data_by_custom_criteria({"building": True})`` returns every node tagged
+            ``building``, these included.
+
 
         See Also
         --------
@@ -722,7 +734,8 @@ class OSM:
         `https://wiki.openstreetmap.org/wiki/Key:building <https://wiki.openstreetmap.org/wiki/Key:building>`__
 
         """
-        return self._read_layer(
+        validate_bool(keep_nodes, "keep_nodes")
+        gdf = self._read_layer(
             "building",
             "buildings",
             engine_backend.get_buildings,
@@ -730,8 +743,9 @@ class OSM:
             extra_attributes,
             tags_to_keep,
             timestamp,
-            with_nodes=False,
+            with_nodes=keep_nodes,
         )
+        return without_building_parts(gdf) if keep_nodes else gdf
 
     @logged()
     @records_read(lambda args: _require_layer_key(args["custom_filter"], "landuse"))

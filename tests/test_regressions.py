@@ -5440,3 +5440,51 @@ def test_box_reads_leave_out_tag_columns_of_rows_outside_the_box():
     ]
     assert list(frames[0].columns) == list(frames[1].columns)
     assert not [c for c in frames[0].columns if frames[0][c].isna().all()]
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_get_buildings_keeps_building_nodes_on_request(engine):
+    """``get_buildings`` returned no building mapped as a single node. With
+    ``keep_nodes=True`` it returns them as Points, without the nodes tagged
+    ``building=entrance`` (33 in the sample), and its ways and relations stay those of the
+    default read, which still has no nodes."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), engine=engine, progress=False)
+    default = osm.get_buildings()
+    buildings = osm.get_buildings(keep_nodes=True)
+    points = buildings[buildings["osm_type"] == "node"]
+    assert sorted(points["building"]) == ["kiosk", "roof", "yes"]
+    assert set(points.geometry.geom_type) == {"Point"}
+    assert "node" not in set(default["osm_type"])
+    others = buildings[buildings["osm_type"] != "node"]
+    assert list(zip(others["osm_type"], others["id"])) == list(
+        zip(default["osm_type"], default["id"])
+    )
+    with pytest.raises(ValueError, match="'keep_nodes' should be boolean"):
+        osm.get_buildings(keep_nodes="yes")
+
+
+def test_building_parts_are_left_out_of_building_nodes():
+    """Of the building nodes, those tagged ``building=entrance``, ``window`` or ``no`` are
+    left out, a way with such a value is kept, a frame without them is returned as it is,
+    and nothing left gives None with a warning."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, Point
+
+    from pyrosm.layers import without_building_parts
+
+    rows = [
+        ("node", 1, "yes", Point(0, 0)),
+        ("node", 2, "entrance", Point(0, 1)),
+        ("node", 3, "window", Point(0, 2)),
+        ("node", 4, "no", Point(0, 3)),
+        ("way", 5, "entrance", LineString([(0, 0), (1, 1)])),
+    ]
+    gdf = gpd.GeoDataFrame(rows, columns=["osm_type", "id", "building", "geometry"])
+    assert without_building_parts(gdf)["id"].tolist() == [1, 5]
+    buildings = gdf[gdf["id"].isin([1, 5])]
+    assert without_building_parts(buildings) is buildings
+    with pytest.warns(UserWarning):
+        assert without_building_parts(gdf[gdf["id"].isin([2, 3])]) is None
+    assert without_building_parts(None) is None

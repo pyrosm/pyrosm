@@ -272,12 +272,14 @@ def get_buildings(
     keep_metadata=True,
     progress=None,
     keep_node_info=False,
+    keep_nodes=False,
 ):
-    """Read building geometries (ways + relations) from ``filepath`` with the out-of-core
-    engine, with the same columns as ``OSM(...).get_buildings()``. ``custom_filter`` refines
-    which buildings to keep (the ``building`` key is always ensured); ``extra_attributes`` /
-    ``tags_to_keep`` adjust the tag columns. See :func:`_get_layer` for ``bounding_box`` /
-    ``complete_relations`` / ``output`` / ``workers`` / ``keep_metadata`` / ``progress``.
+    """Read building geometries (ways + relations, and with ``keep_nodes`` the building
+    nodes as points) from ``filepath`` with the out-of-core engine, with the same columns as
+    ``OSM(...).get_buildings()``. ``custom_filter`` refines which buildings to keep (the
+    ``building`` key is always ensured); ``extra_attributes`` / ``tags_to_keep`` adjust the
+    tag columns. See :func:`_get_layer` for ``bounding_box`` / ``complete_relations`` /
+    ``output`` / ``workers`` / ``keep_metadata`` / ``progress``.
     """
     from pyrosm.config import Conf
     from pyrosm.utils import read_tag_columns
@@ -293,7 +295,7 @@ def get_buildings(
         workers,
         output,
         keep_metadata,
-        include_nodes=False,
+        include_nodes=keep_nodes,
         bounding_box=bounding_box,
         complete_relations=complete_relations,
         progress=progress,
@@ -313,9 +315,11 @@ def get_landuse(
     keep_metadata=True,
     progress=None,
     keep_node_info=False,
+    keep_nodes=True,
 ):
-    """Read landuse geometries (ways + relations) from ``filepath`` with the out-of-core
-    engine, with the same columns as ``OSM(...).get_landuse()``. ``custom_filter`` refines
+    """Read landuse geometries (nodes as points unless ``keep_nodes`` is False, ways and
+    relations) from ``filepath`` with the out-of-core engine, with the same columns as
+    ``OSM(...).get_landuse()``. ``custom_filter`` refines
     which landuse to keep (the ``landuse`` key is always ensured); ``extra_attributes`` /
     ``tags_to_keep`` adjust the tag columns. See :func:`_get_layer` for the others."""
     from pyrosm.config import Conf
@@ -332,6 +336,7 @@ def get_landuse(
         workers,
         output,
         keep_metadata,
+        include_nodes=keep_nodes,
         bounding_box=bounding_box,
         complete_relations=complete_relations,
         progress=progress,
@@ -351,9 +356,10 @@ def get_natural(
     keep_metadata=True,
     progress=None,
     keep_node_info=False,
+    keep_nodes=True,
 ):
-    """Read natural features (nodes + ways + relations) from ``filepath`` with the
-    out-of-core engine, with the same columns as ``OSM(...).get_natural()``. ``custom_filter``
+    """Read natural features (nodes as points unless ``keep_nodes`` is False, ways and
+    relations) from ``filepath`` with the out-of-core engine, with the same columns as ``OSM(...).get_natural()``. ``custom_filter``
     refines which natural features to keep (the ``natural`` key is always ensured);
     ``extra_attributes`` / ``tags_to_keep`` adjust the tag columns. See :func:`_get_layer` for
     the others."""
@@ -371,6 +377,7 @@ def get_natural(
         workers,
         output,
         keep_metadata,
+        include_nodes=keep_nodes,
         bounding_box=bounding_box,
         complete_relations=complete_relations,
         progress=progress,
