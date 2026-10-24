@@ -751,10 +751,10 @@ def test_pandarm_connectivity():
     assert isinstance(access, pd.Series)
     assert len(access) == 5262
 
+    # A list up to pandarm 0.0.5, a NumPy array from 0.0.7
     shortest_distances = g.shortest_path_lengths(
         node_ids[0:100], node_ids[100:200], imp_name="length"
     )
-    assert isinstance(shortest_distances, list)
     assert len(shortest_distances) == 100
     shortest_distances = pd.Series(shortest_distances)
     assert round(shortest_distances.min(), 0) == 22
