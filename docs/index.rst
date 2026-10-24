@@ -107,6 +107,7 @@ See :doc:`How to cite pyrosm <citation>` for the full reference and a BibTeX ent
 .. toctree::
     :caption: Additional info
 
+    upgrading.md
     faq.md
     benchmarks/benchmarks_scaling.ipynb
 
