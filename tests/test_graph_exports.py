@@ -409,71 +409,6 @@ def test_nxgraph_connectivity(immutable_nodes_and_edges):
 
 
 @_pandana_unsupported_on_win
-def test_pdgraph_connectivity():
-    """Pandana graph export.
-
-    Skipped when ``pandana`` is not installed (it has no Python 3.13 build on
-    conda-forge yet), so the suite stays green on Python 3.13.
-    """
-    pytest.importorskip("pandana")
-    from pyrosm.graphs import to_pandana
-    import pandas as pd
-    from pyrosm import OSM
-
-    osm = OSM(get_data("helsinki_pbf"))
-    nodes, edges = osm.get_network(nodes=True)
-
-    # Prerare some test data for aggregations
-    restaurants = osm.get_pois(custom_filter={"amenity": ["restaurant"]})
-    restaurants = restaurants.loc[restaurants["osm_type"] == "node"]
-    restaurants["employee_cnt"] = 1
-    x = restaurants["lon"]
-    y = restaurants["lat"]
-
-    g = to_pandana(nodes, edges, retain_all=False, simplify=False)
-
-    # Nodes and edges should be in DataFrames
-    assert isinstance(g.nodes_df, pd.DataFrame)
-    assert isinstance(g.edges_df, pd.DataFrame)
-
-    # Precompute up to 1000 meters
-    g.precompute(1000)
-
-    # Link restaurants to graph
-    g.set_pois("restaurants", 1000, 5, x, y)
-
-    # Find the distance to nearest 5 restaurants from each node
-    nearest_restaurants = g.nearest_pois(1000, "restaurants", num_pois=5)
-    assert isinstance(nearest_restaurants, pd.DataFrame)
-    assert nearest_restaurants.shape == (5262, 5)
-
-    # Get closest node_ids for each restaurant
-    node_ids = g.get_node_ids(x, y)
-    assert isinstance(node_ids, pd.Series)
-    assert node_ids.min() > 0
-    restaurants["node_id"] = node_ids
-
-    # Attach employee counts to the graph
-    g.set(node_ids, variable=restaurants.employee_cnt, name="employee_cnt")
-
-    # Aggregate the number of employees within 500 meters from each node
-    access = g.aggregate(500, type="sum", decay="linear", name="employee_cnt")
-    assert isinstance(access, pd.Series)
-    assert len(access) == 5262
-
-    # Test shortest path calculations
-    shortest_distances = g.shortest_path_lengths(
-        node_ids[0:100], node_ids[100:200], imp_name="length"
-    )
-    assert isinstance(shortest_distances, list)
-    assert len(shortest_distances) == 100
-    shortest_distances = pd.Series(shortest_distances)
-    assert round(shortest_distances.min(), 0) == 22
-    assert round(shortest_distances.max(), 0) in [2457, 2458]
-    assert round(shortest_distances.mean(), 0) in [865, 866, 867]
-
-
-@_pandana_unsupported_on_win
 def test_to_graph_api(test_pbf):
     """Smoke-test the to_graph() API for igraph, networkx and pandana.
 
@@ -702,15 +637,17 @@ def test_get_directed_edges_explicit_oneway_bicycle_direction():
     assert (3, 4) in pairs and (4, 3) in pairs  # oneway:bicycle=no -> both ways
 
 
-def test_pandarm_connectivity():
-    """pandarm graph export (#270).
-
-    pandarm is the maintained, NumPy 2-compatible fork of pandana, so unlike the
-    pandana tests this is NOT skipped on Windows. Skipped only when pandarm is
-    not installed.
+@pytest.mark.parametrize(
+    "library", [pytest.param("pandana", marks=_pandana_unsupported_on_win), "pandarm"]
+)
+def test_pandana_and_pandarm_connectivity(library):
+    """pandana and pandarm graph export (#270). pandarm, the maintained NumPy
+    2-compatible fork of pandana, also runs on Windows and keeps the CRS of the nodes.
+    Skipped when the library is not installed (pandana has no Python 3.13 build on
+    conda-forge yet).
     """
-    pytest.importorskip("pandarm")
-    from pyrosm.graphs import to_pandarm
+    pytest.importorskip(library)
+    from pyrosm import graphs
     import pandas as pd
     from pyrosm import OSM
 
@@ -723,12 +660,16 @@ def test_pandarm_connectivity():
     x = restaurants["lon"]
     y = restaurants["lat"]
 
-    # The network takes the nodes' CRS, so pandarm does not warn that none was given
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        g = to_pandarm(nodes, edges, retain_all=False, simplify=False)
-    assert not [w for w in caught if "CRS" in str(w.message)]
-    assert g.nodes_df.crs == nodes.crs
+    to_network = getattr(graphs, f"to_{library}")
+    if library == "pandarm":
+        # The network takes the nodes' CRS, so pandarm does not warn that none was given
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            g = to_network(nodes, edges, retain_all=False, simplify=False)
+        assert not [w for w in caught if "CRS" in str(w.message)]
+        assert g.nodes_df.crs == nodes.crs
+    else:
+        g = to_network(nodes, edges, retain_all=False, simplify=False)
 
     assert isinstance(g.nodes_df, pd.DataFrame)
     assert isinstance(g.edges_df, pd.DataFrame)
@@ -751,7 +692,7 @@ def test_pandarm_connectivity():
     assert isinstance(access, pd.Series)
     assert len(access) == 5262
 
-    # A list up to pandarm 0.0.5, a NumPy array from 0.0.7
+    # A list in pandana and in pandarm up to 0.0.5, a NumPy array from pandarm 0.0.7
     shortest_distances = g.shortest_path_lengths(
         node_ids[0:100], node_ids[100:200], imp_name="length"
     )
