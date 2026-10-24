@@ -290,14 +290,19 @@ def _write_multiblock_pbf(src_path, dst_path, replicas):
                 frame(out, "OSMData", nb)
 
 
-def test_to_pbf_parallel_multiblock(helsinki_pbf, tmp_path):
+@pytest.mark.parametrize(
+    "options",
+    [{}, {"compact": True}, {"repack": True}],
+    ids=["default", "compact", "repack"],
+)
+def test_to_pbf_parallel_multiblock(helsinki_pbf, tmp_path, options):
     # 4 replicas of the bundled blocks -> enough OSMData blocks that workers=3
     # genuinely runs several blocks per worker through the persistent pool.
     big = str(tmp_path / "multiblock.osm.pbf")
     _write_multiblock_pbf(helsinki_pbf, big, replicas=4)
     osm = OSM(big, bounding_box=CROP_BBOX)
-    out_seq = osm.to_pbf(workers=1)
-    out_par = osm.to_pbf(workers=3)
+    out_seq = osm.to_pbf(workers=1, **options)
+    out_par = osm.to_pbf(workers=3, **options)
     try:
         with open(out_seq, "rb") as f:
             seq_bytes = f.read()
@@ -430,26 +435,6 @@ def test_to_pbf_compact_shrinks_string_tables(helsinki_pbf):
     finally:
         Path(out_false).unlink()
         Path(out_true).unlink()
-
-
-def test_to_pbf_compact_parallel_multiblock(helsinki_pbf, tmp_path):
-    # compact=True output is byte-identical between the sequential and the parallel
-    # (multi-block) write paths -> the pruned table order is deterministic.
-    big = str(tmp_path / "multiblock.osm.pbf")
-    _write_multiblock_pbf(helsinki_pbf, big, replicas=4)
-    osm = OSM(big, bounding_box=CROP_BBOX)
-    out_seq = osm.to_pbf(compact=True, workers=1)
-    out_par = osm.to_pbf(compact=True, workers=3)
-    try:
-        with open(out_seq, "rb") as f:
-            seq_bytes = f.read()
-        with open(out_par, "rb") as f:
-            par_bytes = f.read()
-        assert seq_bytes == par_bytes
-        assert OSM(out_par).get_network() is not None
-    finally:
-        Path(out_seq).unlink()
-        Path(out_par).unlink()
 
 
 def test_to_pbf_compact_preserves_user_metadata(tmp_path):
