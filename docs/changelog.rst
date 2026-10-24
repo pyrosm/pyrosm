@@ -6,6 +6,7 @@ Unreleased
 
 - NEW: ``get_buildings(keep_nodes=True)`` also returns the buildings mapped as single nodes, as Points. Nodes tagged ``building=entrance`` or ``building=window``, parts of a building, and ``building=no`` are left out, so the result holds only features that represent buildings; ``get_data_by_custom_criteria({"building": True})`` returns every node tagged ``building``. By default ``get_buildings()`` returns the building ways and relations, as before (`#706 <https://github.com/pyrosm/pyrosm/pull/706>`__)
 - DOCS: A new page, Upgrading, lists release by release the changes since 0.6.2 that alter what reads, downloads and graph exports return or that need a change in code, with what to do about each (`#713 <https://github.com/pyrosm/pyrosm/pull/713>`__)
+- DOCS: The links of the quickstart and of the guide to reading OSM data open their sections, and the ``OSM.to_pbf`` API page gives its paragraph about the crop's progress as text instead of four parameters that do not exist (`#716 <https://github.com/pyrosm/pyrosm/pull/716>`__)
 
 v0.24.0 (Oct 23, 2026)
 ----------------------

@@ -1303,6 +1303,9 @@ class OSM:
         as ``OSM()`` reads by it, so reading the cropped file returns the features
         that reading the source with the same ``bounding_box`` does.
 
+        The crop shows its progress as this object's ``progress`` says: one bar, or
+        ``progress(done, 100)`` calls, from 0 to 100 % over the whole crop.
+
         Parameters
         ----------
 
@@ -1343,9 +1346,6 @@ class OSM:
             string tables, so ``compact`` is ignored when ``repack=True``. The written
             OSM data is identical to ``repack=False``. Default ``False`` keeps the
             current (faster, slightly larger) in-place crop.
-
-        The crop shows its progress as this object's ``progress`` says: one bar, or
-        ``progress(done, 100)`` calls, from 0 to 100 % over the whole crop.
 
         Returns
         -------
