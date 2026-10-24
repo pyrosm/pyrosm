@@ -78,7 +78,7 @@ if _linetrace:
 setup(
     name="pyrosm",
     version="0.24.0",
-    license="MIT",
+    license="BSD-3-Clause",
     license_files=["LICENSE", "vendor/khash/LICENSE", "vendor/libdeflate/COPYING"],
     description="A Python tool to parse OSM data from Protobuf format into GeoDataFrame.",
     long_description=read_long_description(),
@@ -98,7 +98,7 @@ setup(
         # complete classifier list: http://pypi.python.org/pypi?%3Aaction=list_classifiers
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
-        "License :: OSI Approved :: MIT License",
+        "License :: OSI Approved :: BSD License",
         "Operating System :: Unix",
         "Operating System :: POSIX",
         "Operating System :: Microsoft :: Windows",

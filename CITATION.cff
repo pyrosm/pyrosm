@@ -15,7 +15,7 @@ identifiers:
 doi: 10.5281/zenodo.3755057
 version: 0.13.1
 date-released: "2026-08-01"
-license: MIT
+license: BSD-3-Clause
 repository-code: "https://github.com/pyrosm/pyrosm"
 url: "https://pyrosm.readthedocs.io/"
 keywords:

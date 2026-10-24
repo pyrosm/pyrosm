@@ -127,7 +127,7 @@ A BibTeX entry and version-specific DOIs are available in the [documentation](ht
 
 ## License and copyright
 
-Pyrosm is licensed under MIT (see [license](LICENSE)). 
+Pyrosm is licensed under the BSD 3-Clause License (see [license](LICENSE)).
 
 The OSM data is downloaded from two sources:
 
