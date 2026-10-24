@@ -261,15 +261,18 @@ def validate_tags_as_columns(tags_as_columns, name="tags_as_columns"):
             )
 
 
+def validate_bool(value, name):
+    """Raise ``ValueError`` unless ``value``, the parameter ``name``, is True or False."""
+    if not isinstance(value, bool):
+        raise ValueError(f"'{name}' should be boolean type: True or False")
+
+
 def validate_booleans(keep_nodes, keep_ways, keep_relations):
-    if not isinstance(keep_nodes, bool):
-        raise ValueError("'keep_nodes' should be boolean type: True or False")
-
-    if not isinstance(keep_ways, bool):
-        raise ValueError("'keep_ways' should be boolean type: True or False")
-
-    if not isinstance(keep_relations, bool):
-        raise ValueError("'keep_relations' should be boolean type: True or False")
+    """Raise ``ValueError`` unless the three parameters are booleans and one of them is
+    True."""
+    validate_bool(keep_nodes, "keep_nodes")
+    validate_bool(keep_ways, "keep_ways")
+    validate_bool(keep_relations, "keep_relations")
 
     if keep_nodes is False and keep_ways is False and keep_relations is False:
         raise ValueError(
