@@ -15,6 +15,17 @@ def helsinki_pbf():
     return get_data("helsinki_pbf")
 
 
+def _iter_primitive_blocks(path):
+    """Yield each OSMData block of the PBF `path`, parsed by protobuf."""
+    from pyrosm.pbf_export import _iter_block_data
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    for data in _iter_block_data(path):
+        block = PrimitiveBlock()
+        block.ParseFromString(data)
+        yield block
+
+
 def _read_elements(path):
     """Read a PBF block-by-block into id sets + node coordinates.
 
@@ -22,8 +33,6 @@ def _read_elements(path):
     node_coords maps node id -> (lon, lat) in degrees and way_refs maps way id ->
     list of (absolute) node ids.
     """
-    from pyrosm.pbf_export import _iter_primitive_blocks
-
     node_ids, way_ids, rel_ids = set(), set(), set()
     coords, way_refs = {}, {}
     for pblock in _iter_primitive_blocks(path):
@@ -244,7 +253,6 @@ def _write_multiblock_pbf(src_path, dst_path, replicas):
     """
     import zlib
     from struct import pack
-    from pyrosm.pbf_export import _iter_primitive_blocks
     from pyrosm.proto.fileformat_pb2 import BlobHeader, Blob
     from pyrosm.proto.osmformat_pb2 import HeaderBlock
 
@@ -351,8 +359,6 @@ def test_to_pbf_osmium_cross_check(helsinki_pbf):
 # ---------------------------------------------------------------------------
 def _block_string_tables(path):
     """Per-block string tables (the list of byte entries) of a PBF."""
-    from pyrosm.pbf_export import _iter_primitive_blocks
-
     return [list(pb.stringtable.s) for pb in _iter_primitive_blocks(path)]
 
 
@@ -515,8 +521,6 @@ META_BBOX = [24.94, 60.16, 24.96, 60.18]
 
 def _block_fill(path):
     """(number of OSMData blocks, total node count) of a PBF."""
-    from pyrosm.pbf_export import _iter_primitive_blocks
-
     nblocks = nnodes = 0
     for pb in _iter_primitive_blocks(path):
         nblocks += 1
@@ -859,7 +863,7 @@ def test_crop_pbf_rejects_unreadable_input(
     # With workers=2 the four blocks go through the pool, where the corrupt one is
     # decompressed and decoded.
     from pyrosm.exceptions import InvalidOSMFileError
-    from pyrosm.pbf_export import _iter_primitive_blocks, crop_pbf
+    from pyrosm.pbf_export import crop_pbf
     import zlib
 
     from pyrosm.proto.fileformat_pb2 import Blob, BlobHeader
@@ -949,8 +953,6 @@ def _merge_inputs(src, tmp_path):
 def _dense_nodes(path):
     """{node id: (version or None, tags)} of the dense nodes of a PBF, and the
     DenseInfo version count and node count of each dense group."""
-    from pyrosm.pbf_export import _iter_primitive_blocks
-
     nodes, groups = {}, []
     for pb in _iter_primitive_blocks(path):
         st = [s.decode() for s in pb.stringtable.s]
@@ -1144,7 +1146,7 @@ def test_merge_pbf_splits_large_blocks(helsinki_pbf, tmp_path, monkeypatch):
     merged = merge_pbf([a, b], str(tmp_path / "split.osm.pbf"))
 
     assert _read_elements(merged)[:3] == expected[:3]
-    blocks = list(pbf_export._iter_primitive_blocks(merged))
+    blocks = list(_iter_primitive_blocks(merged))
     assert len(blocks) > 20
     for pb in blocks:
         n_elements = sum(
@@ -1226,7 +1228,7 @@ def test_to_pbf_writes_each_kind_of_group(tmp_path):
     # encoded as protobuf itself encodes it, and a group without elements is left out.
     # A re-packed crop keeps the same elements, each way's and relation's Info fields
     # as present in the source, and a repeated tag key once, with its last value.
-    from pyrosm.pbf_export import _iter_block_data, _iter_primitive_blocks
+    from pyrosm.pbf_export import _iter_block_data
     from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
 
     blk = PrimitiveBlock(granularity=100, date_granularity=1000)
@@ -1696,6 +1698,7 @@ def test_scans_corrupt_blocks(corrupted_copies):
         assert status[0] in (0, 1)
         assert len(found[0]) == copies[0] and len(found[5]) == refs[0]
 
+
 @pytest.mark.parametrize(
     "region, limit, repack",
     [
@@ -1888,7 +1891,7 @@ def test_parallel_crop_falls_back_only_when_the_pool_breaks(
 
     import pyrosm.pbf_export as pbf_export
     from pyrosm.exceptions import InvalidOSMFileError
-    from pyrosm.pbf_export import _iter_primitive_blocks, crop_pbf
+    from pyrosm.pbf_export import crop_pbf
     from pyrosm.proto.fileformat_pb2 import Blob
 
     class Threads(ThreadPoolExecutor):
@@ -2007,8 +2010,6 @@ from shapely.geometry import (  # noqa: E402
 
 def _way_tags(path):
     """Map way id -> {tag key: value} read straight from a written PBF."""
-    from pyrosm.pbf_export import _iter_primitive_blocks
-
     out = {}
     for pblock in _iter_primitive_blocks(path):
         st = [s.decode("utf-8", "replace") for s in pblock.stringtable.s]
@@ -2060,8 +2061,6 @@ def test_write_pbf_untouched_poi_tags_survive(helsinki_pbf, tmp_path):
     out = str(tmp_path / "poi.osm.pbf")
     # Write only the network; the untouched POI node must keep its tags.
     osm.write_pbf(osm.get_network(), out)
-
-    from pyrosm.pbf_export import _iter_primitive_blocks
 
     found = None
     for pblock in _iter_primitive_blocks(out):
@@ -2313,8 +2312,6 @@ def test_write_pbf_metadata_preserved(helsinki_pbf, tmp_path):
     osm.write_pbf(osm.get_network(), out)
 
     # changeset carried through; no 'visible' tag emitted on any way.
-    from pyrosm.pbf_export import _iter_primitive_blocks
-
     found = None
     for pblock in _iter_primitive_blocks(out):
         for grp in pblock.primitivegroup:
@@ -2373,8 +2370,6 @@ def test_write_pbf_relation_members_absolute(helsinki_pbf, tmp_path):
 
     out = str(tmp_path / "rel.osm.pbf")
     osm.write_pbf(osm.get_network(), out)
-
-    from pyrosm.pbf_export import _iter_primitive_blocks
 
     found = None
     for pblock in _iter_primitive_blocks(out):
@@ -2632,8 +2627,6 @@ def test_write_pbf_edit_node_and_relation(helsinki_pbf, tmp_path):
     )
     out = str(tmp_path / "edit_nr.osm.pbf")
     osm.write_pbf([osm.get_network(), edit], out)
-
-    from pyrosm.pbf_export import _iter_primitive_blocks
 
     node_note = rel_note = None
     for pblock in _iter_primitive_blocks(out):
@@ -2897,8 +2890,6 @@ def tiny_pbf(tmp_path):
 
 def _relation_members(path):
     """Map relation id -> [(member type, id, role)] read straight from a PBF."""
-    from pyrosm.pbf_export import _iter_primitive_blocks
-
     kinds = {0: "node", 1: "way", 2: "relation"}
     out = {}
     for pblock in _iter_primitive_blocks(path):

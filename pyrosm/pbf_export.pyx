@@ -338,12 +338,6 @@ cdef _decode_block(data, filepath):
     return header, nodes, ways, relations
 
 
-def _iter_primitive_blocks(filepath, progress=None):
-    """Yield each parsed OSMData `PrimitiveBlock` (skips the leading OSMHeader)."""
-    for data in _iter_block_data(filepath, progress):
-        yield _parse(PrimitiveBlock(), data, filepath)
-
-
 def _iter_decoded_blocks(filepath, progress=None):
     """Yield each OSMData block decoded by `_decode_block`."""
     for data in _iter_block_data(filepath, progress):
@@ -497,18 +491,18 @@ cdef _nodes_inside_file(filepath, region, progress):
     ])
 
 
-cdef _ways_touching_file(filepath, nodes_in_bbox_set, progress, with_refs):
+cdef _ways_touching_file(filepath, nodes_in_bbox_set, progress):
     """The ids of the ways of `filepath` with a node in the set `nodes_in_bbox_set`, and
-    with `with_refs` the distinct node ids of those ways (else None)."""
+    the distinct node ids of those ways."""
     kept_way_ids = []
     extra_nodes = []
     for _, _, ways, _ in _iter_decoded_blocks(filepath, progress):
         ids, refs = _ways_touching(ways, nodes_in_bbox_set)
         kept_way_ids.append(ids)
-        if with_refs:
-            extra_nodes.append(refs)
-    ways = np.concatenate(kept_way_ids or [np.empty(0, dtype=np.int64)])
-    return ways, _unique_concat(extra_nodes) if with_refs else None
+        extra_nodes.append(refs)
+    return np.concatenate(kept_way_ids or [np.empty(0, dtype=np.int64)]), _unique_concat(
+        extra_nodes
+    )
 
 
 cdef _relations_touching_file(filepath, kept_nodes_set, kept_ways_set, progress):
@@ -638,28 +632,19 @@ cdef _way_winners(sources, touching, nodes_in_bbox, nib_set, pool, progress,
     copy lies outside the box is dropped, and only the winning copies' nodes are
     kept. Returns the kept way ids of each file and the kept node ids: the nodes in the
     box `nodes_in_bbox` (`nib_set` as a set, or None to build it here) and those of the
-    winning copies outside it. With a `pool`, `payload_kinds` holds the (payload, kinds)
-    pairs of each file's blocks from the node pass (see `_select`).
+    winning copies outside it. The copies are read by `pool` from the blocks that hold
+    ways, as `payload_kinds` (the (payload, kinds) pairs of each file's blocks from the
+    node pass, see `_select`) gives them.
     """
     candidates = _unique_concat(touching)
-    if pool is None:
-        candidates_set = _to_set(candidates)
-        copies = [
-            [
-                _block_way_copies(pb, candidates_set, nib_set)
-                for pb in _iter_primitive_blocks(p, progress)
-            ]
-            for p in sources
-        ]
-    else:
-        pool.broadcast("candidate_ways", candidates)
-        copies = [
-            list(pool.imap(
-                _worker_way_copies,
-                _payloads_holding(payload_kinds[i], _HOLDS_WAYS, progress),
-            ))
-            for i in range(len(sources))
-        ]
+    pool.broadcast("candidate_ways", candidates)
+    copies = [
+        list(pool.imap(
+            _worker_way_copies,
+            _payloads_holding(payload_kinds[i], _HOLDS_WAYS, progress),
+        ))
+        for i in range(len(sources))
+    ]
     blocks = [block for source_blocks in copies for block in source_blocks]
     src = np.repeat(
         np.arange(len(sources)),
@@ -2269,7 +2254,8 @@ cdef _select(sources, region, keep_relations, pool, progress, complete_relations
     also keeps its other way members and their nodes (see `_complete_relations`).
     With a `pool`, each stage spreads a file's blocks over the workers, which get the
     id sets the stage needs from `pool.broadcast`; the stages after the node stage read
-    only the blocks that hold ways or relations, as the node stage found them. Each pass
+    only the blocks that hold ways or relations, as the node stage found them. Several
+    files need a pool (an `_InlinePool` runs its stages on the calling thread). Each pass
     over the files is reported to `progress` (a `_ReadProgress`).
     """
     completing = complete_relations and keep_relations
@@ -2326,7 +2312,7 @@ cdef _select(sources, region, keep_relations, pool, progress, complete_relations
     with progress.one_pass(_FINDING_WAYS):
         for i, p in enumerate(sources):
             if pool is None:
-                ways, refs = _ways_touching_file(p, nib_set, progress, one_file)
+                ways, refs = _ways_touching_file(p, nib_set, progress)
             else:
                 payloads = _payloads_holding(payload_kinds[i], _HOLDS_WAYS, progress)
                 results = list(pool.imap(_worker_ways_touching, payloads))
@@ -2980,6 +2966,32 @@ class _ThreadPool:
 
     def close(self):
         self.executor.shutdown(wait=True, cancel_futures=True)
+
+
+class _InlinePool(_ThreadPool):
+    """The stages of a `_ThreadPool` run on the calling thread, batch by batch, with its
+    `_Context` for the crop region `region` (bounds, polygon): the selection of a merge
+    with one worker, whose passes after the node pass then read only the blocks that hold
+    ways or relations, while nothing runs beside the calling thread."""
+
+    def __init__(self, region):
+        bounds, polygon = region
+        self.context = _Context(
+            bounds, None if polygon is None else polygon.wkb, None, False, in_memory=True
+        )
+        self.executor = None
+        self.workers = 1
+        self.window = 1
+
+    def imap(self, func, items, batch=_THREAD_BATCH, window=None):
+        """``func`` mapped over ``items`` in order, in batches of at most ``batch`` blobs,
+        each run when the next result is asked for."""
+        batched = _BATCHED.get(func, func)
+        for payloads in _read_batches(items, batch, itemgetter(2), itemgetter(3)):
+            yield from _run_batched(batched, self.context, payloads)
+
+    def close(self):
+        pass
 
 
 def _with_pool(func, args, workers, sources, region, compact, threads_only=False):
@@ -4459,10 +4471,14 @@ def _write_whole_merge(sources, fingerprints, bounds, kept, progress, output_pat
 def _select_and_merge(sources, fingerprints, region, keep_relations, progress,
                       output_path, pool):
     """Select the elements a merge cropped to `region` keeps (see `_select`) and write
-    the merge to `output_path`, both with `pool` when one is used."""
+    the merge to `output_path`, both with `pool` when one is used; without one, the
+    selection runs the stages of the threads on the calling thread (see
+    `_InlinePool`)."""
+    selecting = _InlinePool(region) if pool is None else pool
     kept_nodes, kept_ways, kept_rel = _select(
-        sources, region, keep_relations, pool, progress
+        sources, region, keep_relations, selecting, progress
     )
+    del selecting
     kept = (kept_nodes, _unique_concat(kept_ways), _unique_concat(kept_rel))
     won = (None, [_to_set(w) for w in kept_ways], [_to_set(r) for r in kept_rel])
     write_atomic_path(output_path, partial(
