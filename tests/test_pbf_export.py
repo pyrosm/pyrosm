@@ -1582,13 +1582,14 @@ def _expected_way_copies(block, candidates, nodes_in_box):
 @pytest.mark.parametrize("source", ["crafted", "helsinki"])
 def test_scans_read_blocks_as_protobuf(tmp_path, helsinki_pbf, source):
     """The selection stages' GIL-free scans read each block as protobuf does:
-    _relation_blocks marks the blocks holding relations, and _way_copies_blocks gives the
-    copies of the candidate ways (version and timestamp -1 where not recorded, the refs of
-    the copies touching the box) or leaves a block to the protobuf path (status 1)."""
+    _block_kinds marks the blocks holding ways (1) and relations (2), and
+    _way_copies_blocks gives the copies of the candidate ways (version and timestamp -1
+    where not recorded, the refs of the copies touching the box) or leaves a block to the
+    protobuf path (status 1)."""
     from pyrosm.int64_hash import Int64Set
     from pyrosm.pbf_export import (
+        _block_kinds,
         _iter_block_data,
-        _relation_blocks,
         _way_copies_blocks,
         crop_pbf,
     )
@@ -1607,10 +1608,14 @@ def test_scans_read_blocks_as_protobuf(tmp_path, helsinki_pbf, source):
     buffer = np.frombuffer(b"".join(blocks), dtype=np.uint8)
     starts = np.concatenate([[0], np.cumsum([len(b) for b in blocks])]).astype(np.int64)
 
-    marked = _relation_blocks(buffer, starts)
+    kinds = _block_kinds(buffer, starts)
     pbs = [PrimitiveBlock.FromString(b) for b in blocks]
-    assert marked.tolist() == [any(g.relations for g in pb.primitivegroup) for pb in pbs]
-    assert marked.any()
+    assert kinds.tolist() == [
+        any(g.ways for g in pb.primitivegroup)
+        + 2 * any(g.relations for g in pb.primitivegroup)
+        for pb in pbs
+    ]
+    assert (kinds & 1).any() and (kinds & 2).any()
 
     status, copies, refs, found = _way_copies_blocks(
         buffer,
@@ -1631,18 +1636,18 @@ def test_scans_corrupt_blocks(corrupted_copies):
     """A corrupted block is marked or not, its way copies read or left to the protobuf
     path; the scans never read outside it."""
     from pyrosm.int64_hash import Int64Set
-    from pyrosm.pbf_export import _relation_blocks, _way_copies_blocks
+    from pyrosm.pbf_export import _block_kinds, _way_copies_blocks
 
     block = _crafted_blocks()[4].SerializeToString()
     candidates = Int64Set(np.array([40, 41, 42, 43], dtype=np.int64))
     nodes_in_box = Int64Set(np.array([2, 22, 30], dtype=np.int64))
     empty = np.zeros(0, dtype=np.uint8), np.array([0, 0], dtype=np.int64)
-    assert _relation_blocks(*empty).tolist() == [False]
+    assert _block_kinds(*empty).tolist() == [0]
     assert _way_copies_blocks(*empty, candidates, nodes_in_box)[0].tolist() == [0]
     for data in corrupted_copies(block, 300, seed=4):
         buffer = np.frombuffer(data, dtype=np.uint8)
         starts = np.array([0, len(data)], dtype=np.int64)
-        assert len(_relation_blocks(buffer, starts)) == 1
+        assert len(_block_kinds(buffer, starts)) == 1
         status, copies, refs, found = _way_copies_blocks(
             buffer, starts, candidates, nodes_in_box
         )
