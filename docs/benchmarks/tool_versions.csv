@@ -1,6 +1,6 @@
 tool,version
 osmextract,0.6.0
-pyrosm,0.23.0
+pyrosm,0.25.0
 osmnx,2.1.1
 quackosm,0.19.0
 pyosmium,4.3.1
