@@ -2632,12 +2632,29 @@ def _batch_write(ctx, payloads, buffer, starts):
 
 def _batch_repack(ctx, payloads, buffer, starts):
     """`_worker_repack` of each payload of a part of a batch (its blocks in ``buffer``),
-    with the pool's context ``ctx``; each block is copied out of ``buffer``, which is
-    released before the next part."""
-    return [
-        _repack_block(ctx, bytes(buffer[starts[b]:starts[b + 1]]), payload[0])
-        for b, payload in enumerate(payloads)
-    ]
+    with the pool's context ``ctx``: the blocks are cropped by `_crop_blocks` without the
+    GIL, and the elements of each cropped copy decoded; a block `_crop_blocks` leaves to
+    `_crop_block` is copied out of ``buffer``, which is released before the next part, and
+    decoded as `_worker_repack` does."""
+    status, offsets, data = _crop_blocks(
+        buffer,
+        starts,
+        ctx.get_set("kept_nodes", True),
+        ctx.get_set("kept_ways"),
+        ctx.get_set("kept_rel"),
+    )
+    out = []
+    for b, payload in enumerate(payloads):
+        if status[b] == _CROPPED:
+            cropped = data[offsets[b]:offsets[b + 1]]
+            out.append(_kept_chunks(cropped, payload[0], (None, None, None)))
+        elif status[b] == _NOTHING_KEPT:
+            out.append([])
+        else:
+            out.append(
+                _repack_block(ctx, bytes(buffer[starts[b]:starts[b + 1]]), payload[0])
+            )
+    return out
 
 
 # The batch version of each stage function with one.

@@ -1398,11 +1398,11 @@ def _packed_sint(values, runs=1):
     return [b"".join(encoded[i : i + step]) for i in range(0, len(encoded), step)]
 
 
-def _crafted_blocks():
+def _crafted_blocks(standard_grid=False):
     """Blocks for the GIL-free crop: dense nodes with metadata and tags on a shifted grid,
     unsorted dense nodes, ids in 9 packed runs, plain nodes, ways, a group of ways and
     relations, relations, a block with an empty group, and a block with nothing in the
-    crop box."""
+    crop box; with `standard_grid` on the standard grid, which a re-packed crop needs."""
     import zlib
 
     from pyrosm.proto.fileformat_pb2 import Blob
@@ -1411,8 +1411,10 @@ def _crafted_blocks():
     lon0, lat0 = sum(CROP_BBOX[0::2]) / 2, sum(CROP_BBOX[1::2]) / 2
 
     def dense(ids, inside, granularity=100, offset=0, tags=None, info=False):
+        if standard_grid:
+            granularity, offset = 100, 0
         blk = PrimitiveBlock(granularity=granularity, lat_offset=offset, lon_offset=offset)
-        blk.date_granularity = 500
+        blk.date_granularity = 1000 if standard_grid else 500
         blk.stringtable.s.extend([b"", b"amenity", b"cafe", b"alice"])
         d = blk.primitivegroup.add().dense
         lons = [lon0 if i else lon0 + 1 for i in inside]
@@ -1655,23 +1657,26 @@ def test_scans_corrupt_blocks(corrupted_copies):
         assert len(found[0]) == copies[0] and len(found[5]) == refs[0]
 
 @pytest.mark.parametrize(
-    "region, limit",
+    "region, limit, repack",
     [
-        ("box", None),
-        ("polygon", None),
-        ("box", "_BATCH_RAW_BYTES"),
-        ("box", "_BATCH_BYTES"),
+        ("box", None, False),
+        ("polygon", None, False),
+        ("box", "_BATCH_RAW_BYTES", False),
+        ("box", "_BATCH_BYTES", False),
+        ("box", None, True),
     ],
-    ids=["box", "polygon", "box, a blob per part", "box, each blob read alone"],
+    ids=[
+        "box", "polygon", "box, a blob per part", "box, each blob read alone", "repack"
+    ],
 )
 def test_threaded_crop_writes_the_sequential_bytes(
-    tmp_path, monkeypatch, region, limit
+    tmp_path, monkeypatch, region, limit, repack
 ):
     """A crop on threads writes the bytes a crop in one process writes, also for blocks
     the GIL-free decoder and cropper leave to the per-block code (ids in more packed
     runs than they keep, plain nodes, relations), blocks that keep nothing, and when
     each blob of a batch is decompressed in a part of its own, or read alone as a batch
-    spanning more than the limit is."""
+    spanning more than the limit is; also a re-packed crop."""
     from shapely.geometry import box
 
     from pyrosm.engine import blobs
@@ -1680,8 +1685,10 @@ def test_threaded_crop_writes_the_sequential_bytes(
     if limit is not None:
         monkeypatch.setattr(blobs, limit, 1)
 
-    source = _pbf_file(tmp_path / "crafted.osm.pbf", *_crafted_blocks())
+    blocks = _crafted_blocks(standard_grid=repack)
+    source = _pbf_file(tmp_path / "crafted.osm.pbf", *blocks)
     crop = {"box": {"bounding_box": CROP_BBOX}, "polygon": {"polygon": box(*CROP_BBOX)}}
+    crop[region]["repack"] = repack
     one = crop_pbf(source, str(tmp_path / "one.osm.pbf"), workers=1, **crop[region])
     two = crop_pbf(source, str(tmp_path / "two.osm.pbf"), workers=2, **crop[region])
     assert Path(two).read_bytes() == Path(one).read_bytes()
