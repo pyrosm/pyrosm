@@ -58,6 +58,7 @@ from pyrosm.primitive_block_decoder cimport (
     REL_TYPES, ST_S, WAY_ID, WAY_INFO, WAY_KEYS, WAY_REFS, WAY_VALS, NODE_ID, NODE_INFO,
     WIRE_LENGTH, WIRE_VARINT, _Runs, _add_span, _field_end, _fields_end,
     _read_element_id, _read_tag, _read_varint, _runs_count, _runs_fill, _skip_field,
+    _zig_zag_decode,
 )
 
 from pyrosm.engine.blobs import (
@@ -91,9 +92,10 @@ _MEMBER_NODE = 0
 _MEMBER_WAY = 1
 
 # Primitive group kinds, in the order a file sorted by type then id holds them.
-_NODES = 0
-_WAYS = 1
-_RELATIONS = 2
+cdef enum:
+    _NODES = 0
+    _WAYS = 1
+    _RELATIONS = 2
 
 
 # ---------------------------------------------------------------------------
@@ -1677,6 +1679,176 @@ cdef int _push(_Int64s* a, int64_t value) noexcept nogil:
     return 0
 
 
+# The order a merge requires of its inputs (types in the order nodes, ways, relations;
+# ids rising within each), read from a block's groups without the GIL: for each group
+# that holds elements, its kind (as `_group_kind` takes it), its first and last id of
+# that kind, and whether those ids rise.
+
+cdef inline void _note_id(int64_t element_id, Py_ssize_t* count, int64_t* first,
+                          int64_t* last, int64_t* rising) noexcept nogil:
+    """Count `element_id` as the next id of a group (see `_group_order`)."""
+    if count[0] == 0:
+        first[0] = element_id
+    elif element_id <= last[0]:
+        rising[0] = 0
+    last[0] = element_id
+    count[0] += 1
+
+
+cdef int _group_order(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                      int64_t* kind, int64_t* first, int64_t* last,
+                      int64_t* rising) noexcept nogil:
+    """The order of the elements of the group `buf[start:end]`: its `kind` (`_NODES` when
+    it holds dense or plain nodes, else `_WAYS`, else `_RELATIONS`; -1 when it holds no
+    element), the `first` and `last` id of its elements of that kind (of its dense nodes
+    when it has them) and whether those ids `rising`. Returns 1 when the group is not
+    made of well-formed fields."""
+    cdef Py_ssize_t pos = start, f_start, f_end, d_pos, d_end, count = 0
+    cdef int field, wire, d_field, d_wire, element_field
+    cdef bint has_dense = False, has_nodes = False, has_ways = False, has_rels = False
+    cdef uint64_t length
+    cdef int64_t element_id = 0
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire == WIRE_LENGTH:
+            has_dense |= field == GROUP_DENSE
+            has_nodes |= field == GROUP_NODES
+            has_ways |= field == GROUP_WAYS
+            has_rels |= field == GROUP_RELATIONS
+        _skip_field(buf, &pos, end, wire)
+    if pos != end:
+        return 1
+    kind[0] = -1
+    if has_dense or has_nodes:
+        kind[0] = _NODES
+    elif has_ways:
+        kind[0] = _WAYS
+    elif has_rels:
+        kind[0] = _RELATIONS
+    else:
+        return 0
+    element_field = (
+        GROUP_DENSE if has_dense else GROUP_NODES if has_nodes
+        else GROUP_WAYS if has_ways else GROUP_RELATIONS
+    )
+    rising[0] = 1
+    pos = start
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if field != element_field or wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        f_start = pos
+        f_end = _field_end(pos, length, end)
+        if f_end > end:
+            return 1
+        pos = f_end
+        if element_field != GROUP_DENSE:
+            if _read_element_id(buf, f_start, f_end, element_field == GROUP_NODES,
+                                &element_id):
+                return 1
+            _note_id(element_id, &count, first, last, rising)
+            continue
+        # The ids of dense nodes are delta coded, in one or more packed runs.
+        d_pos = f_start
+        while d_pos < f_end:
+            _read_tag(buf, &d_pos, f_end, &d_field, &d_wire)
+            if d_field == DENSE_ID and d_wire == WIRE_VARINT:
+                element_id += _zig_zag_decode(_read_varint(buf, &d_pos, f_end))
+                _note_id(element_id, &count, first, last, rising)
+            elif d_field == DENSE_ID and d_wire == WIRE_LENGTH:
+                length = _read_varint(buf, &d_pos, f_end)
+                d_end = _field_end(d_pos, length, f_end)
+                if d_end > f_end:
+                    return 1
+                while d_pos < d_end:
+                    element_id += _zig_zag_decode(_read_varint(buf, &d_pos, d_end))
+                    _note_id(element_id, &count, first, last, rising)
+                if d_pos != d_end:
+                    return 1
+            else:
+                _skip_field(buf, &d_pos, f_end, d_wire)
+        if d_pos != f_end:
+            return 1
+    if pos != end:
+        return 1
+    if count == 0:
+        kind[0] = -1
+    return 0
+
+
+cdef int _block_order(const unsigned char* buf, Py_ssize_t end,
+                      _Int64s* out) noexcept nogil:
+    """Append to `out` the (kind, first id, last id, rising) of each group of the block
+    `buf[:end]` that holds elements, in file order (see `_group_order`). Returns 1 when
+    the block is not made of well-formed fields, -1 when memory runs out."""
+    cdef Py_ssize_t pos = 0, f_start
+    cdef int field, wire
+    cdef uint64_t length
+    cdef int64_t kind = -1, first = 0, last = 0, rising = 1
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if field != PB_PRIMITIVEGROUP or wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        f_start = pos
+        pos = _field_end(pos, length, end)
+        if pos > end or _group_order(buf, f_start, pos, &kind, &first, &last, &rising):
+            return 1
+        if kind >= 0 and (
+            _push(out, kind) < 0 or _push(out, first) < 0 or _push(out, last) < 0
+            or _push(out, rising) < 0
+        ):
+            return -1
+    return 1 if pos != end else 0
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def _block_orders(const unsigned char[::1] buffer, const int64_t[::1] starts):
+    """For each block ``buffer[starts[i]:starts[i + 1]]``, the order of its elements as an
+    array of (kind, first id, last id, rising) rows, one per group that holds elements
+    (see `_group_order`), or None for a block the scan cannot read (its decode raises
+    the error)."""
+    cdef Py_ssize_t n_blocks = starts.shape[0] - 1, b, mark
+    cdef int status
+    check_batch_starts(starts, buffer.shape[0])
+    cdef const unsigned char* buf = &buffer[0] if buffer.shape[0] else _NO_BYTES
+    cdef _Int64s rows
+    memset(&rows, 0, sizeof(_Int64s))
+    at = np.zeros(n_blocks + 1, dtype=np.int64)
+    readable = np.ones(n_blocks, dtype=bool)
+    cdef int64_t[::1] at_view = at
+    cdef uint8_t[::1] readable_view = readable.view(np.uint8)
+    cdef bint out_of_memory = False
+    try:
+        with nogil:
+            for b in range(n_blocks):
+                mark = rows.n
+                status = _block_order(buf + starts[b], starts[b + 1] - starts[b], &rows)
+                if status < 0:
+                    out_of_memory = True
+                    break
+                if status > 0:
+                    rows.n = mark
+                    readable_view[b] = 0
+                at_view[b + 1] = rows.n
+        if out_of_memory:
+            raise MemoryError()
+        table = np.array(<int64_t[:rows.n]>rows.data, dtype=np.int64) if rows.n else (
+            np.empty(0, dtype=np.int64)
+        )
+    finally:
+        free(rows.data)
+    table = table.reshape(-1, 4)
+    return [
+        table[at[b] // 4:at[b + 1] // 4] if readable[b] else None
+        for b in range(n_blocks)
+    ]
+
+
 # The copies of candidate ways found so far, in `_block_way_copies`'s six arrays: one entry
 # per copy in the first five, and the refs of the copies that touch the box in ``refs``.
 cdef struct _Copies:
@@ -2659,6 +2831,42 @@ def _batch_repack(ctx, payloads, buffer, starts):
     return out
 
 
+cdef _layout_order(data, filepath):
+    """The order rows of `_block_orders` for the decompressed block `data` of `filepath`,
+    read from its layout as `_SortedInput` reads it; for a block the GIL-free scan cannot
+    read. A block whose layout cannot be read raises its error."""
+    rows = []
+    for kind, block, group in _block_groups(data, filepath):
+        ids = _group_ids(kind, group)
+        if len(ids):
+            rows.append((kind, ids[0], ids[-1], bool((ids[1:] > ids[:-1]).all())))
+    return np.array(rows, dtype=np.int64).reshape(-1, 4)
+
+
+def _worker_merge_input(payload):
+    """The order of the elements and the kept elements of a payload's block for a merge
+    (see `_batch_merge_input`). Only the thread pool runs it: its chunks do not
+    pickle."""
+    data = _payload_data(payload)
+    view = np.frombuffer(data, dtype=np.uint8)
+    order = _block_orders(view, np.array([0, len(view)], dtype=np.int64))[0]
+    if order is None:
+        order = _layout_order(data, payload[0])
+    return order, _repack_block(_WORKER_CONTEXT, data, payload[0])
+
+
+def _batch_merge_input(ctx, payloads, buffer, starts):
+    """`_worker_merge_input` of each payload of a part of a batch (its blocks in
+    ``buffer``): the order of each block's elements (see `_block_orders`, or
+    `_layout_order` for a block it cannot read) and its kept elements (see
+    `_batch_repack`)."""
+    orders = _block_orders(buffer, starts)
+    for b, payload in enumerate(payloads):
+        if orders[b] is None:
+            orders[b] = _layout_order(bytes(buffer[starts[b]:starts[b + 1]]), payload[0])
+    return list(zip(orders, _batch_repack(ctx, payloads, buffer, starts)))
+
+
 # The batch version of each stage function with one.
 _BATCHED = {
     _worker_nodes_inside: _batch_nodes_inside,
@@ -2669,6 +2877,7 @@ _BATCHED = {
     _worker_way_copies: _batch_way_copies,
     _worker_write: _batch_write,
     _worker_repack: _batch_repack,
+    _worker_merge_input: _batch_merge_input,
 }
 
 
@@ -2766,10 +2975,6 @@ def _with_pool(func, args, workers, sources, region, compact):
     else:
         warnings.warn(_POOL_FALLBACK_WARNING, RuntimeWarning)
     return func(*args, None)
-
-
-def _merge_select(sources, region, keep_relations, progress, pool):
-    return _select(sources, region, keep_relations, pool, progress)
 
 
 cdef _open_pool(workers, sources, region, compact):
@@ -3762,6 +3967,17 @@ cdef list _kept_chunks(data, filepath, kept):
     ]
 
 
+def _merge_input_blocks(source_path, kept_nodes, kept_ways, kept_rel, progress, pool):
+    """Yield (order, chunks) for each block of the merge input `source_path`, in file
+    order: the order of its elements (see `_block_orders`) and its kept elements (see
+    `_kept_chunks`), read, cropped and decoded by the threads of `pool`, a
+    `_ThreadPool`."""
+    pool.broadcast("kept_nodes", kept_nodes)
+    pool.broadcast("kept_ways", kept_ways)
+    pool.broadcast("kept_rel", kept_rel)
+    yield from pool.imap(_worker_merge_input, _iter_payloads(source_path, progress))
+
+
 def _repack_chunks(source_path, kept_nodes, kept_ways, kept_rel, progress, pool):
     """Yield the kept elements of each block of `source_path` (see `_kept_chunks`), in file
     order: read, decompressed and decoded by the threads of `pool` when it is a
@@ -3890,6 +4106,38 @@ class _SortedInput:
             for chunk in _decode_group(kind, block, group, kept):
                 versions, timestamps = _chunk_ranks(kind, chunk)
                 yield chunk, _chunk_ids(kind, chunk), versions, timestamps
+
+
+class _ChunkInput:
+    """One merge input read as the (order, chunks) of its blocks in file order (see
+    `_merge_input_blocks`): every element is checked to be sorted by type then id, as
+    `_SortedInput` checks them, and the kept elements are merged."""
+
+    def __init__(self, filepath, blocks):
+        self.filepath = filepath
+        self._chunks = self._checked(blocks)
+        self._next = next(self._chunks, None)
+
+    def _checked(self, blocks):
+        """The (kind, chunk) pairs of `blocks`, each block checked for its order first."""
+        last_kind, last_id = -1, None
+        for order, chunks in blocks:
+            for kind, first, last, rising in order.tolist():
+                if kind < last_kind or not rising or (
+                    kind == last_kind and first <= last_id
+                ):
+                    raise _not_sorted(self.filepath)
+                last_kind, last_id = kind, last
+            yield from chunks
+
+    def chunks(self, kind, kept):
+        """Yield (chunk, ids, versions, timestamps) for the kept elements of `kind`; the
+        chunks hold only kept elements, so `kept` is not used."""
+        while self._next is not None and self._next[0] <= kind:
+            chunk = self._next[1]
+            self._next = next(self._chunks, None)
+            versions, timestamps = _chunk_ranks(kind, chunk)
+            yield chunk, _chunk_ids(kind, chunk), versions, timestamps
 
 
 cdef _winning_copies(ids, versions, timestamps, src):
@@ -4027,12 +4275,13 @@ cpdef merge_pbf(inputs, output_path=None, bounding_box=None, keep_relations=True
         are written.
 
     workers : int | str
-        Number of threads for selecting the elements inside ``bounding_box`` or
-        ``polygon``. By default (``None``, as ``"auto"``) the count is chosen as an
-        out-of-core read does for the inputs' total size; ``1`` runs sequentially. The
-        merged file is written sequentially either way. With
-        ``PYROSM_DECODE_BACKEND=processes`` they are worker processes, one by default;
-        when those cannot run (on macOS and Windows: a script without an
+        Number of threads for merging inside ``bounding_box`` or ``polygon``: they
+        select the elements, then read, crop and decode the inputs' blocks and encode
+        the merged ones, which are written in order. By default (``None``, as
+        ``"auto"``) the count is chosen as an out-of-core read does for the inputs'
+        total size; ``1`` runs sequentially, as does a merge of whole inputs. With
+        ``PYROSM_DECODE_BACKEND=processes`` they are worker processes, one by default,
+        which only select the elements; when those cannot run (on macOS and Windows: a script without an
         ``if __name__ == "__main__":`` guard, or one read from stdin), the merge runs
         in one process and warns.
 
@@ -4102,34 +4351,25 @@ cdef _merge(sources, output_path, bounding_box, keep_relations, workers, polygon
 
     _refuse_input_as_output(output_path, sources)
 
-    if bounding_box is None and polygon is None:
-        bounds = _header_bounds(headers)
-        kept = (None, None, None if keep_relations else Int64Set())
-        won = (None, None, None)
-        progress.plan([_WRITING])
-    else:
-        region = _region(bounding_box, polygon)
-        bounds = region[0]
-        kept_nodes, kept_ways, kept_rel = _with_pool(
-            _merge_select, (sources, region, keep_relations, progress), workers,
-            sources, region, False,
-        )
-        kept = (
-            _to_sorted_set(kept_nodes),
-            _to_set(_unique_concat(kept_ways)),
-            _to_set(_unique_concat(kept_rel)),
-        )
-        won = (None, [_to_set(w) for w in kept_ways], [_to_set(r) for r in kept_rel])
-
     made = output_path is None
     if made:
         fd, output_path = tempfile.mkstemp(suffix=".osm.pbf", prefix="pyrosm_merge_")
         os.close(fd)
-    boxed = bounding_box is not None or polygon is not None
     try:
-        write_atomic_path(output_path, partial(
-            _write_merge, sources, fingerprints, bounds, boxed, kept, won, progress
-        ))
+        if bounding_box is None and polygon is None:
+            kept = (None, None, None if keep_relations else np.empty(0, dtype=np.int64))
+            progress.plan([_WRITING])
+            write_atomic_path(output_path, partial(
+                _write_merge, sources, fingerprints, _header_bounds(headers), False, kept,
+                (None, None, None), progress, None,
+            ))
+        else:
+            region = _region(bounding_box, polygon)
+            _with_pool(
+                _select_and_merge,
+                (sources, fingerprints, region, keep_relations, progress, output_path),
+                workers, sources, region, False,
+            )
     except BaseException:
         if made:
             Path(output_path).unlink(missing_ok=True)
@@ -4137,16 +4377,48 @@ cdef _merge(sources, output_path, bounding_box, keep_relations, workers, polygon
     return output_path
 
 
-def _write_merge(sources, fingerprints, bounds, boxed, kept, won, progress, path):
+def _select_and_merge(sources, fingerprints, region, keep_relations, progress,
+                      output_path, pool):
+    """Select the elements a merge cropped to `region` keeps (see `_select`) and write
+    the merge to `output_path`, both with `pool` when one is used."""
+    kept_nodes, kept_ways, kept_rel = _select(
+        sources, region, keep_relations, pool, progress
+    )
+    kept = (kept_nodes, _unique_concat(kept_ways), _unique_concat(kept_rel))
+    won = (None, [_to_set(w) for w in kept_ways], [_to_set(r) for r in kept_rel])
+    write_atomic_path(output_path, partial(
+        _write_merge, sources, fingerprints, region[0], True, kept, won, progress, pool
+    ))
+
+
+def _write_merge(sources, fingerprints, bounds, boxed, kept, won, progress, pool, path):
     """Write the merge of `_merge` to `path` with the header box `bounds`, refusing it
     when an input changed since its `fingerprints`; warn when no node is written (none
-    lies in the box `bounds` when `boxed`, else the inputs hold none)."""
+    lies in the box `bounds` when `boxed`, else the inputs hold none). `kept` holds the
+    ids of the nodes, ways and relations to write (None: all of them); with a `boxed`
+    merge and a `_ThreadPool`, its threads crop and decode the inputs' blocks (see
+    `_merge_input_blocks`) and encode the merged blocks."""
+    threaded = boxed and isinstance(pool, _ThreadPool)
     with open(path, "wb") as out, progress.one_pass(_WRITING):
-        inputs = [_SortedInput(p, progress) for p in sources]
+        if threaded:
+            inputs = [
+                _ChunkInput(
+                    p, _merge_input_blocks(p, kept[0], kept[1], kept[2], progress, pool)
+                )
+                for p in sources
+            ]
+            kept_sets = (None, None, None)
+        else:
+            inputs = [_SortedInput(p, progress) for p in sources]
+            kept_sets = (
+                None if kept[0] is None else _to_sorted_set(kept[0]),
+                None if kept[1] is None else _to_set(kept[1]),
+                None if kept[2] is None else _to_set(kept[2]),
+            )
         _write_header(out, bounds, sorted_output=True)
-        writer = _RepackWriter(out)
+        writer = _RepackWriter(out, pool.executor if threaded else None)
         for kind in (_NODES, _WAYS, _RELATIONS):
-            _merge_kind(inputs, kind, kept[kind], won[kind], writer)
+            _merge_kind(inputs, kind, kept_sets[kind], won[kind], writer)
         writer.close()
     if writer.nodes_written == 0:
         _warn_empty(sources, bounds if boxed else None)

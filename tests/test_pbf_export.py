@@ -1289,7 +1289,17 @@ def test_to_pbf_writes_each_kind_of_group(tmp_path):
         ("HistoricalInformation", "ValueError", "Cannot crop or merge"),
         ("unsorted ids", "ValueError", "not sorted by type then id"),
         ("unsorted ids outside the box", "ValueError", "not sorted by type then id"),
+        (
+            "unsorted ids outside the box, on threads",
+            "ValueError",
+            "not sorted by type then id",
+        ),
         ("nodes after ways", "ValueError", "not sorted by type then id"),
+        (
+            "nodes after ways outside the box, on threads",
+            "ValueError",
+            "not sorted by type then id",
+        ),
         ("output is an input", "ValueError", "is the input"),
         ("output is a hard link to an input", "ValueError", "is the input"),
         ("input changes during the merge", "ValueError", "changed while it was"),
@@ -1315,9 +1325,9 @@ def test_merge_pbf_rejects_bad_input(
         bad.write_bytes(data[: len(data) // 2])
     elif case == "HistoricalInformation":
         _pbf_file(bad, features=("OsmSchema-V0.6", case))
-    elif case in ("unsorted ids", "unsorted ids outside the box"):
+    elif case.startswith("unsorted ids"):
         _pbf_file(bad, _dense_block([10, 11], True), _dense_block([5, 6], True))
-    elif case == "nodes after ways":
+    elif case.startswith("nodes after ways"):
         _pbf_file(bad, ways, _dense_block([5, 6], True))
     elif case == "output is an input":
         bad.write_bytes(Path(helsinki_pbf).read_bytes())
@@ -1341,7 +1351,9 @@ def test_merge_pbf_rejects_bad_input(
     else:
         inputs = []
     errors = {"InvalidOSMFileError": InvalidOSMFileError, "ValueError": ValueError}
-    kwargs = {"bounding_box": [0, 0, 1, 1]} if case.endswith("outside the box") else {}
+    kwargs = {"bounding_box": [0, 0, 1, 1]} if "outside the box" in case else {}
+    if case.endswith("on threads"):
+        kwargs["workers"] = 2
     with pytest.raises(errors[error], match=match) as err:
         merge_pbf(inputs, output, **kwargs)
     assert not list(tmp_path.glob(".pyrosm_merge_*"))
@@ -1581,16 +1593,38 @@ def _expected_way_copies(block, candidates, nodes_in_box):
     return out
 
 
+def _expected_order(pb):
+    """The (kind, first id, last id, rising) of each group of the PrimitiveBlock `pb`
+    that holds elements, as protobuf reads them (see `_block_orders`)."""
+    rows = []
+    for g in pb.primitivegroup:
+        if g.HasField("dense"):
+            kind, ids = 0, np.cumsum(list(g.dense.id)).tolist()
+        elif len(g.nodes):
+            kind, ids = 0, [n.id for n in g.nodes]
+        elif len(g.ways):
+            kind, ids = 1, [w.id for w in g.ways]
+        elif len(g.relations):
+            kind, ids = 2, [r.id for r in g.relations]
+        else:
+            continue
+        if ids:
+            rising = all(b > a for a, b in zip(ids, ids[1:]))
+            rows.append([kind, ids[0], ids[-1], int(rising)])
+    return rows
+
+
 @pytest.mark.parametrize("source", ["crafted", "helsinki"])
 def test_scans_read_blocks_as_protobuf(tmp_path, helsinki_pbf, source):
     """The selection stages' GIL-free scans read each block as protobuf does:
-    _block_kinds marks the blocks holding ways (1) and relations (2), and
-    _way_copies_blocks gives the copies of the candidate ways (version and timestamp -1
-    where not recorded, the refs of the copies touching the box) or leaves a block to the
-    protobuf path (status 1)."""
+    _block_kinds marks the blocks holding ways (1) and relations (2), _block_orders gives
+    the order of each group's elements, and _way_copies_blocks gives the copies of the
+    candidate ways (version and timestamp -1 where not recorded, the refs of the copies
+    touching the box) or leaves a block to the protobuf path (status 1)."""
     from pyrosm.int64_hash import Int64Set
     from pyrosm.pbf_export import (
         _block_kinds,
+        _block_orders,
         _iter_block_data,
         _way_copies_blocks,
         crop_pbf,
@@ -1618,6 +1652,8 @@ def test_scans_read_blocks_as_protobuf(tmp_path, helsinki_pbf, source):
         for pb in pbs
     ]
     assert (kinds & 1).any() and (kinds & 2).any()
+    orders = [order.tolist() for order in _block_orders(buffer, starts)]
+    assert orders == [_expected_order(pb) for pb in pbs]
 
     status, copies, refs, found = _way_copies_blocks(
         buffer,
@@ -1638,18 +1674,20 @@ def test_scans_corrupt_blocks(corrupted_copies):
     """A corrupted block is marked or not, its way copies read or left to the protobuf
     path; the scans never read outside it."""
     from pyrosm.int64_hash import Int64Set
-    from pyrosm.pbf_export import _block_kinds, _way_copies_blocks
+    from pyrosm.pbf_export import _block_kinds, _block_orders, _way_copies_blocks
 
     block = _crafted_blocks()[4].SerializeToString()
     candidates = Int64Set(np.array([40, 41, 42, 43], dtype=np.int64))
     nodes_in_box = Int64Set(np.array([2, 22, 30], dtype=np.int64))
     empty = np.zeros(0, dtype=np.uint8), np.array([0, 0], dtype=np.int64)
     assert _block_kinds(*empty).tolist() == [0]
+    assert [order.tolist() for order in _block_orders(*empty)] == [[]]
     assert _way_copies_blocks(*empty, candidates, nodes_in_box)[0].tolist() == [0]
     for data in corrupted_copies(block, 300, seed=4):
         buffer = np.frombuffer(data, dtype=np.uint8)
         starts = np.array([0, len(data)], dtype=np.int64)
         assert len(_block_kinds(buffer, starts)) == 1
+        assert len(_block_orders(buffer, starts)) == 1
         status, copies, refs, found = _way_copies_blocks(
             buffer, starts, candidates, nodes_in_box
         )
