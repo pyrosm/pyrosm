@@ -497,16 +497,18 @@ cdef _nodes_inside_file(filepath, region, progress):
     ])
 
 
-cdef _ways_touching_file(filepath, nodes_in_bbox_set, progress):
+cdef _ways_touching_file(filepath, nodes_in_bbox_set, progress, with_refs):
+    """The ids of the ways of `filepath` with a node in the set `nodes_in_bbox_set`, and
+    with `with_refs` the distinct node ids of those ways (else None)."""
     kept_way_ids = []
     extra_nodes = []
     for _, _, ways, _ in _iter_decoded_blocks(filepath, progress):
         ids, refs = _ways_touching(ways, nodes_in_bbox_set)
         kept_way_ids.append(ids)
-        extra_nodes.append(refs)
-    return np.concatenate(kept_way_ids or [np.empty(0, dtype=np.int64)]), _unique_concat(
-        extra_nodes
-    )
+        if with_refs:
+            extra_nodes.append(refs)
+    ways = np.concatenate(kept_way_ids or [np.empty(0, dtype=np.int64)])
+    return ways, _unique_concat(extra_nodes) if with_refs else None
 
 
 cdef _relations_touching_file(filepath, kept_nodes_set, kept_ways_set, progress):
@@ -627,20 +629,21 @@ cdef _block_way_copies(pblock, candidates, nodes_in_bbox_set):
     )
 
 
-cdef _way_winners(sources, touching, nodes_in_bbox, pool, progress, payload_kinds):
+cdef _way_winners(sources, touching, nodes_in_bbox, nib_set, pool, progress,
+                  payload_kinds):
     """Keep a way only where its winning copy is a copy that touches the box.
 
     `touching` holds, per file, the ways whose copy in that file has a node in the
     box. Every copy of those ways is ranked as in the merge, so a way whose winning
     copy lies outside the box is dropped, and only the winning copies' nodes are
-    kept. Returns the kept way ids of each file and the kept node ids. With a `pool`,
-    `payload_kinds` holds the (payload, kinds) pairs of each file's blocks from the node
-    pass (see `_select`).
+    kept. Returns the kept way ids of each file and the kept node ids: the nodes in the
+    box `nodes_in_bbox` (`nib_set` as a set, or None to build it here) and those of the
+    winning copies outside it. With a `pool`, `payload_kinds` holds the (payload, kinds)
+    pairs of each file's blocks from the node pass (see `_select`).
     """
     candidates = _unique_concat(touching)
     if pool is None:
         candidates_set = _to_set(candidates)
-        nib_set = _to_set(nodes_in_bbox)
         copies = [
             [
                 _block_way_copies(pb, candidates_set, nib_set)
@@ -658,22 +661,27 @@ cdef _way_winners(sources, touching, nodes_in_bbox, pool, progress, payload_kind
             for i in range(len(sources))
         ]
     blocks = [block for source_blocks in copies for block in source_blocks]
+    src = np.repeat(
+        np.arange(len(sources)),
+        [sum([len(block[0]) for block in source_blocks]) for source_blocks in copies],
+    )
     ids, versions, timestamps, touches, ref_counts, refs = [
         np.concatenate([block[k] for block in blocks]) if blocks
         else np.empty(0, dtype=np.int64)
         for k in range(6)
     ]
-    src = np.repeat(
-        np.arange(len(sources)),
-        [sum([len(block[0]) for block in source_blocks]) for source_blocks in copies],
-    )
+    del copies, blocks
 
     winners = _winning_copies(ids, versions, timestamps, src)
     passing = np.zeros(len(ids), dtype=bool)
     passing[winners] = touches[winners].astype(bool)
     kept_ways = [ids[passing & (src == i)] for i in range(len(sources))]
     kept_refs = refs[np.repeat(passing, ref_counts)]
-    return kept_ways, _unique_concat([nodes_in_bbox, kept_refs])
+    del refs
+    if nib_set is None:
+        nib_set = _to_set(nodes_in_bbox)
+    outside = np.unique(kept_refs[~nib_set.isin(kept_refs)])
+    return kept_ways, np.concatenate([nodes_in_bbox, outside])
 
 
 # ---------------------------------------------------------------------------
@@ -2302,29 +2310,38 @@ cdef _select(sources, region, keep_relations, pool, progress, complete_relations
                     kinds.append(block_kinds)
                 payload_kinds.append(list(zip(payloads, kinds)))
             nodes_in_bbox = _unique_concat(found_nodes)
+            del found_nodes
             pool.broadcast("nodes_in_bbox", nodes_in_bbox)
+            nib_set = (
+                pool.context.get_set("nodes_in_bbox") if isinstance(pool, _ThreadPool)
+                else None
+            )
 
-    # Stage 2: ways with >=1 node in the bbox (+ all their refs -> complete ways).
+    # Stage 2: ways with >=1 node in the bbox (+ all their refs -> complete ways). With
+    # several files, the nodes of the kept ways are those of their winning copies (see
+    # `_way_winners`), so the refs found here are not kept.
+    one_file = len(sources) == 1
     kept_ways = []
     kept_nodes = [nodes_in_bbox]
     with progress.one_pass(_FINDING_WAYS):
         for i, p in enumerate(sources):
             if pool is None:
-                ways, refs = _ways_touching_file(p, nib_set, progress)
+                ways, refs = _ways_touching_file(p, nib_set, progress, one_file)
             else:
                 payloads = _payloads_holding(payload_kinds[i], _HOLDS_WAYS, progress)
                 results = list(pool.imap(_worker_ways_touching, payloads))
                 ways = _unique_concat([w for w, _ in results])
-                refs = _unique_concat([r for _, r in results])
+                refs = _unique_concat([r for _, r in results]) if one_file else None
+                del results
             kept_ways.append(ways)
             kept_nodes.append(refs)
-    if len(sources) > 1:
+    if one_file:
+        kept_nodes = _unique_concat(kept_nodes)
+    else:
         with progress.one_pass(_CHOOSING_WAYS):
             kept_ways, kept_nodes = _way_winners(
-                sources, kept_ways, nodes_in_bbox, pool, progress, payload_kinds
+                sources, kept_ways, nodes_in_bbox, nib_set, pool, progress, payload_kinds
             )
-    else:
-        kept_nodes = _unique_concat(kept_nodes)
 
     # Stage 3: relations referencing a kept node/way.
     if not keep_relations:
