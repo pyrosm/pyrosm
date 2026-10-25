@@ -1,8 +1,8 @@
 Changelog
 =========
 
-v0.25.0
--------
+v0.25.0 (Oct 25, 2026)
+----------------------
 
 This release makes crops and merges faster and leaner, and changes the licence: pyrosm is licensed under the BSD 3-Clause License instead of MIT. ``get_buildings(keep_nodes=True)`` also returns the buildings mapped as single nodes. With ``workers``, crops read only the blocks each pass needs, and re-packed crops cut, decode and encode their blocks on the threads: on Finland (737 MB), a crop of the Helsinki region takes 3.8 s instead of 5.0 s, and a re-packed one 6.2 s instead of 11.6 s. Merges write on the threads, also without a region, select their elements as the threads do when they have one worker, and hold far less memory for a large region: merging two Finland extracts with 8 workers takes about 17 s instead of 25 s cut to the Helsinki region and 55 s instead of 75 s whole, and cut to all of Finland it peaks at 7 GB instead of 19 GB. Crops and merges refuse a block whose string table comes in two parts instead of writing it wrong, and a new docs page, Upgrading, lists release by release the changes that need action.
 
