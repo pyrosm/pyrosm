@@ -10,7 +10,10 @@ PyPI, and creates the GitHub release.
 1. Check the libraries in [vendor/](vendor/README.md) against their upstream releases,
    and update them when a release fixes a bug in the code pyrosm uses.
 2. Bump `version` in [setup.py](setup.py) (and `version = release` in
-   [docs/conf.py](docs/conf.py)) to the new `X.Y.Z`.
+   [docs/conf.py](docs/conf.py)) to the new `X.Y.Z`, and update the citations: `version` and
+   `date-released` (the release date) in [CITATION.cff](CITATION.cff), and the version and the
+   year in [README.md](README.md), [docs/index.rst](docs/index.rst) and
+   [docs/citation.rst](docs/citation.rst).
 3. Move the `Unreleased` notes under a new `vX.Y.Z` heading in
    [CHANGELOG.md](CHANGELOG.md) and [docs/changelog.rst](docs/changelog.rst).
 4. Merge the above to `main`.

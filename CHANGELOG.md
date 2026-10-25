@@ -19,6 +19,7 @@ This release makes crops and merges faster and leaner, and changes the licence: 
 - FIXED: Crops and merges refuse a block whose string table comes in two parts, which protobuf reads as one, with an `InvalidOSMFileError` that names the file. They read only the last part: a crop wrote the block's elements with tags and roles beyond the written string table, and a re-packed crop failed with `IndexError` ([#727](https://github.com/pyrosm/pyrosm/pull/727))
 - DOCS: A new page, Upgrading, lists release by release the changes since 0.6.2 that alter what reads, downloads and graph exports return or that need a change in code, with what to do about each ([#713](https://github.com/pyrosm/pyrosm/pull/713))
 - DOCS: The links of the quickstart and of the guide to reading OSM data open their sections, and the `OSM.to_pbf` API page gives its paragraph about the crop's progress as text instead of four parameters that do not exist ([#716](https://github.com/pyrosm/pyrosm/pull/716))
+- DOCS: The citations on the How to cite page, on the start page of the docs, in the README and in `CITATION.cff` name the current version, 0.25.0, instead of 0.13.1, and the release steps include updating them ([#746](https://github.com/pyrosm/pyrosm/pull/746))
 
 v0.24.0
 -------
