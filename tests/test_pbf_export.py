@@ -1401,8 +1401,8 @@ def _packed_sint(values, runs=1):
 def _crafted_blocks():
     """Blocks for the GIL-free crop: dense nodes with metadata and tags on a shifted grid,
     unsorted dense nodes, ids in 9 packed runs, plain nodes, ways, a group of ways and
-    relations, relations, a block with two string tables and an empty group, and a block
-    with nothing in the crop box."""
+    relations, relations, a block with an empty group, and a block with nothing in the
+    crop box."""
     import zlib
 
     from pyrosm.proto.fileformat_pb2 import Blob
@@ -1471,8 +1471,8 @@ def _crafted_blocks():
         rel.types.extend([t for t, _ in members])
         rel.roles_sid.extend([3] * len(members))
     blocks.append(rels)
-    twice = rels.SerializeToString() + _len_field(1, _len_field(1, b"x")) + _len_field(2, b"")
-    blocks.append(Blob(zlib_data=zlib.compress(twice), raw_size=len(twice)))
+    empty_group = rels.SerializeToString() + _len_field(2, b"")
+    blocks.append(Blob(zlib_data=zlib.compress(empty_group), raw_size=len(empty_group)))
     blocks.append(dense([70, 71], [0, 0], tags=[1, 1]))
     return blocks
 

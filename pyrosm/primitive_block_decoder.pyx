@@ -951,6 +951,8 @@ def element_layout(const unsigned char[::1] data):
             if pos > end:
                 break
             if field == PB_STRINGTABLE:
+                if string_table is not None:
+                    _corrupt("a block holds two string tables")
                 string_table = (f_start, pos)
             elif field == PB_PRIMITIVEGROUP:
                 groups.append(_group_layout(buf, f_start, pos))
