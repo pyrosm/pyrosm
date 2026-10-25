@@ -75,7 +75,7 @@ html_logo = "img/pyrosm_logo.png"
 html_theme_options = {
     # "external_links": [],
     "repository_url": "https://github.com/HTenkanen/pyrosm/",
-    "repository_branch": "master",
+    "repository_branch": "main",
     "path_to_docs": "docs/",
     # "twitter_url": "https://twitter.com/pythongis",
     # "google_analytics_id": "UA-159257488-1",
@@ -95,7 +95,7 @@ html_context = {
     # Format Template: https://{{ github_host|default("github.com") }}/{{ github_user }}/{{ github_repo }}/blob/{{ github_version }}{{ conf_py_path }}{{ pagename }}{{ suffix }}
     "github_user": "htenkanen",
     "github_repo": "pyrosm",
-    "github_version": "master/",
+    "github_version": "main/",
     "conf_py_path": "/docs/",
 }
 

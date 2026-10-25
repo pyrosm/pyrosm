@@ -1,9 +1,9 @@
 name: test
 on:
-  # Run on pushes to the default branch and on PRs. Scoping push to master
+  # Run on pushes to the default branch and on PRs. Scoping push to main
   # avoids the duplicate push+pull_request runs on every PR branch.
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
   workflow_call:
   workflow_dispatch:

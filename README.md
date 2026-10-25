@@ -7,7 +7,7 @@
 [![PyPI version](https://badge.fury.io/py/pyrosm.svg)](https://badge.fury.io/py/pyrosm)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/pyrosm.svg?logo=python&logoColor=%23fff)](https://pypi.org/project/pyrosm)
 [![Documentation Status](https://readthedocs.org/projects/pyrosm/badge/?version=latest)](https://pyrosm.readthedocs.io/en/latest/?badge=latest)
-[![Coverage Status](https://codecov.io/gh/pyrosm/pyrosm/branch/master/graph/badge.svg)](https://codecov.io/gh/pyrosm/pyrosm) 
+[![Coverage Status](https://codecov.io/gh/pyrosm/pyrosm/branch/main/graph/badge.svg)](https://codecov.io/gh/pyrosm/pyrosm) 
 [![CodeFactor](https://www.codefactor.io/repository/github/pyrosm/pyrosm/badge)](https://www.codefactor.io/repository/github/pyrosm/pyrosm)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/pyrosm?color=yellow&label=Downloads)](https://pypistats.org/packages/pyrosm)
 [![Downloads (PyPI total)](https://static.pepy.tech/personalized-badge/pyrosm?period=total&units=international_system&left_color=grey&right_color=orange&left_text=Downloads%20(pypi))](https://pepy.tech/project/pyrosm)
@@ -26,7 +26,7 @@ The main difference between pyrosm and OSMnx is that OSMnx reads the data over i
 that can be downloaded e.g. from [GeoFabrik's website](https://download.geofabrik.de/). The library has been developed by keeping performance in mind, hence, it is mainly written in Cython (*Python with C-like performance*) which makes it fast to parse OpenStreetMap data from PBF files. With its out-of-core ("streaming") engine, the default reader, it is possible to read whole-country (or even continent) extracts quickly without running out of
 memory. Pyrosm decodes the PBF data with [Google's Protocol Buffers](https://protobuf.dev/) library (using its fast `upb` C backend). Protocol Buffers is a commonly used and efficient method to serialize and compress structured data which is also used by OpenStreetMap contributors to distribute the OSM data in PBF format (Protocolbuffer Binary Format). 
 
-> **Backend change.** Since **v0.8.0**, the backend used to parse the protocol-buffer messages is [Google's Protobuf](https://protobuf.dev/) (its fast C `upb` backend) instead of the previously used [Pyrobuf](https://github.com/appnexus/pyrobuf). The switch was made for maintainability and installation reliability: Pyrobuf is no longer maintained and its source build fails with modern `setuptools`, which broke `pip install pyrosm`, whereas Google's Protobuf is actively maintained and ships prebuilt wheels and conda-forge packages for every Python version pyrosm supports. The change does **not** slow down parsing — see the [backend benchmark](https://github.com/pyrosm/pyrosm/blob/master/docs/benchmarks/README.md). **v0.7.0 was the last release that used Pyrobuf.**
+> **Backend change.** Since **v0.8.0**, the backend used to parse the protocol-buffer messages is [Google's Protobuf](https://protobuf.dev/) (its fast C `upb` backend) instead of the previously used [Pyrobuf](https://github.com/appnexus/pyrobuf). The switch was made for maintainability and installation reliability: Pyrobuf is no longer maintained and its source build fails with modern `setuptools`, which broke `pip install pyrosm`, whereas Google's Protobuf is actively maintained and ships prebuilt wheels and conda-forge packages for every Python version pyrosm supports. The change does **not** slow down parsing — see the [backend benchmark](https://github.com/pyrosm/pyrosm/blob/main/docs/benchmarks/README.md). **v0.7.0 was the last release that used Pyrobuf.**
 
 > **Out-of-core ("streaming") engine.** Pyrosm reads with its out-of-core engine by default: `OSM(filepath)` decodes PBF files in a **single streaming pass with bounded memory**, decodes larger files **in parallel** on threads (`workers="auto"`, the default), and caches each layer's result automatically. It reads whole-country and even **whole-continent** extracts (e.g. all of South America) quickly on modest machines without running out of memory. `OSM(filepath, engine="in_memory")` selects the in-memory reader, which parses the whole file once and serves every read of the reader from it; history reads always use it. 
 
@@ -107,7 +107,7 @@ You can install a local development version of the tool by 1) creating an enviro
     - e.g. Python 3.14 (you might want to modify the env-name which is `test` by default): `$ mamba env create -f ci/314-conda.yaml` (or `$ micromamba create -f ci/314-conda.yaml`)
     - environment files for other versions are available under `ci/` (e.g. `ci/312-conda.yaml`)
     
- 2. build pyrosm development version from master (activate the environment first):
+ 2. build pyrosm development version from main (activate the environment first):
  
     - `pip install -e . --no-build-isolation`
     - (`--no-build-isolation` builds the Cython extensions against the build dependencies provided by the environment, i.e. Cython, instead of refetching and recompiling it in an isolated build environment)
