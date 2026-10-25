@@ -1341,9 +1341,9 @@ class OSM:
         repack : bool
             When ``True`` the kept elements are re-chunked into canonical, densely
             packed blocks (as ``osmium``/Osmosis produce), giving the smallest output
-            at the cost of speed. ``workers`` threads select the elements and read and
-            decode the source blocks of the write, whose re-packed blocks are encoded
-            and written on one thread (the whole write, with
+            at the cost of speed. ``workers`` threads select the elements, read and
+            decode the source blocks of the write and encode the re-packed blocks, which
+            are written in order (the whole write runs in one process with
             ``PYROSM_DECODE_BACKEND=processes``). Re-packed blocks already have minimal
             string tables, so ``compact`` is ignored when ``repack=True``. The written
             OSM data is identical to ``repack=False``. Default ``False`` keeps the

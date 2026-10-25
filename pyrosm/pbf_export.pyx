@@ -25,6 +25,7 @@ import shutil
 import tempfile
 import threading
 import warnings
+from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from functools import partial
@@ -1985,9 +1986,10 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     False (default) the source block's full string table is copied verbatim.
 
     When ``repack`` is True the kept elements are re-chunked into canonical, densely
-    packed blocks (smallest output, slowest). ``workers`` threads select the elements and
-    read and decode the source blocks of the write, whose re-packed blocks are encoded and
-    written on one thread (the whole write, with ``PYROSM_DECODE_BACKEND=processes``).
+    packed blocks (smallest output, slowest). ``workers`` threads select the elements,
+    read and decode the source blocks of the write and encode the re-packed blocks, which
+    are written in order (the whole write runs in one process with
+    ``PYROSM_DECODE_BACKEND=processes``).
     ``repack=True`` produces minimal string tables, so ``compact`` is irrelevant and
     ignored.
 
@@ -3572,35 +3574,80 @@ cdef _slice_meta(meta, sel):
     return {k: v[sel] for k, v in meta.items()}
 
 
+class _Collected(list):
+    """The blocks an emit function writes, in order."""
+
+    def write(self, data):
+        self.append(data)
+
+
+cdef _emit_blocks(out, bint nodes, tuple args):
+    """Write to `out` the blocks of `args`: of nodes as `_emit_repack_node_block` writes
+    them (with `nodes`), else of ways or relations as `_emit_repack_elements` does."""
+    if nodes:
+        _emit_repack_node_block(out, args[0], args[1], args[2], args[3], args[4])
+    else:
+        _emit_repack_elements(out, args[0], args[1])
+
+
+def _encoded_blocks(bint nodes, tuple args):
+    """The framed blocks that `_emit_blocks` writes for `args`, in order."""
+    out = _Collected()
+    _emit_blocks(out, nodes, args)
+    return out
+
+
+# How many groups of re-packed blocks the executor may encode ahead of the write.
+_ENCODE_WINDOW = 16
+
+
 cdef class _RepackWriter:
+    """Re-chunks decoded element chunks, added in file order, into canonical full blocks
+    and writes them in that order; with an `executor`, the blocks are encoded and
+    compressed on it."""
     cdef object out
     cdef list node_chunks
     cdef long node_count
     cdef readonly long nodes_written
-    cdef list way_buf
-    cdef long way_count
-    cdef list rel_buf
-    cdef long rel_count
+    cdef dict element_chunks
+    cdef dict element_counts
+    cdef object executor
+    cdef object pending
 
-    def __cinit__(self, out):
+    def __cinit__(self, out, executor=None):
         self.out = out
         self.node_chunks = []
         self.node_count = 0
         self.nodes_written = 0
-        self.way_buf = []
-        self.way_count = 0
-        self.rel_buf = []
-        self.rel_count = 0
+        self.element_chunks = {_WAYS: [], _RELATIONS: []}
+        self.element_counts = {_WAYS: 0, _RELATIONS: 0}
+        self.executor = executor
+        self.pending = deque()
+
+    cdef _emit(self, bint nodes, tuple args):
+        """Encode and write the blocks of `args` (see `_emit_blocks`): here, or on the
+        executor, the blocks then written in order."""
+        if self.executor is None:
+            _emit_blocks(self.out, nodes, args)
+            return
+        while len(self.pending) >= _ENCODE_WINDOW:
+            self._write_oldest()
+        self.pending.append(self.executor.submit(_encoded_blocks, nodes, args))
+
+    cdef _write_oldest(self):
+        """Write the oldest blocks encoded on the executor, once they are done."""
+        for data in self.pending.popleft().result():
+            self.out.write(data)
 
     cdef add(self, kind, chunk):
+        """Add the decoded chunk `chunk` of elements of `kind`."""
         if kind == _NODES:
-            self.add_nodes(chunk)
-        elif kind == _WAYS:
-            self.add_ways(chunk)
+            self._add_nodes(chunk)
         else:
-            self.add_relations(chunk)
+            self._add_elements(kind, chunk)
 
-    cdef add_nodes(self, chunk):
+    cdef _add_nodes(self, chunk):
+        """Buffer the node chunk `chunk`, writing each full block."""
         # A dense block's DenseInfo is per-field all-or-nothing, so the nodes of one
         # block share a metadata schema: a chunk with another schema starts a new block.
         if self.node_chunks and \
@@ -3612,67 +3659,66 @@ cdef class _RepackWriter:
         while self.node_count >= _MAX_GROUP:
             self._emit_full_node_block()
 
-    cdef _emit_full_node_block(self):
-        ids = np.concatenate([c[0] for c in self.node_chunks])
-        lat = np.concatenate([c[1] for c in self.node_chunks])
-        lon = np.concatenate([c[2] for c in self.node_chunks])
+    cdef tuple _joined_nodes(self):
+        """The buffered node chunks joined into one (ids, lat, lon, tags, meta)."""
         tags = []
         for c in self.node_chunks:
             tags.extend(c[3])
-        meta = _concat_meta([c[4] for c in self.node_chunks])
-        _emit_repack_node_block(
-            self.out, ids[:_MAX_GROUP], lat[:_MAX_GROUP], lon[:_MAX_GROUP],
-            tags[:_MAX_GROUP], _slice_meta(meta, slice(None, _MAX_GROUP)))
+        return (
+            np.concatenate([c[0] for c in self.node_chunks]),
+            np.concatenate([c[1] for c in self.node_chunks]),
+            np.concatenate([c[2] for c in self.node_chunks]),
+            tags,
+            _concat_meta([c[4] for c in self.node_chunks]),
+        )
+
+    cdef _emit_full_node_block(self):
+        """Write the first `_MAX_GROUP` buffered nodes as one block and keep the rest."""
+        ids, lat, lon, tags, meta = self._joined_nodes()
+        self._emit(True, (
+            ids[:_MAX_GROUP], lat[:_MAX_GROUP], lon[:_MAX_GROUP],
+            tags[:_MAX_GROUP], _slice_meta(meta, slice(None, _MAX_GROUP))))
         rem = (ids[_MAX_GROUP:], lat[_MAX_GROUP:], lon[_MAX_GROUP:],
                tags[_MAX_GROUP:], _slice_meta(meta, slice(_MAX_GROUP, None)))
         self.node_chunks = [rem]
         self.node_count = len(ids) - _MAX_GROUP
 
     cdef _flush_nodes(self):
+        """Write the buffered nodes as one block."""
         if self.node_count > 0:
-            ids = np.concatenate([c[0] for c in self.node_chunks])
-            lat = np.concatenate([c[1] for c in self.node_chunks])
-            lon = np.concatenate([c[2] for c in self.node_chunks])
-            tags = []
-            for c in self.node_chunks:
-                tags.extend(c[3])
-            meta = _concat_meta([c[4] for c in self.node_chunks])
-            _emit_repack_node_block(self.out, ids, lat, lon, tags, meta)
+            self._emit(True, self._joined_nodes())
         self.node_chunks = []
         self.node_count = 0
 
-    cdef add_ways(self, chunk):
+    cdef _add_elements(self, kind, chunk):
+        """Buffer the way or relation chunk `chunk` (`kind`), writing each full block;
+        the buffered nodes, and before relations the buffered ways, are written first."""
         self._flush_nodes()
-        self.way_buf.append(chunk)
-        self.way_count += len(chunk)
-        while self.way_count >= _MAX_GROUP:
-            batch, self.way_buf = _split_chunks(self.way_buf, _MAX_GROUP)
-            self.way_count -= _MAX_GROUP
-            _emit_repack_elements(self.out, batch, False)
+        if kind == _RELATIONS:
+            self._flush_elements(_WAYS)
+        self.element_chunks[kind].append(chunk)
+        self.element_counts[kind] += len(chunk)
+        while self.element_counts[kind] >= _MAX_GROUP:
+            batch, self.element_chunks[kind] = _split_chunks(
+                self.element_chunks[kind], _MAX_GROUP
+            )
+            self.element_counts[kind] -= _MAX_GROUP
+            self._emit(False, (batch, kind == _RELATIONS))
 
-    cdef _flush_ways(self):
-        if self.way_buf:
-            _emit_repack_elements(self.out, self.way_buf, False)
-        self.way_buf = []
-        self.way_count = 0
-
-    cdef add_relations(self, chunk):
-        self._flush_nodes()
-        self._flush_ways()
-        self.rel_buf.append(chunk)
-        self.rel_count += len(chunk)
-        while self.rel_count >= _MAX_GROUP:
-            batch, self.rel_buf = _split_chunks(self.rel_buf, _MAX_GROUP)
-            self.rel_count -= _MAX_GROUP
-            _emit_repack_elements(self.out, batch, True)
+    cdef _flush_elements(self, kind):
+        """Write the buffered ways or relations (`kind`) as one block."""
+        if self.element_chunks[kind]:
+            self._emit(False, (self.element_chunks[kind], kind == _RELATIONS))
+        self.element_chunks[kind] = []
+        self.element_counts[kind] = 0
 
     cdef close(self):
+        """Write everything buffered, and the blocks still being encoded."""
         self._flush_nodes()
-        self._flush_ways()
-        if self.rel_buf:
-            _emit_repack_elements(self.out, self.rel_buf, True)
-        self.rel_buf = []
-        self.rel_count = 0
+        self._flush_elements(_WAYS)
+        self._flush_elements(_RELATIONS)
+        while self.pending:
+            self._write_oldest()
 
 
 cdef _check_standard_grid(header, filepath):
@@ -3755,10 +3801,13 @@ cdef _decode_group(kind, _Block block, group, kept):
 cdef _repack_write(source_path, output_path, kept_nodes, kept_ways, kept_rel, bounds,
                    progress, pool):
     """Re-pack write: re-chunk the kept crop (the kept id arrays) into canonical full
-    blocks, decoded as `_repack_chunks` does and written in file order here."""
+    blocks, decoded as `_repack_chunks` does, encoded on the threads of `pool` when it is
+    a `_ThreadPool` and written in file order here."""
     with open(output_path, "wb") as out, progress.one_pass(_WRITING):
         _write_header(out, bounds)
-        writer = _RepackWriter(out)
+        writer = _RepackWriter(
+            out, pool.executor if isinstance(pool, _ThreadPool) else None
+        )
         for chunks in _repack_chunks(
             source_path, kept_nodes, kept_ways, kept_rel, progress, pool
         ):
