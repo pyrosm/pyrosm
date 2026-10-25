@@ -1288,6 +1288,7 @@ def test_to_pbf_writes_each_kind_of_group(tmp_path):
         ("truncated", "InvalidOSMFileError", "the file is truncated"),
         ("HistoricalInformation", "ValueError", "Cannot crop or merge"),
         ("unsorted ids", "ValueError", "not sorted by type then id"),
+        ("unsorted ids, on threads", "ValueError", "not sorted by type then id"),
         ("unsorted ids outside the box", "ValueError", "not sorted by type then id"),
         (
             "unsorted ids outside the box, on threads",
@@ -1295,6 +1296,7 @@ def test_to_pbf_writes_each_kind_of_group(tmp_path):
             "not sorted by type then id",
         ),
         ("nodes after ways", "ValueError", "not sorted by type then id"),
+        ("nodes after ways, on threads", "ValueError", "not sorted by type then id"),
         (
             "nodes after ways outside the box, on threads",
             "ValueError",
@@ -1802,16 +1804,30 @@ def _crafted_merge_inputs(tmp_path):
     return [a, b]
 
 
-def test_threaded_merge_writes_the_sequential_bytes(tmp_path):
-    """A merge with a box on threads writes the bytes a merge in one process writes: the
-    copies of each way are read without the GIL as protobuf reads them (a missing Info, a
-    version above 2**31, refs in several runs), or by protobuf (refs written unpacked)."""
+@pytest.mark.parametrize(
+    "bounding_box, keep_relations",
+    [(CROP_BBOX, True), (None, True), (None, False)],
+    ids=["box", "whole inputs", "whole inputs without relations"],
+)
+def test_threaded_merge_writes_the_sequential_bytes(
+    tmp_path, bounding_box, keep_relations
+):
+    """A merge on threads writes the bytes a merge in one process writes: the copies of
+    each way are read without the GIL as protobuf reads them (a missing Info, a version
+    above 2**31, refs in several runs), or by protobuf (refs written unpacked)."""
     from pyrosm import merge_pbf
 
     inputs = _crafted_merge_inputs(tmp_path)
-    one = merge_pbf(inputs, str(tmp_path / "one.osm.pbf"), CROP_BBOX, workers=1)
-    two = merge_pbf(inputs, str(tmp_path / "two.osm.pbf"), CROP_BBOX, workers=2)
+    options = {"keep_relations": keep_relations}
+    one = merge_pbf(
+        inputs, str(tmp_path / "one.osm.pbf"), bounding_box, workers=1, **options
+    )
+    two = merge_pbf(
+        inputs, str(tmp_path / "two.osm.pbf"), bounding_box, workers=2, **options
+    )
     assert Path(two).read_bytes() == Path(one).read_bytes()
+    if bounding_box is None:
+        return
     _, way_ids, _, _, way_refs = _read_elements(one)
     # The higher version wins: way 12's 2**31 + 5 is an int32, below B's 1; a way
     # without Info has version -1, below B's 0. Way 14 touches the box in B, and its
