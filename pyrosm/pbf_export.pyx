@@ -1960,9 +1960,11 @@ cpdef crop_pbf(source_path, output_path, bounding_box=None, keep_relations=True,
     False (default) the source block's full string table is copied verbatim.
 
     When ``repack`` is True the kept elements are re-chunked into canonical, densely
-    packed blocks (smallest output, slowest); the re-pack write is sequential, but
-    ``workers`` still parallelizes the selection. ``repack=True`` produces minimal
-    string tables, so ``compact`` is irrelevant and ignored.
+    packed blocks (smallest output, slowest). ``workers`` threads select the elements and
+    read and decode the source blocks of the write, whose re-packed blocks are encoded and
+    written on one thread (the whole write, with ``PYROSM_DECODE_BACKEND=processes``).
+    ``repack=True`` produces minimal string tables, so ``compact`` is irrelevant and
+    ignored.
 
     ``progress``: ``None`` (default) follows :func:`pyrosm.enable_logging`, ``True``
     shows a bar on stderr once the crop has run 2 seconds, from 0 to 100 % over the
@@ -2029,8 +2031,8 @@ def _select_and_write(source_path, output_path, region, keep_relations, compact,
     kept_ways, kept_rel = kept_ways[0], kept_rel[0]
     if repack:
         _repack_write(
-            source_path, output_path, _to_sorted_set(kept_nodes), _to_set(kept_ways),
-            _to_set(kept_rel), bounds, progress
+            source_path, output_path, kept_nodes, kept_ways, kept_rel, bounds, progress,
+            pool
         )
     elif pool is not None:
         pool.broadcast("kept_nodes", kept_nodes)
@@ -2386,6 +2388,22 @@ def _worker_write(payload):
     return _write_block(_WORKER_CONTEXT, _payload_data(payload), payload[0])
 
 
+cdef _repack_block(ctx, data, filepath):
+    """The kept elements of the block `data` (see `_kept_chunks`), by the kept id sets of
+    the pool's context `ctx`."""
+    return _kept_chunks(
+        data,
+        filepath,
+        (ctx.get_set("kept_nodes", True), ctx.get_set("kept_ways"), ctx.get_set("kept_rel")),
+    )
+
+
+def _worker_repack(payload):
+    """The kept elements of a payload's block for the re-pack write. Only the thread pool
+    runs it: its chunks do not pickle."""
+    return _repack_block(_WORKER_CONTEXT, _payload_data(payload), payload[0])
+
+
 def _batch_parts(payloads):
     """The decompressed blocks of the payloads of one file, read in one go and
     decompressed without the GIL in parts (see `_inflated_batch`): yields ``(part,
@@ -2550,6 +2568,16 @@ def _batch_write(ctx, payloads, buffer, starts):
     return out
 
 
+def _batch_repack(ctx, payloads, buffer, starts):
+    """`_worker_repack` of each payload of a part of a batch (its blocks in ``buffer``),
+    with the pool's context ``ctx``; each block is copied out of ``buffer``, which is
+    released before the next part."""
+    return [
+        _repack_block(ctx, bytes(buffer[starts[b]:starts[b + 1]]), payload[0])
+        for b, payload in enumerate(payloads)
+    ]
+
+
 # The batch version of each stage function with one.
 _BATCHED = {
     _worker_nodes_inside: _batch_nodes_inside,
@@ -2559,6 +2587,7 @@ _BATCHED = {
     _worker_relations_touching: _batch_relations_touching,
     _worker_way_copies: _batch_way_copies,
     _worker_write: _batch_write,
+    _worker_repack: _batch_repack,
 }
 
 
@@ -3577,17 +3606,50 @@ cdef _check_standard_grid(header, filepath):
         )
 
 
+def _block_groups(data, filepath):
+    """Yield (kind, block, group) for each primitive group of the decompressed block
+    `data` of `filepath` that holds elements: `group` as `element_layout` gives it and
+    `block` the `_Block` of `data`."""
+    header, table, groups = _raw_decoded(element_layout, data, filepath)
+    _check_standard_grid(header, filepath)
+    block = _Block(data, table, filepath)
+    for group in groups:
+        kind = _group_kind(group)
+        if kind is not None:
+            yield kind, block, group
+
+
 def _iter_groups(filepath, progress=None):
-    """Yield (kind, block, group) for each primitive group of a PBF that holds elements:
-    `group` as `element_layout` gives it and `block` the `_Block` it is in."""
+    """Yield (kind, block, group) for each primitive group of a PBF that holds elements
+    (see `_block_groups`)."""
     for data in _iter_block_data(filepath, progress):
-        header, table, groups = _raw_decoded(element_layout, data, filepath)
-        _check_standard_grid(header, filepath)
-        block = _Block(data, table, filepath)
-        for group in groups:
-            kind = _group_kind(group)
-            if kind is not None:
-                yield kind, block, group
+        yield from _block_groups(data, filepath)
+
+
+cdef list _kept_chunks(data, filepath, kept):
+    """The elements of the decompressed block `data` of `filepath` in the id sets `kept`
+    (nodes, ways, relations), as (kind, chunk) pairs in block order (see
+    `_decode_group`)."""
+    return [
+        (kind, chunk)
+        for kind, block, group in _block_groups(data, filepath)
+        for chunk in _decode_group(kind, block, group, kept[kind])
+    ]
+
+
+def _repack_chunks(source_path, kept_nodes, kept_ways, kept_rel, progress, pool):
+    """Yield the kept elements of each block of `source_path` (see `_kept_chunks`), in file
+    order: read, decompressed and decoded by the threads of `pool` when it is a
+    `_ThreadPool`, otherwise here."""
+    if isinstance(pool, _ThreadPool):
+        pool.broadcast("kept_nodes", kept_nodes)
+        pool.broadcast("kept_ways", kept_ways)
+        pool.broadcast("kept_rel", kept_rel)
+        yield from pool.imap(_worker_repack, _iter_payloads(source_path, progress))
+    else:
+        kept = (_to_sorted_set(kept_nodes), _to_set(kept_ways), _to_set(kept_rel))
+        for data in _iter_block_data(source_path, progress):
+            yield _kept_chunks(data, source_path, kept)
 
 
 cdef _decode_group(kind, _Block block, group, kept):
@@ -3611,15 +3673,17 @@ cdef _decode_group(kind, _Block block, group, kept):
     return [_element_chunk(decoded, block.strings(), kind == _RELATIONS)]
 
 
-cdef _repack_write(source_path, output_path, kept_nodes_set, kept_ways_set,
-                   kept_rel_set, bounds, progress):
-    """Sequential re-pack write: re-chunk the kept crop into canonical full blocks."""
-    kept = (kept_nodes_set, kept_ways_set, kept_rel_set)
+cdef _repack_write(source_path, output_path, kept_nodes, kept_ways, kept_rel, bounds,
+                   progress, pool):
+    """Re-pack write: re-chunk the kept crop (the kept id arrays) into canonical full
+    blocks, decoded as `_repack_chunks` does and written in file order here."""
     with open(output_path, "wb") as out, progress.one_pass(_WRITING):
         _write_header(out, bounds)
         writer = _RepackWriter(out)
-        for kind, block, group in _iter_groups(source_path, progress):
-            for chunk in _decode_group(kind, block, group, kept[kind]):
+        for chunks in _repack_chunks(
+            source_path, kept_nodes, kept_ways, kept_rel, progress, pool
+        ):
+            for kind, chunk in chunks:
                 writer.add(kind, chunk)
         writer.close()
     return output_path
