@@ -1546,6 +1546,8 @@ cdef int _append_cropped_block(const unsigned char* buf, Py_ssize_t end,
             if pos > end:
                 return _BY_PYTHON
             if field == PB_STRINGTABLE:
+                if table_start >= 0:
+                    return _BY_PYTHON  # `_crop_block` raises for a second table
                 table_start = f_start
                 table_end = pos
             elif field == PB_PRIMITIVEGROUP:

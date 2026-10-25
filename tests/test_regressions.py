@@ -5488,3 +5488,60 @@ def test_building_parts_are_left_out_of_building_nodes():
     with pytest.warns(UserWarning):
         assert without_building_parts(gdf[gdf["id"].isin([2, 3])]) is None
     assert without_building_parts(None) is None
+
+
+@pytest.mark.parametrize(
+    "operation", ["crop", "re-packed crop", "crop on threads", "merge"]
+)
+def test_crops_and_merges_refuse_a_block_with_two_string_tables(tmp_path, operation):
+    """A block with two string tables, which protobuf reads as one, makes crops and
+    merges raise InvalidOSMFileError naming the file. They kept only the last table: a
+    crop wrote the block's elements with tags beyond it, a re-packed crop raised
+    IndexError."""
+    import shutil
+    import zlib
+    from struct import pack
+
+    from pyrosm.exceptions import InvalidOSMFileError
+    from pyrosm.pbf_export import crop_pbf, merge_pbf
+    from pyrosm.proto.fileformat_pb2 import Blob, BlobHeader
+    from pyrosm.proto.osmformat_pb2 import HeaderBlock, PrimitiveBlock
+
+    def nodes(first_id):
+        block = PrimitiveBlock()
+        block.stringtable.s.append(b"")
+        dense = block.primitivegroup.add().dense
+        dense.id.extend([first_id, 1])
+        dense.lat.extend([601500000, 0])
+        dense.lon.extend([249500000, 0])
+        return block.SerializeToString()
+
+    relations = PrimitiveBlock()
+    relations.stringtable.s.extend([b"", b"type", b"route"])
+    relations.primitivegroup.add().relations.add(
+        id=60, keys=[1], vals=[2], memids=[1], types=[0], roles_sid=[0]
+    )
+    second_table = b"\x0a\x03\x0a\x01x"  # field 1 (StringTable) holding the string "x"
+    blocks = [nodes(1), nodes(3), nodes(5), relations.SerializeToString() + second_table]
+    path = tmp_path / "two_tables.osm.pbf"
+    header = HeaderBlock(required_features=["OsmSchema-V0.6", "DenseNodes"])
+    with open(path, "wb") as f:
+        for kind, data in [("OSMHeader", header.SerializeToString())] + [
+            ("OSMData", block) for block in blocks
+        ]:
+            blob = Blob(zlib_data=zlib.compress(data), raw_size=len(data))
+            blob = blob.SerializeToString()
+            head = BlobHeader(type=kind, datasize=len(blob)).SerializeToString()
+            f.write(pack("!L", len(head)) + head + blob)
+    out = str(tmp_path / "out.osm.pbf")
+    bbox = [24.9, 60.1, 25.0, 60.2]
+    with pytest.raises(InvalidOSMFileError, match="two string tables") as raised:
+        if operation == "merge":
+            copy = shutil.copy(path, tmp_path / "copy.osm.pbf")
+            merge_pbf([str(path), str(copy)], out)
+        else:
+            crop_pbf(
+                str(path), out, bbox, repack=operation == "re-packed crop",
+                workers=2 if operation == "crop on threads" else 1,
+            )
+    assert "two_tables.osm.pbf" in str(raised.value) or "copy.osm.pbf" in str(raised.value)
