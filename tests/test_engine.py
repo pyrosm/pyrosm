@@ -3224,6 +3224,26 @@ def test_osm_out_of_core_history_without_timestamp_matches_in_memory(
     _assert_full_parity(mine, ref)
 
 
+def test_osm_out_of_core_history_reads_without_timestamp_share_the_cache(
+    helsinki_history_pbf, monkeypatch, fresh_cache
+):
+    # A history file read without a timestamp reads each element's latest version in the
+    # file, whatever current time its OSM object chose, so a later object reuses the
+    # cached result.
+    import warnings
+
+    decodes = _count_decodes(monkeypatch)
+    first, second = OSM(helsinki_history_pbf), OSM(helsinki_history_pbf)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        earlier = first.get_buildings()
+        second._implicit_now = first._implicit_now - 60
+        later = second.get_buildings()
+    assert sum(decodes) == 1
+    assert len(list(fresh_cache.glob("result_*.parquet"))) == 1
+    _assert_full_parity(later, earlier)
+
+
 def test_osm_out_of_core_history_reads_at_two_times_are_cached_apart(
     helsinki_history_pbf, fresh_cache
 ):

@@ -1,5 +1,6 @@
 import contextlib
 import logging
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -319,10 +320,15 @@ class OSM:
         return self.engine == "out_of_core"
 
     def _history_time(self, timestamp):
-        """The UNIX time (seconds) at which a read with ``timestamp`` chooses each element's
-        version, as :meth:`_set_current_time` sets it, or None for a file without history.
+        """The UNIX time (seconds) at which an out-of-core read with ``timestamp`` chooses
+        each element's version: the ``timestamp``, or for a history file read without one
+        ``math.inf``. That gives each element's latest version in the file, as the current
+        time :meth:`_set_current_time` chooses does for the in-memory reader, under one
+        result-cache key for every such read. None for a file without history.
         """
         self._set_current_time(timestamp)
+        if timestamp is None and self._osh_file:
+            return math.inf
         return self._current_timestamp
 
     def _read_engine(self, reader, timestamp, with_relations=True, **kwargs):
