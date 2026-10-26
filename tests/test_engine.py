@@ -467,10 +467,7 @@ def test_engine_decode_shard_target_parity(
 
     monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
     monkeypatch.setattr(decode, "_SHARD_TARGET_BYTES", target)
-    _assert_full_parity(
-        get_buildings(helsinki_pbf),
-        OSM(helsinki_pbf, engine="in_memory").get_buildings(),
-    )
+    _assert_full_parity(get_buildings(helsinki_pbf), OSM(helsinki_pbf, engine="in_memory").get_buildings())
 
 
 @pytest.mark.parametrize("backend", ["processes", "threads"])
@@ -532,11 +529,7 @@ def repacked_pbf(tmp_path_factory):
 
     path = tmp_path_factory.mktemp("repacked") / "helsinki.osm.pbf"
     crop_pbf(
-        get_data("helsinki_pbf"),
-        str(path),
-        [24.0, 60.0, 26.0, 61.0],
-        repack=True,
-        workers=1,
+        get_data("helsinki_pbf"), str(path), [24.0, 60.0, 26.0, 61.0], repack=True, workers=1
     )
     return str(path)
 
@@ -712,12 +705,7 @@ def test_engine_threaded_decode_releases_each_part(tmp_path, monkeypatch):
     "osm_keys, data_filter, bbox, exclude",
     [
         ([b"building"], {"building": ["yes"]}, None, False),
-        (
-            [b"highway"],
-            {"highway": ["footway", "path"]},
-            (24.940, 60.168, 24.948, 60.174),
-            False,
-        ),
+        ([b"highway"], {"highway": ["footway", "path"]}, (24.940, 60.168, 24.948, 60.174), False),
         ([b"natural", b"water"], {"natural": ["water"]}, None, True),
     ],
     ids=["values", "values in a box", "excluded members"],
@@ -824,19 +812,11 @@ def _way_store(ways):
 _FILTER_WAYS = [
     (1, [1, 2], [(b"highway", b"residential")]),
     (2, [1, 2], [(b"highway", b"footway")]),
-    (
-        3,
-        [1, 2],
-        [(b"highway", b"residential"), (b"access", b"no"), (b"motorcar", b"yes")],
-    ),
+    (3, [1, 2], [(b"highway", b"residential"), (b"access", b"no"), (b"motorcar", b"yes")]),
     (4, [1, 2], [(b"highway", b"residential"), (b"access", b"private")]),
     (5, [1, 2], [(b"highway", b"service"), (b"service", b"driveway")]),
     (6, [1, 2], [(b"highway", b"residential"), (b"area", b"yes")]),
-    (
-        7,
-        [1, 2],
-        [(b"highway", b"residential"), (b"access", "\u00a0private;x".encode())],
-    ),
+    (7, [1, 2], [(b"highway", b"residential"), (b"access", "\u00a0private;x".encode())]),
     (8, [1, 2], [(b"highway", b"residential"), (b"access", b"yes ; private")]),
     (9, [1, 2], [(b"highway", b"footway"), (b"highway", b"residential")]),
     (10, [1, 2], [(b"building", b"yes"), (b"name", b"x")]),
@@ -996,11 +976,7 @@ def test_engine_node_coordinates_match_node_lookup(tmp_path):
     from pyrosm.engine.ways import node_coordinates
 
     parts = [
-        {
-            "node_id": [5, 1, 9],
-            "node_lon": [5.0, 1.0, 9.0],
-            "node_lat": [50.0, 10.0, 90.0],
-        },
+        {"node_id": [5, 1, 9], "node_lon": [5.0, 1.0, 9.0], "node_lat": [50.0, 10.0, 90.0]},
         {"node_id": [], "node_lon": [], "node_lat": []},
         {"node_id": [1, 7], "node_lon": [1.5, 7.0], "node_lat": [15.0, 70.0]},
     ]
@@ -1074,11 +1050,7 @@ _ESCAPED = 'Tie "A"\n\t\x01\x7f\\/\r\b\x0cä€\U0001f600'.encode()
 _CRAFTED_WAYS = [
     (1, [1, 2, 3, 4, 1], _BUILDING),
     (2, [1, 4, 3, 2, 1], _BUILDING + [(b"source", b"survey")]),
-    (
-        3,
-        [1, 2, 3],
-        [(b"highway", b"footway"), (b"name", _ESCAPED), (b"note", _ESCAPED)],
-    ),
+    (3, [1, 2, 3], [(b"highway", b"footway"), (b"name", _ESCAPED), (b"note", _ESCAPED)]),
     (4, [1, 2, 3, 1], [(b"highway", b"footway")]),
     (5, [1, 2, 3, 1], [(b"highway", b"pedestrian"), (b"area", b"yes")]),
     (6, [1, 2, 3, 4, 1], [(b"area", b"no"), (b"building", b"roof")]),
@@ -1103,19 +1075,9 @@ _CRAFTED_WAYS = [
 @pytest.mark.parametrize(
     "ways, tags_as_columns, keep_metadata, keep_other_tags",
     [
-        (
-            slice(None),
-            ["building", "highway", "name", "area", "id", "id_tag"],
-            False,
-            True,
-        ),
+        (slice(None), ["building", "highway", "name", "area", "id", "id_tag"], False, True),
         (slice(None), ["building", "source", "id_tag"], True, False),
-        (
-            slice(0, 6),
-            ["building", "highway", "name", "area", "source", "note"],
-            True,
-            True,
-        ),
+        (slice(0, 6), ["building", "highway", "name", "area", "source", "note"], True, True),
         (slice(10, 11), ["building"], True, True),
     ],
     ids=["all ways", "requested tags with metadata", "no leftovers", "untagged"],
@@ -1138,19 +1100,14 @@ def test_engine_store_tag_columns_match_the_python_path(
     )
     mine = result_tag_columns(store, tags_as_columns, keep_metadata, keep_other_tags)
     assert mine == ref
-    assert (
-        collect._result_tag_columns(
-            store, tags_as_columns, keep_metadata, keep_other_tags
-        )
-        == ref
-    )
+    assert collect._result_tag_columns(
+        store, tags_as_columns, keep_metadata, keep_other_tags
+    ) == ref
     column_keys, tag_cols = collect._way_column_keys(tags_as_columns, keep_metadata)
     # Without other tags the process decode's tag dicts also hold the geometry tag keys.
     from pyrosm.engine.readers import _GEOMETRY_TAG_KEYS
 
-    by_dicts = store.way_columns(
-        None if keys is None else keys | set(_GEOMETRY_TAG_KEYS)
-    )
+    by_dicts = store.way_columns(None if keys is None else keys | set(_GEOMETRY_TAG_KEYS))
     col_lists, leftover, _ = collect._route_tags(
         by_dicts["tags"],
         store.version,
@@ -1694,13 +1651,7 @@ def test_route_tags_drops_the_tags_of_no_column_without_other_tags():
     metadata = (store.version, store.timestamp, store.visible)
     routed = [
         collect._route_tags(
-            store.way_columns(keys)["tags"],
-            *metadata,
-            tag_cols,
-            False,
-            False,
-            False,
-            False,
+            store.way_columns(keys)["tags"], *metadata, tag_cols, False, False, False, False
         )[:2]
         for keys in (set(requested), set(requested) | set(_GEOMETRY_TAG_KEYS))
     ]
@@ -2101,9 +2052,7 @@ def test_engine_pois_value_filter_parity(helsinki_pbf):
 def test_engine_custom_criteria_value_filter_parity(helsinki_pbf):
     flt = {"amenity": ["restaurant", "cafe", "pub"]}
     mine = get_data_by_custom_criteria(helsinki_pbf, custom_filter=flt)
-    ref = OSM(helsinki_pbf, engine="in_memory").get_data_by_custom_criteria(
-        custom_filter=flt
-    )
+    ref = OSM(helsinki_pbf, engine="in_memory").get_data_by_custom_criteria(custom_filter=flt)
     assert mine is not None and len(mine) > 0
     _assert_full_parity(mine, ref)
 
@@ -2122,9 +2071,7 @@ def test_engine_custom_criteria_keep_flags_parity(helsinki_pbf, flags):
     # in-memory reader.
     flt = {"amenity": True}
     mine = get_data_by_custom_criteria(helsinki_pbf, custom_filter=flt, **flags)
-    ref = OSM(helsinki_pbf, engine="in_memory").get_data_by_custom_criteria(
-        custom_filter=flt, **flags
-    )
+    ref = OSM(helsinki_pbf, engine="in_memory").get_data_by_custom_criteria(custom_filter=flt, **flags)
     if ref is None:
         assert mine is None
         return
@@ -2136,25 +2083,17 @@ def test_engine_custom_criteria_keep_other_tags_false_minimal(helsinki_pbf):
     # JSON 'tags' column of leftover tags is dropped, and the rest is identical.
     flt = {"building": True}
     full = get_data_by_custom_criteria(
-        helsinki_pbf,
-        custom_filter=flt,
-        tags_as_columns=["building"],
-        keep_other_tags=True,
+        helsinki_pbf, custom_filter=flt, tags_as_columns=["building"], keep_other_tags=True
     )
     minimal = get_data_by_custom_criteria(
-        helsinki_pbf,
-        custom_filter=flt,
-        tags_as_columns=["building"],
-        keep_other_tags=False,
+        helsinki_pbf, custom_filter=flt, tags_as_columns=["building"], keep_other_tags=False
     )
     assert full is not None and minimal is not None
     assert "tags" in full.columns and "tags" not in minimal.columns
     # Same columns apart from the dropped 'tags' column, and the same elements in order.
     assert set(full.columns) - {"tags"} == set(minimal.columns)
     assert minimal["id"].tolist() == full["id"].tolist()
-    assert (
-        minimal["building"].fillna("").tolist() == full["building"].fillna("").tolist()
-    )
+    assert minimal["building"].fillna("").tolist() == full["building"].fillna("").tolist()
     assert minimal.geometry.geom_type.tolist() == full.geometry.geom_type.tolist()
 
 
@@ -2167,9 +2106,7 @@ def test_engine_custom_criteria_keep_other_tags_false_value_filter(helsinki_pbf)
     )
     ref = get_data_by_custom_criteria(helsinki_pbf, custom_filter=flt)
     assert minimal is not None and len(minimal) > 0
-    assert set(minimal["id"]) == set(
-        ref["id"]
-    )  # the value filter still selects the same rows
+    assert set(minimal["id"]) == set(ref["id"])  # the value filter still selects the same rows
     assert "tags" not in minimal.columns
     assert set(minimal["amenity"]) == {"restaurant", "cafe", "pub"}
     assert "name" in minimal.columns
@@ -2193,28 +2130,19 @@ def test_osm_custom_criteria_keep_other_tags_in_memory_rejected(helsinki_pbf):
         osm.get_data_by_custom_criteria({"building": True}, keep_other_tags=False)
     # The default value leaves the in-memory path working.
     assert (
-        osm.get_data_by_custom_criteria({"building": True}, keep_other_tags=True)
-        is not None
+        osm.get_data_by_custom_criteria({"building": True}, keep_other_tags=True) is not None
     )
 
 
-def test_engine_custom_criteria_keep_other_tags_cache_isolation(
-    helsinki_pbf, fresh_cache
-):
+def test_engine_custom_criteria_keep_other_tags_cache_isolation(helsinki_pbf, fresh_cache):
     # keep_other_tags is part of the result-cache key, so a minimal read does not serve (or get
     # served by) a full-tags cached result.
     flt = {"building": True}
     full = get_data_by_custom_criteria(
-        helsinki_pbf,
-        custom_filter=flt,
-        tags_as_columns=["building"],
-        keep_other_tags=True,
+        helsinki_pbf, custom_filter=flt, tags_as_columns=["building"], keep_other_tags=True
     )
     minimal = get_data_by_custom_criteria(
-        helsinki_pbf,
-        custom_filter=flt,
-        tags_as_columns=["building"],
-        keep_other_tags=False,
+        helsinki_pbf, custom_filter=flt, tags_as_columns=["building"], keep_other_tags=False
     )
     assert "tags" in full.columns
     assert "tags" not in minimal.columns
@@ -2399,9 +2327,7 @@ def test_engine_custom_criteria_non_conf_key_parity(helsinki_pbf):
     # A filter key without a dedicated Conf.tags column set becomes its own column.
     flt = {"source": True}
     mine = get_data_by_custom_criteria(helsinki_pbf, custom_filter=flt)
-    ref = OSM(helsinki_pbf, engine="in_memory").get_data_by_custom_criteria(
-        custom_filter=flt
-    )
+    ref = OSM(helsinki_pbf, engine="in_memory").get_data_by_custom_criteria(custom_filter=flt)
     _assert_full_parity(mine, ref)
 
 
@@ -2438,9 +2364,7 @@ def test_engine_boundaries_custom_filter_adds_boundary_key(helsinki_region_pbf):
     # A custom_filter without 'boundary' gets it added, matching OSM().get_boundaries().
     flt = {"admin_level": True}
     mine = get_boundaries(helsinki_region_pbf, custom_filter=dict(flt))
-    ref = OSM(helsinki_region_pbf, engine="in_memory").get_boundaries(
-        custom_filter=dict(flt)
-    )
+    ref = OSM(helsinki_region_pbf, engine="in_memory").get_boundaries(custom_filter=dict(flt))
     if ref is None or len(ref) == 0:
         assert mine is None or len(mine) == 0
         return
@@ -2511,9 +2435,7 @@ def test_engine_network_custom_filter_parity(helsinki_pbf):
     # yields no column.
     flt = {"highway": ["footway", "path", "pedestrian"], "crossing": True}
     mine = get_network(helsinki_pbf, custom_filter=flt, filter_type="keep")
-    ref = OSM(helsinki_pbf, engine="in_memory").get_network(
-        custom_filter=flt, filter_type="keep"
-    )
+    ref = OSM(helsinki_pbf, engine="in_memory").get_network(custom_filter=flt, filter_type="keep")
     assert mine is not None and len(mine) > 0
     _assert_full_parity(mine, ref)
 
@@ -2541,9 +2463,9 @@ def test_engine_network_nodes_keep_metadata_false_parity(helsinki_pbf):
     mine_nodes, mine_edges = get_network(
         helsinki_pbf, network_type="driving", nodes=True, keep_metadata=False
     )
-    ref_nodes, ref_edges = OSM(
-        helsinki_pbf, keep_metadata=False, engine="in_memory"
-    ).get_network(network_type="driving", nodes=True)
+    ref_nodes, ref_edges = OSM(helsinki_pbf, keep_metadata=False, engine="in_memory").get_network(
+        network_type="driving", nodes=True
+    )
     assert "changeset" not in mine_nodes.columns and "visible" in mine_nodes.columns
     _assert_full_parity(mine_edges, ref_edges)
     a = mine_nodes.sort_values("id").reset_index(drop=True).assign(osm_type="node")
@@ -2632,9 +2554,7 @@ def test_engine_network_pyarrow_absent_falls_back(
 
     monkeypatch.setattr(_compat, "HAS_PYARROW", False)
     mine = get_network(helsinki_pbf, network_type="driving")
-    _assert_full_parity(
-        mine, OSM(helsinki_pbf, engine="in_memory").get_network(network_type="driving")
-    )
+    _assert_full_parity(mine, OSM(helsinki_pbf, engine="in_memory").get_network(network_type="driving"))
     assert list(cache.cache_dir().glob("*.parquet")) == []
 
 
@@ -2694,9 +2614,7 @@ def test_engine_node_records_by_id_edge_cases():
     assert rec["lat"].tolist() == [600000000 * 100 / 1e9, 600000010 * 100 / 1e9]
     assert rec["version"].tolist() == [3, 3] and rec["visible"].dtype == bool
     # keep_metadata=False drops version/timestamp/changeset but keeps visible.
-    lean = _node_records_by_id(
-        st, header, nodes, Int64Set([1]), False, NodeTagsBuilder()
-    )
+    lean = _node_records_by_id(st, header, nodes, Int64Set([1]), False, NodeTagsBuilder())
     assert "version" not in lean and "visible" in lean
 
 
@@ -2741,9 +2659,7 @@ def test_engine_buildings_bounding_box_parity(helsinki_pbf, complete_relations):
         helsinki_pbf, bounding_box=bbox, complete_relations=complete_relations
     )
     ref = OSM(
-        helsinki_pbf,
-        bounding_box=bbox,
-        complete_relations=complete_relations,
+        helsinki_pbf, bounding_box=bbox, complete_relations=complete_relations,
         engine="in_memory",
     ).get_buildings()
     assert ref is not None and (ref["osm_type"] == "relation").any()
@@ -2764,9 +2680,7 @@ def test_engine_network_bounding_box_parity(helsinki_pbf):
     # filter clips to the box -- matching the in-memory reader.
     full = OSM(helsinki_pbf, engine="in_memory").get_network(network_type="driving")
     bbox = _central_bbox(full, frac=0.5)
-    ref = OSM(helsinki_pbf, bounding_box=bbox, engine="in_memory").get_network(
-        network_type="driving"
-    )
+    ref = OSM(helsinki_pbf, bounding_box=bbox, engine="in_memory").get_network(network_type="driving")
     mine = get_network(helsinki_pbf, network_type="driving", bounding_box=bbox)
     assert ref is not None and 0 < len(ref) < len(full)
     _assert_full_parity(mine, ref)
@@ -2778,9 +2692,9 @@ def test_engine_custom_criteria_bounding_box_parity(helsinki_pbf):
     mine = get_data_by_custom_criteria(
         helsinki_pbf, custom_filter=flt, filter_type="keep", bounding_box=bbox
     )
-    ref = OSM(
-        helsinki_pbf, bounding_box=bbox, engine="in_memory"
-    ).get_data_by_custom_criteria(custom_filter=flt, filter_type="keep")
+    ref = OSM(helsinki_pbf, bounding_box=bbox, engine="in_memory").get_data_by_custom_criteria(
+        custom_filter=flt, filter_type="keep"
+    )
     assert mine is not None and len(mine) > 0
     _assert_full_parity(mine, ref)
 
@@ -3034,9 +2948,7 @@ def test_osm_out_of_core_bbox_complete_relations_parity(
 ):
     bbox = _central_bbox(OSM(helsinki_pbf, engine="in_memory").get_buildings())
     ref = OSM(
-        helsinki_pbf,
-        bounding_box=bbox,
-        complete_relations=complete_relations,
+        helsinki_pbf, bounding_box=bbox, complete_relations=complete_relations,
         engine="in_memory",
     ).get_buildings()
     mine = OSM(
@@ -3067,9 +2979,7 @@ def test_osm_workers_validation(test_pbf):
     assert OSM(test_pbf, workers=2, engine="in_memory").workers == 2
     assert type(OSM(test_pbf, workers=np.int64(2), engine="in_memory").workers) is int
     assert OSM(test_pbf, workers="auto", engine="in_memory").workers == "auto"
-    assert (
-        OSM(test_pbf, workers="AUTO", engine="in_memory").workers == "auto"
-    )  # normalized
+    assert OSM(test_pbf, workers="AUTO", engine="in_memory").workers == "auto"  # normalized
 
 
 @pytest.mark.parametrize(
@@ -3732,9 +3642,7 @@ def test_osm_custom_criteria_everything_matches_in_memory(
     mine = OSM(
         fp, engine="out_of_core", workers=1, **constructor
     ).get_data_by_custom_criteria(None, **options)
-    ref = OSM(fp, **constructor, engine="in_memory").get_data_by_custom_criteria(
-        None, **options
-    )
+    ref = OSM(fp, **constructor, engine="in_memory").get_data_by_custom_criteria(None, **options)
     if not options and not constructor:
         assert {"node", "way", "relation"} <= set(ref["osm_type"])
     if fixture == "helsinki_pbf":
