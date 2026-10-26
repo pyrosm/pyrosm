@@ -58,9 +58,9 @@ class _DecodeSettings:
     those tag keys are resolved into the element tag dicts (the ``keep_other_tags=False``
     minimal-tags mode). ``spill_all_ways`` spills every way's id and node refs, which only
     the lookup of relation members reads. ``unix_time``, for a history read, keeps each
-    element's version at that time, and ``blobs``, the read's data blobs ``(offset, size,
-    span)`` in file order, let a task read on past its own blocks to settle it (see
-    :class:`_HistoryRuns`)."""
+    element's version at that time (its latest version for ``math.inf``), and ``blobs``,
+    the read's data blobs ``(offset, size, span)`` in file order, let a task read on past
+    its own blocks to settle it (see :class:`_HistoryRuns`)."""
 
     filepath: str
     shard_dir: str
