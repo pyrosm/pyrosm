@@ -10,8 +10,9 @@ set rather than the whole file.
 The ``get_*`` readers re-exported here are the engine's internals behind
 ``OSM(filepath, engine="out_of_core")``, without an API promise. They give the in-memory
 reader's columns, but they do not check their parameters as :class:`~pyrosm.OSM` does,
-and they read every version of each element of a history file (``.osh.pbf``); read data
-with ``OSM``, which also handles history files by ``timestamp``.
+and of a history file (``.osh.pbf``) they read every version of each element unless
+they are given the read's time as ``unix_time`` (seconds), which ``OSM`` passes for its
+``timestamp``; read data with ``OSM``.
 
 By default (``workers="auto"``) the engine chooses the thread count by the file's size: a
 single core for files below about 20 MB; for larger files the CPU cores this process may

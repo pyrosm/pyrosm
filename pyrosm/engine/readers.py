@@ -65,6 +65,7 @@ def _get_layer(
     keep_other_tags=True,
     progress=None,
     keep_node_info=False,
+    unix_time=None,
 ):
     """Read a layer: decode the file in parallel selecting the elements that carry any of
     the filter keys (``osm_keys`` if given, else ``custom_filter``'s keys, or every tagged
@@ -85,7 +86,9 @@ def _get_layer(
     ``if __name__ == "__main__":`` guard) -- see the package docstring. ``progress``
     (``None``, ``True``, ``False`` or a callable) shows the read as for
     ``OSM(..., progress=...)``; a cached read has nothing to show. ``keep_node_info`` keeps each way's ``nodes`` column (a list of node ids), as
-    ``OSM(..., keep_node_info=True)`` does.
+    ``OSM(..., keep_node_info=True)`` does. ``unix_time`` (seconds), for a history file
+    (``.osh.pbf``), reads each element's version at that time, as
+    ``OSM(...).get_buildings(timestamp=...)`` and the other layer reads do.
     """
     validate_progress(progress)
     workers = default_workers(workers)
@@ -134,6 +137,8 @@ def _get_layer(
                 "keep_other_tags": keep_other_tags,
                 "keep_node_info": keep_node_info,
             }
+            if unix_time is not None:
+                key_params["unix_time"] = unix_time
             cache_path = cache.result_path(filepath, key_params)
             result = cache.materialize(
                 cache_path,
@@ -161,6 +166,7 @@ def _get_layer(
                     requested_tag_keys=requested_tag_keys,
                     steps=steps,
                     spill_all_ways=keep_relations,
+                    unix_time=unix_time,
                 )
                 is not None,
                 steps=steps,
@@ -208,6 +214,7 @@ def _get_layer(
             requested_tag_keys=requested_tag_keys,
             steps=steps,
             spill_all_ways=keep_relations,
+            unix_time=unix_time,
         )
         return result if output is not None else _node_lists(result)
 
@@ -273,13 +280,14 @@ def get_buildings(
     progress=None,
     keep_node_info=False,
     keep_nodes=False,
+    unix_time=None,
 ):
     """Read building geometries (ways + relations, and with ``keep_nodes`` the building
     nodes as points) from ``filepath`` with the out-of-core engine, with the same columns as
     ``OSM(...).get_buildings()``. ``custom_filter`` refines which buildings to keep (the
     ``building`` key is always ensured); ``extra_attributes`` / ``tags_to_keep`` adjust the
     tag columns. See :func:`_get_layer` for ``bounding_box`` / ``complete_relations`` /
-    ``output`` / ``workers`` / ``keep_metadata`` / ``progress``.
+    ``output`` / ``workers`` / ``keep_metadata`` / ``progress`` / ``unix_time``.
     """
     from pyrosm.config import Conf
     from pyrosm.utils import read_tag_columns
@@ -300,6 +308,7 @@ def get_buildings(
         complete_relations=complete_relations,
         progress=progress,
         keep_node_info=keep_node_info,
+        unix_time=unix_time,
     )
 
 
@@ -316,6 +325,7 @@ def get_landuse(
     progress=None,
     keep_node_info=False,
     keep_nodes=True,
+    unix_time=None,
 ):
     """Read landuse geometries (nodes as points unless ``keep_nodes`` is False, ways and
     relations) from ``filepath`` with the out-of-core engine, with the same columns as
@@ -341,6 +351,7 @@ def get_landuse(
         complete_relations=complete_relations,
         progress=progress,
         keep_node_info=keep_node_info,
+        unix_time=unix_time,
     )
 
 
@@ -357,6 +368,7 @@ def get_natural(
     progress=None,
     keep_node_info=False,
     keep_nodes=True,
+    unix_time=None,
 ):
     """Read natural features (nodes as points unless ``keep_nodes`` is False, ways and
     relations) from ``filepath`` with the out-of-core engine, with the same columns as ``OSM(...).get_natural()``. ``custom_filter``
@@ -382,6 +394,7 @@ def get_natural(
         complete_relations=complete_relations,
         progress=progress,
         keep_node_info=keep_node_info,
+        unix_time=unix_time,
     )
 
 
@@ -397,6 +410,7 @@ def get_pois(
     keep_metadata=True,
     progress=None,
     keep_node_info=False,
+    unix_time=None,
 ):
     """Read points of interest (nodes + ways + relations) from ``filepath`` with the
     out-of-core engine, with the same columns as ``OSM(...).get_pois(custom_filter=...)``.
@@ -423,6 +437,7 @@ def get_pois(
         complete_relations=complete_relations,
         progress=progress,
         keep_node_info=keep_node_info,
+        unix_time=unix_time,
     )
 
 
@@ -501,6 +516,7 @@ def get_data_by_custom_criteria(
     progress=None,
     keep_node_info=False,
     tags_to_keep=None,
+    unix_time=None,
 ):
     """Read OSM elements matching an arbitrary ``custom_filter`` from ``filepath`` with the
     out-of-core engine, with the same columns as
@@ -562,6 +578,7 @@ def get_data_by_custom_criteria(
         keep_other_tags=keep_other_tags,
         progress=progress,
         keep_node_info=keep_node_info,
+        unix_time=unix_time,
     )
 
 

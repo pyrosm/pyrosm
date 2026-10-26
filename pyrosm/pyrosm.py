@@ -313,18 +313,27 @@ class OSM:
             progress="callable" if callable(progress) else progress,
         )
 
-    def _use_engine(self, timestamp):
-        """Whether the out-of-core engine handles this read. History reads -- an ``.osh.pbf``
-        file, or an explicit ``timestamp`` -- route to the in-memory reader instead, which
-        chooses each element's last version at/before the timestamp, taken whole, from all
-        its versions."""
-        return self.engine == "out_of_core" and timestamp is None and not self._osh_file
+    def _use_engine(self, timestamp, takes_time=False):
+        """Whether the out-of-core engine handles this read. A history read -- an
+        ``.osh.pbf`` file, or an explicit ``timestamp`` -- goes to it when its engine reader
+        takes the read's time (``takes_time``, see :meth:`_history_time`), and to the
+        in-memory reader otherwise."""
+        history = timestamp is not None or self._osh_file
+        return self.engine == "out_of_core" and (takes_time or not history)
+
+    def _history_time(self, timestamp):
+        """The UNIX time (seconds) at which a read with ``timestamp`` chooses each element's
+        version, as :meth:`_set_current_time` sets it, or None for a file without history.
+        """
+        self._set_current_time(timestamp)
+        return self._current_timestamp
 
     def _read_engine(self, reader, with_relations=True, **kwargs):
         """Route a feature read to the given out-of-core engine reader, threading the
         constructor-level ``bounding_box`` / ``keep_metadata`` / ``keep_node_info`` /
-        ``workers`` (and ``complete_relations`` for the layer readers). Only non-history reads reach here;
-        history reads use the in-memory path (see :meth:`_use_engine`)."""
+        ``workers`` (and ``complete_relations`` for the layer readers). A history read
+        reaches it only with a reader that takes its time as ``unix_time`` (see
+        :meth:`_use_engine`)."""
         kwargs["bounding_box"] = self.bounding_box
         kwargs["keep_metadata"] = self.keep_metadata
         kwargs["workers"] = self.workers
@@ -440,13 +449,14 @@ class OSM:
         ``engine_reader`` with the out-of-core engine, else in memory, in both without
         nodes unless ``with_nodes``, with a warning naming ``result_name`` when nothing
         matches."""
-        if self._use_engine(timestamp):
+        if self._use_engine(timestamp, takes_time=True):
             gdf = self._read_engine(
                 engine_reader,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
                 keep_nodes=with_nodes,
+                unix_time=self._history_time(timestamp),
             )
             if gdf is None:
                 warn_empty_result(result_name)
@@ -1067,12 +1077,13 @@ class OSM:
         'tourism', 'viewpoint', 'wilderness_hut', 'zoo']
 
         """
-        if self._use_engine(timestamp):
+        if self._use_engine(timestamp, takes_time=True):
             gdf = self._read_engine(
                 engine_backend.get_pois,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
+                unix_time=self._history_time(timestamp),
             )
             if gdf is None:
                 warn_empty_result("pois")
@@ -1168,8 +1179,7 @@ class OSM:
             columns and the rest are kept in a JSON ``tags`` column. ``False`` resolves only
             the requested tags (``tags_as_columns`` plus the filter keys) and drops the JSON
             ``tags`` column, so the read does minimal tag work. Only supported by the
-            out-of-core engine (``OSM(..., engine='out_of_core')``), and not for history
-            reads (an ``.osh.pbf`` file or a ``timestamp``), which use the in-memory reader.
+            out-of-core engine (``OSM(..., engine='out_of_core')``).
 
         timestamp: str | datetime | int
             If provided, the data from given moment of time will be returned. The time should be provided in UTC.
@@ -1208,7 +1218,7 @@ class OSM:
         filter_type = filter_type.lower()
         validate_booleans(keep_nodes, keep_ways, keep_relations)
 
-        if self._use_engine(timestamp):
+        if self._use_engine(timestamp, takes_time=True):
             gdf = self._read_engine(
                 engine_backend.get_data_by_custom_criteria,
                 custom_filter=custom_filter,
@@ -1221,6 +1231,7 @@ class OSM:
                 extra_attributes=extra_attributes,
                 keep_other_tags=keep_other_tags,
                 tags_to_keep=tags_to_keep,
+                unix_time=self._history_time(timestamp),
             )
             if gdf is None:
                 warn_empty_result("custom")
@@ -1230,11 +1241,6 @@ class OSM:
         # reader resolves every tag once and caches it for reuse across layers, so it cannot
         # honour the minimal-tags mode.
         if keep_other_tags is False:
-            if self.engine == "out_of_core":
-                raise ValueError(
-                    "keep_other_tags=False is not supported for history reads (an "
-                    ".osh.pbf file or a timestamp), which use the in-memory reader."
-                )
             raise ValueError(
                 "keep_other_tags=False is only supported by the out-of-core engine; "
                 "construct OSM(..., engine='out_of_core')."

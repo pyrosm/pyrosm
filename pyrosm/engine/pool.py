@@ -342,6 +342,7 @@ def _decode_all(
     requested_tag_keys=None,
     progress=None,
     spill_all_ways=True,
+    unix_time=None,
 ):
     """Decode every data blob (``(offset, size, span)``, see
     :func:`~pyrosm.engine.blobs._data_blob_spans`) into shards, on threads or in worker
@@ -350,7 +351,8 @@ def _decode_all(
     pool_ok)``: the shards in file order (paths, or :class:`~pyrosm.engine.decode._Shard`
     objects on threads) and whether the decode ran in parallel. ``progress`` is as for
     :func:`_run_pool`. ``spill_all_ways=False`` leaves out every way's id and node refs,
-    which only the lookup of relation members reads.
+    which only the lookup of relation members reads. ``unix_time`` (seconds), for a
+    history file, keeps each element's version at that time.
     """
     tasks = _decode_tasks(blobs, workers)
     settings = _DecodeSettings(
@@ -361,6 +363,8 @@ def _decode_all(
         bbox_bounds,
         requested_tag_keys,
         spill_all_ways,
+        unix_time,
+        None if unix_time is None else tuple(blobs),
     )
     if _decode_backend() == "threads":
         return _decode_threads(tasks, workers, settings, progress), workers > 1
@@ -450,10 +454,12 @@ def _decode_and_run(
     requested_tag_keys=None,
     steps=None,
     spill_all_ways=True,
+    unix_time=None,
 ):
     """Index + parallel-decode ``filepath`` into a temp shard dir, call
     ``run(shard_paths, steps)`` in this process and clean up. The shared front half of
-    every public read.
+    every public read. ``unix_time`` (seconds), for a history file, reads each element's
+    version at that time.
 
     ``steps`` (a :class:`~pyrosm.utils.progress.Steps` of the whole read, or None) gets
     the steps :data:`INDEXING` and :data:`DECODING`, moved by the bytes of the file
@@ -488,6 +494,7 @@ def _decode_and_run(
                     else (steps.start_step(DECODING), header_bytes, total)
                 ),
                 spill_all_ways,
+                unix_time,
             )
             fields["pool"] = pool_ok
         token = None

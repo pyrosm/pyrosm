@@ -3119,18 +3119,19 @@ def test_osm_out_of_core_network_nodes_parity(helsinki_pbf):
     _assert_full_parity(a, b)
 
 
-# History (.osh) reads route to the in-memory selection even under engine="out_of_core"
-# (the latest-version-per-element merge is global, so streaming gives no benefit); the
+# History (.osh) reads under engine="out_of_core": the layer reads go to the engine, which
+# reads each element's version at the time; the others go to the in-memory reader. The
 # result must match the in-memory reader exactly.
 
 
-def _osm_history_parity(fp, method, timestamp, **kwargs):
+def _osm_history_parity(fp, method, timestamp, osm_kwargs=None, **kwargs):
     import copy
 
-    ref = getattr(OSM(fp, engine="in_memory"), method)(
+    osm_kwargs = osm_kwargs or {}
+    ref = getattr(OSM(fp, engine="in_memory", **osm_kwargs), method)(
         timestamp=timestamp, **copy.deepcopy(kwargs)
     )
-    mine = getattr(OSM(fp, engine="out_of_core"), method)(
+    mine = getattr(OSM(fp, engine="out_of_core", **osm_kwargs), method)(
         timestamp=timestamp, **copy.deepcopy(kwargs)
     )
     if ref is None:
@@ -3152,35 +3153,66 @@ def _osm_history_parity(fp, method, timestamp, **kwargs):
         ("get_data_by_custom_criteria", {"custom_filter": {"highway": True}}),
     ],
 )
-def test_osm_out_of_core_history_routes_to_in_memory(
+def test_osm_out_of_core_history_reads_match_in_memory(
     helsinki_history_pbf, method, kwargs, timestamp
 ):
     _osm_history_parity(helsinki_history_pbf, method, timestamp, **kwargs)
 
 
-def test_osm_out_of_core_history_without_timestamp_routes_to_in_memory(
+@pytest.mark.parametrize("method", ["get_buildings", "get_pois"])
+def test_osm_out_of_core_history_reads_with_options_match_in_memory(
+    helsinki_history_pbf, method
+):
+    # A bounding box with complete relations, without metadata, decoded on two threads,
+    # so that runs of versions cross the decode's tasks.
+    options = dict(
+        bounding_box=[24.918, 60.155, 24.933, 60.159],
+        complete_relations=True,
+        keep_metadata=False,
+        workers=2,
+    )
+    _osm_history_parity(helsinki_history_pbf, method, "2015-01-01", options)
+
+
+def test_osm_out_of_core_history_without_timestamp_matches_in_memory(
     helsinki_history_pbf,
 ):
     # An .osh.pbf with no timestamp uses the current UTC time (with a warning) in both
-    # engines; the out-of-core engine routes to the in-memory selection, matching it.
+    # engines.
     import warnings
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        ref = OSM(helsinki_history_pbf, engine="in_memory").get_network()
-        mine = OSM(helsinki_history_pbf, engine="out_of_core").get_network()
+        ref = OSM(helsinki_history_pbf, engine="in_memory").get_pois()
+        mine = OSM(helsinki_history_pbf, engine="out_of_core").get_pois()
     _assert_full_parity(mine, ref)
 
 
+def test_osm_out_of_core_history_reads_at_two_times_are_cached_apart(
+    helsinki_history_pbf, fresh_cache
+):
+    # The result cache keys a history read by its time, so a read of the file at another
+    # time is read and not served from the first read's cache.
+    osm = OSM(helsinki_history_pbf, engine="out_of_core")
+    osm.get_buildings(timestamp="2010-01-01")
+    later = osm.get_buildings(timestamp="2015-01-01")
+    assert len(list(fresh_cache.glob("result_*.parquet"))) == 2
+    ref = OSM(helsinki_history_pbf, engine="in_memory")
+    _assert_full_parity(later, ref.get_buildings(timestamp="2015-01-01"))
+
+
 def test_use_engine_routing(helsinki_pbf, helsinki_history_pbf):
-    # The out-of-core engine handles only non-history reads; an .osh file or an explicit
-    # timestamp routes to the in-memory path.
+    # The out-of-core engine handles non-history reads, and history reads (an .osh file or
+    # an explicit timestamp) only with a reader that takes the read's time.
     assert OSM(helsinki_pbf, engine="out_of_core")._use_engine(None) is True
     assert OSM(helsinki_pbf, engine="out_of_core")._use_engine("2015-01-01") is False
     assert OSM(helsinki_pbf, engine="in_memory")._use_engine(None) is False
     osh = OSM(helsinki_history_pbf, engine="out_of_core")
     assert osh._use_engine(None) is False
     assert osh._use_engine("2015-01-01") is False
+    assert osh._use_engine("2015-01-01", takes_time=True) is True
+    in_memory = OSM(helsinki_history_pbf, engine="in_memory")
+    assert in_memory._use_engine(None, takes_time=True) is False
 
 
 def _history_blocks(path):
