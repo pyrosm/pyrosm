@@ -3373,14 +3373,43 @@ def test_history_runs_settle_versions_that_go_on_in_later_blocks():
     )
     assert released[2]["id"].tolist() == [4] and runs.held[:2] == (1, 12)
 
+    runs = decode._HistoryRuns(runs.settings)
+    runs.settle(*_nodes_block([(5, 1, 10)]))
+    released, block = runs.settle(*_ways_block((13, 1, 10, 1)))
+    assert released[2]["id"].tolist() == [5] and runs.held[:2] == (1, 13)
+
+
+def test_history_runs_finish_reads_on_as_far_as_the_versions_go(monkeypatch):
+    """The element held after a task's last block is settled by the blocks after it in the
+    file: kept through blocks with only its versions after the time, to the end of the
+    file, and dropped when a later block, also one past the next, holds a version in time.
+    """
+    from pyrosm.engine import decode
+
+    blocks = {}
+    monkeypatch.setattr(decode, "_read_block", lambda f, offset, size: offset)
+    monkeypatch.setattr(decode, "decode_primitive_block", lambda offset: blocks[offset])
+    blobs = ((0, 1, 1), (1, 1, 1), (2, 1, 1))
+    settings = decode._DecodeSettings(None, None, unix_time=30, blobs=blobs)
+    for later, last, kept in [
+        ((5, 2, 50, 1), (5, 3, 60, 1), [(5, 1)]),
+        ((5, 2, 50, 1), (5, 3, 20, 1), []),
+        ((5, 2, 20, 1), (5, 3, 60, 1), []),
+    ]:
+        runs = decode._HistoryRuns(settings)
+        runs.settle(*_ways_block((5, 1, 10, 1)))
+        blocks[1], blocks[2] = _ways_block(later), _ways_block(last)
+        released = runs.finish(None, 0)
+        assert [(b[3]["id"][0], b[3]["version"][0]) for b in released] == kept
+
 
 @pytest.mark.parametrize(
-    "threaded, one_task_per_block",
-    [(False, True), (True, False)],
-    ids=["processes, a task per block", "threads, one task"],
+    "threaded, blocks_per_task",
+    [(False, 1), (True, 2)],
+    ids=["processes, a task per block", "threads, two blocks per task"],
 )
 def test_history_decode_spills_the_versions_at_the_time(
-    tmp_path, threaded, one_task_per_block
+    tmp_path, threaded, blocks_per_task
 ):
     """Both decode paths of a history read spill each element at the read's time, the
     last of its versions in the file dated at or before it, also when its versions go on
@@ -3398,7 +3427,10 @@ def test_history_decode_spills_the_versions_at_the_time(
         path, str(tmp_path), None, unix_time=unix_time, blobs=blobs
     )
     worker = decode._decode_batch_threads if threaded else decode._decode_batch
-    tasks = [[b] for b in blobs] if one_task_per_block else [list(blobs)]
+    tasks = [
+        list(blobs[i : i + blocks_per_task])
+        for i in range(0, len(blobs), blocks_per_task)
+    ]
     shards = [
         decode._open_shard(s)
         for i, task in enumerate(tasks)
