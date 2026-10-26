@@ -140,12 +140,14 @@ def _network_ways(
     bounding_box,
     filepath,
     steps,
+    unix_time=None,
 ):
     """The highway ways a network read keeps, as way arrays, and the coordinate store of
     their nodes: ``(ways, node_coordinates)``, or ``None`` when no way is kept. With
     ``segments`` the store holds the node records (tags + metadata), gathered with a
     second pass over ``filepath``, the step ``GATHERING_NODES`` of ``steps`` (see
-    :func:`~pyrosm.engine.collect._gather_node_records`); otherwise only the coordinates.
+    :func:`~pyrosm.engine.collect._gather_node_records`), at ``unix_time`` for a history
+    file; otherwise only the coordinates.
     """
     kept = _network_kept(shard_paths, filter_spec, bounding_box)
     if kept is None:
@@ -157,6 +159,7 @@ def _network_ways(
             keep_metadata,
             start_step(steps, GATHERING_NODES),
             threaded=_is_threaded(shard_paths),
+            unix_time=unix_time,
         )
     else:
         node_coordinates = _coordinates(shard_paths, kept, None)
@@ -174,11 +177,13 @@ def _assemble_network(
     filepath=None,
     steps=None,
     keep_node_info=False,
+    unix_time=None,
 ):
     """Assemble the matching highway ways as a network (LineString edges + a ``length``
     column) through pyrosm's ``parse_network`` path. Returns ``(edges, nodes)``; ``nodes``
     is the graph-export node frame, only built when ``segments`` is True
-    (``get_network(nodes=True)``), from the node records of :func:`_network_ways`. A
+    (``get_network(nodes=True)``), from the node records of :func:`_network_ways` (at
+    ``unix_time`` for a history file). A
     threaded read without ``segments`` gives the edges as an
     :class:`~pyrosm.engine.ways.ArrowFrame` (see :func:`_network_frame`). The edges are
     built in the step ``BUILDING_EDGES`` of ``steps`` (a
@@ -204,6 +209,7 @@ def _assemble_network(
         bounding_box,
         filepath,
         steps,
+        unix_time,
     )
     if read is None:
         return None, None
@@ -266,6 +272,7 @@ def _assemble_graph_network(
     filepath,
     steps,
     keep_node_info,
+    unix_time=None,
 ):
     """The network of :func:`_assemble_network` with ``segments`` as the readers of graph
     simplification, ``(nodes, edges)``: a :class:`~pyrosm.graph_simplify._StoreNodes` and
@@ -288,6 +295,7 @@ def _assemble_graph_network(
         bounding_box,
         filepath,
         steps,
+        unix_time,
     )
     if read is None:
         return None, None

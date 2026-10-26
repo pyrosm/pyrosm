@@ -313,13 +313,10 @@ class OSM:
             progress="callable" if callable(progress) else progress,
         )
 
-    def _use_engine(self, timestamp, takes_time=False):
-        """Whether the out-of-core engine handles this read. A history read -- an
-        ``.osh.pbf`` file, or an explicit ``timestamp`` -- goes to it when its engine reader
-        takes the read's time (``takes_time``, see :meth:`_history_time`), and to the
-        in-memory reader otherwise."""
-        history = timestamp is not None or self._osh_file
-        return self.engine == "out_of_core" and (takes_time or not history)
+    def _use_engine(self):
+        """Whether the out-of-core engine reads the file, history reads included (see
+        :meth:`_read_engine`), rather than the in-memory reader."""
+        return self.engine == "out_of_core"
 
     def _history_time(self, timestamp):
         """The UNIX time (seconds) at which a read with ``timestamp`` chooses each element's
@@ -328,12 +325,12 @@ class OSM:
         self._set_current_time(timestamp)
         return self._current_timestamp
 
-    def _read_engine(self, reader, with_relations=True, **kwargs):
+    def _read_engine(self, reader, timestamp, with_relations=True, **kwargs):
         """Route a feature read to the given out-of-core engine reader, threading the
         constructor-level ``bounding_box`` / ``keep_metadata`` / ``keep_node_info`` /
-        ``workers`` (and ``complete_relations`` for the layer readers). A history read
-        reaches it only with a reader that takes its time as ``unix_time`` (see
-        :meth:`_use_engine`)."""
+        ``workers`` (and ``complete_relations`` for the layer readers), and the time of a
+        history read with ``timestamp`` as ``unix_time`` (see :meth:`_history_time`)."""
+        kwargs["unix_time"] = self._history_time(timestamp)
         kwargs["bounding_box"] = self.bounding_box
         kwargs["keep_metadata"] = self.keep_metadata
         kwargs["workers"] = self.workers
@@ -449,14 +446,14 @@ class OSM:
         ``engine_reader`` with the out-of-core engine, else in memory, in both without
         nodes unless ``with_nodes``, with a warning naming ``result_name`` when nothing
         matches."""
-        if self._use_engine(timestamp, takes_time=True):
+        if self._use_engine():
             gdf = self._read_engine(
                 engine_reader,
+                timestamp,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
                 keep_nodes=with_nodes,
-                unix_time=self._history_time(timestamp),
             )
             if gdf is None:
                 warn_empty_result(result_name)
@@ -625,9 +622,10 @@ class OSM:
         custom_filter, filter_type = _network_filter_type(custom_filter, filter_type)
         advanced_filter = isinstance(custom_filter, CompiledFilter)
 
-        if self._use_engine(timestamp):
+        if self._use_engine():
             result = self._read_engine(
                 engine_backend.get_network,
+                timestamp,
                 with_relations=False,
                 network_type=network_type,
                 extra_attributes=extra_attributes,
@@ -960,15 +958,15 @@ class OSM:
                     f"'name' should be text." f"Got '{name}' of type {type(name)}."
                 )
 
-        if self._use_engine(timestamp, takes_time=True):
+        if self._use_engine():
             gdf = self._read_engine(
                 engine_backend.get_boundaries,
+                timestamp,
                 boundary_type=boundary_type,
                 name=name,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
-                unix_time=self._history_time(timestamp),
             )
             if gdf is None:
                 warn_empty_result("boundaries")
@@ -1078,13 +1076,13 @@ class OSM:
         'tourism', 'viewpoint', 'wilderness_hut', 'zoo']
 
         """
-        if self._use_engine(timestamp, takes_time=True):
+        if self._use_engine():
             gdf = self._read_engine(
                 engine_backend.get_pois,
+                timestamp,
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
-                unix_time=self._history_time(timestamp),
             )
             if gdf is None:
                 warn_empty_result("pois")
@@ -1219,9 +1217,10 @@ class OSM:
         filter_type = filter_type.lower()
         validate_booleans(keep_nodes, keep_ways, keep_relations)
 
-        if self._use_engine(timestamp, takes_time=True):
+        if self._use_engine():
             gdf = self._read_engine(
                 engine_backend.get_data_by_custom_criteria,
+                timestamp,
                 custom_filter=custom_filter,
                 osm_keys_to_keep=osm_keys_to_keep,
                 filter_type=filter_type,
@@ -1232,7 +1231,6 @@ class OSM:
                 extra_attributes=extra_attributes,
                 keep_other_tags=keep_other_tags,
                 tags_to_keep=tags_to_keep,
-                unix_time=self._history_time(timestamp),
             )
             if gdf is None:
                 warn_empty_result("custom")
@@ -1614,8 +1612,8 @@ class OSM:
         With the out-of-core engine the simplified graph is built straight from the
         ways and nodes read from the file: the tables of every street segment and of
         every node that ``get_network(nodes=True)`` returns are not built, so the read
-        takes less memory. With ``simplify=False``, the in-memory engine or a history
-        read, the tables are read with ``get_network`` and exported with ``to_graph``.
+        takes less memory. With ``simplify=False`` or the in-memory engine, the tables are
+        read with ``get_network`` and exported with ``to_graph``.
 
         The read and the export show one progress as the ``progress`` of this object
         says: a bar "Building the graph of <file>" from 0 to 100 % with the current step
@@ -1666,9 +1664,10 @@ class OSM:
             leave=False,
             timed=True,
         ) as steps, self._progress_as(steps):
-            if simplify and self._use_engine(timestamp):
+            if simplify and self._use_engine():
                 nodes, edges = self._read_engine(
                     graph_network,
+                    timestamp,
                     with_relations=False,
                     network_type=network_type,
                     extra_attributes=extra_attributes,
@@ -1709,7 +1708,7 @@ class OSM:
         """The shares of the steps of the read of :meth:`get_graph`, in seconds of reads of
         Paris, as the shares of the graph steps are (see
         :func:`pyrosm.graphs.step_shares`)."""
-        if self._use_engine(timestamp):
+        if self._use_engine():
             if simplify:
                 shares, seconds = GRAPH_SHARES, _GRAPH_READ_SECONDS
             else:

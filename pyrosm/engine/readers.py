@@ -685,6 +685,7 @@ def get_network(
     keep_metadata=True,
     progress=None,
     keep_node_info=False,
+    unix_time=None,
 ):
     """Read a street network (``highway=*`` ways as LineString edges + a ``length`` column)
     from ``filepath`` with the out-of-core engine, with the same columns as
@@ -705,7 +706,9 @@ def get_network(
     ``nodes.parquet`` into the ``path`` directory and returns the directory (both require
     ``pyarrow``). With ``pyarrow`` absent the default read returns the in-memory result with no
     cache. ``progress`` shows the read as for ``OSM(..., progress=...)``, including the second
-    pass of ``nodes=True``; a cached read has nothing to show."""
+    pass of ``nodes=True``; a cached read has nothing to show. ``unix_time`` (seconds), for
+    a history file (``.osh.pbf``), reads each element's version at that time, as
+    ``OSM(...).get_network(timestamp=...)`` does."""
     from pyrosm.graphs import record_network_type
 
     validate_progress(progress)
@@ -732,12 +735,13 @@ def get_network(
                 filepath=filepath,
                 steps=steps,
                 keep_node_info=keep_node_info,
+                unix_time=unix_time,
             )
             return (node_gdf, edges) if nodes else edges
 
         def decode():
             return _decode_network(
-                filepath, filter_spec, bounding_box, workers, steps, assemble
+                filepath, filter_spec, bounding_box, workers, steps, assemble, unix_time
             )
 
         # A user-supplied output writes the result there and returns it: a GeoParquet
@@ -765,6 +769,8 @@ def get_network(
             "bounding_box": bounding_box,
             "keep_node_info": keep_node_info,
         }
+        if unix_time is not None:
+            key_params["unix_time"] = unix_time
         if nodes:
             edges_path = cache.result_path(filepath, {**key_params, "part": "edges"})
             nodes_path = cache.result_path(filepath, {**key_params, "part": "nodes"})
@@ -830,10 +836,13 @@ def _network_spec(
     return tags_as_columns, (network_keys, data_filter, filter_type)
 
 
-def _decode_network(filepath, filter_spec, bounding_box, workers, steps, assemble):
+def _decode_network(
+    filepath, filter_spec, bounding_box, workers, steps, assemble, unix_time=None
+):
     """``assemble(shard_paths, steps)`` over the ways of ``filepath`` with the keys of
     ``filter_spec`` (see :func:`_network_spec`), decoded as
-    :func:`~pyrosm.engine.pool._decode_and_run` does with ``workers`` and ``steps``.
+    :func:`~pyrosm.engine.pool._decode_and_run` does with ``workers``, ``steps`` and
+    ``unix_time``.
     """
     return _decode_and_run(
         filepath,
@@ -844,6 +853,7 @@ def _decode_network(filepath, filter_spec, bounding_box, workers, steps, assembl
         bbox_bounds=_bbox_bounds(bounding_box),
         steps=steps,
         spill_all_ways=False,
+        unix_time=unix_time,
     )
 
 
@@ -859,6 +869,7 @@ def graph_network(
     keep_metadata=True,
     progress=None,
     keep_node_info=False,
+    unix_time=None,
 ):
     """The network that :func:`get_network` with ``nodes=True`` reads, for graph export:
     ``(nodes, edges)``, readers of its node and edge tables that do not build them (see
@@ -881,9 +892,10 @@ def graph_network(
             filepath,
             steps,
             keep_node_info,
+            unix_time,
         )
 
     with read_steps(filepath, progress, GRAPH_SHARES) as steps:
         return _decode_network(
-            filepath, filter_spec, bounding_box, workers, steps, assemble
+            filepath, filter_spec, bounding_box, workers, steps, assemble, unix_time
         )

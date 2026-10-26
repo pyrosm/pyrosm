@@ -3119,9 +3119,8 @@ def test_osm_out_of_core_network_nodes_parity(helsinki_pbf):
     _assert_full_parity(a, b)
 
 
-# History (.osh) reads under engine="out_of_core": the layer reads go to the engine, which
-# reads each element's version at the time; the others go to the in-memory reader. The
-# result must match the in-memory reader exactly.
+# History (.osh) reads under engine="out_of_core" go to the engine, which reads each
+# element's version at the time. The result must match the in-memory reader exactly.
 
 
 def _osm_history_parity(fp, method, timestamp, osm_kwargs=None, **kwargs):
@@ -3140,12 +3139,20 @@ def _osm_history_parity(fp, method, timestamp, osm_kwargs=None, **kwargs):
         mine = getattr(OSM(fp, engine="out_of_core", **osm_kwargs), method)(
             timestamp=timestamp, **copy.deepcopy(kwargs)
         )
-    # The engine reads it at the read's time; networks are still read in memory.
-    if method != "get_network":
-        assert decode.call_args.kwargs["unix_time"] is not None
+    # The engine reads it at the read's time.
+    assert decode.call_args.kwargs["unix_time"] is not None
     if ref is None:
         assert mine is None
         return
+    if isinstance(ref, tuple):
+        # A network with its nodes: (nodes, edges).
+        (mine_nodes, mine), (ref_nodes, ref) = mine, ref
+        _assert_full_parity(
+            *(
+                frame.sort_values("id").reset_index(drop=True).assign(osm_type="node")
+                for frame in (mine_nodes, ref_nodes)
+            )
+        )
     _assert_full_parity(mine, ref)
 
 
@@ -3154,6 +3161,7 @@ def _osm_history_parity(fp, method, timestamp, osm_kwargs=None, **kwargs):
     "method,kwargs",
     [
         ("get_network", {}),
+        ("get_network", {"network_type": "driving", "nodes": True}),
         ("get_buildings", {}),
         ("get_landuse", {}),
         ("get_natural", {}),
@@ -3167,9 +3175,12 @@ def test_osm_out_of_core_history_reads_match_in_memory(
     _osm_history_parity(helsinki_history_pbf, method, timestamp, **kwargs)
 
 
-@pytest.mark.parametrize("method", ["get_buildings", "get_pois"])
+@pytest.mark.parametrize(
+    "method, kwargs",
+    [("get_buildings", {}), ("get_pois", {}), ("get_network", {"nodes": True})],
+)
 def test_osm_out_of_core_history_reads_with_options_match_in_memory(
-    helsinki_history_pbf, method
+    helsinki_history_pbf, method, kwargs
 ):
     # A bounding box with complete relations, without metadata, decoded on two threads,
     # so that runs of versions cross the decode's tasks.
@@ -3179,7 +3190,7 @@ def test_osm_out_of_core_history_reads_with_options_match_in_memory(
         keep_metadata=False,
         workers=2,
     )
-    _osm_history_parity(helsinki_history_pbf, method, "2015-01-01", options)
+    _osm_history_parity(helsinki_history_pbf, method, "2015-01-01", options, **kwargs)
 
 
 @pytest.mark.parametrize(
@@ -3226,18 +3237,11 @@ def test_osm_out_of_core_history_reads_at_two_times_are_cached_apart(
     _assert_full_parity(later, ref.get_buildings(timestamp="2015-01-01"))
 
 
-def test_use_engine_routing(helsinki_pbf, helsinki_history_pbf):
-    # The out-of-core engine handles non-history reads, and history reads (an .osh file or
-    # an explicit timestamp) only with a reader that takes the read's time.
-    assert OSM(helsinki_pbf, engine="out_of_core")._use_engine(None) is True
-    assert OSM(helsinki_pbf, engine="out_of_core")._use_engine("2015-01-01") is False
-    assert OSM(helsinki_pbf, engine="in_memory")._use_engine(None) is False
-    osh = OSM(helsinki_history_pbf, engine="out_of_core")
-    assert osh._use_engine(None) is False
-    assert osh._use_engine("2015-01-01") is False
-    assert osh._use_engine("2015-01-01", takes_time=True) is True
-    in_memory = OSM(helsinki_history_pbf, engine="in_memory")
-    assert in_memory._use_engine(None, takes_time=True) is False
+@pytest.mark.parametrize("engine", ["out_of_core", "in_memory"])
+def test_osm_timestamp_needs_a_history_file(test_pbf, engine):
+    # A timestamp chooses versions from a history file (.osh.pbf) only.
+    with pytest.raises(ValueError, match="OSH.PBF"):
+        OSM(test_pbf, engine=engine).get_network(timestamp="2015-01-01")
 
 
 def _history_blocks(path):
