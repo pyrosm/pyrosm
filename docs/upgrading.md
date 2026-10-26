@@ -9,13 +9,6 @@ new options that leave the defaults as they were, and fixes of calls that failed
 
 ## Unreleased
 
-- **History reads are cached.** With `engine="out_of_core"`, the default, reads of a history
-  file (`.osh.pbf`) or with a `timestamp` run on the out-of-core engine and, with `pyarrow`
-  installed, write their results to its cache in the temporary folder, by their time, as other
-  reads do. A history file read without a `timestamp` is cached under the current time its `OSM`
-  object chose, so each new object adds cache files: pass a `timestamp` to reuse them, or remove
-  them with `OSM.clear_cache()`. `OSM(fp, engine="in_memory")` reads history files without the
-  cache.
 - **Node metadata of history reads.** With `keep_metadata=False`, an in-memory history read
   leaves out the nodes' `version`, `timestamp` and `changeset`, as other reads do. Keep the
   default `keep_metadata=True` to read them.
