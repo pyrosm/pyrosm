@@ -5564,3 +5564,24 @@ def test_node_tags_without_leftovers_are_typed_as_strings(engine, monkeypatch):
     assert (stones["osm_type"] == "node").all()
     assert stones["tags"].dtype == pd.Series([""]).dtype
     assert stones["tags"].isna().all()
+
+
+@pytest.mark.parametrize("bounding_box", [None, [24.918, 60.155, 24.933, 60.159]])
+def test_history_reads_leave_out_node_metadata_on_request(bounding_box):
+    """#751 — an in-memory history read with ``keep_metadata=False`` leaves out the nodes'
+    version, timestamp and changeset, also from the node frame of
+    ``get_network(nodes=True)`` and from the nodes outside a bounding box that its ways
+    bring in."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(
+        get_data("helsinki_test_history_pbf"),
+        bounding_box=bounding_box,
+        keep_metadata=False,
+        engine="in_memory",
+    )
+    pois = osm.get_pois(timestamp="2019-01-01")
+    nodes, edges = osm.get_network(timestamp="2019-01-01", nodes=True)
+    assert (pois["osm_type"] == "node").any()
+    for frame in (pois, nodes, edges):
+        assert not {"version", "timestamp", "changeset"} & set(frame.columns)

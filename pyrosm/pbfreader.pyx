@@ -154,6 +154,16 @@ cdef dict _tags_as_dicts(dict columns):
     }
 
 
+cdef _nodes_at_time(df, bint keep_metadata):
+    """Each node's state at the time of a history read, from the frame ``df`` of its
+    versions (see :func:`~pyrosm.data_filter.get_latest_version`), without the version,
+    timestamp and changeset the choice needed unless ``keep_metadata``."""
+    df = get_latest_version(df)
+    if not keep_metadata:
+        df = df.drop(columns=["version", "timestamp", "changeset"])
+    return df
+
+
 cdef _way_mask(dict ways, node_lookup, unix_time_filter, way_ids=None):
     """Which ways of a decoded block to keep: those not newer than ``unix_time_filter``,
     whose id is in ``way_ids`` (an array) when given, and with a node in ``node_lookup``
@@ -319,7 +329,7 @@ cdef _parse_osm_data(
     # Keep each element's state at the timestamp if filter is used
     if unix_time_filter is not None:
         start_step(steps, SELECTING_VERSIONS)
-        nodes_df = get_latest_version(create_df(all_nodes))
+        nodes_df = _nodes_at_time(create_df(all_nodes), keep_metadata)
         rows = latest_version_rows(all_ways.ids, all_ways.visible)
         way_changesets = [(all_ways.ids[rows], all_ways.changeset[rows])]
         all_ways = all_ways.records(rows)
@@ -423,7 +433,7 @@ cdef _parse_osm_data(
                     # built from each vertex's state at the timestamp rather than
                     # whichever historical version drop_duplicates happens to keep.
                     if unix_time_filter is not None:
-                        boundary_df = get_latest_version(boundary_df)
+                        boundary_df = _nodes_at_time(boundary_df, keep_metadata)
                     coords = pd.concat(
                         [create_df(_tags_as_dicts(all_nodes)), boundary_df],
                         ignore_index=True,
