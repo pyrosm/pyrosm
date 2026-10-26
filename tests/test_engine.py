@@ -3126,14 +3126,23 @@ def test_osm_out_of_core_network_nodes_parity(helsinki_pbf):
 
 def _osm_history_parity(fp, method, timestamp, osm_kwargs=None, **kwargs):
     import copy
+    from unittest import mock
+
+    import pyrosm.engine.readers as readers
 
     osm_kwargs = osm_kwargs or {}
     ref = getattr(OSM(fp, engine="in_memory", **osm_kwargs), method)(
         timestamp=timestamp, **copy.deepcopy(kwargs)
     )
-    mine = getattr(OSM(fp, engine="out_of_core", **osm_kwargs), method)(
-        timestamp=timestamp, **copy.deepcopy(kwargs)
-    )
+    with mock.patch.object(
+        readers, "_decode_and_run", wraps=readers._decode_and_run
+    ) as decode:
+        mine = getattr(OSM(fp, engine="out_of_core", **osm_kwargs), method)(
+            timestamp=timestamp, **copy.deepcopy(kwargs)
+        )
+    # The engine reads it at the read's time; networks are still read in memory.
+    if method != "get_network":
+        assert decode.call_args.kwargs["unix_time"] is not None
     if ref is None:
         assert mine is None
         return
@@ -3149,7 +3158,6 @@ def _osm_history_parity(fp, method, timestamp, osm_kwargs=None, **kwargs):
         ("get_landuse", {}),
         ("get_natural", {}),
         ("get_pois", {}),
-        ("get_boundaries", {}),
         ("get_data_by_custom_criteria", {"custom_filter": {"highway": True}}),
     ],
 )
@@ -3172,6 +3180,23 @@ def test_osm_out_of_core_history_reads_with_options_match_in_memory(
         workers=2,
     )
     _osm_history_parity(helsinki_history_pbf, method, "2015-01-01", options)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [{}, {"bounding_box": [24.93, 60.15, 24.96, 60.17], "complete_relations": True}],
+    ids=["whole file", "bounding box, complete relations"],
+)
+def test_osm_out_of_core_history_boundaries_match_in_memory(options):
+    # The boundary relations of the Helsinki history sample, whose member ways have
+    # versions of their own (the bundled history test file has no boundaries).
+    _osm_history_parity(
+        get_data("helsinki_history_pbf"),
+        "get_boundaries",
+        "2015-01-01",
+        options,
+        boundary_type="all",
+    )
 
 
 def test_osm_out_of_core_history_without_timestamp_matches_in_memory(

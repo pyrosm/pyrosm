@@ -455,6 +455,7 @@ def get_boundaries(
     keep_metadata=True,
     progress=None,
     keep_node_info=False,
+    unix_time=None,
 ):
     """Read boundaries (ways + relations) from ``filepath`` with the out-of-core engine,
     with the same columns as ``OSM(...).get_boundaries()``. ``boundary_type`` selects the
@@ -487,6 +488,7 @@ def get_boundaries(
         complete_relations=complete_relations,
         progress=progress,
         keep_node_info=keep_node_info,
+        unix_time=unix_time,
     )
     # The name post-filter, as OSM.get_boundaries does. The output= + name combination is
     # rejected above, so reaching here means an in-memory frame.

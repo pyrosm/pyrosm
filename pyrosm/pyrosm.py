@@ -960,7 +960,7 @@ class OSM:
                     f"'name' should be text." f"Got '{name}' of type {type(name)}."
                 )
 
-        if self._use_engine(timestamp):
+        if self._use_engine(timestamp, takes_time=True):
             gdf = self._read_engine(
                 engine_backend.get_boundaries,
                 boundary_type=boundary_type,
@@ -968,6 +968,7 @@ class OSM:
                 custom_filter=custom_filter,
                 extra_attributes=extra_attributes,
                 tags_to_keep=tags_to_keep,
+                unix_time=self._history_time(timestamp),
             )
             if gdf is None:
                 warn_empty_result("boundaries")
