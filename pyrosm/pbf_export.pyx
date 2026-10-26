@@ -65,6 +65,7 @@ from pyrosm.engine.blobs import (
     _MAX_BLOB_SIZE, _decompress_blob, _inflated_batch, _invalid_pbf, _read_batches,
     _read_span,
 )
+from pyrosm._arrays cimport _kept_keys_vals
 from pyrosm._arrays import _offsets_from_lengths
 from pyrosm.engine.pool import _PoolStartError, _ordered_map
 from pyrosm.int64_hash cimport Int64Set, SortedInt64Set, _set_has, kh_i64set_t
@@ -754,29 +755,6 @@ cdef bytes _block_bytes(table, list groups, header):
         _varint_field(PB_LAT_OFFSET, header["lat_offset"]),
         _varint_field(PB_LON_OFFSET, header["lon_offset"]),
     ])
-
-
-cdef _kept_keys_vals(const int64_t[::1] keys_vals, keep):
-    """The tag stream (each node's key and value ids followed by a 0) of the nodes that
-    `keep` marks, out of `keys_vals`, the stream of all of them."""
-    cdef const uint8_t[::1] kept = keep.view(np.uint8)
-    out = np.empty(keys_vals.shape[0], dtype=np.int64)
-    cdef int64_t[::1] o = out
-    cdef Py_ssize_t i = 0, n = 0, node = 0, end = keys_vals.shape[0]
-    while i < end:
-        if keys_vals[i] == 0:
-            if kept[node]:
-                o[n] = 0
-                n += 1
-            node += 1
-            i += 1
-        else:
-            if kept[node]:
-                o[n] = keys_vals[i]
-                o[n + 1] = keys_vals[i + 1]
-                n += 2
-            i += 2
-    return out[:n]
 
 
 cdef bytes _dense_bytes(dense, keep):

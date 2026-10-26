@@ -15,7 +15,8 @@ from pathlib import Path
 
 import numpy as np
 
-from pyrosm._arrays import _offsets_from_lengths
+from pyrosm._arrays import _kept_keys_vals, _offsets_from_lengths
+from pyrosm.data_filter import latest_version_rows
 from pyrosm.primitive_block_decoder import (
     BLOCK_COUNTS,
     decode_batch_nogil,
@@ -55,7 +56,8 @@ class _DecodeSettings:
     xmax, ymax)`` (or None). When ``requested_tag_keys`` (utf-8 bytes) is not None, only
     those tag keys are resolved into the element tag dicts (the ``keep_other_tags=False``
     minimal-tags mode). ``spill_all_ways`` spills every way's id and node refs, which only
-    the lookup of relation members reads."""
+    the lookup of relation members reads. ``unix_time``, for a history read, keeps each
+    element's version at that time (see :func:`_versions_at`)."""
 
     filepath: str
     shard_dir: str
@@ -64,6 +66,7 @@ class _DecodeSettings:
     bbox_bounds: tuple = None
     requested_tag_keys: list = None
     spill_all_ways: bool = True
+    unix_time: int = None
 
 
 def _key_indices(string_table, osm_keys):
@@ -225,14 +228,84 @@ def _matching_nodes(
     }
 
 
+def _meta(elements, name):
+    """The metadata column ``name`` of all ``elements`` (a node, way or relation dict of
+    ``decode_primitive_block``). The decoder returns an empty array for a column the block
+    lacks, read like the in-memory parse: ``visible`` as 1 (as the PBF format reads it),
+    the rest as 0."""
+    arr = elements[name]
+    if len(arr) == len(elements["id"]):
+        return arr
+    return np.full(len(elements["id"]), 1 if name == "visible" else 0, dtype=np.int64)
+
+
 def _dense_meta(nodes, name, idx):
-    """The DenseInfo column ``name`` of the dense nodes ``idx``. The decoder returns an
-    empty array for a column the block lacks, read like the in-memory parse: ``visible``
-    as 1 (as the PBF format reads it), the rest as 0."""
-    arr = nodes[name]
-    if len(arr) == len(nodes["id"]):
-        return arr[idx]
-    return np.full(len(idx), 1 if name == "visible" else 0, dtype=np.int64)
+    """The DenseInfo column ``name`` of the dense nodes ``idx`` (see :func:`_meta`)."""
+    return _meta(nodes, name)[idx]
+
+
+# The offset arrays of ``decode_primitive_block``'s ways and relations, each with the flat
+# arrays whose rows it delimits.
+_ELEMENT_OFFSETS = {
+    "tags_off": ("keys", "vals"),
+    "refs_off": ("refs",),
+    "members_off": ("memids", "types", "roles"),
+}
+
+
+def _element_rows(elements, rows):
+    """``elements`` (a node, way or relation dict of ``decode_primitive_block``) with only
+    the elements at ``rows``: their columns, their rows of the offset-delimited arrays and,
+    for nodes, their part of the dense ``keys_vals`` tag stream."""
+    n = len(elements["id"])
+    delimited = {flat for flats in _ELEMENT_OFFSETS.values() for flat in flats}
+    out = {}
+    for key, values in elements.items():
+        if key == "keys_vals" and len(values):
+            keep = np.zeros(n, dtype=bool)
+            keep[rows] = True
+            out[key] = _kept_keys_vals(values, keep)
+        elif key in _ELEMENT_OFFSETS:
+            for flat in _ELEMENT_OFFSETS[key]:
+                out[key], out[flat] = take(values, elements[flat], rows)
+        elif key not in delimited:
+            out[key] = values[rows] if len(values) == n else values
+    return out
+
+
+def _versions_at(elements, unix_time, date_granularity=1000):
+    """``elements`` (a node, way or relation dict of ``decode_primitive_block`` of a history
+    file, each element's versions one after another) with each element cut to its version
+    at ``unix_time`` (seconds): the last of its versions in the block dated at or before
+    then, left out when that version is a deletion, as the in-memory reader chooses it (see
+    :func:`~pyrosm.data_filter.latest_version_rows`). The block's timestamps count
+    ``date_granularity`` milliseconds. None when no element is left."""
+    if elements is None:
+        return None
+    dated = _meta(elements, "timestamp") * date_granularity
+    in_time = np.flatnonzero(dated <= unix_time * 1000)
+    rows = in_time[
+        latest_version_rows(
+            elements["id"][in_time], _meta(elements, "visible")[in_time]
+        )
+    ]
+    if len(rows) == 0:
+        return None
+    return _element_rows(elements, rows)
+
+
+def _decoded_block(settings, data):
+    """``decode_primitive_block``'s ``(string_table, header, nodes, ways, relations)`` of
+    the decompressed block ``data`` of the read with the :class:`_DecodeSettings`
+    ``settings``; for a history read each element is cut to its version at
+    ``settings.unix_time`` (see :func:`_versions_at`)."""
+    string_table, header, *elements = decode_primitive_block(data)
+    if settings.unix_time is not None:
+        elements = [
+            _versions_at(e, settings.unix_time, header["date_granularity"])
+            for e in elements
+        ]
+    return (string_table, header, *elements)
 
 
 def _node_records_by_id(string_table, header, nodes, wanted, keep_metadata, tags):
@@ -498,7 +571,7 @@ def _decode_batch(settings, task, advance=None):
     with open(settings.filepath, "rb") as f:
         for offset, size, span in blobs:
             data = _read_block(f, offset, size)
-            arrays = _decode_one_block(settings, *decode_primitive_block(data))
+            arrays = _decode_one_block(settings, *_decoded_block(settings, data))
             pending.append(arrays)
             pending_bytes += sum(v.nbytes for v in arrays.values())
             if pending_bytes >= _SHARD_TARGET_BYTES:
@@ -742,8 +815,9 @@ def _copied_views(arrays):
 def _decode_batch_threads(settings, task, advance=None):
     """Thread worker: :func:`_decode_batch` with the blocks read, decompressed and decoded
     without the GIL, ``_THREAD_BATCH`` at a time (a block the GIL-free decoder does not
-    handle is decoded by :func:`_decode_one_block`). Each shard keeps its object arrays in
-    memory and spills only its numeric arrays (see :class:`_Shard`). Returns the shards.
+    handle, and every block of a history read, is decoded by :func:`_decode_one_block`).
+    Each shard keeps its object arrays in memory and spills only its numeric arrays (see
+    :class:`_Shard`). Returns the shards.
     """
     task_id, blobs = task
     shards = []
@@ -763,27 +837,29 @@ def _decode_batch_threads(settings, task, advance=None):
     with open(settings.filepath, "rb") as f:
         for whole in _read_batches(blobs, _THREAD_BATCH):
             for batch, buffer, starts in _decoded_parts(f, whole):
-                decoded = decode_batch_nogil(
-                    buffer,
-                    starts,
-                    keys=settings.osm_keys,
-                    features=settings.include_nodes,
-                    all_ways=settings.spill_all_ways,
-                    bbox=settings.bbox_bounds,
-                    way_strings=True,
-                    requested=settings.requested_tag_keys,
-                )
-                counts = decoded["counts"]
-                at = {
-                    name: _offsets_from_lengths(counts[:, i]).tolist()
-                    for i, name in enumerate(BLOCK_COUNTS)
-                }
+                decoded = None
+                if settings.unix_time is None:
+                    decoded = decode_batch_nogil(
+                        buffer,
+                        starts,
+                        keys=settings.osm_keys,
+                        features=settings.include_nodes,
+                        all_ways=settings.spill_all_ways,
+                        bbox=settings.bbox_bounds,
+                        way_strings=True,
+                        requested=settings.requested_tag_keys,
+                    )
+                    counts = decoded["counts"]
+                    at = {
+                        name: _offsets_from_lengths(counts[:, i]).tolist()
+                        for i, name in enumerate(BLOCK_COUNTS)
+                    }
                 for b in range(len(batch)):
                     data = buffer[starts[b] : starts[b + 1]]
-                    if counts[b, _STATUS]:
-                        # A block the GIL-free decoder hands back.
+                    if decoded is None or counts[b, _STATUS]:
+                        # A history read's block, or one the GIL-free decoder hands back.
                         arrays = _columnar_tags(
-                            _decode_one_block(settings, *decode_primitive_block(data))
+                            _decode_one_block(settings, *_decoded_block(settings, data))
                         )
                     else:
                         arrays = _block_shard(decoded, at, b, settings.bbox_bounds)

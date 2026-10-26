@@ -3183,6 +3183,133 @@ def test_use_engine_routing(helsinki_pbf, helsinki_history_pbf):
     assert osh._use_engine("2015-01-01") is False
 
 
+def _history_blocks(path):
+    """``decode_primitive_block``'s ``(string_table, header, nodes, ways, relations)`` of
+    each block of the PBF ``path``, in file order."""
+    from pyrosm.engine.blobs import _data_blob_spans, _index_blobs, _read_block
+    from pyrosm.primitive_block_decoder import decode_primitive_block
+
+    with open(path, "rb") as f:
+        return [
+            decode_primitive_block(_read_block(f, offset, size))
+            for offset, size, _ in _data_blob_spans(_index_blobs(path))[0]
+        ]
+
+
+def _element_contents(elements):
+    """Each decoded element's coordinates and tag ids (nodes), or tag ids and refs or
+    members (ways, relations), in order."""
+    n = len(elements["id"])
+    if "keys_vals" in elements:
+        kv, p, out = elements["keys_vals"], 0, []
+        for i in range(n):
+            pairs = []
+            while p < len(kv) and kv[p] != 0:
+                pairs.append((kv[p], kv[p + 1]))
+                p += 2
+            p += 1
+            out.append((elements["lat"][i], elements["lon"][i], tuple(pairs)))
+        return out
+    t, out = elements["tags_off"], []
+    for i in range(n):
+        tags = tuple(zip(*(elements[k][t[i] : t[i + 1]] for k in ("keys", "vals"))))
+        if "refs_off" in elements:
+            r = elements["refs_off"]
+            part = tuple(elements["refs"][r[i] : r[i + 1]])
+        else:
+            m = elements["members_off"]
+            part = tuple(
+                zip(*(elements[k][m[i] : m[i + 1]] for k in ("memids", "types", "roles")))
+            )
+        out.append((tags, part))
+    return out
+
+
+@pytest.mark.parametrize("date", ["2010-01-01", "2016-06-01", "2025-01-01"])
+def test_versions_at_keep_each_elements_version_at_the_time(helsinki_history_pbf, date):
+    """Each element of a history block is cut to its last version dated at or before the
+    time, whole (coordinates, tags, refs, members); an element whose version then is a
+    deletion, or that has none yet, is left out."""
+    from pyrosm.engine import decode
+    from pyrosm.utils import get_unix_time
+
+    unix_time = get_unix_time(date, True)
+    for _, _, *kinds in _history_blocks(helsinki_history_pbf):
+        for elements in kinds:
+            if elements is None:
+                continue
+            last = {}
+            for i, (eid, ts) in enumerate(zip(elements["id"], elements["timestamp"])):
+                if ts <= unix_time:
+                    last[eid] = i
+            rows = [i for i in last.values() if elements["visible"][i]]
+            kept = decode._versions_at(elements, unix_time)
+            if not rows:
+                assert kept is None
+                continue
+            assert kept["id"].tolist() == elements["id"][rows].tolist()
+            assert kept["version"].tolist() == elements["version"][rows].tolist()
+            contents = _element_contents(elements)
+            assert _element_contents(kept) == [contents[i] for i in rows]
+
+
+def test_versions_at_date_the_versions_by_the_block_granularity():
+    """A block's timestamps count its ``date_granularity`` milliseconds: with 500, the
+    stored 20 and 40 are 10 s and 20 s, so at 15 s the first version is the one in time."""
+    from pyrosm.engine import decode
+
+    one = np.array([1, 1])
+    ways = {
+        "id": np.array([7, 7]),
+        "keys": np.empty(0, np.int64),
+        "vals": np.empty(0, np.int64),
+        "tags_off": np.array([0, 0, 0]),
+        "refs": np.array([1, 2, 1, 2, 3]),
+        "refs_off": np.array([0, 2, 5]),
+        "version": np.array([1, 2]),
+        "timestamp": np.array([20, 40]),
+        "changeset": one,
+        "visible": one,
+    }
+    kept = decode._versions_at(ways, 15, date_granularity=500)
+    assert kept["version"].tolist() == [1]
+    assert kept["refs"].tolist() == [1, 2]
+
+
+@pytest.mark.parametrize("threaded", [False, True], ids=["processes", "threads"])
+def test_history_decode_spills_the_versions_at_the_time(
+    helsinki_history_pbf, tmp_path, threaded
+):
+    """Both decode paths of a history read spill each block's elements at the read's
+    time: the node coordinates, the matched ways and every way's refs."""
+    from pyrosm.engine import decode
+    from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
+    from pyrosm.utils import get_unix_time
+
+    unix_time = get_unix_time("2016-06-01", True)
+    settings = decode._DecodeSettings(
+        helsinki_history_pbf, str(tmp_path), [b"building"], unix_time=unix_time
+    )
+    blobs = _data_blob_spans(_index_blobs(helsinki_history_pbf))[0]
+    worker = decode._decode_batch_threads if threaded else decode._decode_batch
+    shards = [decode._open_shard(s) for s in worker(settings, (0, blobs))]
+    nodes, ways = [], []
+    for _, _, block_nodes, block_ways, _ in _history_blocks(helsinki_history_pbf):
+        for elements, parts in ((block_nodes, nodes), (block_ways, ways)):
+            kept = decode._versions_at(elements, unix_time)
+            if kept is not None:
+                parts.append(kept)
+
+    def spilled(key):
+        return np.concatenate([s[key] for s in shards]).tolist()
+
+    assert spilled("node_id") == np.concatenate([n["id"] for n in nodes]).tolist()
+    assert spilled("all_id") == np.concatenate([w["id"] for w in ways]).tolist()
+    versions = {(i, v) for w in ways for i, v in zip(w["id"], w["version"])}
+    matched = list(zip(spilled("way_id"), spilled("way_version")))
+    assert matched and set(matched) <= versions
+
+
 def _gather_every_shard_id(shard_paths, needed):
     """Reference for ``_gather_node_shards``: search every id of every shard in
     ``needed``."""

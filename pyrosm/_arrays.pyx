@@ -1,3 +1,4 @@
+from libc.stdint cimport int64_t, uint8_t
 from libc.stdlib cimport malloc
 import cython
 import numpy as np
@@ -110,6 +111,29 @@ def _offsets_from_lengths(lengths):
     if len(lengths):
         np.cumsum(lengths, out=off[1:])
     return off
+
+
+cpdef _kept_keys_vals(const int64_t[::1] keys_vals, keep):
+    """The tag stream (each node's key and value ids followed by a 0) of the nodes that
+    `keep` marks, out of `keys_vals`, the stream of all of them."""
+    cdef const uint8_t[::1] kept = keep.view(np.uint8)
+    out = np.empty(keys_vals.shape[0], dtype=np.int64)
+    cdef int64_t[::1] o = out
+    cdef Py_ssize_t i = 0, n = 0, node = 0, end = keys_vals.shape[0]
+    while i < end:
+        if keys_vals[i] == 0:
+            if kept[node]:
+                o[n] = 0
+                n += 1
+            node += 1
+            i += 1
+        else:
+            if kept[node]:
+                o[n] = keys_vals[i]
+                o[n + 1] = keys_vals[i + 1]
+                n += 2
+            i += 2
+    return out[:n]
 
 
 cpdef columns_to_arrays(data):
