@@ -188,9 +188,10 @@ class OSM:
         process and warns -- but it is not parallel.
 
         History reads -- an `.osh.pbf` file, or any feature call with a
-        `timestamp` -- are served by the in-memory reader with either engine, which
-        chooses the latest version of each element at/before the timestamp from all
-        its versions. `write_pbf` also reads the file in memory with either engine.
+        `timestamp` -- choose the latest version of each element at/before the
+        timestamp from all its versions, with either engine; the out-of-core engine
+        caches them as its other reads, by that time. `write_pbf` reads the file in
+        memory with either engine.
 
     keep_node_info : bool (default: False)
         Whether to keep the `nodes` column -- the ordered member node ids of each
