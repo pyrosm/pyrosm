@@ -5545,3 +5545,22 @@ def test_crops_and_merges_refuse_a_block_with_two_string_tables(tmp_path, operat
                 workers=2 if operation == "crop on threads" else 1,
             )
     assert "two_tables.osm.pbf" in str(raised.value) or "copy.osm.pbf" in str(raised.value)
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_node_tags_without_leftovers_are_typed_as_strings(engine, monkeypatch):
+    """#750 — when no node of a result has tags outside the tag columns, a read without
+    the result cache types their missing ``tags`` as pandas types a column of strings, as
+    the cached out-of-core read gives them."""
+    import pandas as pd
+
+    from pyrosm import OSM, get_data
+    from pyrosm.utils import _compat
+
+    monkeypatch.setattr(_compat, "HAS_PYARROW", False)
+    stones = OSM(get_data("helsinki_pbf"), engine=engine).get_natural(
+        custom_filter={"natural": ["stone"]}
+    )
+    assert (stones["osm_type"] == "node").all()
+    assert stones["tags"].dtype == pd.Series([""]).dtype
+    assert stones["tags"].isna().all()

@@ -193,6 +193,10 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
     return ways, relation_ways, filtered_relations
 
 cdef get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter, filter_type, bint keep_all=False):
+    """The nodes of ``node_arrays`` that ``data_filter`` keeps or excludes by
+    ``filter_type`` (on the keys ``osm_keys``; every tagged node with ``keep_all``), with
+    their tags as the ``tags_as_columns`` columns and a JSON ``tags`` column of the others,
+    or None when no node passes."""
     tags = node_arrays["tags"]
     if isinstance(tags, NodeTags):
         # Check only the tagged nodes that carry one of the keys
@@ -207,11 +211,10 @@ cdef get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter, filter_t
         return None
     # Otherwise, filter the data accordingly
     filtered_nodes = filter_array_dict_by_indices_or_mask(node_arrays, indices)
-    # explode_tag_array returns the non-empty tag columns, and a JSON 'tags' column only
-    # when some node had leftover tags; it replaces the nodes' tag dicts (None for each
-    # node when none had leftovers).
+    # explode_tag_array returns the non-empty tag columns and the JSON 'tags' column of
+    # the leftover tags, which replaces the nodes' tag dicts.
     tags = explode_tag_array(filtered_nodes["tags"], tags_as_columns)
-    filtered_nodes["tags"] = tags.pop("tags", [None] * len(filtered_nodes["id"]))
+    filtered_nodes["tags"] = tags.pop("tags")
     filtered_nodes.update(tags)
     return filtered_nodes
 

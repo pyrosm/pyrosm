@@ -153,10 +153,10 @@ def _node_arrays(ids, lon, lat, meta, keep_metadata):
 
 def _explode_node_tags(node_arrays, tags, tags_as_columns):
     """``node_arrays`` with the tag columns of the nodes' tag dicts ``tags`` merged in, as
-    ``get_osm_nodes`` merges them: their JSON ``tags`` column takes the place of ``tags``
-    (None for each node when none had other tags)."""
+    ``get_osm_nodes`` merges them: their JSON ``tags`` column takes the place of ``tags``.
+    """
     exploded = explode_node_tag_array(tags, list(tags_as_columns))
-    node_arrays["tags"] = exploded.pop("tags", [None] * len(tags))
+    node_arrays["tags"] = exploded.pop("tags")
     node_arrays.update(exploded)
     return node_arrays
 
