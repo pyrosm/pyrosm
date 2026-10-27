@@ -55,6 +55,7 @@ from pyrosm.exceptions import (
     DownloadError,
     ExtractDownloadError,
     ExtractNotFoundError,
+    RequestRefusedError,
 )
 from pyrosm.utils import _file_identity, check_bounds, validate_workers
 from pyrosm.utils.progress import stepping, validate_progress
@@ -1249,6 +1250,9 @@ def get_data_by_area(
     pyrosm.exceptions.ExtractDownloadError
         If every extract that contains the area failed to download; its ``errors`` hold the
         :class:`~pyrosm.exceptions.DownloadError` of each extract tried.
+    pyrosm.exceptions.RequestRefusedError
+        If an extract chosen was downloaded in full 3 times in the last 24 hours (see
+        :func:`pyrosm.utils.download.download`); no other extract is tried instead.
     """
     return _get_area(
         area,
@@ -1374,6 +1378,8 @@ def _get_area(
                 path = _download_file(
                     extract.url, filename, update, directory, progress=progress, **net
                 )
+            except RequestRefusedError:
+                raise
             except DownloadError as e:
                 failed.append((extract.url, str(e)))
                 errors.append(e)

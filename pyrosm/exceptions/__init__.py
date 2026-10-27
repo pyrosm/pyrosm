@@ -73,7 +73,9 @@ class DownloadError(ExtractDownloadError, ValueError, OSError):
 
 
 class RequestRefusedError(DownloadError):
-    """pyrosm did not send a request because it would break the usage policy of the data
-    provider, such as too many geocoding requests to the public Nominatim server with
-    pyrosm's own User-Agent. The message says why and how to go on. ``attempts`` is 0.
+    """pyrosm did not send a request, or did not take the file a server began to send,
+    because it would break the usage policy of the data provider or download one file too
+    often: too many geocoding requests to the public Nominatim server with pyrosm's own
+    User-Agent, or a 4th full download of one URL in 24 hours. The message says why and how
+    to go on. ``attempts`` is the number of requests sent, 0 when none was.
     """

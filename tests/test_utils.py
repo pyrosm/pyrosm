@@ -9,6 +9,9 @@ from urllib.error import HTTPError
 import pytest
 from pyrosm import get_data
 
+# The folder of the download logs, before each test gets its own (see conftest.py).
+from pyrosm.utils.download import _download_log_dir as DOWNLOAD_LOG_DIR
+
 
 @pytest.fixture
 def helsinki_history_pbf():
@@ -380,6 +383,7 @@ def test_download_update_asks_only_for_a_changed_file(tmp_path, monkeypatch):
         return _Served(served["body"], 200, served["headers"])
 
     monkeypatch.setattr(dl.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(dl, "_FULL_DOWNLOADS_A_DAY", 100)
     url, path = "https://example.invalid/x.osm.pbf", tmp_path / "x.osm.pbf"
     record = dl.validators_record(path)
 
@@ -448,6 +452,93 @@ def test_download_update_asks_only_for_a_changed_file(tmp_path, monkeypatch):
     monkeypatch.setattr(dl, "download_dir", lambda: tmp_path)
     assert dl.clear_downloads() == 1
     assert list(tmp_path.iterdir()) == []
+
+
+def test_download_refuses_a_fourth_full_download_in_a_day(tmp_path, monkeypatch):
+    """Full downloads of a URL are logged; a 4th within 24 hours is refused before the
+    server sends the file, whatever the folder. A 304 is not a download; another URL, a
+    download older than 24 hours or a deleted log does not count."""
+    import json
+    import math
+
+    from pyrosm.exceptions import RequestRefusedError
+    from pyrosm.utils import download as dl
+
+    assert DOWNLOAD_LOG_DIR() == dl.download_dir() / "download-log"
+    served = {}
+    asked = []
+
+    def urlopen(request, context=None, timeout=None):
+        asked.append(request.get_header("If-none-match"))
+        if asked[-1] == served["etag"]:
+            raise HTTPError(request.full_url, 304, "Not Modified", {}, None)
+        return _Served(served["etag"].encode() * 10, 200, {"ETag": served["etag"]})
+
+    monkeypatch.setattr(dl.urllib.request, "urlopen", urlopen)
+    url = "https://example.invalid/x.osm.pbf"
+    log = dl._download_log(url)
+
+    def get(etag, folder="a", from_url=url):
+        served["etag"] = etag
+        return Path(dl.download(from_url, "x.osm.pbf", True, tmp_path / folder))
+
+    get('"v1"')
+    get('"v1"')  # unchanged: not a download
+    assert len(json.loads(log.read_text())["downloads"]) == 1
+    get('"v2"')
+    replace = Path.replace
+
+    def fail_on_the_extract(partial, target):
+        if Path(target).name == "x.osm.pbf":
+            raise PermissionError("in use")
+        return replace(partial, target)
+
+    with monkeypatch.context() as m:  # downloaded, but not moved into place: counted
+        m.setattr(Path, "replace", fail_on_the_extract)
+        with pytest.raises(PermissionError):
+            get('"v2"', folder="b")
+    get('"v2"')  # unchanged: still asked
+    first = json.loads(log.read_text())["downloads"][0]["time"]
+    until = math.ceil(datetime.fromisoformat(first).timestamp() + 24 * 3600)
+    until = datetime.fromtimestamp(until, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    for folder, requests in [("a", 1), ("c", 0)]:  # changed, or not here: refused
+        with pytest.raises(RequestRefusedError, match="in full 3 times") as info:
+            get('"v3"', folder)
+        assert (info.value.url, info.value.attempts) == (url, requests)
+        assert str(log) in str(info.value) and until in str(info.value)
+    assert get('"v2"').read_bytes() == b'"v2"' * 10
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a", "b", "c"]
+    assert list((tmp_path / "b").iterdir()) == list((tmp_path / "c").iterdir()) == []
+    get('"v3"', "c", "https://example.invalid/y.osm.pbf")  # another URL
+    record = json.loads(log.read_text())
+    old = datetime.now(timezone.utc) - timedelta(hours=25)
+    record["downloads"][0]["time"] = old.isoformat()
+    log.write_text(json.dumps(record))
+    get('"v3"')  # the first download is older than 24 hours
+    assert [d["bytes"] for d in json.loads(log.read_text())["downloads"]] == [40] * 3
+    log.unlink()  # the log deleted
+    get('"v4"')
+    now = datetime.now()
+    times = [now.isoformat()] + [now.astimezone(timezone.utc).isoformat()] * 2
+    log.write_text(json.dumps({"downloads": [{"time": t} for t in times]}))
+    with pytest.raises(RequestRefusedError):  # local and UTC times
+        get('"v5"', folder="c")
+    log.unlink()
+    log.mkdir()  # a log that cannot be read or written does not stop downloads
+    get('"v5"')
+    assert asked == [
+        None,
+        '"v1"',
+        '"v1"',
+        None,
+        '"v2"',
+        '"v2"',
+        '"v2"',
+        None,
+        '"v2"',
+        '"v3"',
+        '"v4"',
+    ]
 
 
 class _Opener:

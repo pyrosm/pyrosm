@@ -5684,11 +5684,11 @@ def test_timestamps_count_the_blocks_date_granularity(tmp_path, engine):
     assert dict(zip(read.osm_type, read.timestamp)) == {"node": 1_262_000_000}
 
 
-def _area_extracts(monkeypatch, tmp_path, extracts, refused, status):
+def _area_extracts(monkeypatch, tmp_path, extracts, refused, status, error=None):
     """Make ``get_data_by_area`` find ``extracts``, each ``(provider, id, url, bytes, bounds,
     contains)``, and download each as a copy of the bundled Helsinki file, except the URL
-    ``refused``, whose download fails with HTTP ``status``. Returns the list of the URLs
-    downloaded, in order."""
+    ``refused``, whose download fails with HTTP ``status`` (an ``error``, by default a
+    ``DownloadError``). Returns the list of the URLs downloaded, in order."""
     import shutil
 
     import geopandas as gpd
@@ -5718,7 +5718,7 @@ def _area_extracts(monkeypatch, tmp_path, extracts, refused, status):
     def download(url, filename, update, directory, **net):
         downloads.append(url)
         if url == refused:
-            raise DownloadError("refused", url=url, status=status, attempts=3)
+            raise (error or DownloadError)("refused", url=url, status=status, attempts=3)
         return shutil.copy(helsinki, tmp_path / filename)
 
     monkeypatch.setattr("pyrosm.utils.download.download", download)
@@ -5760,6 +5760,26 @@ def test_get_data_by_area_skips_a_refusing_host(tmp_path, monkeypatch, status, t
     names = {e[2]: e[1] for e in extracts}
     assert [names[url] for url in downloads] == tried
     assert got.extract == tried[-1]
+
+
+def test_get_data_by_area_stops_at_a_refused_download(tmp_path, monkeypatch):
+    """A download that pyrosm refuses (a 4th full download of one URL in 24 hours) ends
+    ``get_data_by_area``: no other, larger extract is downloaded instead."""
+    import pyrosm
+    from pyrosm.exceptions import RequestRefusedError
+
+    area = [24.93, 60.16, 24.96, 60.18]
+    extracts = [
+        ("Geofabrik", "helsinki", "https://geofabrik/helsinki.osm.pbf", 200, area, True),
+        ("BBBike", "Helsinki", "https://bbbike/Helsinki.osm.pbf", 5000, area, True),
+    ]
+    refused = extracts[0][2]
+    downloads = _area_extracts(
+        monkeypatch, tmp_path, extracts, refused, None, RequestRefusedError
+    )
+    with pytest.raises(RequestRefusedError):
+        pyrosm.get_data_by_area(area, crop=False, directory=tmp_path, progress=False)
+    assert downloads == [refused]
 
 
 def test_get_data_by_area_keeps_the_downloaded_part_of_a_refusing_provider(
