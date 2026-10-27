@@ -1,3 +1,4 @@
+import pandas as pd
 from rapidjson import dumps
 
 cdef unicode tounicode(char *s):
@@ -5,9 +6,9 @@ cdef unicode tounicode(char *s):
 
 cdef explode_tag_array(tag_array, tags_as_columns):
     """The tag columns of the tag dicts ``tag_array`` that occur (a key of
-    ``tags_as_columns`` with at least one value), then, when some element has other tags,
-    the JSON ``tags`` column of those. A tag keyed ``id`` is routed as ``id_tag``, so it
-    cannot replace the element's id."""
+    ``tags_as_columns`` with at least one value), then the JSON ``tags`` column of the
+    other tags, missing for an element without them. A tag keyed ``id`` is routed as
+    ``id_tag``, so it cannot replace the element's id."""
     cdef int i, n = len(tag_array)
     cdef bint any_other = False
     column_keys = list(dict.fromkeys(tags_as_columns))
@@ -36,10 +37,11 @@ cdef explode_tag_array(tag_array, tags_as_columns):
     for k in column_keys:
         if k in appearing:
             data[k] = [record.get(k) for record in records]
-    # The leftover-tags column is kept only when some element had leftover tags
-    # (otherwise it would be all-None and was dropped before).
-    if any_other:
-        data["tags"] = other_list
+    # Without other tags the column is typed as pandas types a column of strings (missing
+    # values NaN from pandas 3), as a column read back from GeoParquet is.
+    data["tags"] = (
+        other_list if any_other else pd.array(other_list, dtype=pd.Series([""]).dtype)
+    )
     return data
 
 

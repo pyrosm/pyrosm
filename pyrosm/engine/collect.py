@@ -153,10 +153,10 @@ def _node_arrays(ids, lon, lat, meta, keep_metadata):
 
 def _explode_node_tags(node_arrays, tags, tags_as_columns):
     """``node_arrays`` with the tag columns of the nodes' tag dicts ``tags`` merged in, as
-    ``get_osm_nodes`` merges them: their JSON ``tags`` column takes the place of ``tags``
-    (None for each node when none had other tags)."""
+    ``get_osm_nodes`` merges them: their JSON ``tags`` column takes the place of ``tags``.
+    """
     exploded = explode_node_tag_array(tags, list(tags_as_columns))
-    node_arrays["tags"] = exploded.pop("tags", [None] * len(tags))
+    node_arrays["tags"] = exploded.pop("tags")
     node_arrays.update(exploded)
     return node_arrays
 
@@ -241,7 +241,7 @@ _NODE_RECORD_DTYPES = {
 
 
 def _gather_node_records(
-    filepath, node_ids, keep_metadata, progress=None, threaded=False
+    filepath, node_ids, keep_metadata, progress=None, threaded=False, unix_time=None
 ):
     """Second pass over the file gathering the full records (coordinates + tags + metadata)
     of ``node_ids``, returned as a rich ``NodeLocations`` -- the coordinate store the
@@ -251,13 +251,15 @@ def _gather_node_records(
     ``progress(done, file_size)``, when given, gets the bytes of the file read: 0 first, then
     after each data blob, and the file size at the end. With ``threaded`` (a threaded
     decode's read) the blocks are decoded without the GIL on threads (see
-    :func:`~pyrosm.engine.ways.node_record_blocks`)."""
+    :func:`~pyrosm.engine.ways.node_record_blocks`). ``unix_time`` (seconds), for a
+    history file, gathers each node's version at that time (see
+    :class:`~pyrosm.engine.decode._HistoryRuns`), decoding the blocks in Python."""
     from pyrosm.int64_hash import Int64Set
     from pyrosm.node_lookup import NodeLocations
     from pyrosm.primitive_block_decoder import decode_primitive_block
     from pyrosm.way_store import NodeTagsBuilder
     from pyrosm.engine.blobs import _index_blobs, _read_block
-    from pyrosm.engine.decode import _node_records_by_id
+    from pyrosm.engine.decode import _DecodeSettings, _HistoryRuns, _node_records_by_id
 
     wanted = Int64Set(node_ids)
     cols = ["id", "lon", "lat", "visible"]
@@ -265,16 +267,33 @@ def _gather_node_records(
         cols += ["version", "timestamp", "changeset"]
     arrays = {c: [] for c in cols}
     tags = NodeTagsBuilder()
+    runs = None
+    if unix_time is not None:
+        runs = _HistoryRuns(_DecodeSettings(filepath, None, unix_time=unix_time))
+
+    def node_records(blocks):
+        return [
+            _node_records_by_id(st, header, nodes, wanted, keep_metadata, tags)
+            for st, header, nodes, _, _ in blocks
+        ]
 
     def python_path(data):
         st, header, nodes, _, _ = decode_primitive_block(data)
-        return _node_records_by_id(st, header, nodes, wanted, keep_metadata, tags)
+        if runs is None:
+            return node_records([(st, header, nodes, None, None)])
+        return node_records(runs.settle(st, header, nodes, None, None))
+
+    def add(records):
+        for rec in records:
+            if rec is not None:
+                for c in cols:
+                    arrays[c].append(rec[c])
 
     with open(filepath, "rb") as f:
         file_size = os.fstat(f.fileno()).st_size
         if progress is not None:
             progress(0, file_size)
-        if threaded:
+        if threaded and runs is None:
             blocks = node_record_blocks(filepath, wanted, keep_metadata)
         else:
             blocks = (
@@ -286,17 +305,16 @@ def _gather_node_records(
         # wanted nodes' records and tags decoded on threads.
         for end, item in blocks:
             if isinstance(item, bytes):
-                rec = python_path(item)
+                add(python_path(item))
             elif item is not None:
                 rec, counts, keys, vals, strings = item
                 tags.add_pairs(counts, keys, vals, strings)
-            else:
-                rec = None
-            if rec is not None:
-                for c in cols:
-                    arrays[c].append(rec[c])
+                add([rec])
             if progress is not None:
                 progress(end, file_size)
+        if runs is not None:
+            # The node held back at the end of the file: no block follows it.
+            add(node_records(runs.finish(f, file_size)))
         if progress is not None:
             progress(file_size, file_size)
     frame = {

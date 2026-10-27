@@ -7,6 +7,16 @@ first; the releases not listed here changed nothing of this kind. Changes in spe
 new options that leave the defaults as they were, and fixes of calls that failed are left out. The
 [changelog](changelog.rst) lists every change.
 
+## Unreleased
+
+- **Node metadata of history reads.** With `keep_metadata=False`, an in-memory history read
+  leaves out the nodes' `version`, `timestamp` and `changeset`, as other reads do. Keep the
+  default `keep_metadata=True` to read them.
+- **`tags` of nodes without other tags.** With pandas 3, when none of the nodes a read returns
+  has tags outside the tag columns, an in-memory read, or an out-of-core read without `pyarrow`,
+  gives their `tags` as NaN in a `str` column, as a cached read does. They were `None` in an
+  object column; `isna()` finds both.
+
 ## pyrosm 0.24.0
 
 - **Polygons and lines.** A closed way is a Polygon when one of its tags is in the OSM wiki's list

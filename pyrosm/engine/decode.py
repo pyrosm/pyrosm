@@ -9,13 +9,15 @@ relations -- selected by filter-key presence) and, for reads that look up relati
 *every* way (id + refs).
 """
 
+from bisect import bisect_right
 from dataclasses import dataclass
 from operator import itemgetter
 from pathlib import Path
 
 import numpy as np
 
-from pyrosm._arrays import _offsets_from_lengths
+from pyrosm._arrays import _kept_keys_vals, _offsets_from_lengths
+from pyrosm.data_filter import latest_version_rows
 from pyrosm.primitive_block_decoder import (
     BLOCK_COUNTS,
     decode_batch_nogil,
@@ -55,7 +57,10 @@ class _DecodeSettings:
     xmax, ymax)`` (or None). When ``requested_tag_keys`` (utf-8 bytes) is not None, only
     those tag keys are resolved into the element tag dicts (the ``keep_other_tags=False``
     minimal-tags mode). ``spill_all_ways`` spills every way's id and node refs, which only
-    the lookup of relation members reads."""
+    the lookup of relation members reads. ``unix_time``, for a history read, keeps each
+    element's version at that time (its latest version for ``math.inf``), and ``blobs``,
+    the read's data blobs ``(offset, size, span)`` in file order, let a task read on past
+    its own blocks to settle it (see :class:`_HistoryRuns`)."""
 
     filepath: str
     shard_dir: str
@@ -64,6 +69,8 @@ class _DecodeSettings:
     bbox_bounds: tuple = None
     requested_tag_keys: list = None
     spill_all_ways: bool = True
+    unix_time: int = None
+    blobs: tuple = None
 
 
 def _key_indices(string_table, osm_keys):
@@ -225,14 +232,152 @@ def _matching_nodes(
     }
 
 
+def _meta(elements, name):
+    """The metadata column ``name`` of all ``elements`` (a node, way or relation dict of
+    ``decode_primitive_block``). The decoder returns an empty array for a column the block
+    lacks, read like the in-memory parse: ``visible`` as 1 (as the PBF format reads it),
+    the rest as 0."""
+    arr = elements[name]
+    if len(arr) == len(elements["id"]):
+        return arr
+    return np.full(len(elements["id"]), 1 if name == "visible" else 0, dtype=np.int64)
+
+
 def _dense_meta(nodes, name, idx):
-    """The DenseInfo column ``name`` of the dense nodes ``idx``. The decoder returns an
-    empty array for a column the block lacks, read like the in-memory parse: ``visible``
-    as 1 (as the PBF format reads it), the rest as 0."""
-    arr = nodes[name]
-    if len(arr) == len(nodes["id"]):
-        return arr[idx]
-    return np.full(len(idx), 1 if name == "visible" else 0, dtype=np.int64)
+    """The DenseInfo column ``name`` of the dense nodes ``idx`` (see :func:`_meta`)."""
+    return _meta(nodes, name)[idx]
+
+
+# The offset arrays of ``decode_primitive_block``'s ways and relations, each with the flat
+# arrays whose rows it delimits.
+_ELEMENT_OFFSETS = {
+    "tags_off": ("keys", "vals"),
+    "refs_off": ("refs",),
+    "members_off": ("memids", "types", "roles"),
+}
+
+
+def _element_rows(elements, rows):
+    """``elements`` (a node, way or relation dict of ``decode_primitive_block``) with only
+    the elements at ``rows``: their columns, their rows of the offset-delimited arrays and,
+    for nodes, their part of the dense ``keys_vals`` tag stream."""
+    n = len(elements["id"])
+    delimited = {flat for flats in _ELEMENT_OFFSETS.values() for flat in flats}
+    out = {}
+    for key, values in elements.items():
+        if key == "keys_vals" and len(values):
+            keep = np.zeros(n, dtype=bool)
+            keep[rows] = True
+            out[key] = _kept_keys_vals(values, keep)
+        elif key in _ELEMENT_OFFSETS:
+            for flat in _ELEMENT_OFFSETS[key]:
+                out[key], out[flat] = take(values, elements[flat], rows)
+        elif key not in delimited:
+            out[key] = values[rows] if len(values) == n else values
+    return out
+
+
+def _in_time(elements, unix_time, date_granularity):
+    """Whether each version of ``elements`` (a node, way or relation dict of
+    ``decode_primitive_block``) is dated at or before ``unix_time`` (seconds); the block's
+    timestamps count ``date_granularity`` milliseconds."""
+    return _meta(elements, "timestamp") * date_granularity <= unix_time * 1000
+
+
+def _version_rows(elements, unix_time, date_granularity=1000):
+    """The rows of ``elements`` (a node, way or relation dict of ``decode_primitive_block``
+    of a history file, each element's versions one after another) of each element's
+    version at ``unix_time``: the last of its versions in the block dated at or before
+    then (see :func:`_in_time`), without the elements whose version then is a deletion, as
+    the in-memory reader chooses them (see
+    :func:`~pyrosm.data_filter.latest_version_rows`)."""
+    at = np.flatnonzero(_in_time(elements, unix_time, date_granularity))
+    return at[latest_version_rows(elements["id"][at], _meta(elements, "visible")[at])]
+
+
+class _HistoryRuns:
+    """Each element's version at the time of a history read (``settings.unix_time``) over
+    the blocks of one decode task, in file order. A block's last element may have more
+    versions in the next block, so it is held back, unless the block goes on to a later
+    element kind, until a later block shows whether a newer version or a deletion dated
+    at or before the time replaces it (see :meth:`block`). The element still held after
+    the task's blocks is settled by reading on into the blocks after them (see
+    :meth:`finish`)."""
+
+    def __init__(self, settings):
+        self.settings = settings
+        # (kind, id, the decoded block of that one element), kind indexing
+        # decode_primitive_block's (nodes, ways, relations).
+        self.held = None
+
+    def _settled(self, kinds, date_granularity):
+        """For the held element and a later decoded block's ``(nodes, ways, relations)``:
+        whether the block holds a version of it dated at or before the time (a newer
+        version or a deletion, which replaces it), and whether its versions end in the
+        block (the block goes on past it, to a later element or a later element kind).
+        """
+        kind, held_id, _ = self.held
+        elements = kinds[kind]
+        later_kind = any(e is not None for e in kinds[kind + 1 :])
+        if elements is None:
+            return False, later_kind
+        run = elements["id"] == held_id
+        in_time = _in_time(elements, self.settings.unix_time, date_granularity)
+        return bool(in_time[run].any()), later_kind or not run[-1]
+
+    def block(self, data):
+        """The decoded blocks to process for the decompressed block ``data`` (see
+        :meth:`settle`)."""
+        return self.settle(*decode_primitive_block(data))
+
+    def settle(self, string_table, header, *kinds):
+        """The decoded blocks ``(string_table, header, nodes, ways, relations)`` to
+        process for a decoded block: the held element if this block settles it without
+        replacing it, as a block of its own, then this block with each element cut to its
+        version at the time (see :func:`_version_rows`), without the last element it
+        holds back."""
+        granularity = header["date_granularity"]
+        out = []
+        if self.held is not None:
+            replaced, ended = self._settled(kinds, granularity)
+            if replaced or ended:
+                if not replaced:
+                    out.append(self.held[2])
+                self.held = None
+        present = [k for k, elements in enumerate(kinds) if elements is not None]
+        cut = []
+        for k, elements in enumerate(kinds):
+            if elements is None:
+                cut.append(None)
+                continue
+            rows = _version_rows(elements, self.settings.unix_time, granularity)
+            ids = elements["id"]
+            if k == present[-1] and len(rows) and ids[rows[-1]] == ids[-1]:
+                one = [None, None, None]
+                one[k] = _element_rows(elements, rows[-1:])
+                self.held = (k, ids[-1], (string_table, header, *one))
+                rows = rows[:-1]
+            cut.append(_element_rows(elements, rows) if len(rows) else None)
+        out.append((string_table, header, *cut))
+        return out
+
+    def finish(self, f, last_offset):
+        """The decoded blocks to process after the task's last block (its blob at
+        ``last_offset`` in the open file ``f``): the held element, unless a block after it
+        in the file (``settings.blobs``) replaces it. Those blocks are read only as far as
+        its versions go on."""
+        if self.held is None:
+            return []
+        blobs = self.settings.blobs or ()
+        start = bisect_right([offset for offset, _, _ in blobs], last_offset)
+        for offset, size, _ in blobs[start:]:
+            _, header, *kinds = decode_primitive_block(_read_block(f, offset, size))
+            replaced, ended = self._settled(kinds, header["date_granularity"])
+            if replaced:
+                return []
+            if ended:
+                break
+        return [self.held[2]]
 
 
 def _node_records_by_id(string_table, header, nodes, wanted, keep_metadata, tags):
@@ -485,6 +630,7 @@ def _decode_batch(settings, task, advance=None):
     paths = []
     pending = []
     pending_bytes = 0
+    runs = None if settings.unix_time is None else _HistoryRuns(settings)
 
     def flush():
         nonlocal pending, pending_bytes
@@ -495,16 +641,27 @@ def _decode_batch(settings, task, advance=None):
         paths.append(path)
         pending, pending_bytes = [], 0
 
+    def add(block):
+        nonlocal pending_bytes
+        arrays = _decode_one_block(settings, *block)
+        pending.append(arrays)
+        pending_bytes += sum(v.nbytes for v in arrays.values())
+        if pending_bytes >= _SHARD_TARGET_BYTES:
+            flush()
+
     with open(settings.filepath, "rb") as f:
         for offset, size, span in blobs:
             data = _read_block(f, offset, size)
-            arrays = _decode_one_block(settings, *decode_primitive_block(data))
-            pending.append(arrays)
-            pending_bytes += sum(v.nbytes for v in arrays.values())
-            if pending_bytes >= _SHARD_TARGET_BYTES:
-                flush()
+            if runs is None:
+                add(decode_primitive_block(data))
+            else:
+                for block in runs.block(data):
+                    add(block)
             if advance is not None:
                 advance(span)
+        if runs is not None and blobs:
+            for block in runs.finish(f, blobs[-1][0]):
+                add(block)
     flush()
     return paths
 
@@ -742,13 +899,15 @@ def _copied_views(arrays):
 def _decode_batch_threads(settings, task, advance=None):
     """Thread worker: :func:`_decode_batch` with the blocks read, decompressed and decoded
     without the GIL, ``_THREAD_BATCH`` at a time (a block the GIL-free decoder does not
-    handle is decoded by :func:`_decode_one_block`). Each shard keeps its object arrays in
-    memory and spills only its numeric arrays (see :class:`_Shard`). Returns the shards.
+    handle, and every block of a history read, is decoded by :func:`_decode_one_block`).
+    Each shard keeps its object arrays in memory and spills only its numeric arrays (see
+    :class:`_Shard`). Returns the shards.
     """
     task_id, blobs = task
     shards = []
     pending = []
     pending_bytes = 0
+    runs = None if settings.unix_time is None else _HistoryRuns(settings)
 
     def flush():
         nonlocal pending, pending_bytes
@@ -760,44 +919,56 @@ def _decode_batch_threads(settings, task, advance=None):
         shards.append(_Shard.write(path, merged, objects))
         pending, pending_bytes = [], 0
 
+    def add(arrays):
+        nonlocal pending_bytes
+        pending.append(arrays)
+        pending_bytes += sum(
+            v.nbytes for k, v in arrays.items() if k not in _OBJECT_KEYS
+        )
+        if pending_bytes >= _SHARD_TARGET_BYTES:
+            flush()
+
+    def add_decoded(block):
+        add(_columnar_tags(_decode_one_block(settings, *block)))
+
     with open(settings.filepath, "rb") as f:
         for whole in _read_batches(blobs, _THREAD_BATCH):
             for batch, buffer, starts in _decoded_parts(f, whole):
-                decoded = decode_batch_nogil(
-                    buffer,
-                    starts,
-                    keys=settings.osm_keys,
-                    features=settings.include_nodes,
-                    all_ways=settings.spill_all_ways,
-                    bbox=settings.bbox_bounds,
-                    way_strings=True,
-                    requested=settings.requested_tag_keys,
-                )
-                counts = decoded["counts"]
-                at = {
-                    name: _offsets_from_lengths(counts[:, i]).tolist()
-                    for i, name in enumerate(BLOCK_COUNTS)
-                }
+                decoded = None
+                if runs is None:
+                    decoded = decode_batch_nogil(
+                        buffer,
+                        starts,
+                        keys=settings.osm_keys,
+                        features=settings.include_nodes,
+                        all_ways=settings.spill_all_ways,
+                        bbox=settings.bbox_bounds,
+                        way_strings=True,
+                        requested=settings.requested_tag_keys,
+                    )
+                    counts = decoded["counts"]
+                    at = {
+                        name: _offsets_from_lengths(counts[:, i]).tolist()
+                        for i, name in enumerate(BLOCK_COUNTS)
+                    }
                 for b in range(len(batch)):
                     data = buffer[starts[b] : starts[b + 1]]
-                    if counts[b, _STATUS]:
+                    if runs is not None:
+                        for block in runs.block(data):
+                            add_decoded(block)
+                    elif counts[b, _STATUS]:
                         # A block the GIL-free decoder hands back.
-                        arrays = _columnar_tags(
-                            _decode_one_block(settings, *decode_primitive_block(data))
-                        )
+                        add_decoded(decode_primitive_block(data))
                     else:
-                        arrays = _block_shard(decoded, at, b, settings.bbox_bounds)
-                    pending.append(arrays)
-                    pending_bytes += sum(
-                        v.nbytes for k, v in arrays.items() if k not in _OBJECT_KEYS
-                    )
-                    if pending_bytes >= _SHARD_TARGET_BYTES:
-                        flush()
+                        add(_block_shard(decoded, at, b, settings.bbox_bounds))
                 if advance is not None:
                     advance(sum(span for _, _, span in batch))
                 # The part is released before the next one is decompressed: the pending
                 # shards' slices of its arrays are copied out of them.
                 pending = [_copied_views(arrays) for arrays in pending]
-                del buffer, starts, decoded, data, arrays
+                del buffer, starts, decoded, data
+        if runs is not None and blobs:
+            for block in runs.finish(f, blobs[-1][0]):
+                add_decoded(block)
     flush()
     return shards

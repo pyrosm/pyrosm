@@ -65,6 +65,7 @@ def _get_layer(
     keep_other_tags=True,
     progress=None,
     keep_node_info=False,
+    unix_time=None,
 ):
     """Read a layer: decode the file in parallel selecting the elements that carry any of
     the filter keys (``osm_keys`` if given, else ``custom_filter``'s keys, or every tagged
@@ -85,7 +86,9 @@ def _get_layer(
     ``if __name__ == "__main__":`` guard) -- see the package docstring. ``progress``
     (``None``, ``True``, ``False`` or a callable) shows the read as for
     ``OSM(..., progress=...)``; a cached read has nothing to show. ``keep_node_info`` keeps each way's ``nodes`` column (a list of node ids), as
-    ``OSM(..., keep_node_info=True)`` does.
+    ``OSM(..., keep_node_info=True)`` does. ``unix_time`` (seconds), for a history file
+    (``.osh.pbf``), reads each element's version at that time, as
+    ``OSM(...).get_buildings(timestamp=...)`` and the other layer reads do.
     """
     validate_progress(progress)
     workers = default_workers(workers)
@@ -134,6 +137,8 @@ def _get_layer(
                 "keep_other_tags": keep_other_tags,
                 "keep_node_info": keep_node_info,
             }
+            if unix_time is not None:
+                key_params["unix_time"] = unix_time
             cache_path = cache.result_path(filepath, key_params)
             result = cache.materialize(
                 cache_path,
@@ -161,6 +166,7 @@ def _get_layer(
                     requested_tag_keys=requested_tag_keys,
                     steps=steps,
                     spill_all_ways=keep_relations,
+                    unix_time=unix_time,
                 )
                 is not None,
                 steps=steps,
@@ -208,6 +214,7 @@ def _get_layer(
             requested_tag_keys=requested_tag_keys,
             steps=steps,
             spill_all_ways=keep_relations,
+            unix_time=unix_time,
         )
         return result if output is not None else _node_lists(result)
 
@@ -273,13 +280,14 @@ def get_buildings(
     progress=None,
     keep_node_info=False,
     keep_nodes=False,
+    unix_time=None,
 ):
     """Read building geometries (ways + relations, and with ``keep_nodes`` the building
     nodes as points) from ``filepath`` with the out-of-core engine, with the same columns as
     ``OSM(...).get_buildings()``. ``custom_filter`` refines which buildings to keep (the
     ``building`` key is always ensured); ``extra_attributes`` / ``tags_to_keep`` adjust the
     tag columns. See :func:`_get_layer` for ``bounding_box`` / ``complete_relations`` /
-    ``output`` / ``workers`` / ``keep_metadata`` / ``progress``.
+    ``output`` / ``workers`` / ``keep_metadata`` / ``progress`` / ``unix_time``.
     """
     from pyrosm.config import Conf
     from pyrosm.utils import read_tag_columns
@@ -300,6 +308,7 @@ def get_buildings(
         complete_relations=complete_relations,
         progress=progress,
         keep_node_info=keep_node_info,
+        unix_time=unix_time,
     )
 
 
@@ -316,6 +325,7 @@ def get_landuse(
     progress=None,
     keep_node_info=False,
     keep_nodes=True,
+    unix_time=None,
 ):
     """Read landuse geometries (nodes as points unless ``keep_nodes`` is False, ways and
     relations) from ``filepath`` with the out-of-core engine, with the same columns as
@@ -341,6 +351,7 @@ def get_landuse(
         complete_relations=complete_relations,
         progress=progress,
         keep_node_info=keep_node_info,
+        unix_time=unix_time,
     )
 
 
@@ -357,6 +368,7 @@ def get_natural(
     progress=None,
     keep_node_info=False,
     keep_nodes=True,
+    unix_time=None,
 ):
     """Read natural features (nodes as points unless ``keep_nodes`` is False, ways and
     relations) from ``filepath`` with the out-of-core engine, with the same columns as ``OSM(...).get_natural()``. ``custom_filter``
@@ -382,6 +394,7 @@ def get_natural(
         complete_relations=complete_relations,
         progress=progress,
         keep_node_info=keep_node_info,
+        unix_time=unix_time,
     )
 
 
@@ -397,6 +410,7 @@ def get_pois(
     keep_metadata=True,
     progress=None,
     keep_node_info=False,
+    unix_time=None,
 ):
     """Read points of interest (nodes + ways + relations) from ``filepath`` with the
     out-of-core engine, with the same columns as ``OSM(...).get_pois(custom_filter=...)``.
@@ -423,6 +437,7 @@ def get_pois(
         complete_relations=complete_relations,
         progress=progress,
         keep_node_info=keep_node_info,
+        unix_time=unix_time,
     )
 
 
@@ -440,6 +455,7 @@ def get_boundaries(
     keep_metadata=True,
     progress=None,
     keep_node_info=False,
+    unix_time=None,
 ):
     """Read boundaries (ways + relations) from ``filepath`` with the out-of-core engine,
     with the same columns as ``OSM(...).get_boundaries()``. ``boundary_type`` selects the
@@ -472,6 +488,7 @@ def get_boundaries(
         complete_relations=complete_relations,
         progress=progress,
         keep_node_info=keep_node_info,
+        unix_time=unix_time,
     )
     # The name post-filter, as OSM.get_boundaries does. The output= + name combination is
     # rejected above, so reaching here means an in-memory frame.
@@ -501,6 +518,7 @@ def get_data_by_custom_criteria(
     progress=None,
     keep_node_info=False,
     tags_to_keep=None,
+    unix_time=None,
 ):
     """Read OSM elements matching an arbitrary ``custom_filter`` from ``filepath`` with the
     out-of-core engine, with the same columns as
@@ -562,6 +580,7 @@ def get_data_by_custom_criteria(
         keep_other_tags=keep_other_tags,
         progress=progress,
         keep_node_info=keep_node_info,
+        unix_time=unix_time,
     )
 
 
@@ -666,6 +685,7 @@ def get_network(
     keep_metadata=True,
     progress=None,
     keep_node_info=False,
+    unix_time=None,
 ):
     """Read a street network (``highway=*`` ways as LineString edges + a ``length`` column)
     from ``filepath`` with the out-of-core engine, with the same columns as
@@ -686,7 +706,9 @@ def get_network(
     ``nodes.parquet`` into the ``path`` directory and returns the directory (both require
     ``pyarrow``). With ``pyarrow`` absent the default read returns the in-memory result with no
     cache. ``progress`` shows the read as for ``OSM(..., progress=...)``, including the second
-    pass of ``nodes=True``; a cached read has nothing to show."""
+    pass of ``nodes=True``; a cached read has nothing to show. ``unix_time`` (seconds), for
+    a history file (``.osh.pbf``), reads each element's version at that time, as
+    ``OSM(...).get_network(timestamp=...)`` does."""
     from pyrosm.graphs import record_network_type
 
     validate_progress(progress)
@@ -713,12 +735,13 @@ def get_network(
                 filepath=filepath,
                 steps=steps,
                 keep_node_info=keep_node_info,
+                unix_time=unix_time,
             )
             return (node_gdf, edges) if nodes else edges
 
         def decode():
             return _decode_network(
-                filepath, filter_spec, bounding_box, workers, steps, assemble
+                filepath, filter_spec, bounding_box, workers, steps, assemble, unix_time
             )
 
         # A user-supplied output writes the result there and returns it: a GeoParquet
@@ -746,6 +769,8 @@ def get_network(
             "bounding_box": bounding_box,
             "keep_node_info": keep_node_info,
         }
+        if unix_time is not None:
+            key_params["unix_time"] = unix_time
         if nodes:
             edges_path = cache.result_path(filepath, {**key_params, "part": "edges"})
             nodes_path = cache.result_path(filepath, {**key_params, "part": "nodes"})
@@ -811,10 +836,13 @@ def _network_spec(
     return tags_as_columns, (network_keys, data_filter, filter_type)
 
 
-def _decode_network(filepath, filter_spec, bounding_box, workers, steps, assemble):
+def _decode_network(
+    filepath, filter_spec, bounding_box, workers, steps, assemble, unix_time=None
+):
     """``assemble(shard_paths, steps)`` over the ways of ``filepath`` with the keys of
     ``filter_spec`` (see :func:`_network_spec`), decoded as
-    :func:`~pyrosm.engine.pool._decode_and_run` does with ``workers`` and ``steps``.
+    :func:`~pyrosm.engine.pool._decode_and_run` does with ``workers``, ``steps`` and
+    ``unix_time``.
     """
     return _decode_and_run(
         filepath,
@@ -825,6 +853,7 @@ def _decode_network(filepath, filter_spec, bounding_box, workers, steps, assembl
         bbox_bounds=_bbox_bounds(bounding_box),
         steps=steps,
         spill_all_ways=False,
+        unix_time=unix_time,
     )
 
 
@@ -840,6 +869,7 @@ def graph_network(
     keep_metadata=True,
     progress=None,
     keep_node_info=False,
+    unix_time=None,
 ):
     """The network that :func:`get_network` with ``nodes=True`` reads, for graph export:
     ``(nodes, edges)``, readers of its node and edge tables that do not build them (see
@@ -862,9 +892,10 @@ def graph_network(
             filepath,
             steps,
             keep_node_info,
+            unix_time,
         )
 
     with read_steps(filepath, progress, GRAPH_SHARES) as steps:
         return _decode_network(
-            filepath, filter_spec, bounding_box, workers, steps, assemble
+            filepath, filter_spec, bounding_box, workers, steps, assemble, unix_time
         )

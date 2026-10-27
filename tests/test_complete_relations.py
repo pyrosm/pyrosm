@@ -160,22 +160,30 @@ def test_complete_relations_invalid_type_raises(test_pbf):
         OSM(test_pbf, complete_relations="yes")
 
 
-def test_complete_relations_with_history_file(helsinki_history_pbf):
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_complete_relations_with_history_file(helsinki_history_pbf, engine):
     # complete_relations also fixes straddling relations in a history (.osh) read,
     # exercising the latest-version selection on the completed member ways. A fixed
     # timestamp keeps the read deterministic.
     bbox = [24.933271, 60.157689, 24.934307, 60.158535]
     ts = "2021-01-01"
 
-    whole_rel = _relation_geoms(OSM(helsinki_history_pbf).get_buildings(timestamp=ts))
-    partial_rel = _relation_geoms(
-        OSM(helsinki_history_pbf, bounding_box=bbox).get_buildings(timestamp=ts)
+    whole_rel = _relation_geoms(
+        OSM(helsinki_history_pbf, engine=engine).get_buildings(timestamp=ts)
     )
-    osm = OSM(helsinki_history_pbf, bounding_box=bbox, complete_relations=True)
+    partial_rel = _relation_geoms(
+        OSM(helsinki_history_pbf, bounding_box=bbox, engine=engine).get_buildings(
+            timestamp=ts
+        )
+    )
+    osm = OSM(
+        helsinki_history_pbf, bounding_box=bbox, complete_relations=True, engine=engine
+    )
     complete_rel = _relation_geoms(osm.get_buildings(timestamp=ts))
 
-    # The completion pass actually fetched member ways for this box.
-    assert len(osm._relation_member_ways) > 0
+    # The in-memory completion pass actually fetched member ways for this box.
+    if engine == "in_memory":
+        assert len(osm._relation_member_ways) > 0
 
     # The relations completion changed (relative to the partial read) are the ones it
     # repaired; each must now match the whole-file geometry. (Relations completion did

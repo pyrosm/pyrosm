@@ -3650,34 +3650,59 @@ def test_graph_exports_hold_the_given_nodes_and_edges(graph_type):
     assert sum(weights) == pytest.approx(length)
 
 
-def test_history_read_without_timestamp_parses_once(monkeypatch):
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_history_read_without_timestamp_reads_once(engine, monkeypatch):
     """Reading a history file without a timestamp took a new "now" on every call, so
     every call parsed the file again and warned again, and ``keep_other_tags=False``
     failed asking for the out-of-core engine already in use. The object chooses "now"
-    once and warns once, at the user's call, and the error names history reads."""
+    once and warns once, at the user's call, so a second read reuses the first (the
+    parsed file, or the engine's cached result), and the engine reads with
+    ``keep_other_tags=False``."""
     import warnings
 
+    import pyrosm.engine.readers
     import pyrosm.pyrosm
     from pyrosm import OSM, get_data
 
-    parse = pyrosm.pyrosm.parse_osm_data
-    parses = []
+    if engine == "in_memory":
+        module, name, time_argument = (
+            pyrosm.pyrosm,
+            "parse_osm_data",
+            "unix_time_filter",
+        )
+    else:
+        pytest.importorskip("pyarrow")
+        module, name, time_argument = (
+            pyrosm.engine.readers,
+            "_decode_and_run",
+            "unix_time",
+        )
+    read = getattr(module, name)
+    times = []
 
-    def counting_parse(*args, **kwargs):
-        parses.append(kwargs["unix_time_filter"])
-        return parse(*args, **kwargs)
+    def counting_read(*args, **kwargs):
+        times.append(kwargs[time_argument])
+        return read(*args, **kwargs)
 
-    monkeypatch.setattr(pyrosm.pyrosm, "parse_osm_data", counting_parse)
-    osm = OSM(get_data("helsinki_test_history_pbf"))
+    monkeypatch.setattr(module, name, counting_read)
+    osm = OSM(get_data("helsinki_test_history_pbf"), engine=engine)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         first, second = osm.get_buildings(), osm.get_buildings()
     implicit = [w for w in caught if "without user-defined timestamp" in str(w.message)]
-    assert len(parses) == 1 and parses[0] is not None
+    assert len(times) == 1 and times[0] is not None
     assert len(implicit) == 1 and implicit[0].filename == __file__
     assert len(first) == len(second)
-    with pytest.raises(ValueError, match="not supported for history reads"):
-        osm.get_data_by_custom_criteria({"building": True}, keep_other_tags=False)
+    if engine == "in_memory":
+        with pytest.raises(
+            ValueError, match="only supported by the out-of-core engine"
+        ):
+            osm.get_data_by_custom_criteria({"building": True}, keep_other_tags=False)
+    else:
+        minimal = osm.get_data_by_custom_criteria(
+            {"building": True}, keep_other_tags=False
+        )
+        assert "tags" not in minimal.columns
 
 
 @pytest.mark.parametrize(
@@ -5545,3 +5570,43 @@ def test_crops_and_merges_refuse_a_block_with_two_string_tables(tmp_path, operat
                 workers=2 if operation == "crop on threads" else 1,
             )
     assert "two_tables.osm.pbf" in str(raised.value) or "copy.osm.pbf" in str(raised.value)
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_node_tags_without_leftovers_are_typed_as_strings(engine, monkeypatch):
+    """#750 — when no node of a result has tags outside the tag columns, a read without
+    the result cache types their missing ``tags`` as pandas types a column of strings, as
+    the cached out-of-core read gives them."""
+    import pandas as pd
+
+    from pyrosm import OSM, get_data
+    from pyrosm.utils import _compat
+
+    monkeypatch.setattr(_compat, "HAS_PYARROW", False)
+    stones = OSM(get_data("helsinki_pbf"), engine=engine).get_natural(
+        custom_filter={"natural": ["stone"]}
+    )
+    assert (stones["osm_type"] == "node").all()
+    assert stones["tags"].dtype == pd.Series([""]).dtype
+    assert stones["tags"].isna().all()
+
+
+@pytest.mark.parametrize("bounding_box", [None, [24.918, 60.155, 24.933, 60.159]])
+def test_history_reads_leave_out_node_metadata_on_request(bounding_box):
+    """#751 — an in-memory history read with ``keep_metadata=False`` leaves out the nodes'
+    version, timestamp and changeset, also from the node frame of
+    ``get_network(nodes=True)`` and from the nodes outside a bounding box that its ways
+    bring in."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(
+        get_data("helsinki_test_history_pbf"),
+        bounding_box=bounding_box,
+        keep_metadata=False,
+        engine="in_memory",
+    )
+    pois = osm.get_pois(timestamp="2019-01-01")
+    nodes, edges = osm.get_network(timestamp="2019-01-01", nodes=True)
+    assert (pois["osm_type"] == "node").any()
+    for frame in (pois, nodes, edges):
+        assert not {"version", "timestamp", "changeset"} & set(frame.columns)
