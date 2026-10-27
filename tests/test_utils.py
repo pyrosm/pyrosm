@@ -354,6 +354,102 @@ def test_download_resumes(
     assert seen == requests
 
 
+def test_download_update_asks_only_for_a_changed_file(tmp_path, monkeypatch):
+    """With ``update``, the ETag and Last-Modified of the last download go with the request;
+    a 304 keeps the file, a new copy replaces it, and a file of another size, or a server
+    without validators, gets a plain request."""
+    import json
+    from urllib.error import HTTPError
+
+    from pyrosm.utils import _file_identity
+    from pyrosm.utils import download as dl
+
+    served = {"body": b"a" * 50, "headers": {"ETag": '"v1"', "Last-Modified": "Mon"}}
+    asked = []
+
+    def urlopen(request, context=None, timeout=None):
+        sent = (request.get_header("If-none-match"), request.get_header("If-modified-since"))
+        asked.append(sent)
+        current = (served["headers"].get("ETag"), served["headers"].get("Last-Modified"))
+        by_date = not current[0] and sent[1] and sent[1] == current[1]
+        if sent[0] and sent[0] == current[0] or by_date:
+            if served.get("touch"):  # the file changes while the server is asked
+                path.write_bytes(b"d" * 60)
+            moved = served.get("moved") and "https://example.invalid/moved.osm.pbf"
+            raise HTTPError(moved or request.full_url, 304, "Not Modified", {}, None)
+        return _Served(served["body"], 200, served["headers"])
+
+    monkeypatch.setattr(dl.urllib.request, "urlopen", urlopen)
+    url, path = "https://example.invalid/x.osm.pbf", tmp_path / "x.osm.pbf"
+    record = dl.validators_record(path)
+
+    def update(from_url=url, **server):
+        served.update(server)
+        return dl.download(from_url, "x.osm.pbf", True, tmp_path)
+
+    write_atomic = dl.write_atomic
+
+    def replaced_after_writing(target, write):
+        write_atomic(target, write)
+        if Path(target).name == path.name:
+            (tmp_path / "other").write_bytes(b"e" * 60)
+            (tmp_path / "other").replace(path)
+
+    dl.download(url, "x.osm.pbf", False, tmp_path)
+    assert json.loads(record.read_text()) == {
+        "url": url,
+        "served": url,
+        "etag": '"v1"',
+        "last_modified": "Mon",
+        "file": list(_file_identity(path)),
+    }
+    written = path.stat().st_mtime_ns
+    assert update() == str(path)  # unchanged
+    assert path.stat().st_mtime_ns == written
+    update(body=b"b" * 60, headers={"ETag": '"v2"'})  # changed
+    assert path.read_bytes() == b"b" * 60
+    update()  # unchanged, by its ETag alone
+    update(moved=True)  # a 304 from another URL: asked again in full
+    update(moved=False, touch=True)  # changed while asked: downloaded in full
+    assert path.read_bytes() == b"b" * 60
+    served["touch"] = False
+    update(from_url="https://example.invalid/y.osm.pbf")  # another URL: asked in full
+    path.write_bytes(b"c" * 60)  # changed here, same size: asked for in full
+    update(headers={"Last-Modified": "Tue"})
+    update()  # unchanged, by its date alone
+    with monkeypatch.context() as m:  # replaced by another writer: not recorded
+        m.setattr(dl, "write_atomic", replaced_after_writing)
+        update(headers={"ETag": '"v4"'})
+    assert json.loads(record.read_text())["last_modified"] == "Tue"
+    update(headers={})  # no validators: no record
+    assert not record.exists()
+    record.mkdir()  # a record that cannot be written leaves the download as it is
+    path.write_bytes(b"c" * 70)
+    update(headers={"ETag": '"v3"'})
+    assert asked == [
+        (None, None),
+        ('"v1"', "Mon"),
+        ('"v1"', "Mon"),
+        ('"v2"', None),
+        ('"v2"', None),
+        (None, None),
+        ('"v2"', None),
+        (None, None),
+        (None, None),
+        (None, None),
+        (None, "Tue"),
+        (None, "Tue"),
+        (None, None),
+        (None, None),
+    ]
+    assert path.read_bytes() == b"b" * 60
+    record.rmdir()
+    record.write_text("{}")
+    monkeypatch.setattr(dl, "download_dir", lambda: tmp_path)
+    assert dl.clear_downloads() == 1
+    assert list(tmp_path.iterdir()) == []
+
+
 class _Opener:
     """An ``OpenerDirector`` stand-in that records requests and returns ``responses``."""
 

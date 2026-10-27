@@ -1171,8 +1171,9 @@ def get_data_by_area(
         from are unchanged. When ``False``, return the full extract.
 
     update : bool
-        When ``True``, re-download the extract, refresh the provider indexes and sizes, and
-        crop again.
+        When ``True``, download the extract again unless the provider answers that it has
+        not changed since the last download (see :func:`pyrosm.get_data`), refresh the
+        provider indexes and sizes, and crop again.
 
     directory : str, optional
         Directory for the downloads, the provider indexes and the cropped file. ``None``

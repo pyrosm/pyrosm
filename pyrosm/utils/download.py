@@ -2,6 +2,7 @@ import email.utils
 import enum
 import glob
 import http.client
+import json
 import logging
 import os
 import re
@@ -20,6 +21,7 @@ import certifi
 from pyrosm import __version__
 from pyrosm._log import log_event
 from pyrosm.exceptions import DownloadError
+from pyrosm.utils import _file_identity
 from pyrosm.utils.progress import reporting, validate_progress
 
 USER_AGENT = "pyrosm/%s (+https://github.com/pyrosm/pyrosm)" % __version__
@@ -223,6 +225,10 @@ def _encoded(headers):
     return coding != "identity"
 
 
+class _NotModified(Exception):
+    """The server answered a conditional request with 304: the local copy is current."""
+
+
 class _Transfer:
     """One file downloaded into ``out_file``, over as many attempts as it takes.
 
@@ -230,20 +236,28 @@ class _Transfer:
     ``If-Range`` when the server gave a strong validator, and starts over otherwise. After a
     partial answer that does not fit the copy, the rest of the call starts over every time.
     ``progress``, when given, is called as ``progress(written, total)`` when the server
-    starts sending the file and after each chunk.
+    starts sending the file and after each chunk. With ``stored`` (the record of the copy
+    downloaded before, see :func:`_stored_validators`) its ``If-None-Match`` /
+    ``If-Modified-Since`` go with each request until the server sends the file; a 304 from
+    the URL that served that copy raises :class:`_NotModified`, one from another URL makes
+    the request again without them. ``etag``, ``last_modified`` and ``served`` (the URL
+    that sent it) describe the full answer.
     """
 
-    def __init__(self, url, filename, out_file, net, progress=None):
+    def __init__(self, url, filename, out_file, net, progress=None, stored=None):
         self.url = url
         self.filename = filename
         self.out_file = out_file
         self.net = net
         self.progress = progress
+        self.conditional = _conditional_headers(stored)
+        self.served_before = None if stored is None else stored.get("served")
         self.written = 0
         self.validator = None
         self.total = None
         self.resumable = True
         self.attempts = 0
+        self.etag = self.last_modified = self.served = self.file_id = None
 
     def _restart(self):
         _call_local(self.out_file.seek, 0)
@@ -288,7 +302,22 @@ class _Transfer:
             headers["If-Range"] = self.validator
         else:
             self._restart()
-        with self.net.open(self.url, headers=headers) as response:
+            headers.update(self.conditional)
+        while True:
+            try:
+                response = self.net.open(self.url, headers=headers)
+                break
+            except HTTPError as e:
+                if e.code != 304 or not self.conditional:
+                    raise
+                e.close()
+                if e.geturl() == self.served_before:
+                    raise _NotModified() from None
+                # Not the URL that served the copy: ask for the file itself.
+                for name in self.conditional:
+                    headers.pop(name)
+                self.conditional = {}
+        with response:
             if getattr(response, "status", 200) == 206:
                 if not resume:
                     raise self._abandon_resume("partial content it was not asked for")
@@ -297,6 +326,10 @@ class _Transfer:
                 # A full answer, also to a range request whose copy has changed.
                 self._restart()
                 limit = None
+                self.conditional = {}
+                self.etag = response.headers.get("ETag")
+                self.last_modified = response.headers.get("Last-Modified")
+                self.served = getattr(response, "url", None) or self.url
                 self.validator = None
                 if self.resumable and not _encoded(response.headers):
                     self.validator = _validator(response.headers)
@@ -457,6 +490,67 @@ def sources_record(path):
     return Path(os.fspath(path) + ".sources")
 
 
+def validators_record(path):
+    """The file beside ``path`` that records the URL, ``ETag`` and ``Last-Modified`` of its
+    download, the URL that served it and the file it wrote, which a later ``update`` sends
+    back (see :func:`download`)."""
+    return Path(os.fspath(path) + ".validators")
+
+
+def _stored_validators(path, url):
+    """The :func:`validators_record` of the file ``path`` when it records a download from
+    ``url`` that wrote this very file (see :func:`~pyrosm.utils._file_identity`), else
+    None."""
+    try:
+        stored = json.loads(validators_record(path).read_text(encoding="utf-8"))
+        if stored.get("url") == url and stored.get("file") == list(
+            _file_identity(path)
+        ):
+            return stored
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def _conditional_headers(stored):
+    """The ``If-None-Match`` and ``If-Modified-Since`` headers of the record ``stored``
+    (see :func:`_stored_validators`), which ask for the file only if it changed."""
+    headers = {}
+    if stored and stored.get("etag"):
+        headers["If-None-Match"] = stored["etag"]
+    if stored and stored.get("last_modified"):
+        headers["If-Modified-Since"] = stored["last_modified"]
+    return headers
+
+
+def _record_validators(path, transfer):
+    """Record the URL, ``ETag`` and ``Last-Modified`` of ``transfer``, the download of
+    ``path``, the URL that served it and the identity of ``path`` (see
+    :func:`validators_record`); without either header the record is removed. A record that
+    cannot be written, or a ``path`` that is no longer the file ``transfer`` wrote, is left
+    out."""
+    record = validators_record(path)
+    try:
+        if not (transfer.etag or transfer.last_modified):
+            record.unlink(missing_ok=True)
+            return
+        identity = _file_identity(path)
+        if identity[:2] != transfer.file_id:
+            # Another writer replaced the file since.
+            return
+        stored = {
+            "url": transfer.url,
+            "served": transfer.served,
+            "etag": transfer.etag,
+            "last_modified": transfer.last_modified,
+            "file": list(identity),
+        }
+        data = json.dumps(stored).encode("utf-8")
+        write_atomic(record, lambda out: out.write(data))
+    except OSError:
+        pass
+
+
 def _remove_download(path):
     """Remove the file ``path``, the partial files of its interrupted downloads and its
     record (see :func:`sources_record`); returns the number of PBF and partial files
@@ -470,6 +564,7 @@ def _remove_download(path):
     for file in removed:
         file.unlink()
     sources_record(path).unlink(missing_ok=True)
+    validators_record(path).unlink(missing_ok=True)
     return len(removed)
 
 
@@ -496,6 +591,7 @@ def clear_downloads(filepath=None):
     stems = {p.name for p in directory.glob("*.pbf")}
     stems |= {p.name.rsplit(".", 2)[0] for p in directory.glob("*.pbf.*.part")}
     stems |= {p.name[: -len(".sources")] for p in directory.glob("*.pbf.sources")}
+    stems |= {p.name[: -len(".validators")] for p in directory.glob("*.pbf.validators")}
     return sum(_remove_download(directory / stem) for stem in sorted(stems))
 
 
@@ -515,6 +611,10 @@ def download(
     ``headers``, ``timeout`` and ``opener`` go to every request (see :func:`open_url`). A
     dropped connection is resumed or retried; a failure raises
     :class:`~pyrosm.exceptions.DownloadError`. Returns the file path as a string.
+
+    With ``update``, a file downloaded before is asked for only if it changed: the ``ETag``
+    and ``Last-Modified`` its download gave (see :func:`validators_record`) go with the
+    request, and the server's 304 answer keeps the file as it is.
 
     ``progress`` shows the download: ``None`` (default) follows
     :func:`pyrosm.enable_logging`, ``True`` draws a bar on stderr (a widget in Jupyter when
@@ -537,13 +637,19 @@ def download(
 
     # Download data to temp if it does not exist or if update is requested
     if update or file_exists is False:
+        stored = _stored_validators(filepath, url) if file_exists else None
+        transfers = []
 
         def fetch(out_file):
-            transfer = _Transfer(url, filename, out_file, net, report)
+            transfer = _Transfer(url, filename, out_file, net, report, stored)
+            transfers.append(transfer)
             while True:
                 kept = transfer.written
                 try:
-                    return _retry(transfer.attempt)
+                    _retry(transfer.attempt)
+                    # The device and inode of the file written, which its rename keeps.
+                    transfer.file_id = _call_local(_file_identity, out_file)[:2]
+                    return
                 except _FETCH_ERRORS as e:
                     # A resumable round that kept more of the file earns another round.
                     gained = transfer.written > kept
@@ -562,11 +668,28 @@ def download(
         # never leaves a partial file that a later call would reuse. Errors creating or
         # replacing the local file propagate as they are.
         start = time.perf_counter()
-        with reporting(progress, "Downloading %s" % filepath.name) as report:
+        while True:
             try:
-                write_atomic(filepath, fetch)
-            except _LocalWriteError as e:
-                raise e.__cause__
+                with reporting(progress, "Downloading %s" % filepath.name) as report:
+                    try:
+                        write_atomic(filepath, fetch)
+                    except _LocalWriteError as e:
+                        raise e.__cause__
+                break
+            except _NotModified:
+                if _stored_validators(filepath, url) == stored:
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "download_unchanged",
+                        file=filepath.name,
+                        seconds=time.perf_counter() - start,
+                        path=filepath,
+                    )
+                    return str(filepath)
+                # The file changed while the server was asked: download it in full.
+                stored = None
+        _record_validators(filepath, transfers[-1])
 
         log_event(
             logger,
