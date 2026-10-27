@@ -1,3 +1,4 @@
+import contextlib
 import email.utils
 import enum
 import glob
@@ -13,6 +14,7 @@ import shutil
 import ssl
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +26,7 @@ from pyrosm import __version__
 from pyrosm._log import log_event
 from pyrosm.exceptions import DownloadError, RequestRefusedError
 from pyrosm.utils import _file_identity
+from pyrosm.utils.file_lock import exclusive_lock
 from pyrosm.utils.progress import reporting, validate_progress
 
 USER_AGENT = "pyrosm/%s (+https://github.com/pyrosm/pyrosm)" % __version__
@@ -589,6 +592,26 @@ def _download_log(url):
     return _download_log_dir() / f"{digest}.json"
 
 
+def _lock_dir():
+    """The folder of the host locks (see :func:`_host_lock`)."""
+    return download_dir() / "locks"
+
+
+@contextlib.contextmanager
+def _host_lock(url):
+    """Hold the lock of the host of ``url`` while the block runs, so that the downloads
+    from one host on this machine go one at a time, whatever their folders; logs a line
+    when another download from the host has to finish first."""
+    host = urllib.parse.urlsplit(url).hostname or "unknown"
+    host = re.sub(r"[^a-z0-9.-]", "_", host)
+
+    def waiting():
+        log_event(logger, logging.INFO, "download_waiting", host=host, url=url)
+
+    with exclusive_lock(_lock_dir() / f"{host}.lock", waiting):
+        yield
+
+
 def _logged_time(download):
     """The time of the ``download`` in a download log, in seconds since the epoch."""
     return datetime.fromisoformat(download["time"]).timestamp()
@@ -708,6 +731,10 @@ def download(
     file that a 304 answer keeps is not a download. Deleting the log, which the error
     names, resets the count.
 
+    Downloads from one host go one at a time on this machine: while another thread or
+    process downloads from the host, the call waits (logging ``download_waiting``), and a
+    file the other download wrote meanwhile is not downloaded again unless ``update``.
+
     ``progress`` shows the download: ``None`` (default) follows
     :func:`pyrosm.enable_logging`, ``True`` draws a bar on stderr (a widget in Jupyter when
     ipywidgets is installed; without a terminal, only a line naming the file), ``False``
@@ -722,83 +749,87 @@ def download(
     filepath = target_dir.resolve() / Path(filename).name
     net = _Net(headers, timeout, opener)
 
-    # Check if file exists
-    file_exists = False
-    if filepath.exists():
-        file_exists = True
-
-    # Download data to temp if it does not exist or if update is requested
-    if update or file_exists is False:
-        stored = _stored_validators(filepath, url) if file_exists else None
-        log = _download_log(url)
-        recent = _recent_downloads(log, time.time())
-        refuse = len(recent) >= _FULL_DOWNLOADS_A_DAY
-        transfers = []
-
-        def fetch(out_file):
-            transfer = _Transfer(url, filename, out_file, net, report, stored, refuse)
-            transfers.append(transfer)
-            while True:
-                kept = transfer.written
-                try:
-                    _retry(transfer.attempt)
-                    # The device and inode of the file written, which its rename keeps.
-                    transfer.file_id = _call_local(_file_identity, out_file)[:2]
-                    _log_download(url, log, transfer.written, time.time())
-                    return
-                except _FETCH_ERRORS as e:
-                    # A resumable round that kept more of the file earns another round.
-                    gained = transfer.written > kept
-                    if _retryable(e) and transfer.validator is not None and gained:
-                        continue
-                    n = transfer.attempts
-                    raise DownloadError(
-                        f"Could not download '{url}' ({n} attempt"
-                        f"{'' if n == 1 else 's'}): {e}",
-                        url=url,
-                        status=e.code if isinstance(e, HTTPError) else None,
-                        attempts=n,
-                    ) from e
-
-        # write_atomic moves the file into place only when complete, so a failed download
-        # never leaves a partial file that a later call would reuse. Errors creating or
-        # replacing the local file propagate as they are.
-        start = time.perf_counter()
-        while True:
-            try:
-                with reporting(progress, "Downloading %s" % filepath.name) as report:
-                    try:
-                        write_atomic(filepath, fetch)
-                    except _LocalWriteError as e:
-                        raise e.__cause__
-                break
-            except _NotModified:
-                if _stored_validators(filepath, url) == stored:
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "download_unchanged",
-                        file=filepath.name,
-                        seconds=time.perf_counter() - start,
-                        path=filepath,
-                    )
-                    return str(filepath)
-                # The file changed while the server was asked: download it in full.
-                stored = None
-            except _Refused:
-                sent = sum(transfer.attempts for transfer in transfers)
-                raise RequestRefusedError(
-                    _refusal(url, log, recent), url=url, attempts=sent
-                ) from None
-        _record_validators(filepath, transfers[-1])
-
-        log_event(
-            logger,
-            logging.INFO,
-            "download",
-            file=filepath.name,
-            megabytes=get_file_size(filepath),
-            seconds=time.perf_counter() - start,
-            path=filepath,
-        )
+    if update or not filepath.exists():
+        with _host_lock(url):
+            # Another download may have written the file while this one waited.
+            if update or not filepath.exists():
+                _fetch_into(filepath, url, filename, net, progress)
     return str(filepath)
+
+
+def _fetch_into(filepath, url, filename, net, progress):
+    """Download ``url`` into ``filepath`` for :func:`download`: conditionally when the
+    record of an earlier download of it is there, refusing a full download that the
+    download log does not allow, and logging and recording what was done."""
+    stored = _stored_validators(filepath, url) if filepath.exists() else None
+    log = _download_log(url)
+    recent = _recent_downloads(log, time.time())
+    refuse = len(recent) >= _FULL_DOWNLOADS_A_DAY
+    transfers = []
+
+    def fetch(out_file):
+        transfer = _Transfer(url, filename, out_file, net, report, stored, refuse)
+        transfers.append(transfer)
+        while True:
+            kept = transfer.written
+            try:
+                _retry(transfer.attempt)
+                # The device and inode of the file written, which its rename keeps.
+                transfer.file_id = _call_local(_file_identity, out_file)[:2]
+                _log_download(url, log, transfer.written, time.time())
+                return
+            except _FETCH_ERRORS as e:
+                # A resumable round that kept more of the file earns another round.
+                gained = transfer.written > kept
+                if _retryable(e) and transfer.validator is not None and gained:
+                    continue
+                n = transfer.attempts
+                raise DownloadError(
+                    f"Could not download '{url}' ({n} attempt"
+                    f"{'' if n == 1 else 's'}): {e}",
+                    url=url,
+                    status=e.code if isinstance(e, HTTPError) else None,
+                    attempts=n,
+                ) from e
+
+    # write_atomic moves the file into place only when complete, so a failed download
+    # never leaves a partial file that a later call would reuse. Errors creating or
+    # replacing the local file propagate as they are.
+    start = time.perf_counter()
+    while True:
+        try:
+            with reporting(progress, "Downloading %s" % filepath.name) as report:
+                try:
+                    write_atomic(filepath, fetch)
+                except _LocalWriteError as e:
+                    raise e.__cause__
+            break
+        except _NotModified:
+            if _stored_validators(filepath, url) == stored:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "download_unchanged",
+                    file=filepath.name,
+                    seconds=time.perf_counter() - start,
+                    path=filepath,
+                )
+                return
+            # The file changed while the server was asked: download it in full.
+            stored = None
+        except _Refused:
+            sent = sum(transfer.attempts for transfer in transfers)
+            raise RequestRefusedError(
+                _refusal(url, log, recent), url=url, attempts=sent
+            ) from None
+    _record_validators(filepath, transfers[-1])
+
+    log_event(
+        logger,
+        logging.INFO,
+        "download",
+        file=filepath.name,
+        megabytes=get_file_size(filepath),
+        seconds=time.perf_counter() - start,
+        path=filepath,
+    )

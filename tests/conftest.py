@@ -107,13 +107,15 @@ def _no_retry_wait(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _own_download_log(tmp_path_factory, monkeypatch):
-    """Each test downloads with its own empty download log, so no test is refused for
-    another test's downloads of the same URL."""
+def _own_download_guards(tmp_path_factory, monkeypatch):
+    """Each test downloads with its own empty download log and host locks, so no test is
+    refused for another test's downloads of the same URL."""
     from pyrosm.utils import download
 
     log_dir = tmp_path_factory.mktemp("download-log")
+    lock_dir = tmp_path_factory.mktemp("locks")
     monkeypatch.setattr(download, "_download_log_dir", lambda: log_dir)
+    monkeypatch.setattr(download, "_lock_dir", lambda: lock_dir)
 
 
 def _corrupted_copies(data, count, seed):

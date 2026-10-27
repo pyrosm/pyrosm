@@ -9,8 +9,10 @@ from urllib.error import HTTPError
 import pytest
 from pyrosm import get_data
 
-# The folder of the download logs, before each test gets its own (see conftest.py).
+# The folders of the download logs and host locks, before each test gets its own (see
+# conftest.py).
 from pyrosm.utils.download import _download_log_dir as DOWNLOAD_LOG_DIR
+from pyrosm.utils.download import _lock_dir as LOCK_DIR
 
 
 @pytest.fixture
@@ -539,6 +541,105 @@ def test_download_refuses_a_fourth_full_download_in_a_day(tmp_path, monkeypatch)
         '"v3"',
         '"v4"',
     ]
+
+
+def _wait_until(condition, seconds=10):
+    """Wait until ``condition()`` is true, failing after ``seconds``."""
+    import time
+
+    deadline = time.monotonic() + seconds
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.01)
+
+
+def test_download_waits_for_another_download_from_the_host(
+    tmp_path, monkeypatch, caplog
+):
+    """Downloads from one host go one at a time, across threads as across processes (one
+    operating-system lock): a download waits, logging it, and then finds the file the other
+    one wrote; a download from another host does not wait. Where the lock cannot be taken,
+    downloads go on without it."""
+    import errno
+    import logging
+    import threading
+
+    from pyrosm.utils import download as dl
+    from pyrosm.utils import file_lock
+
+    assert LOCK_DIR() == dl.download_dir() / "locks"
+    release = threading.Event()
+    requested = []
+
+    def urlopen(request, context=None, timeout=None):
+        requested.append(request.full_url)
+        if request.full_url.startswith("https://a.invalid/"):
+            assert release.wait(10)
+        return _Served(b"x" * 10, 200, {})
+
+    monkeypatch.setattr(dl.urllib.request, "urlopen", urlopen)
+    caplog.set_level(logging.INFO, logger="pyrosm")
+    url, other = "https://a.invalid/x.osm.pbf", "https://b.invalid/x.osm.pbf"
+
+    def get(url, folder="a", update=False):
+        return dl.download(url, "x.osm.pbf", update, tmp_path / folder)
+
+    threads = [threading.Thread(target=get, args=[url]) for _ in range(2)]
+    threads[0].start()
+    _wait_until(lambda: requested)
+    threads[1].start()
+    _wait_until(lambda: "download_waiting" in caplog.text)
+    get(other, "b")  # another host
+    release.set()
+    for thread in threads:
+        thread.join(10)
+    assert requested == [url, other]
+    assert caplog.text.count("download_waiting") == 1
+    # A lock folder that cannot be made, or a file system that cannot lock.
+    monkeypatch.setattr(dl, "_lock_dir", lambda: tmp_path / "a" / "x.osm.pbf")
+    get(url, update=True)
+    monkeypatch.setattr(dl, "_lock_dir", lambda: tmp_path / "locks")
+
+    # Not at once, or held by another file and then not while waiting.
+    errors = [errno.ENOLCK, errno.EAGAIN, errno.ENOLCK]
+
+    def cannot_lock(*args):
+        raise OSError(errors.pop(0), "lock")
+
+    lock = "fcntl.flock" if file_lock.fcntl is not None else "msvcrt.locking"
+    monkeypatch.setattr(lock, cannot_lock)
+    get(url, update=True)
+    get(other, update=True)
+    assert requested == [url, other, url, url, other]
+    assert caplog.text.count("download_waiting") == 2 and errors == []
+
+
+def test_exclusive_lock_refuses_nesting_and_is_not_kept_by_a_forked_child(tmp_path):
+    """A thread that holds a lock gets an error, not a wait for itself, when it asks for it
+    again, and keeps the lock; a child made by fork lets go of the parent's lock files."""
+    import os
+
+    from pyrosm.utils import file_lock
+
+    path = tmp_path / "host.lock"
+
+    def held_elsewhere():
+        with open(path, "a+b") as other:
+            if not file_lock._try_lock(other):
+                return True
+            file_lock._unlock(other)
+            return False
+
+    with file_lock.exclusive_lock(path, lambda: None):
+        with pytest.raises(RuntimeError, match="already"):
+            with file_lock.exclusive_lock(path, lambda: None):
+                pass
+        assert held_elsewhere()
+        if hasattr(os, "register_at_fork"):
+            file_lock._let_go_in_child()  # as in the child, after fork
+            assert not held_elsewhere()
+    assert not held_elsewhere()
+    assert file_lock._open_fds == file_lock._holders == set()
 
 
 class _Opener:
