@@ -5610,3 +5610,74 @@ def test_history_reads_leave_out_node_metadata_on_request(bounding_box):
     assert (pois["osm_type"] == "node").any()
     for frame in (pois, nodes, edges):
         assert not {"version", "timestamp", "changeset"} & set(frame.columns)
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_timestamps_count_the_blocks_date_granularity(tmp_path, engine):
+    """#761 — a block counts its timestamps in ``date_granularity`` milliseconds. Only the
+    in-memory reader's nodes were converted to seconds: ways and relations, and every
+    element the out-of-core engine read, kept the stored counts, and an in-memory history
+    read compared those with the requested time."""
+    import zlib
+    from struct import pack
+
+    from pyrosm import OSM
+    from pyrosm.proto.fileformat_pb2 import Blob, BlobHeader
+    from pyrosm.proto.osmformat_pb2 import HeaderBlock, PrimitiveBlock
+
+    # Stored times count 2 s: the node is from 2009, the ways and the relation from 2020.
+    block = PrimitiveBlock(date_granularity=2000)
+    block.stringtable.s.extend(
+        [b"", b"amenity", b"cafe", b"highway", b"residential", b"type"]
+        + [b"multipolygon", b"building", b"yes", b"outer"]
+    )
+    dense = block.primitivegroup.add().dense
+    dense.id.extend([1, 1, 1])
+    dense.lat.extend([601700000, 1000, 1000])
+    dense.lon.extend([249400000, 1000, 1000])
+    dense.keys_vals.extend([1, 2, 0, 0, 0])
+    for name, values in [
+        ("version", [1, 1, 1]),
+        ("timestamp", [631_000_000, 0, 0]),
+        ("changeset", [5, 0, 0]),
+        ("uid", [0, 0, 0]),
+        ("user_sid", [0, 0, 0]),
+    ]:
+        getattr(dense.denseinfo, name).extend(values)
+    ways = block.primitivegroup.add().ways
+    ways.add(id=10, keys=[3], vals=[4], refs=[1, 1, 1])
+    ways.add(id=11, refs=[1, 1, 1, -2])
+    relation = block.primitivegroup.add().relations.add(
+        id=20, keys=[5, 7], vals=[6, 8], memids=[11], types=[1], roles_sid=[9]
+    )
+    for element in [*ways, relation]:
+        element.info.version, element.info.timestamp = 1, 800_000_000
+    paths = []
+    for name, features in [
+        ("current.osm.pbf", []),
+        ("history.osh.pbf", ["HistoricalInformation"]),
+    ]:
+        required = ["OsmSchema-V0.6", "DenseNodes"] + features
+        header = HeaderBlock(required_features=required)
+        paths.append(str(tmp_path / name))
+        with open(paths[-1], "wb") as f:
+            for kind, data in [("OSMHeader", header), ("OSMData", block)]:
+                data = data.SerializeToString()
+                blob = Blob(zlib_data=zlib.compress(data), raw_size=len(data))
+                blob = blob.SerializeToString()
+                head = BlobHeader(type=kind, datasize=len(blob)).SerializeToString()
+                f.write(pack("!L", len(head)) + head + blob)
+
+    current, history = (OSM(path, engine=engine) for path in paths)
+    features = {"amenity": True, "highway": True, "building": True}
+    read = current.get_data_by_custom_criteria(features)
+    assert dict(zip(read.osm_type, read.timestamp)) == {
+        "node": 1_262_000_000,
+        "way": 1_600_000_000,
+        "relation": 1_600_000_000,
+    }
+    nodes, edges = current.get_network("all", nodes=True)
+    assert set(nodes.timestamp) == {1_262_000_000}
+    assert set(edges.timestamp) == {1_600_000_000}
+    read = history.get_data_by_custom_criteria(features, timestamp="2019-01-01")
+    assert dict(zip(read.osm_type, read.timestamp)) == {"node": 1_262_000_000}

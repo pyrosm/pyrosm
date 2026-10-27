@@ -22,6 +22,7 @@ from pyrosm.primitive_block_decoder import (
     BLOCK_COUNTS,
     decode_batch_nogil,
     decode_primitive_block,
+    with_timestamps_in_seconds,
 )
 from pyrosm.way_columns import take
 from pyrosm.engine.blobs import _inflated_batch, _read_batches, _read_block, _read_span
@@ -385,11 +386,13 @@ def _node_records_by_id(string_table, header, nodes, wanted, keep_metadata, tags
     ``wanted`` (an :class:`~pyrosm.int64_hash.Int64Set`) -- the second-pass gather that
     builds the graph-export node frame's coordinate store. Their tags, resolved through the
     string table, are added to ``tags`` (a :class:`~pyrosm.way_store.NodeTagsBuilder`);
-    metadata is included only when ``keep_metadata`` (matching the in-memory reader).
-    Returns a dict of parallel arrays, or ``None`` when no wanted node is in this block.
+    metadata (timestamps in seconds) is included only when ``keep_metadata`` (matching the
+    in-memory reader). Returns a dict of parallel arrays, or ``None`` when no wanted node is
+    in this block.
     """
     if nodes is None:
         return None
+    nodes = with_timestamps_in_seconds(nodes, header)
     ids = nodes["id"]
     keep = wanted.isin(ids)
     idx = np.flatnonzero(keep)
@@ -478,8 +481,12 @@ def _decode_one_block(settings, string_table, header, nodes, ways, relations):
     :class:`_DecodeSettings` ``settings``: node coordinates, the matching layer point
     nodes, the matching layer ways (refs + resolved tags + metadata), *all* ways (id + refs,
     for relation-member lookup; empty unless ``settings.spill_all_ways``) and the matching
-    layer relations. Returns a dict of the npz arrays ``_write_shard`` spills (every key
-    present, empty when absent)."""
+    layer relations, with their timestamps in seconds. Returns a dict of the npz arrays
+    ``_write_shard`` spills (every key present, empty when absent)."""
+    nodes, ways, relations = (
+        with_timestamps_in_seconds(elements, header)
+        for elements in (nodes, ways, relations)
+    )
     node_id, node_lon, node_lat, in_box = [], [], [], []
     nf = {k: [] for k in ("id", "lon", "lat", "tags", "meta")}
     way_match_id, way_match_refs, way_match_tags = [], [], []

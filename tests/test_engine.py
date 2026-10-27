@@ -2591,7 +2591,12 @@ def test_engine_node_records_by_id_edge_cases():
     from pyrosm.int64_hash import Int64Set
     from pyrosm.way_store import NodeTagsBuilder
 
-    header = {"granularity": 100, "lat_offset": 0, "lon_offset": 0}
+    header = {
+        "granularity": 100,
+        "date_granularity": 1000,
+        "lat_offset": 0,
+        "lon_offset": 0,
+    }
     st = [b"", b"amenity", b"cafe"]
     tags = NodeTagsBuilder()
     # A block with no dense nodes (a way/relation block) yields nothing.
@@ -3649,7 +3654,12 @@ def test_block_tags_share_one_decoded_string_table():
         "visible": np.array([1]),
         **meta,
     }
-    header = {"granularity": 100, "lat_offset": 0, "lon_offset": 0}
+    header = {
+        "granularity": 100,
+        "date_granularity": 1000,
+        "lat_offset": 0,
+        "lon_offset": 0,
+    }
     shard = decode._decode_one_block(
         settings, string_table, header, None, ways, relations
     )
