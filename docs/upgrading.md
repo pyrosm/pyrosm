@@ -16,6 +16,10 @@ new options that leave the defaults as they were, and fixes of calls that failed
   has tags outside the tag columns, an in-memory read, or an out-of-core read without `pyarrow`,
   gives their `tags` as NaN in a `str` column, as a cached read does. They were `None` in an
   object column; `isna()` finds both.
+- **Timestamps of blocks that do not count seconds.** For a file whose blocks have a
+  `date_granularity` other than 1000, ways and relations, and with the out-of-core engine
+  every element, have their `timestamp` in seconds, where it was the stored count; an in-memory
+  history read leaves out the ways and relations that did not exist yet at its time.
 
 ## pyrosm 0.24.0
 

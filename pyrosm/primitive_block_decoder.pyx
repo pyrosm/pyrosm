@@ -25,8 +25,10 @@ the flat (CSR) arrays exactly, then a single fill pass writes into them -- no pe
 allocation. Plain nodes are returned in the same form as dense ones.
 Coordinates and ids are returned as raw cumulative integers (not scaled by
 ``granularity``/offset); scaling is the caller's job, which keeps the values exact and
-easy to compare against the protobuf path in tests. ``decode_batch_nogil`` (the GIL-free
-batch decoder at the end of this module) gives coordinates in degrees.
+easy to compare against the protobuf path in tests. Timestamps likewise count the block's
+``date_granularity`` milliseconds (:func:`with_timestamps_in_seconds` converts them).
+``decode_batch_nogil`` (the GIL-free batch decoder at the end of this module) gives
+coordinates in degrees and handles only blocks whose timestamps count seconds.
 """
 import numpy as np
 
@@ -814,6 +816,16 @@ cdef int _read_header_value(const unsigned char* buf, Py_ssize_t* pos, Py_ssize_
     return 0
 
 
+def with_timestamps_in_seconds(elements, header):
+    """``elements`` (a node, way or relation dict of :func:`decode_primitive_block`, or
+    None) with its ``timestamp`` column in seconds: the decoded column counts the block's
+    ``header["date_granularity"]`` milliseconds."""
+    if elements is None or header["date_granularity"] == 1000:
+        return elements
+    timestamps = elements["timestamp"] * header["date_granularity"] // 1000
+    return {**elements, "timestamp": timestamps}
+
+
 def decode_primitive_block(const unsigned char[::1] data, bint keep_metadata=True):
     """Decode a decompressed ``PrimitiveBlock`` into ``(string_table, header, nodes,
     ways, relations)``.
@@ -1002,8 +1014,8 @@ def decode_elements(const unsigned char[::1] data, starts, ends, bint is_relatio
 # wanted id), all ways' ids and refs, and the ways carrying a wanted key with their tags and
 # metadata. A block it does not handle (plain nodes, relations, a packed field in more runs
 # than it keeps, dense groups whose tags or metadata only some groups have, several string
-# tables, data that does not follow the format) gets status 1 and none of its elements; the
-# caller decodes it with ``decode_primitive_block``.
+# tables, timestamps that do not count seconds, data that does not follow the format) gets
+# status 1 and none of its elements; the caller decodes it with ``decode_primitive_block``.
 #
 # C code cannot grow numpy arrays without the GIL, so every block is decoded twice by the
 # same functions (``_decode_block_nogil`` and the ones it calls). In the count pass
@@ -1770,7 +1782,7 @@ cdef int _decode_block_nogil(const unsigned char* buf, Py_ssize_t end,
     cdef Py_ssize_t pos = 0, f_start, g_pos, g_end, e_start, st_start = -1, st_end = -1
     cdef int field, wire
     cdef uint64_t length
-    cdef int64_t granularity = 100, lat_offset = 0, lon_offset = 0
+    cdef int64_t granularity = 100, lat_offset = 0, lon_offset = 0, date_granularity = 1000
     cdef int64_t* key_ids = req.key_ids
     cdef Py_ssize_t n_ids = 0, n_table = 0
     cdef _DenseState state
@@ -1787,6 +1799,8 @@ cdef int _decode_block_nogil(const unsigned char* buf, Py_ssize_t end,
             length = _read_varint(buf, &pos, end)
             if field == PB_GRANULARITY:
                 granularity = <int64_t>length
+            elif field == PB_DATE_GRANULARITY:
+                date_granularity = <int64_t>length
             elif field == PB_LAT_OFFSET:
                 lat_offset = <int64_t>length
             elif field == PB_LON_OFFSET:
@@ -1805,7 +1819,7 @@ cdef int _decode_block_nogil(const unsigned char* buf, Py_ssize_t end,
                 return 1  # each of several string tables is checked by the Python path
             st_start = f_start
             st_end = pos
-    if pos != end:
+    if pos != end or date_granularity != 1000:
         return 1
     if st_start >= 0:
         # Also checks the table's encoding, which decode_primitive_block always does.

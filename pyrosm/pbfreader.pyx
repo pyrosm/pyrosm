@@ -32,12 +32,16 @@ def iter_decoded_blocks(filepath, progress=None):
     """Yield each data block of ``filepath`` decoded by the raw block decoder, as
     ``(string_table, header, nodes, ways, relations)`` (see
     :func:`~pyrosm.primitive_block_decoder.decode_primitive_block`), with the string
-    table decoded to ``str``. The header block is checked first. ``progress(done, size)``
+    table decoded to ``str`` and the timestamps in seconds. The header block is checked
+    first. ``progress(done, size)``
     gets the bytes of the file read: 0 first, then after each block, and the file size at
     the end."""
     from pyrosm.engine.blobs import _index_blobs, _read_block
     from pyrosm.pbf_export import read_header_block
-    from pyrosm.primitive_block_decoder import decode_primitive_block
+    from pyrosm.primitive_block_decoder import (
+        decode_primitive_block,
+        with_timestamps_in_seconds,
+    )
 
     valid_header_block(read_header_block(filepath))
     with open(filepath, "rb") as f:
@@ -52,7 +56,14 @@ def iter_decoded_blocks(filepath, progress=None):
             )
             if progress is not None:
                 progress(offset + length, size)
-            yield [tounicode(s) for s in strings], header, nodes, ways, relations
+            yield (
+                [tounicode(s) for s in strings],
+                header,
+                *(
+                    with_timestamps_in_seconds(elements, header)
+                    for elements in (nodes, ways, relations)
+                ),
+            )
         if progress is not None:
             progress(size, size)
 
@@ -114,9 +125,8 @@ cdef dict _node_columns(
         columns["tags"] = _node_tags(nodes["keys_vals"], n, strings)
     columns["visible"] = visible
     if keep_meta:
-        timestamp = nodes["timestamp"] * header["date_granularity"] / 1000
         columns["version"] = _or_zeros(nodes["version"], n)
-        columns["timestamp"] = _or_zeros(timestamp.astype(int).astype(np.uint32), n)
+        columns["timestamp"] = _or_zeros(nodes["timestamp"].astype(np.uint32), n)
         columns["changeset"] = _or_zeros(nodes["changeset"].astype(np.int32), n)
 
     mask = None
