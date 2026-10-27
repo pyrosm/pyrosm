@@ -30,6 +30,8 @@ from pyrosm.utils.file_lock import exclusive_lock
 from pyrosm.utils.progress import reporting, validate_progress
 
 USER_AGENT = "pyrosm/%s (+https://github.com/pyrosm/pyrosm)" % __version__
+# The environment variables that AI coding agents set for the commands they run.
+_AGENT_VARIABLES = ("AI_AGENT", "CLAUDECODE")
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +87,17 @@ class _HTTPHandler(urllib.request.HTTPHandler):
         return self.do_open(self.connection, req)
 
 
+def _user_agent():
+    """pyrosm's ``User-Agent``: :data:`USER_AGENT`, with ``agent`` added to its comment
+    when an AI coding agent runs pyrosm (``AI_AGENT`` or ``CLAUDECODE`` is set)."""
+    if any(os.environ.get(name) for name in _AGENT_VARIABLES):
+        return USER_AGENT.replace(")", "; agent)")
+    return USER_AGENT
+
+
 def open_url(url, method="GET", headers=None, timeout=None, opener=None):
-    """Open ``url`` with pyrosm's User-Agent and certifi's CA bundle.
+    """Open ``url`` with pyrosm's User-Agent (see :func:`_user_agent`) and certifi's CA
+    bundle.
 
     ``headers`` are added to (or override) the default ``User-Agent`` header; credentials,
     cookies and ``Host`` are not sent on to the target of a redirect. ``timeout`` (in
@@ -103,7 +114,7 @@ def open_url(url, method="GET", headers=None, timeout=None, opener=None):
             "an opener."
         )
     connect, read = timeout if split else (timeout, timeout)
-    headers = {"User-Agent": USER_AGENT, **(headers or {})}
+    headers = {"User-Agent": _user_agent(), **(headers or {})}
     bound = {k: v for k, v in headers.items() if k.lower() in _ORIGIN_BOUND}
     request = urllib.request.Request(
         url,

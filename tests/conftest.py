@@ -107,6 +107,15 @@ def _no_retry_wait(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_agent_environment(monkeypatch):
+    """Tests send pyrosm's plain User-Agent also when an AI coding agent runs them."""
+    from pyrosm.utils import download
+
+    for name in download._AGENT_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _own_download_guards(tmp_path_factory, monkeypatch):
     """Each test downloads with its own empty download log and host locks, so no test is
     refused for another test's downloads of the same URL."""

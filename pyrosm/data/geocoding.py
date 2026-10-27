@@ -176,9 +176,10 @@ def geocode(
         own instance for heavy use.
 
     user_agent : str, optional
-        The ``User-Agent`` header sent to Nominatim. Defaults to a pyrosm string, which
-        every pyrosm user shares: once a process has sent the public server 50 requests
-        with it, geocoding with it raises :class:`~pyrosm.exceptions.RequestRefusedError`.
+        The ``User-Agent`` header sent to Nominatim. Defaults to a pyrosm string (marked
+        ``agent`` when an AI coding agent runs pyrosm), which every pyrosm user shares:
+        once a process has sent the public server 50 requests with it, geocoding with it
+        raises :class:`~pyrosm.exceptions.RequestRefusedError`.
         Nominatim rejects requests without a descriptive agent.
 
     headers : dict, optional

@@ -655,18 +655,24 @@ class _Opener:
 
 def test_open_url_opener_and_timeouts(monkeypatch):
     """An injected opener gets the request and timeout; a (connect, read) pair builds
-    pyrosm's own opener; an opener with a pair is refused."""
+    pyrosm's own opener; an opener with a pair is refused. The User-Agent says ``agent``
+    when an AI coding agent runs pyrosm, unless the caller gives their own."""
+    import pyrosm
     from pyrosm.utils import download as dl
 
     url = "https://example.invalid/x"
-    opener = _Opener("response", "response")
-    # The caller's opener needs no certificates from pyrosm and always gets the timeout.
-    monkeypatch.setattr(dl.ssl, "create_default_context", lambda **k: 1 / 0)
-    assert dl.open_url(url, headers={"User-Agent": "t/1"}, timeout=7, opener=opener)
-    assert dl.open_url(url, opener=opener)
+    opener = _Opener(*["response"] * 4)
+    with monkeypatch.context() as m:
+        # The caller's opener needs no certificates and always gets the timeout.
+        m.setattr(dl.ssl, "create_default_context", lambda **k: 1 / 0)
+        assert dl.open_url(url, headers={"User-Agent": "t/1"}, timeout=7, opener=opener)
+        assert dl.open_url(url, opener=opener)
+        m.setenv("CLAUDECODE", "1")  # run by an AI coding agent
+        assert dl.open_url(url, opener=opener)
+        assert dl.open_url(url, headers={"User-Agent": "t/1"}, opener=opener)
     sent = [(r.get_header("User-agent"), t) for r, t in opener.requests]
-    assert sent == [("t/1", 7), (dl.USER_AGENT, None)]
-    monkeypatch.undo()
+    agent = "pyrosm/%s (+https://github.com/pyrosm/pyrosm; agent)" % pyrosm.__version__
+    assert sent == [("t/1", 7), (dl.USER_AGENT, None), (agent, None), ("t/1", None)]
 
     built, own = [], _Opener("response")
     monkeypatch.setattr(
