@@ -5681,3 +5681,108 @@ def test_timestamps_count_the_blocks_date_granularity(tmp_path, engine):
     assert set(edges.timestamp) == {1_600_000_000}
     read = history.get_data_by_custom_criteria(features, timestamp="2019-01-01")
     assert dict(zip(read.osm_type, read.timestamp)) == {"node": 1_262_000_000}
+
+
+def _area_extracts(monkeypatch, tmp_path, extracts, refused, status):
+    """Make ``get_data_by_area`` find ``extracts``, each ``(provider, id, url, bytes, bounds,
+    contains)``, and download each as a copy of the bundled Helsinki file, except the URL
+    ``refused``, whose download fails with HTTP ``status``. Returns the list of the URLs
+    downloaded, in order."""
+    import shutil
+
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import box
+
+    import pyrosm
+    from pyrosm.data import extract_index as ei
+    from pyrosm.exceptions import DownloadError
+
+    found = gpd.GeoDataFrame(
+        {
+            "provider": [e[0] for e in extracts],
+            "id": [e[1] for e in extracts],
+            "name": [e[1] for e in extracts],
+            "url": [e[2] for e in extracts],
+            "bytes": pd.array([e[3] for e in extracts], dtype="Int64"),
+            "contains": [e[5] for e in extracts],
+        },
+        geometry=[box(*e[4]) for e in extracts],
+        crs="EPSG:4326",
+    )
+    monkeypatch.setattr(ei, "find_extracts", lambda geom, **k: found)
+    helsinki = pyrosm.get_data("helsinki_pbf")
+    downloads = []
+
+    def download(url, filename, update, directory, **net):
+        downloads.append(url)
+        if url == refused:
+            raise DownloadError("refused", url=url, status=status, attempts=3)
+        return shutil.copy(helsinki, tmp_path / filename)
+
+    monkeypatch.setattr("pyrosm.utils.download.download", download)
+    return downloads
+
+
+@pytest.mark.parametrize(
+    "status, tried",
+    [
+        (429, ["noord-brabant", "Helsinki"]),
+        (503, ["noord-brabant", "Helsinki"]),
+        (404, ["noord-brabant", "netherlands"]),
+    ],
+)
+def test_get_data_by_area_skips_a_refusing_host(tmp_path, monkeypatch, status, tried):
+    """#765 — after a download failed with 429 or 503, ``get_data_by_area`` tried the
+    host's larger extracts next. It leaves out every extract of that host and tries the
+    other providers; other failures leave out only the extract that failed."""
+    import pyrosm
+
+    area = [24.93, 60.16, 24.96, 60.18]
+    extracts = [
+        ("Geofabrik", "noord-brabant", "https://geofabrik/noord-brabant.osm.pbf", 200),
+        ("Geofabrik", "netherlands", "https://geofabrik/netherlands.osm.pbf", 1400),
+        ("BBBike", "Helsinki", "https://bbbike/Helsinki.osm.pbf", 5000),
+        ("Geofabrik", "europe", "https://geofabrik/europe.osm.pbf", 35000),
+    ]
+    downloads = _area_extracts(
+        monkeypatch,
+        tmp_path,
+        [(*e, area, True) for e in extracts],
+        extracts[0][2],
+        status,
+    )
+    with pytest.warns(UserWarning, match="choosing again without"):
+        got = pyrosm.get_data_by_area(
+            area, crop=False, directory=tmp_path, progress=False
+        )
+    names = {e[2]: e[1] for e in extracts}
+    assert [names[url] for url in downloads] == tried
+    assert got.extract == tried[-1]
+
+
+def test_get_data_by_area_keeps_the_downloaded_part_of_a_refusing_provider(
+    tmp_path, monkeypatch
+):
+    """#765 — a ``smallest_total`` choice whose second part answered 429 is made again
+    with the parts already downloaded, from another provider for the rest, and without
+    downloading a part twice."""
+    import pyrosm
+
+    left, right = [24.93, 60.16, 24.945, 60.18], [24.945, 60.16, 24.96, 60.18]
+    extracts = [
+        ("Geofabrik", "left", "https://geofabrik/left.osm.pbf", 90, left, False),
+        ("Geofabrik", "right", "https://geofabrik/right.osm.pbf", 100, right, False),
+        ("BBBike", "east", "https://bbbike/east.osm.pbf", 300, right, False),
+    ]
+    downloads = _area_extracts(monkeypatch, tmp_path, extracts, extracts[1][2], 429)
+    with pytest.warns(UserWarning, match="and the other Geofabrik extracts"):
+        got = pyrosm.get_data_by_area(
+            [24.93, 60.16, 24.96, 60.18],
+            crop=False,
+            directory=tmp_path,
+            progress=False,
+            strategy="smallest_total",
+        )
+    assert downloads == [extracts[0][2], extracts[1][2], extracts[2][2]]
+    assert (got.provider, got.extract) == ("Geofabrik+BBBike", "left+east")

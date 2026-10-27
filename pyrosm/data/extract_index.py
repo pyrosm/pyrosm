@@ -1141,8 +1141,11 @@ def get_data_by_area(
     ``strategy="smallest_total"`` it may instead download several extracts that together cover
     the area and merge them into one file (see ``strategy``). A download that fails with a network error or HTTP status 408, 425, 429 or 5xx is
     tried up to three times, waiting 1 s, 2 s or the server's ``Retry-After`` in between; when it
-    still fails, the choice is made again without it. By default the file is then cropped to
-    the area's bounding box, or with ``crop="polygon"`` to the area itself.
+    still fails, the choice is made again without it, and when its provider answered 429 or
+    503, its request to slow down, also without the provider's other extracts that are not
+    downloaded yet. An extract already downloaded is not downloaded again in the same call. By
+    default the file is then cropped to the area's bounding box, or with ``crop="polygon"`` to
+    the area itself.
 
     Movisda cuts its extracts exactly at their edges, so features crossing the edge of a Movisda
     extract are clipped or missing there: open ways such as streets are cut at the edge and
@@ -1262,6 +1265,30 @@ def get_data_by_area(
     )
 
 
+# The HTTP statuses with which a host asks its clients to stop or slow down.
+_REFUSING_STATUSES = (429, 503)
+
+
+def _without_failed(candidates, extract, error, downloaded):
+    """``candidates`` without ``extract``, whose download failed with ``error`` (a
+    :class:`~pyrosm.exceptions.DownloadError`). When its provider, which serves its extracts
+    from one host, refused with HTTP status 429 or 503, also without the provider's other
+    extracts, except those whose URLs are in ``downloaded`` (already downloaded). Returns them
+    and the provider left out, or None."""
+    if error.status not in _REFUSING_STATUSES:
+        return candidates[candidates["url"] != extract.url], None
+    keep = (candidates["provider"] != extract.provider) | candidates["url"].isin(
+        list(downloaded)
+    )
+    return candidates[keep & (candidates["url"] != extract.url)], extract.provider
+
+
+def _extract_source(extract, path):
+    """The :class:`ExtractSource` of the candidate row ``extract``, downloaded to ``path``."""
+    bytes_ = None if pd.isna(extract.bytes) else int(extract.bytes)
+    return ExtractSource(extract.provider, extract.id, extract.url, bytes_, path)
+
+
 def _url_result(urls):
     """The URL of the one extract that ``urls`` lists, or all of them as a list."""
     return urls[0] if len(urls) == 1 else urls
@@ -1315,13 +1342,18 @@ def _get_area(
         progress=progress,
         **net,
     )
-    failed, errors = [], []
+    # The paths of the extracts downloaded so far, by URL: a choice made again reuses them.
+    failed, errors, downloaded = [], [], {}
+    download_seconds = 0.0
     while (chosen := _choose(target, candidates, strategy)) is not None:
         if not download:
             return list(chosen["url"])
         sources = []
-        start = time.perf_counter()
         for extract in chosen.itertuples():
+            path = downloaded.get(extract.url)
+            if path is not None:
+                sources.append(_extract_source(extract, path))
+                continue
             log_event(
                 logger,
                 logging.INFO,
@@ -1336,6 +1368,7 @@ def _get_area(
                 extract.provider.lower(),
                 extract_file_name(extract.url),
             )
+            began = time.perf_counter()
             try:
                 path = _download_file(
                     extract.url, filename, update, directory, progress=progress, **net
@@ -1343,18 +1376,22 @@ def _get_area(
             except DownloadError as e:
                 failed.append((extract.url, str(e)))
                 errors.append(e)
-                warnings.warn(
-                    "Could not download %s (%s); choosing again without it."
-                    % (extract.url, e)
+                candidates, provider = _without_failed(
+                    candidates, extract, e, downloaded
                 )
-                candidates = candidates[candidates["url"] != extract.url]
+                others = (
+                    "" if provider is None else " and the other %s extracts" % provider
+                )
+                warnings.warn(
+                    "Could not download %s (%s); choosing again without it%s."
+                    % (extract.url, e, others)
+                )
                 break
-            bytes_ = None if pd.isna(extract.bytes) else int(extract.bytes)
-            sources.append(
-                ExtractSource(extract.provider, extract.id, extract.url, bytes_, path)
-            )
+            finally:
+                download_seconds += time.perf_counter() - began
+            downloaded[extract.url] = path
+            sources.append(_extract_source(extract, path))
         else:
-            download_seconds = time.perf_counter() - start
             start = time.perf_counter()
             path, provenance = _write_with_provenance(
                 geom,
@@ -1390,7 +1427,7 @@ def _get_area(
             "No Geofabrik, BBBike or Movisda extract contains %s." % what
         )
     raise ExtractDownloadError(
-        "Could not download any of the %d extracts tried for the area: %s"
+        "Could not download the extracts for the area; %d downloads failed: %s"
         % (len(failed), "; ".join("%s (%s)" % f for f in failed)),
         failed,
         errors=errors,
