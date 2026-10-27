@@ -1,8 +1,8 @@
 Changelog
 =========
 
-v0.26.0
--------
+v0.26.0 (Oct 27, 2026)
+----------------------
 
 This release reads history files with the out-of-core engine. With ``engine="out_of_core"``, the default, every read of an ``.osh.pbf`` file or with a ``timestamp`` runs in its streaming pass in bounded memory, returns the same data as the in-memory reader, and is cached by its time. Three fixes change output: with pandas 3, uncached reads give the ``tags`` of nodes without other tags as NaN in a ``str`` column; in-memory history reads with ``keep_metadata=False`` leave out the nodes' metadata; and files whose blocks count time in other units than seconds have their timestamps read in seconds.
 
