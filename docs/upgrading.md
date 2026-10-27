@@ -7,7 +7,7 @@ first; the releases not listed here changed nothing of this kind. Changes in spe
 new options that leave the defaults as they were, and fixes of calls that failed are left out. The
 [changelog](changelog.rst) lists every change.
 
-## Unreleased
+## pyrosm 0.26.0
 
 - **Node metadata of history reads.** With `keep_metadata=False`, an in-memory history read
   leaves out the nodes' `version`, `timestamp` and `changeset`, as other reads do. Keep the

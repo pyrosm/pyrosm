@@ -1,8 +1,10 @@
 Changelog
 =========
 
-Unreleased
-----------
+v0.26.0
+-------
+
+This release reads history files with the out-of-core engine. With `engine="out_of_core"`, the default, every read of an `.osh.pbf` file or with a `timestamp` runs in its streaming pass in bounded memory, returns the same data as the in-memory reader, and is cached by its time. Three fixes change output: with pandas 3, uncached reads give the `tags` of nodes without other tags as NaN in a `str` column; in-memory history reads with `keep_metadata=False` leave out the nodes' metadata; and files whose blocks count time in other units than seconds have their timestamps read in seconds.
 
 - CHANGED: With `engine="out_of_core"`, the default, history reads (an `.osh.pbf` file, or a read with a `timestamp`) run on the out-of-core engine instead of the in-memory reader: every layer, boundaries, networks and graphs. The engine reads each element at its version at the read's time in its streaming pass, in bounded memory, and returns the same data as the in-memory reader. History reads are cached like other reads (with `pyarrow`), by their time; a history file read without a `timestamp` takes each element's latest version in the file, which any current time gives, and is cached under one key, so later `OSM` objects and runs reuse the same cache file. `get_data_by_custom_criteria(keep_other_tags=False)` also reads history files ([#748](https://github.com/pyrosm/pyrosm/pull/748), [#749](https://github.com/pyrosm/pyrosm/pull/749), [#754](https://github.com/pyrosm/pyrosm/pull/754), [#755](https://github.com/pyrosm/pyrosm/pull/755), [#756](https://github.com/pyrosm/pyrosm/pull/756), [#759](https://github.com/pyrosm/pyrosm/pull/759), [#757](https://github.com/pyrosm/pyrosm/pull/757))
 - FIXED: With pandas 3, when none of the nodes a read returned had tags outside the tag columns, the in-memory reader and the out-of-core engine without `pyarrow` gave their `tags` as `None` in an object column; they give NaN in a `str` column, as a cached read does ([#752](https://github.com/pyrosm/pyrosm/pull/752), [#750](https://github.com/pyrosm/pyrosm/issues/750))
