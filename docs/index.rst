@@ -97,6 +97,7 @@ See :doc:`How to cite pyrosm <citation>` for the full reference and a BibTeX ent
     :caption: User guide
 
     downloading_data.ipynb
+    download_responsibly.md
     reading_osm_data.ipynb
     custom_filter.ipynb
     tags_and_columns.ipynb

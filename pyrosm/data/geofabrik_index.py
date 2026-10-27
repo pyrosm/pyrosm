@@ -124,6 +124,9 @@ def get_data_by_bbox(
     Geofabrik, BBBike or Movisda extract (or set of extracts) that covers it, downloaded
     and -- by default -- cropped to the box.
 
+    See https://pyrosm.readthedocs.io/en/stable/download_responsibly.html
+    for what the data providers ask and how pyrosm keeps to it.
+
     Parameters
     ----------
     bbox : list | tuple | numpy.ndarray | shapely geometry | GeoDataFrame | GeoSeries

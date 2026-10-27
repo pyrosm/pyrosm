@@ -581,6 +581,9 @@ def find_extracts(
 ):
     """List the OSM extracts that overlap ``area``, best download first, without downloading.
 
+    See https://pyrosm.readthedocs.io/en/stable/download_responsibly.html
+    for what the data providers ask and how pyrosm keeps to it.
+
     Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and
     1°/10° grid tiles. Extracts that contain the whole area (or ``must_cover`` when given) come
     first, then those that only overlap it; within each group the smallest download comes
@@ -1134,19 +1137,23 @@ def get_data_by_area(
     """Download the OSM data for ``area``: the smallest single extract that contains it, or a
     smaller set of extracts merged into one file.
 
-    Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas and 1°/10°
-    grid tiles, keeps those that contain the whole area (or ``must_cover`` when given), and
-    downloads the one with the smallest
-    file (the first row of ``find_extracts(area, contains_only=True, must_cover=must_cover)``,
-    which shows the choice without downloading). With
-    ``strategy="smallest_total"`` it may instead download several extracts that together cover
-    the area and merge them into one file (see ``strategy``). A download that fails with a network error or HTTP status 408, 425, 429 or 5xx is
-    tried up to three times, waiting 1 s, 2 s or the server's ``Retry-After`` in between; when it
-    still fails, the choice is made again without it, and when its provider answered 429 or
-    503, its request to slow down, also without the provider's other extracts that are not
-    downloaded yet. An extract already downloaded is not downloaded again in the same call. By
-    default the file is then cropped to the area's bounding box, or with ``crop="polygon"`` to
-    the area itself.
+    Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas
+    and 1°/10° grid tiles, keeps those that contain the whole area (or ``must_cover``
+    when given), and downloads the one with the smallest file (the first row of
+    ``find_extracts(area, contains_only=True, must_cover=must_cover)``, which shows the
+    choice without downloading). With ``strategy="smallest_total"`` it may instead
+    download several extracts that together cover the area and merge them into one file
+    (see ``strategy``). A download that fails with a network error or HTTP status 408,
+    425, 429 or 5xx is tried up to three times, waiting 1 s, 2 s or the server's
+    ``Retry-After`` in between; when it still fails, the choice is made again without
+    it, and when its provider answered 429 or 503, its request to slow down, also
+    without the provider's other extracts that are not downloaded yet. An extract
+    already downloaded is not downloaded again in the same call. By default the file is
+    then cropped to the area's bounding box, or with ``crop="polygon"`` to the area
+    itself.
+
+    See https://pyrosm.readthedocs.io/en/stable/download_responsibly.html
+    for what the data providers ask and how pyrosm keeps to it.
 
     Movisda cuts its extracts exactly at their edges, so features crossing the edge of a Movisda
     extract are clipped or missing there: open ways such as streets are cut at the edge and

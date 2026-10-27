@@ -299,6 +299,9 @@ def get_data(
     """
     Get the path to a PBF data file, and download the data if needed.
 
+    See https://pyrosm.readthedocs.io/en/stable/download_responsibly.html
+    for what the data providers ask and how pyrosm keeps to it.
+
     Parameters
     ----------
     dataset : str

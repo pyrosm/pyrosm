@@ -160,6 +160,9 @@ def geocode(
 ):
     """Geocode a place name to a Shapely polygon via Nominatim.
 
+    See https://pyrosm.readthedocs.io/en/stable/download_responsibly.html
+    for what the data providers ask and how pyrosm keeps to it.
+
     Parameters
     ----------
     query : str
@@ -209,9 +212,9 @@ def geocode(
     Notes
     -----
     Each answer is cached for 7 days in ``geocoding`` in pyrosm's default folder, so the
-    same query with the same headers (but for the User-Agent) is answered from there. The public server gets at most one request a second
-    from a process, as Nominatim's usage policy asks
-    (https://operations.osmfoundation.org/policies/nominatim/).
+    same query with the same headers (but for the User-Agent) is answered from there. The
+    public server gets at most one request a second from a process, as Nominatim's usage
+    policy asks (https://operations.osmfoundation.org/policies/nominatim/).
     """
     if not isinstance(query, str) or not query.strip():
         raise ValueError("'query' should be a non-empty place name.")
@@ -312,6 +315,9 @@ def get_data_by_geocoding(
     :func:`pyrosm.get_data_by_area` does: the smallest Geofabrik, BBBike or Movisda
     extract (or set of extracts) that covers it, downloaded and -- by default -- cropped
     to the place.
+
+    See https://pyrosm.readthedocs.io/en/stable/download_responsibly.html
+    for what the data providers ask and how pyrosm keeps to it.
 
     Parameters
     ----------
