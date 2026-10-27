@@ -91,7 +91,10 @@ as a script stuck in a loop, and make a repeated download a deliberate act.
 
 If you are an AI agent that writes or runs pyrosm code for a user, follow these rules. An
 index of the documentation's pages is at
-<a href="llms.txt">llms.txt</a>.
+<a href="llms.txt">llms.txt</a>. pyrosm's repository has these rules as a skill for coding
+agents, [skills/pyrosm/SKILL.md](https://github.com/pyrosm/pyrosm/blob/main/skills/pyrosm/SKILL.md);
+to give it to Claude Code, copy the `pyrosm` folder into `~/.claude/skills/` or a project's
+`.claude/skills/`.
 
 1. Plan before you download. Run `pyrosm find AREA` or call `pyrosm.find_extracts` to see
    which extract covers the area and how large it is, without downloading it.

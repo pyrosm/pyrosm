@@ -7,6 +7,19 @@ first; the releases not listed here changed nothing of this kind. Changes in spe
 new options that leave the defaults as they were, and fixes of calls that failed are left out. The
 [changelog](changelog.rst) lists every change.
 
+## Unreleased
+
+- **Repeated downloads.** A 4th full download of one URL within 24 hours raises
+  `pyrosm.exceptions.RequestRefusedError`, also in `get_data_by_area`, which then stops
+  instead of choosing another extract. Keep a downloaded file and reuse it; the message names
+  the log file that resets the count when deleted.
+- **Geocoding with pyrosm's User-Agent.** After 50 requests to the public Nominatim server
+  from one process with pyrosm's own User-Agent, `geocode` and `get_data_by_geocoding` raise
+  `RequestRefusedError`, and requests go out at least a second apart. Pass `user_agent` with
+  your application's name and a contact, or `base_url` of your own server.
+- **The `pyrosm` command in Python.** `pyrosm.recipes.main` moved to `pyrosm.cli.main`; the
+  `pyrosm` command itself works as before.
+
 ## pyrosm 0.26.0
 
 - **Node metadata of history reads.** With `keep_metadata=False`, an in-memory history read
