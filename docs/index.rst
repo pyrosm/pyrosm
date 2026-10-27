@@ -103,6 +103,7 @@ See :doc:`How to cite pyrosm <citation>` for the full reference and a BibTeX ent
     saving_and_cropping.ipynb
     graphs.ipynb
     recipes.md
+    command_line.md
 
 .. toctree::
     :caption: Additional info

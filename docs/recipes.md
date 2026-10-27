@@ -220,6 +220,7 @@ pyrosm run RECIPE [-o DIR] [--force]
 `pyrosm validate` checks a recipe without running it. Both commands exit with status 0 on
 success, 1 when the recipe or its data is refused (the reason goes to stderr) and 2 when the
 command is used wrongly. They never prompt, so they can run in scripts and workflow tools.
+The other commands of `pyrosm` are on the [command line](command_line.md) page.
 
 ## Python
 
