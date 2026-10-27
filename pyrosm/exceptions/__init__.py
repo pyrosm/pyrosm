@@ -70,3 +70,10 @@ class DownloadError(ExtractDownloadError, ValueError, OSError):
     ``attempts`` describe the failure; the last error is its ``__cause__``. It is also a
     ``ValueError`` and an ``OSError``, the types these failures had before.
     """
+
+
+class RequestRefusedError(DownloadError):
+    """pyrosm did not send a request because it would break the usage policy of the data
+    provider, such as too many geocoding requests to the public Nominatim server with
+    pyrosm's own User-Agent. The message says why and how to go on. ``attempts`` is 0.
+    """

@@ -4596,10 +4596,11 @@ def test_geocode_takes_the_network_options(monkeypatch):
         "urllib.request.urlopen",
         lambda request, context=None, timeout=None: Opener().open(request, timeout),
     )
+    # Four places, as answers are cached.
     pyrosm.geocode("Helsinki")
-    pyrosm.geocode("Helsinki", headers={"User-Agent": "app/1", "X-Key": "k"}, timeout=5)
-    pyrosm.geocode("Helsinki", user_agent="me/2", headers={"user-agent": "app/1"})
-    pyrosm.geocode("Helsinki", timeout=7, opener=Opener())
+    pyrosm.geocode("Espoo", headers={"User-Agent": "app/1", "X-Key": "k"}, timeout=5)
+    pyrosm.geocode("Vantaa", user_agent="me/2", headers={"user-agent": "app/1"})
+    pyrosm.geocode("Kauniainen", timeout=7, opener=Opener())
     agents = [request.get_header("User-agent") for request, _ in sent]
     assert agents[0].startswith("pyrosm") and agents[1:] == ["app/1", "me/2", agents[0]]
     assert sent[1][0].get_header("X-key") == "k"

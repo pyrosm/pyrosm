@@ -88,6 +88,17 @@ def _future_warnings_shown(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _geocoding_state(tmp_path_factory, monkeypatch):
+    """Each test geocodes with its own empty answer cache and request count, so no test is
+    answered from another test's cache or refused for another test's requests."""
+    from pyrosm.data import geocoding
+
+    cache_dir = tmp_path_factory.mktemp("geocoding")
+    monkeypatch.setattr(geocoding, "_cache_dir", lambda: cache_dir)
+    monkeypatch.setattr(geocoding, "_PUBLIC", geocoding._PublicServer())
+
+
+@pytest.fixture(autouse=True)
 def _no_retry_wait(monkeypatch):
     """Retried downloads do not wait between attempts during the tests."""
     from pyrosm.utils import download
