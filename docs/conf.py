@@ -5,7 +5,9 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
 # -- Project information -----------------------------------------------------
+import os
 from datetime import datetime
+from pathlib import Path
 
 current_year = datetime.now().year
 
@@ -34,6 +36,8 @@ extensions = [
     "IPython.sphinxext.ipython_directive",
     "myst_nb",
     "sphinx_design",
+    # Write llms.txt, an index of the pages for language models.
+    "sphinx_llms_txt",
 ]
 
 # Generate the per-object stub pages referenced by the autosummary tables at build time.
@@ -101,6 +105,40 @@ html_context = {
 
 # The master toctree document.
 master_doc = "index"
+
+# The site's address, so that llms.txt links to the published pages (Read the Docs sets it).
+html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "")
+llms_txt_summary = (
+    "pyrosm reads OpenStreetMap PBF files into GeoPandas GeoDataFrames and downloads "
+    "OpenStreetMap extracts from Geofabrik, BBBike and Movisda. Before writing code that "
+    "downloads data or geocodes places, read the Download responsibly page "
+    "(%sdownload_responsibly.html) and follow its rules for AI coding agents." % html_baseurl
+)
+# Link the rendered pages, which hold the API docstrings and the notebooks without their
+# images' data. No llms-full.txt, the sources in one file, which would be mostly notebook
+# JSON: sphinx-llms-txt 0.7 writes it even with llms_txt_full_file = False, and skips it
+# only over its size limit.
+llms_txt_uri_template = ("{base_url}" if html_baseurl else "") + "{docname}.html"
+llms_txt_full_file = False
+llms_txt_full_max_size = 0
+llms_txt_full_size_policy = "info_skip"
+
+
+def _policy_page_first(app, exception):
+    """Move the Download responsibly page to the top of the list of pages in llms.txt."""
+    path = Path(app.outdir) / "llms.txt"
+    if exception is not None or not path.exists():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    policy = [line for line in lines if line.startswith("- [Download responsibly](")]
+    rest = [line for line in lines if line not in policy]
+    first = next(i for i, line in enumerate(rest) if line.startswith("- ["))
+    path.write_text("".join(rest[:first] + policy + rest[first:]), encoding="utf-8")
+
+
+def setup(app):
+    # After sphinx-llms-txt, which writes llms.txt at the default priority, 500.
+    app.connect("build-finished", _policy_page_first, priority=900)
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,

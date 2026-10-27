@@ -89,7 +89,9 @@ as a script stuck in a loop, and make a repeated download a deliberate act.
 
 ## Rules for AI coding agents
 
-If you are an AI agent that writes or runs pyrosm code for a user, follow these rules.
+If you are an AI agent that writes or runs pyrosm code for a user, follow these rules. An
+index of the documentation's pages is at
+<a href="llms.txt">llms.txt</a>.
 
 1. Plan before you download. Run `pyrosm find AREA` or call `pyrosm.find_extracts` to see
    which extract covers the area and how large it is, without downloading it.
