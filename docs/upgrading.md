@@ -19,6 +19,10 @@ new options that leave the defaults as they were, and fixes of calls that failed
   your application's name and a contact, or `base_url` of your own server.
 - **The `pyrosm` command in Python.** `pyrosm.recipes.main` moved to `pyrosm.cli.main`; the
   `pyrosm` command itself works as before.
+- **pyarrow is installed with pyrosm.** pyrosm requires pyarrow 19.0.1 or later, whose wheels
+  need macOS 12 or later. On Linux with glibc older than 2.28, pyarrow has wheels up to Python 3.13;
+  Python 3.14 and later need glibc 2.28. On older systems, pip has to build pyarrow from
+  source.
 
 ## pyrosm 0.26.0
 

@@ -6,7 +6,7 @@ run` carries out a recipe, writes its outputs and records how they were made. Th
 file is then the method: running it again reproduces the data, and the record shows which
 data and which package versions went into it.
 
-Recipes need PyYAML and pyarrow:
+Recipes need PyYAML:
 
 ```bash
 pip install "pyrosm[recipes]"
