@@ -36,13 +36,17 @@ and https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the doc
 
 ## Rules
 
-- Download only what the user's task needs. When it needs several areas, compare with
-  `pyrosm find` the extract that contains them all (their combined bounding box with
-  `--contains-only`) with the extracts of each area, and download whichever is less data:
-  for two cities in different countries, the one extract that contains both can be a whole
-  continent. Tell the user how many files and roughly how much data that is before
-  downloading. Download one file after another, never in parallel, and do not work through
-  a list of countries, cities or tiles that the user did not ask for.
+- Download only what the user's task needs. When it needs several areas, run
+  `pyrosm find AREA --contains-only` on their combined bounding box and on each area, and
+  download whichever is less data: the one extract that contains them all, or the first
+  extract listed for each area, counting a file that covers several areas once. For two
+  cities in different countries, the extract that contains both can be a whole continent.
+  Before downloading, tell the user how many files and roughly how much data that is, and
+  download them one after another, never in parallel.
+- When the user asks for many areas, such as every country of a continent or a grid of
+  tiles, download the one extract that contains them all, even if it is larger, and read
+  each area from it with `OSM(filepath, bounding_box=...)`. Do not work through a list of
+  countries, cities or tiles that the user did not ask for.
 - Do not delete a downloaded file to download it again, and do not call `update=True` in a
   loop.
 - Never work around a refusal: do not delete pyrosm's download log, change pyrosm, or fetch
@@ -51,8 +55,9 @@ and https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the doc
   geocode with the public Nominatim server, tell the user that it has a usage policy
   (https://operations.osmfoundation.org/policies/nominatim/: at most one request per second,
   a User-Agent that names the application, no systematic queries), and pass
-  `user_agent="<application>/<version> (<contact>)"`. Do not geocode lists of places with
-  it, nor from several processes at once.
+  `user_agent="<application>/<version> (<contact>)"`. Geocoding the few places that a task
+  names is fine; do not geocode long lists of places with it, nor from several processes at
+  once.
 - For a whole country or continent that must stay current, or for the planet, point the
   user to pyosmium-up-to-date and https://planet.openstreetmap.org instead of downloading
   again.
