@@ -36,20 +36,22 @@ and https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the doc
 
 ## Rules
 
-- Download only what the user's task needs. When the task names several areas, run
+- Download only what the user's task needs. When the task names a few areas, run
   `pyrosm find AREA --contains-only` for each of them. Then download whichever needs less
-  new data: the smallest extract listed for every area, or the first extract listed for
-  each area, counting a file listed first for several areas once. A suitable file that you
-  have already counts as no new data. For two cities in different countries, the only
-  extract listed for both can be a whole continent. Before downloading, tell the user how
+  new data: the smallest extract that appears in all of their lists, or the first extract
+  in each list, counting a file that is first in several lists once. A suitable file that
+  you have already counts as no new data. For two cities in different countries, the only
+  extract in both lists can be a whole continent. Before downloading, tell the user how
   many files and roughly how much data that is, and download them one after another,
   never in parallel.
-- When the user asks for a whole set of areas instead of naming them, such as every
-  country of a continent, every city above a size or a grid of tiles, download the one
-  extract that contains them all, even if it is larger, and read each area from it with
-  `OSM(filepath, bounding_box=...)`. If no extract contains them all, point the user to the
-  planet file at https://planet.openstreetmap.org. Do not work through a list of countries,
-  cities or tiles that the user did not ask for.
+- When the user asks for a whole set of areas, such as every country of a continent, every
+  city above a size or a grid of tiles, download the smallest extract that contains them
+  all, even if it is larger than separate files, and read each area from it with
+  `OSM(filepath, bounding_box=...)`. A long list counts as a whole set even when the user
+  names each area: find the areas in the extract (for example with
+  `OSM.get_boundaries(name=...)`) instead of geocoding them. If no extract contains them
+  all, point the user to the planet file at https://planet.openstreetmap.org. Do not work
+  through a list of countries, cities or tiles that the user did not ask for.
 - Do not delete a downloaded file to download it again, and do not call `update=True` in a
   loop.
 - Never work around a refusal: do not delete pyrosm's download log, change pyrosm, or fetch
