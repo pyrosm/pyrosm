@@ -97,20 +97,24 @@ index of the documentation's pages is at
    which extract covers the area and how large it is, without downloading it.
 2. Download each extract once, into a folder that lasts, and reuse the file. Do not delete a
    file to download it again, and do not call `update=True` in a loop.
-3. Download only what the user's task needs. When it needs several areas, use
-   `pyrosm find` to compare the extract that contains them all (their combined bounding box
-   with `--contains-only`) with the extracts of each area, and download whichever is less
-   data: for two cities in different countries, the one extract that contains both can be
-   a whole continent. Before downloading, tell the user how many files and roughly how much
-   data that is. Download one file after another, never in parallel, and do not work
-   through a list of countries, cities or tiles that the user did not ask for.
-4. Never work around a refusal. When pyrosm raises `RequestRefusedError`, stop and show its
+3. Download only what the user's task needs. When it needs several areas, run
+   `pyrosm find AREA --contains-only` on their combined bounding box and on each area, and
+   download whichever is less data: the one extract that contains them all, or the first
+   extract listed for each area, counting a file that covers several areas once. For two
+   cities in different countries, the extract that contains both can be a whole continent.
+   Before downloading, tell the user how many files and roughly how much data that is, and
+   download them one after another, never in parallel.
+4. When the user asks for many areas, such as every country of a continent or a grid of
+   tiles, download the one extract that contains them all, even if it is larger, and read
+   each area from it with `OSM(filepath, bounding_box=...)`. Do not work through a list of
+   countries, cities or tiles that the user did not ask for.
+5. Never work around a refusal. When pyrosm raises `RequestRefusedError`, stop and show its
    message to the user. Do not delete the download log, change pyrosm, or fetch the file
    another way (curl, wget, a browser).
-5. Geocode as little as possible, and pass a bounding box when you know one. When you
+6. Geocode as little as possible, and pass a bounding box when you know one. When you
    geocode, tell the user that the public Nominatim server has a usage policy, link to it,
-   say what it allows, and pass a `user_agent` that names the user's application. Do not
-   geocode lists of places with the public server, and do not geocode from several
-   processes at once.
-6. For a whole country or continent that must stay current, or for the planet, point the
+   say what it allows, and pass a `user_agent` that names the user's application.
+   Geocoding the few places that a task names is fine; do not geocode long lists of places
+   with the public server, and do not geocode from several processes at once.
+7. For a whole country or continent that must stay current, or for the planet, point the
    user to pyosmium-up-to-date and planet.openstreetmap.org instead of downloading again.
