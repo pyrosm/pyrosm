@@ -31,10 +31,11 @@ and https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the doc
 3. For an analysis that will run again, write a recipe
    (https://pyrosm.readthedocs.io/en/stable/recipes.html) and run it with
    `pyrosm run recipe.yaml`: a rerun reuses the extract and every stage that did not change.
-4. Pass `update=True` only when the user wants newer data. For a file it downloaded from
-   that URL and that is unchanged on disk since then, pyrosm sends the `ETag` or
-   `Last-Modified` date of the download, so that the server sends the file only if it
-   changed.
+4. Pass `update=True` only when the user wants newer data. pyrosm then sends the server
+   the `ETag` or `Last-Modified` value that it saved from the earlier download, so that the
+   server sends the file only if it changed. Without a saved value (a file that pyrosm did
+   not download from that URL, or a server that gave neither), or for a file changed on
+   disk since, the file is downloaded in full.
 
 ## Rules
 
