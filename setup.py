@@ -32,6 +32,7 @@ requirements = [
     "protobuf>=6.33.5",
     "certifi",
     "tqdm>=4.66",
+    "pyarrow>=19.0.1",
 ]
 
 # Optional line-trace build for measuring Cython (.pyx) test coverage. Enabled
@@ -124,7 +125,7 @@ setup(
     ],
     python_requires=">=3.11",
     install_requires=requirements,
-    extras_require={"notebook": ["ipywidgets>=8"], "recipes": ["pyyaml", "pyarrow"]},
+    extras_require={"notebook": ["ipywidgets>=8"], "recipes": ["pyyaml"]},
     entry_points={"console_scripts": ["pyrosm = pyrosm.cli:main"]},
     ext_modules=_ext_modules,
 )

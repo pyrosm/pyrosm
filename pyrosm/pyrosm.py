@@ -165,10 +165,9 @@ class OSM:
     engine : str (default: 'out_of_core')
         Which reader backend to use. `'out_of_core'` (the default) decodes the file
         in a single streaming pass with bounded peak memory, spilling intermediate
-        data to disk, and -- when the optional `pyarrow` is installed -- caches each
-        read's result in the temporary folder, so an identical read returns it
-        without decoding the file again (`OSM.clear_cache()` removes the cached
-        results). `'in_memory'` parses the
+        data to disk, and caches each read's result in the temporary folder, so an
+        identical read returns it without decoding the file again
+        (`OSM.clear_cache()` removes the cached results). `'in_memory'` parses the
         whole file into memory once and serves every read of the `OSM` object from
         it.
 
