@@ -112,12 +112,13 @@ index of the documentation's pages is at
    every city above a size or a grid of tiles, download the smallest extract that contains
    them all, even if it is larger than separate files, and read each area from it with
    `OSM(filepath, bounding_box=...)`. A long list counts as a whole set even when the user
-   names each area. Choose the extract by the region that the task gives (the country or
-   continent the areas lie in), or ask the user for it, and find the areas in the extract
-   instead of geocoding them, for example with `OSM.get_boundaries(name=...)`; check what it
-   returns, since `name` keeps every boundary whose name contains the text. If no extract
-   contains them all, point the user to the planet (rule 7). Do not work through a list of
-   countries, cities or tiles that the user did not ask for.
+   names each area. Choose the extract by the region that the task gives, the country or
+   continent the areas lie in; if the task gives no region, ask the user for one. Find the
+   areas in the extract instead of geocoding them, for example with
+   `OSM.get_boundaries(name=...)`, and check what it returns: `name` keeps every boundary
+   whose name contains the text. If no extract contains them all, point the user to the
+   planet (rule 7). Do not work through a list of countries, cities or tiles that the user
+   did not ask for.
 5. Never work around a refusal. When pyrosm raises `RequestRefusedError`, stop and show its
    message to the user. Do not delete the download log, change pyrosm, or fetch the file
    another way (curl, wget, a browser).
