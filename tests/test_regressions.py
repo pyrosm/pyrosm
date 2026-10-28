@@ -3671,7 +3671,6 @@ def test_history_read_without_timestamp_reads_once(engine, monkeypatch):
             "unix_time_filter",
         )
     else:
-        pytest.importorskip("pyarrow")
         module, name, time_argument = (
             pyrosm.engine.readers,
             "_decode_and_run",
@@ -5574,16 +5573,14 @@ def test_crops_and_merges_refuse_a_block_with_two_string_tables(tmp_path, operat
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
-def test_node_tags_without_leftovers_are_typed_as_strings(engine, monkeypatch):
-    """#750 — when no node of a result has tags outside the tag columns, a read without
-    the result cache types their missing ``tags`` as pandas types a column of strings, as
-    the cached out-of-core read gives them."""
+def test_node_tags_without_leftovers_are_typed_as_strings(engine):
+    """#750 — when no node of a result has tags outside the tag columns, the in-memory
+    reader types their missing ``tags`` as pandas types a column of strings, as the cached
+    out-of-core read gives them."""
     import pandas as pd
 
     from pyrosm import OSM, get_data
-    from pyrosm.utils import _compat
 
-    monkeypatch.setattr(_compat, "HAS_PYARROW", False)
     stones = OSM(get_data("helsinki_pbf"), engine=engine).get_natural(
         custom_filter={"natural": ["stone"]}
     )

@@ -904,10 +904,9 @@ def python_columns(node_arrays):
 def node_features(shard_paths, tags_as_columns, keep_metadata, filter_spec):
     """The node features of a threaded decode, as
     :func:`~pyrosm.engine.collect._collect_node_features` gives them (the tag columns as
-    Arrow arrays when pyarrow is available and some node has other tags; see
-    :func:`python_columns`), or ``None``."""
+    Arrow arrays when some node has other tags; see :func:`python_columns`), or
+    ``None``."""
     from pyrosm.engine.collect import _explode_node_tags, _node_arrays
-    from pyrosm.utils import _compat
 
     found = _node_store(shard_paths)
     if found is None:
@@ -921,11 +920,10 @@ def node_features(shard_paths, tags_as_columns, keep_metadata, filter_spec):
     node_arrays = _node_arrays(
         store.id, lon[rows], lat[rows], meta[rows], keep_metadata
     )
-    if _compat.HAS_PYARROW:
-        data = _node_tag_columns(store, tags_as_columns)
-        if "tags" in data:
-            node_arrays.update(data)
-            return node_arrays
+    data = _node_tag_columns(store, tags_as_columns)
+    if "tags" in data:
+        node_arrays.update(data)
+        return node_arrays
     tags = np.empty(len(store), dtype=object)
     tags[:] = [store.tags(w) for w in range(len(store))]
     return _explode_node_tags(node_arrays, tags, tags_as_columns)
@@ -949,7 +947,7 @@ def node_table(node_arrays, bounding_box, keep_other_tags=True):
     column when not ``keep_other_tags``), or ``None`` when no point is in
     ``bounding_box``. ``False`` when the Python path must build it: a tag column took a
     non-tag column's name (also ``geometry`` or ``osm_type``), or the ``tags`` column is not
-    an Arrow array (no node has tags outside the columns, or pyarrow built none)."""
+    an Arrow array (no node has tags outside the columns)."""
     import pyarrow as pa
     import shapely
 

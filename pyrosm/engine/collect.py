@@ -31,7 +31,6 @@ from pyrosm.engine.ways import (
     result_tag_columns,
     tag_lists,
 )
-from pyrosm.utils import _compat
 
 # Relation.MemberType -> the byte labels pyrosm's relation assembly expects.
 _MEMBER_TYPE = {0: b"node", 1: b"way", 2: b"relation"}
@@ -604,9 +603,6 @@ def _ways_arrays(
             area_by_tags = cols.area_by_tags()
         else:
             area_by_tags = tags_make_area(cols["tags"])
-    # ``tag_lists`` builds Arrow arrays; without pyarrow the store goes through tag dicts.
-    if isinstance(cols, ElementStore) and not _compat.HAS_PYARROW:
-        cols = cols.way_columns(None if keep_other_tags else set(tags_as_columns))
     if isinstance(cols, ElementStore):
         # The tag columns and the JSON come from the store's string buffers.
         store = cols

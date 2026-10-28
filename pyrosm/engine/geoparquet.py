@@ -3,8 +3,7 @@
 The chunks (the point nodes, then ways in batches, then the relations) are assembled one
 at a time and written in that order by one writer, under the columns of the in-memory
 reader's result in its order. Every way chunk carries the tag columns of all the ways, so a
-tag that first occurs in a later chunk keeps its place. Needs the optional pyarrow
-dependency.
+tag that first occurs in a later chunk keeps its place.
 """
 
 import tempfile

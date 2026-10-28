@@ -11,7 +11,7 @@ from rapidjson import dumps, loads
 
 from pyrosm.data_manager import parse_custom_filter
 from pyrosm.filter_compiler import rename_filter_key
-from pyrosm.utils import _compat, default_workers
+from pyrosm.utils import default_workers
 from pyrosm.engine.decode import _key_bytes
 from pyrosm.engine.pool import (
     GRAPH_SHARES,
@@ -23,7 +23,6 @@ from pyrosm.engine.pool import (
 from pyrosm.engine.bounding_box import _bbox_bounds, _normalize_bounding_box
 from pyrosm.engine.assemble import (
     _assemble_graph_network,
-    _assemble_layer,
     _assemble_network,
 )
 from pyrosm.engine import cache, geoparquet
@@ -79,7 +78,7 @@ def _get_layer(
     ``complete_relations``).
 
     Returns an in-memory GeoDataFrame, or -- when ``output`` is a path -- streams the layer
-    to a chunked GeoParquet there and returns the path (needs the optional ``pyarrow``).
+    to a chunked GeoParquet there and returns the path.
     ``workers`` defaults to ``"auto"``, a thread count chosen by file size; pass
     ``workers=N`` for N threads (with ``PYROSM_DECODE_BACKEND=processes`` they are
     processes, one by default, and on macOS/Windows a parallel read must then run under an
@@ -92,8 +91,6 @@ def _get_layer(
     """
     validate_progress(progress)
     workers = default_workers(workers)
-    if output is not None:
-        _compat.require_pyarrow()
     if custom_filter is None:
         # Every tagged element: no filter keys to select by, nothing to filter by value.
         data_filter, osm_keys, osm_key_bytes = None, None, None
@@ -119,12 +116,11 @@ def _get_layer(
 
     with read_steps(filepath, progress, LAYER_SHARES) as steps:
         # Per-layer result cache: when returning an in-memory frame (not streaming to a
-        # user file) and pyarrow is available, assemble the layer once via the bounded
-        # per-call path, write its result to a deterministic GeoParquet keyed by the
-        # read, and reuse that file on any identical later read instead of re-decoding
-        # the PBF. Each layer is cached separately, so memory stays bounded by one
-        # layer. With pyarrow absent the engine returns the in-memory frame (no cache).
-        if output is None and _compat.HAS_PYARROW:
+        # user file), assemble the layer once via the bounded per-call path, write its
+        # result to a deterministic GeoParquet keyed by the read, and reuse that file on
+        # any identical later read instead of re-decoding the PBF. Each layer is cached
+        # separately, so memory stays bounded by one layer.
+        if output is None:
             key_params = {
                 "filter_spec": filter_spec,
                 "tags_as_columns": tags_as_columns,
@@ -174,20 +170,6 @@ def _get_layer(
             return _node_lists(result)
 
         def run(shard_paths, steps):
-            if output is None:
-                return _assemble_layer(
-                    shard_paths,
-                    tags_as_columns,
-                    keep_metadata,
-                    filter_spec,
-                    keep_ways,
-                    keep_relations,
-                    bounding_box,
-                    complete_relations,
-                    keep_other_tags=keep_other_tags,
-                    keep_node_info=keep_node_info,
-                    steps=steps,
-                )
             return geoparquet._stream_layer_to_parquet(
                 shard_paths,
                 output,
@@ -216,7 +198,7 @@ def _get_layer(
             spill_all_ways=keep_relations,
             unix_time=unix_time,
         )
-        return result if output is not None else _node_lists(result)
+        return result
 
 
 def _node_lists(result):
@@ -703,9 +685,7 @@ def get_network(
     temp dir and reused on identical later reads, like the area/point layers; ``nodes=True``
     caches the ``(nodes, edges)`` tuple as two files. ``output="path"`` writes the edges to that
     GeoParquet and returns the path; with ``nodes=True`` it writes ``edges.parquet`` +
-    ``nodes.parquet`` into the ``path`` directory and returns the directory (both require
-    ``pyarrow``). With ``pyarrow`` absent the default read returns the in-memory result with no
-    cache. ``progress`` shows the read as for ``OSM(..., progress=...)``, including the second
+    ``nodes.parquet`` into the ``path`` directory and returns the directory. ``progress`` shows the read as for ``OSM(..., progress=...)``, including the second
     pass of ``nodes=True``; a cached read has nothing to show. ``unix_time`` (seconds), for
     a history file (``.osh.pbf``), reads each element's version at that time, as
     ``OSM(...).get_network(timestamp=...)`` does."""
@@ -717,9 +697,6 @@ def get_network(
         network_type, extra_attributes, custom_filter, filter_type, tags_to_keep
     )
     bounding_box = _normalize_bounding_box(bounding_box)
-
-    if output is not None:
-        _compat.require_pyarrow()
 
     shares = NETWORK_NODES_SHARES if nodes else NETWORK_SHARES
     with read_steps(filepath, progress, shares) as steps:
@@ -751,11 +728,6 @@ def get_network(
             if nodes:
                 return _write_network_dir(decode(), output, steps)
             return output if _write_result_parquet(decode(), output, steps) else None
-
-        # With pyarrow absent there is nowhere to cache, so return the direct in-memory
-        # result (the edges frame, or the (nodes, edges) tuple for nodes=True).
-        if not _compat.HAS_PYARROW:
-            return record_network_type(_node_lists(decode()), network_type)
 
         # Cache the result to / serve it from a per-read GeoParquet, keyed apart from
         # the area/point layers via "network". nodes=True is a (nodes, edges) tuple,
