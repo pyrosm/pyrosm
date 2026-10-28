@@ -172,12 +172,23 @@ def test_geocode_caches_answers_for_seven_days(monkeypatch):
 
 
 def test_geocode_paces_and_limits_the_public_server(monkeypatch):
+    import time
+    from types import SimpleNamespace
+
     from pyrosm.exceptions import RequestRefusedError
     from pyrosm.utils import download
 
-    captured, waits = [], []
+    # The geocoding module's clock moves only when a wait or the test moves it.
+    captured, waits, now = [], [], [0.0]
+
+    def wait(seconds):
+        waits.append(seconds)
+        now[0] += seconds
+
+    clock = SimpleNamespace(monotonic=lambda: now[0], time=time.time)
+    monkeypatch.setattr(gc, "time", clock)
     monkeypatch.setattr("urllib.request.urlopen", _mock_urlopen(BRIGHTON, captured))
-    monkeypatch.setattr(download, "_sleep", waits.append)
+    monkeypatch.setattr(download, "_sleep", wait)
     monkeypatch.setattr(gc, "_SHARED_AGENT_LIMIT", 2)
     pyrosm.geocode("one")
     pyrosm.geocode("two")
@@ -185,8 +196,9 @@ def test_geocode_paces_and_limits_the_public_server(monkeypatch):
         pyrosm.geocode("three")
     assert isinstance(refused.value, ValueError) and refused.value.attempts == 0
     pyrosm.geocode("one")  # cached, so not counted
+    now[0] += 0.25  # a quarter second after "two" started, so wait the rest
     pyrosm.geocode("three", user_agent="my-study (me@example.org)")
-    gc._PUBLIC.last -= 2  # a request two seconds later goes out at once
+    now[0] += 2  # a request two seconds later goes out at once
     pyrosm.geocode("four", user_agent="my-study (me@example.org)")
     pyrosm.geocode("three", base_url="https://nominatim.example.org")
     queries = [urllib.parse.urlsplit(r.full_url) for r in captured]
@@ -197,7 +209,7 @@ def test_geocode_paces_and_limits_the_public_server(monkeypatch):
         ("nominatim.openstreetmap.org", ["four"]),
         ("nominatim.example.org", ["three"]),
     ]
-    assert len(waits) == 2 and all(0.5 < w <= 1 for w in waits)
+    assert waits == [1.0, 0.75]
 
     # A retried request counts too: the next geocoding is refused.
     from urllib.error import URLError
