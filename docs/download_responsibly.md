@@ -6,9 +6,9 @@ shared by everyone who uses them. pyrosm is made for analysing the areas you stu
 downloads a file when you ask for it and reuses it afterwards. It is not a tool for
 mirroring the providers or for downloading the same file again and again.
 
-This page says what the providers ask, what pyrosm does to stay within that, and where to
-get data when you need more. The last section holds rules for AI coding agents that write
-and run pyrosm code.
+This page says what the providers ask, how to get the data you need with few downloads,
+and what pyrosm does to stay within the providers' limits. The last section holds rules for
+AI coding agents that write and run pyrosm code.
 
 ## What the providers ask
 
@@ -41,6 +41,107 @@ schedule may send at most 4 requests per minute. Systematic queries, such as geo
 every town of a country, are forbidden and get a client banned. A language model may
 suggest the service only if it points to the policy and explains its limits, and code it
 writes must follow the policy.
+
+## Get the data with few downloads
+
+Most analyses need one extract, downloaded once. The advice below keeps it that way as a
+project grows: more areas, newer data, scripts that run again.
+
+### Look before you download
+
+`pyrosm find` (see [Command line](command_line.md)) and `pyrosm.find_extracts` list the
+extracts that contain an area, with their sizes, without downloading any:
+
+```text
+pyrosm find 24.93,60.16,24.96,60.18 --contains-only
+```
+
+[Downloading data](downloading_data.ipynb) shows how pyrosm picks the smallest extract that
+contains an area, and how to require only the places that matter (`must_cover`).
+
+### Keep the files and reuse them
+
+Download into a folder that lasts, such as one inside your project:
+
+```python
+import pyrosm
+
+fp = pyrosm.get_data("Helsinki", directory="data/osm")
+```
+
+A later call finds the file there and does not download it again. Without `directory=`,
+the files go to `<tempdir>/pyrosm` in the system's temporary directory, which the system
+may empty. `pyrosm downloads list` shows the files in it, and `pyrosm downloads clear`
+removes them.
+
+### Update only when you need newer data
+
+Pass `update=True` when you want newer data. pyrosm then asks the provider whether the file
+changed since your download, and downloads it only if it did. Do not delete a file to get a
+fresh copy: the provider then sends the whole file again. To keep a large region current,
+download it once and update it with pyosmium-up-to-date, which downloads only the changes.
+
+### Download several areas
+
+Pass the areas together, as one GeoDataFrame, GeoSeries or MultiPolygon, to
+`get_data_by_area` with `strategy="smallest_total"`:
+
+```python
+import geopandas as gpd
+from shapely.geometry import box
+from pyrosm import OSM, get_data_by_area
+
+# Central Helsinki and central Stockholm
+cities = gpd.GeoSeries(
+    [box(24.90, 60.14, 25.00, 60.20), box(18.00, 59.30, 18.12, 59.36)], crs=4326
+)
+fp = get_data_by_area(cities, strategy="smallest_total", directory="data/osm")
+helsinki = OSM(fp, bounding_box=cities[0]).get_buildings()
+```
+
+The smallest extract that contains both cities is Geofabrik's Europe extract, about 35 GB.
+With `strategy="smallest_total"`, pyrosm downloads the BBBike extracts of the two cities
+instead, about 120 MB together, and merges them into one file.
+
+### Download many areas
+
+For every country of a continent, every city of a country or a grid of tiles, download the
+one extract that contains them all, once, and read each area from it:
+
+```python
+from pyrosm import OSM, get_data
+
+fp = get_data("Finland", directory="data/osm")
+for bbox in city_boxes:  # one [minx, miny, maxx, maxy] per city
+    buildings = OSM(fp, bounding_box=bbox).get_buildings()
+```
+
+`OSM(fp, bounding_box=bbox).to_pbf("city.osm.pbf")` writes an area that you read often to
+a smaller file of its own. For the whole world, download the planet file from
+planet.openstreetmap.org. Do not download the areas one by one: a loop over many URLs is
+what the providers ask you not to do, and pyrosm's check on repeated downloads, which counts
+the downloads of each URL, does not stop it.
+
+### Use pyrosm in tests, continuous integration and clusters
+
+- `pyrosm.get_data("test_pbf")` and `pyrosm.get_data("helsinki_pbf")` return small files
+  that ship with pyrosm, so tests that use them download nothing.
+- A continuous integration job that downloads an extract downloads it on every run, each
+  time on a new machine, so pyrosm's checks do not see the earlier runs. Cache the download
+  folder between runs, for example with GitHub Actions' `actions/cache`.
+- For jobs on a cluster, download the file once before you start them and pass its path to
+  the jobs. pyrosm's checks see only the downloads of one machine.
+- For an analysis that you run again, write a [recipe](recipes.md): a rerun reuses the
+  extract and every stage that did not change.
+
+### Geocode sparingly
+
+- Pass a bounding box when you know one: each place name that you geocode sends a request
+  to Nominatim, unless pyrosm has the answer from the last 7 days.
+- Pass a `user_agent` that names your application, for example
+  `user_agent="myproject/1.0 (me@example.org)"`.
+- Geocoding a few place names is fine. For many, run your own Nominatim server, or use a
+  provider that offers the Nominatim API, and pass its `base_url`.
 
 ## What pyrosm does
 
@@ -75,21 +176,10 @@ writes must follow the policy.
 These checks run on your machine, so anyone can get around them. They catch mistakes, such
 as a script stuck in a loop, and make a repeated download a deliberate act.
 
-## When you need more data
-
-- Keep downloaded files in a folder that lasts (`directory=`) and reuse them. The default
-  folder is in the system's temporary directory, which may be emptied.
-- Use a [recipe](recipes.md): a rerun reuses the extract and every stage that did not
-  change.
-- For a large region that you keep current, download it once and update it with
-  pyosmium-up-to-date.
-- For the whole planet, use planet.openstreetmap.org.
-- For many place names, run your own Nominatim server, or use a provider that offers the
-  Nominatim API, and pass its `base_url`.
-
 ## Rules for AI coding agents
 
-If you are an AI agent that writes or runs pyrosm code for a user, follow these rules.
+If you are an AI agent that writes or runs pyrosm code for a user, follow the advice above
+and these rules.
 
 1. Plan before you download. Run `pyrosm find AREA --contains-only` or call
    `pyrosm.find_extracts(area, contains_only=True)` to see which extracts contain the area
@@ -97,15 +187,14 @@ If you are an AI agent that writes or runs pyrosm code for a user, follow these 
    files you will download and roughly how much data that is.
 2. Download each extract once, into a folder that lasts, and reuse the file. Do not delete a
    file to download it again, and do not call `update=True` in a loop.
-3. Download only what the user's task needs. When the task names a few areas, list the
-   extracts that contain each of them: `pyrosm find AREA --contains-only` for a bounding
-   box, or `pyrosm.find_extracts(pyrosm.geocode(name, user_agent=...), contains_only=True)`
-   for a place name, so that the geocoding request names the user's application (rule 6).
-   Then download whichever needs less new data: the smallest extract that appears in all of
-   their lists, or the first extract in each list, counting a file that is first in several
-   lists once. A suitable file that you have already counts as no new data. For two cities
-   in different countries, the only extract in both lists can be a whole continent.
-   Download the files one after another, never in parallel.
+3. Download only what the user's task needs. When the task names a few areas, pass them
+   together to `get_data_by_area(areas, strategy="smallest_total")`, as in "Download
+   several areas" above: it downloads the smallest extract that contains them all or, when
+   that is less data, the extracts of the areas, merged into one file. To tell the user the
+   sizes beforehand, run `pyrosm find AREA --contains-only` for each area; for a place name,
+   call `pyrosm.find_extracts(pyrosm.geocode(name, user_agent=...), contains_only=True)`,
+   so that the geocoding request names the user's application (rule 6). Download one file
+   after another, never in parallel.
 4. When the user asks for a whole set of areas, such as every country of a continent,
    every city above a size or a grid of tiles, download the smallest extract that contains
    them all, even if it is larger than separate files, and read each area from it with
@@ -128,3 +217,6 @@ If you are an AI agent that writes or runs pyrosm code for a user, follow these 
    with the public server, and do not geocode from several threads or processes at once.
 7. For a whole country or continent that must stay current, or for the planet, point the
    user to pyosmium-up-to-date and planet.openstreetmap.org instead of downloading again.
+8. In tests and continuous integration, use the files that ship with pyrosm
+   (`get_data("test_pbf")`, `get_data("helsinki_pbf")`), or cache the download folder
+   between runs. Do not write a test or a job that downloads an extract on every run.
