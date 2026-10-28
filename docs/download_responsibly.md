@@ -8,7 +8,8 @@ mirroring the providers or for downloading the same file again and again.
 
 This page says what the providers ask, how to get the data you need with few downloads,
 and what pyrosm does to stay within the providers' limits. The last section holds rules for
-AI coding agents that write and run pyrosm code, in addition to the advice for everyone.
+AI coding agents that write and run pyrosm code; an agent follows the advice for everyone
+as well.
 
 ## What the providers ask
 
