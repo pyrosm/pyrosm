@@ -79,11 +79,11 @@ removes them.
 ### Update only when you need newer data
 
 Pass `update=True` when you want newer data. For a file that pyrosm downloaded from that URL
-and that has not changed on your disk since, pyrosm asks the provider whether the file
-changed, and downloads it only if it did; any other file is downloaded in full (see
-"What pyrosm does" below). Do not delete a file to get a fresh copy: the provider then
-sends the whole file again. To keep a large region current,
-download it once and update it with pyosmium-up-to-date, which downloads only the changes.
+and that has not changed on your disk since pyrosm downloaded it, pyrosm asks the provider
+whether the file changed, and downloads it only if it did; any other file is downloaded in
+full (see "What pyrosm does" below). Do not delete a file to get a fresh copy: the provider
+then sends the whole file again. To keep a large region current, download it once and
+update it with pyosmium-up-to-date, which downloads only the changes.
 
 ### Download several areas
 
@@ -105,9 +105,9 @@ helsinki = OSM(fp, bounding_box=cities[0]).get_buildings()
 
 The smallest extract that contains both cities is Geofabrik's Europe extract, about 35 GB.
 With `strategy="smallest_total"`, pyrosm downloads a set of smaller extracts that together
-cover the areas when that is less data, here the BBBike extracts of the two cities, about
-120 MB together, and merges them into one file. If you already have a file that contains
-all the areas, read them from it instead.
+cover the areas when that is less data, or when the size of the single extract is unknown:
+here the BBBike extracts of the two cities, about 120 MB together, merged into one file. If
+files that you already have contain the areas, read the areas from those instead.
 
 ### Download many areas
 
@@ -138,9 +138,9 @@ over many URLs.
 
 - `pyrosm.get_data("test_pbf")` and `pyrosm.get_data("helsinki_pbf")` return small files
   that ship with pyrosm, so tests that use them download nothing.
-- A continuous integration job that runs on a fresh machine, such as a hosted runner,
-  downloads its extract again on every run, and pyrosm's checks do not see the earlier
-  runs. Cache the download folder between runs, for example with GitHub Actions'
+- Without a cache, a continuous integration job that runs on a fresh machine, such as a
+  hosted runner, downloads its extract again on every run, and pyrosm's checks do not see
+  the earlier runs. Cache the download folder between runs, for example with GitHub Actions'
   `actions/cache`.
 - For jobs on a cluster, download the file once, to storage that all the jobs can read,
   before you start them, and pass its path to the jobs. pyrosm's checks see only the
@@ -150,8 +150,9 @@ over many URLs.
 
 ### Geocode sparingly
 
-- Pass a bounding box when you know one: each place name that you geocode sends a request
-  to Nominatim, unless pyrosm has the answer from the last 7 days.
+- When you know an area's bounding box, pass it instead of a place name: each place name
+  that you geocode sends a request to Nominatim, unless pyrosm has the answer from the last
+  7 days.
 - Pass a `user_agent` that names your application, for example
   `user_agent="myproject/1.0 (me@example.org)"`.
 - Geocoding a few place names is fine. For many, run your own Nominatim server, or use a
@@ -198,14 +199,15 @@ and these rules.
 1. Plan before you download. Run `pyrosm find AREA --contains-only` or call
    `pyrosm.find_extracts(area, contains_only=True)` to see which extracts contain the area
    and how large they are, without downloading any. Before downloading, tell the user which
-   files you will download and roughly how much data that is.
+   files you expect to download and roughly how much data that is.
 2. Download each extract once, into a folder that lasts, and reuse the file. Do not delete a
    file to download it again, and do not call `update=True` in a loop.
-3. Download only what the user's task needs. When the task names a few areas and no file
-   you have contains them all, pass them together to
+3. Download only what the user's task needs. When the task names a few areas that the
+   files you have do not already contain, pass them together to
    `get_data_by_area(areas, strategy="smallest_total")`, as in "Download several areas"
    above: it downloads the smallest extract that contains them all or, when that is less
-   data, a set of smaller extracts that together cover them, merged into one file. To tell
+   data or that extract's size is unknown, a set of smaller extracts that together cover
+   them, merged into one file. To tell
    the user the likely files and sizes beforehand, run `pyrosm find AREA --contains-only`
    for each area; for a place name, call
    `pyrosm.find_extracts(pyrosm.geocode(name, user_agent=...), contains_only=True)`, so
