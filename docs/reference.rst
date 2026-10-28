@@ -96,6 +96,7 @@ Exceptions
    ExtractNotFoundError
    ExtractDownloadError
    DownloadError
+   RequestRefusedError
    InvalidOSMFileError
    PBFNotImplemented
    PBFException

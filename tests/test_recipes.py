@@ -18,7 +18,7 @@ from shapely.geometry import box
 
 import pyrosm
 import pyrosm.data
-from pyrosm import OSM, get_data, recipes
+from pyrosm import OSM, cli, get_data, recipes
 from pyrosm.data import extract_index
 from pyrosm.exceptions import ExtractDownloadError
 from pyrosm.graphs import graph_tables
@@ -565,29 +565,29 @@ def test_command(tmp_path, offline, capsys, monkeypatch):
     bad = _recipe(tmp_path, _GOOD + "colour: red\n", name="bad.yaml")
     argv = ["run", str(good), "-o", str(tmp_path / "out")]
     monkeypatch.setattr(recipes, "_PACKAGES", ("pyrosm", "not-installed"))
-    assert recipes.main(argv) == 0
+    assert cli.main(argv) == 0
     written = [tmp_path / "out" / name for name in ("a.pbf", "good.provenance.json")]
     assert capsys.readouterr().out.splitlines() == ["written %s" % path for path in written]
-    assert recipes.main(argv) == 0
+    assert cli.main(argv) == 0
     reused = ["reused %s" % written[0], "written %s" % written[1]]
     assert capsys.readouterr().out.splitlines() == reused
     record = json.loads(written[1].read_text(encoding="utf-8"))
     assert record["invocation"]["argv"] == argv
     assert record["versions"] == {"pyrosm": pyrosm.__version__, "not-installed": None}
-    assert recipes.main(["validate", str(good)]) == 0
+    assert cli.main(["validate", str(good)]) == 0
     assert capsys.readouterr().out == "%s: valid pyrosm recipe\n" % good
-    assert recipes.main(["validate", str(bad)]) == 1
+    assert cli.main(["validate", str(bad)]) == 1
     assert "unknown key 'colour'" in capsys.readouterr().err
 
     def unavailable(*args):
         raise ExtractDownloadError("no extract could be downloaded")
 
     monkeypatch.setattr(recipes, "_run_recipe", unavailable)
-    assert recipes.main(argv) == 1
+    assert cli.main(argv) == 1
     assert capsys.readouterr().err == "pyrosm: no extract could be downloaded\n"
     with pytest.raises(SystemExit) as exit_info:
-        recipes.main(["nonsense"])
+        cli.main(["nonsense"])
     assert exit_info.value.code == 2
     monkeypatch.setitem(sys.modules, "yaml", None)
-    assert recipes.main(["validate", str(good)]) == 1
+    assert cli.main(["validate", str(good)]) == 1
     assert 'pip install "pyrosm[recipes]"' in capsys.readouterr().err

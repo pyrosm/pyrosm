@@ -1,6 +1,18 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- FIXED: After a download failed with HTTP status 429 (too many requests) or 503 (unavailable), ``get_data_by_area`` tried that provider's larger extracts next, up to a continent. It leaves out the provider's other extracts not downloaded yet for the rest of the call and tries the other providers (`#766 <https://github.com/pyrosm/pyrosm/pull/766>`__, `#765 <https://github.com/pyrosm/pyrosm/issues/765>`__)
+- NEW: Geocoding paces and caches its requests to Nominatim, as its usage policy asks: answers are cached for 7 days in pyrosm's default folder, requests to the public server go out one at a time and at least a second apart within a process, and after 50 requests from a process with pyrosm's own User-Agent, ``geocode`` and ``get_data_by_geocoding`` raise the new ``pyrosm.exceptions.RequestRefusedError``, a ``DownloadError``, which says to pass ``user_agent`` or the ``base_url`` of an own server (`#767 <https://github.com/pyrosm/pyrosm/pull/767>`__)
+- CHANGED: With ``update=True``, a file that pyrosm downloaded from the same URL, unchanged since, is asked for only if it changed: the ``ETag`` and ``Last-Modified`` of its download, kept in a ``.validators`` file beside it, go with the request, and a 304 answer keeps the file (`#768 <https://github.com/pyrosm/pyrosm/pull/768>`__)
+- NEW: pyrosm logs each full download per URL in its default folder, wherever the file goes, and refuses a 4th full download of one URL within 24 hours with ``RequestRefusedError``, which names the log; deleting it resets the count. ``get_data_by_area`` raises the refusal instead of choosing another extract (`#769 <https://github.com/pyrosm/pyrosm/pull/769>`__)
+- NEW: Downloads from one host go one at a time on a machine, across threads and processes, under an operating-system lock per host; a download that waits logs ``download_waiting`` and then, unless ``update=True``, uses the file the other one wrote (`#770 <https://github.com/pyrosm/pyrosm/pull/770>`__)
+- CHANGED: When an AI coding agent runs pyrosm (the environment variable ``AI_AGENT`` or ``CLAUDECODE`` is set), the default User-Agent says ``agent`` (`#771 <https://github.com/pyrosm/pyrosm/pull/771>`__)
+- NEW: The ``pyrosm`` command gets ``pyrosm find AREA`` (the extracts of a bounding box, a vector file or a place, without downloading), ``pyrosm info FILE`` (a PBF file's bounding box, snapshot time and SHA-256) and ``pyrosm downloads list|clear``. The command moved from ``pyrosm.recipes.main`` to ``pyrosm.cli.main`` (`#772 <https://github.com/pyrosm/pyrosm/pull/772>`__)
+- DOCS: A new page, Download responsibly, says what the data providers ask, how to get the data with few downloads (several areas, many areas, updates, tests and continuous integration, geocoding), what pyrosm does to keep to the providers' limits and what its refusals mean, and gives rules for AI coding agents. The downloading functions' docstrings point to it. The documentation publishes ``llms.txt``, an index of its pages for language models, with that page first. The repository has the rules as a skill for coding agents, ``skills/pyrosm/SKILL.md`` (`#773 <https://github.com/pyrosm/pyrosm/pull/773>`__, `#774 <https://github.com/pyrosm/pyrosm/pull/774>`__, `#775 <https://github.com/pyrosm/pyrosm/pull/775>`__)
+
 v0.26.0 (Oct 27, 2026)
 ----------------------
 

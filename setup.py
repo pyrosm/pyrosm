@@ -125,6 +125,6 @@ setup(
     python_requires=">=3.11",
     install_requires=requirements,
     extras_require={"notebook": ["ipywidgets>=8"], "recipes": ["pyyaml", "pyarrow"]},
-    entry_points={"console_scripts": ["pyrosm = pyrosm.recipes:main"]},
+    entry_points={"console_scripts": ["pyrosm = pyrosm.cli:main"]},
     ext_modules=_ext_modules,
 )

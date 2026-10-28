@@ -1,5 +1,7 @@
 import json
 import logging
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import geopandas as gpd
@@ -10,6 +12,9 @@ from shapely.geometry import box
 import pyrosm
 import pyrosm.data.extract_index as ei
 import pyrosm.data.geocoding as gc
+
+# The cache folder function itself; each test's fixture replaces it with its own folder.
+CACHE_DIR = gc._cache_dir
 
 BRIGHTON = [
     {
@@ -126,6 +131,102 @@ def test_geocode_service_error_raises(monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", fake)
     with pytest.raises(ValueError, match="Could not reach"):
         pyrosm.geocode("Brighton and Hove, UK")
+
+
+def test_geocode_caches_answers_for_seven_days(monkeypatch):
+    import os
+    import time
+
+    from pyrosm.utils.download import download_dir
+
+    assert CACHE_DIR() == download_dir() / "geocoding"
+    captured = []
+    monkeypatch.setattr("urllib.request.urlopen", _mock_urlopen(BRIGHTON, captured))
+    first = pyrosm.geocode("Brighton and Hove, UK")
+    assert pyrosm.geocode("Brighton and Hove, UK", user_agent="other").equals(first)
+    assert len(captured) == 1
+    pyrosm.geocode("Brighton and Hove, UK", headers={"Accept-Language": "fr"})
+    assert len(captured) == 2
+    # The request's header wins over an opener's, as urllib sends it.
+    english = urllib.request.build_opener()
+    english.addheaders = [("Accept-Language", "en")]
+    french = {"Accept-Language": "fr"}
+    pyrosm.geocode("Brighton and Hove, UK", headers=french, opener=english)
+    assert len(captured) == 2
+    cached = gc._cache_path(captured[0].full_url, [])
+    assert cached.exists()
+    eight_days_ago = time.time() - 8 * 24 * 3600
+    os.utime(cached, (eight_days_ago, eight_days_ago))
+    pyrosm.geocode("Brighton and Hove, UK")
+    assert len(captured) == 3
+    # An answer that cannot be read is asked again, and one that cannot be written is
+    # still returned.
+    cached.write_text("{", encoding="utf-8")
+    pyrosm.geocode("Brighton and Hove, UK")
+    assert len(captured) == 4
+    not_a_folder = cached.parent / "file"
+    not_a_folder.write_text("", encoding="utf-8")
+    monkeypatch.setattr(gc, "_cache_dir", lambda: not_a_folder / "geocoding")
+    assert pyrosm.geocode("Brighton and Hove, UK").equals(first)
+    assert len(captured) == 5
+
+
+def test_geocode_paces_and_limits_the_public_server(monkeypatch):
+    from pyrosm.exceptions import RequestRefusedError
+    from pyrosm.utils import download
+
+    captured, waits = [], []
+    monkeypatch.setattr("urllib.request.urlopen", _mock_urlopen(BRIGHTON, captured))
+    monkeypatch.setattr(download, "_sleep", waits.append)
+    monkeypatch.setattr(gc, "_SHARED_AGENT_LIMIT", 2)
+    pyrosm.geocode("one")
+    pyrosm.geocode("two")
+    with pytest.raises(RequestRefusedError, match="user_agent") as refused:
+        pyrosm.geocode("three")
+    assert isinstance(refused.value, ValueError) and refused.value.attempts == 0
+    pyrosm.geocode("one")  # cached, so not counted
+    pyrosm.geocode("three", user_agent="my-study (me@example.org)")
+    gc._PUBLIC.last -= 2  # a request two seconds later goes out at once
+    pyrosm.geocode("four", user_agent="my-study (me@example.org)")
+    pyrosm.geocode("three", base_url="https://nominatim.example.org")
+    queries = [urllib.parse.urlsplit(r.full_url) for r in captured]
+    assert [(q.netloc, urllib.parse.parse_qs(q.query)["q"]) for q in queries] == [
+        ("nominatim.openstreetmap.org", ["one"]),
+        ("nominatim.openstreetmap.org", ["two"]),
+        ("nominatim.openstreetmap.org", ["three"]),
+        ("nominatim.openstreetmap.org", ["four"]),
+        ("nominatim.example.org", ["three"]),
+    ]
+    assert len(waits) == 2 and all(0.5 < w <= 1 for w in waits)
+
+    # A retried request counts too: the next geocoding is refused.
+    from urllib.error import URLError
+
+    monkeypatch.setattr(gc, "_PUBLIC", gc._PublicServer())
+    replies = [URLError("reset"), _FakeResponse(BRIGHTON)]
+
+    def flaky(request, context=None, timeout=None):
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr("urllib.request.urlopen", flaky)
+    pyrosm.geocode("five")
+    with pytest.raises(RequestRefusedError):
+        pyrosm.geocode("six")
+
+    # A refused geocoding does not wait for a request in flight, and a forked child gets
+    # locks of its own, whoever held the parent's.
+    server = gc._PublicServer()
+    server.shared_agent_requests = gc._SHARED_AGENT_LIMIT
+    server.lock.acquire()
+    with pytest.raises(RequestRefusedError):
+        server.reserve(False)
+    server.count_lock.acquire()
+    server.forget_lock()
+    assert server.lock.acquire(blocking=False)
+    assert server.count_lock.acquire(blocking=False)
 
 
 def test_get_data_by_geocoding(monkeypatch, tmp_path):

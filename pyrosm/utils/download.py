@@ -1,8 +1,12 @@
+import contextlib
 import email.utils
 import enum
 import glob
+import hashlib
 import http.client
+import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -10,6 +14,7 @@ import shutil
 import ssl
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,10 +24,14 @@ import certifi
 
 from pyrosm import __version__
 from pyrosm._log import log_event
-from pyrosm.exceptions import DownloadError
+from pyrosm.exceptions import DownloadError, RequestRefusedError
+from pyrosm.utils import _file_identity
+from pyrosm.utils.file_lock import exclusive_lock
 from pyrosm.utils.progress import reporting, validate_progress
 
 USER_AGENT = "pyrosm/%s (+https://github.com/pyrosm/pyrosm)" % __version__
+# The environment variables that AI coding agents set for the commands they run.
+_AGENT_VARIABLES = ("AI_AGENT", "CLAUDECODE")
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +46,10 @@ _CHUNK = 1 << 18
 _ORIGIN_BOUND = ("authorization", "cookie", "proxy-authorization", "host")
 _STRONG_ETAG = re.compile(r'"[\x21\x23-\x7e\x80-\xff]*"')
 _CONTENT_RANGE = re.compile(r"bytes (\d{1,19})-(\d{1,19})/(\d{1,19})")
+# The full downloads of one URL that 24 hours allow; the next one is refused.
+_FULL_DOWNLOADS_A_DAY = 3
+_DAY = 24 * 3600
+_RESPONSIBLY = "https://pyrosm.readthedocs.io/en/stable/download_responsibly.html"
 _sleep = time.sleep
 
 
@@ -74,8 +87,17 @@ class _HTTPHandler(urllib.request.HTTPHandler):
         return self.do_open(self.connection, req)
 
 
+def _user_agent():
+    """pyrosm's ``User-Agent``: :data:`USER_AGENT`, with ``agent`` added to its comment
+    when an AI coding agent runs pyrosm (``AI_AGENT`` or ``CLAUDECODE`` is set)."""
+    if any(os.environ.get(name) for name in _AGENT_VARIABLES):
+        return USER_AGENT.replace(")", "; agent)")
+    return USER_AGENT
+
+
 def open_url(url, method="GET", headers=None, timeout=None, opener=None):
-    """Open ``url`` with pyrosm's User-Agent and certifi's CA bundle.
+    """Open ``url`` with pyrosm's User-Agent (see :func:`_user_agent`) and certifi's CA
+    bundle.
 
     ``headers`` are added to (or override) the default ``User-Agent`` header; credentials,
     cookies and ``Host`` are not sent on to the target of a redirect. ``timeout`` (in
@@ -92,7 +114,7 @@ def open_url(url, method="GET", headers=None, timeout=None, opener=None):
             "an opener."
         )
     connect, read = timeout if split else (timeout, timeout)
-    headers = {"User-Agent": USER_AGENT, **(headers or {})}
+    headers = {"User-Agent": _user_agent(), **(headers or {})}
     bound = {k: v for k, v in headers.items() if k.lower() in _ORIGIN_BOUND}
     request = urllib.request.Request(
         url,
@@ -223,6 +245,15 @@ def _encoded(headers):
     return coding != "identity"
 
 
+class _NotModified(Exception):
+    """The server answered a conditional request with 304: the local copy is current."""
+
+
+class _Refused(Exception):
+    """A full download that the download log refuses (see :func:`_download_log`) was about
+    to be asked for or to begin."""
+
+
 class _Transfer:
     """One file downloaded into ``out_file``, over as many attempts as it takes.
 
@@ -230,20 +261,39 @@ class _Transfer:
     ``If-Range`` when the server gave a strong validator, and starts over otherwise. After a
     partial answer that does not fit the copy, the rest of the call starts over every time.
     ``progress``, when given, is called as ``progress(written, total)`` when the server
-    starts sending the file and after each chunk.
+    starts sending the file and after each chunk. With ``stored`` (the record of the copy
+    downloaded before, see :func:`_stored_validators`) its ``If-None-Match`` /
+    ``If-Modified-Since`` go with each request until the server sends the file; a 304 from
+    the URL that served that copy raises :class:`_NotModified`, one from another URL makes
+    the request again without them. ``etag``, ``last_modified`` and ``served`` (the URL
+    that sent it) describe the full answer. With ``refuse_full``, :class:`_Refused` is
+    raised instead of asking for the file in full or taking a full answer.
     """
 
-    def __init__(self, url, filename, out_file, net, progress=None):
+    def __init__(
+        self,
+        url,
+        filename,
+        out_file,
+        net,
+        progress=None,
+        stored=None,
+        refuse_full=False,
+    ):
         self.url = url
         self.filename = filename
         self.out_file = out_file
         self.net = net
         self.progress = progress
+        self.conditional = _conditional_headers(stored)
+        self.served_before = None if stored is None else stored.get("served")
+        self.refuse_full = refuse_full
         self.written = 0
         self.validator = None
         self.total = None
         self.resumable = True
         self.attempts = 0
+        self.etag = self.last_modified = self.served = self.file_id = None
 
     def _restart(self):
         _call_local(self.out_file.seek, 0)
@@ -279,7 +329,6 @@ class _Transfer:
         """One request for the file, or for the rest of it after the bytes kept: writes
         what the server sends, reporting the progress, and raises ``OSError`` when the
         answer stops short of its size or holds nothing."""
-        self.attempts += 1
         resume = self.written > 0 and self.validator is not None
         # The file's own bytes, whatever encodings the caller's headers would accept.
         headers = {"Accept-Encoding": "identity"}
@@ -288,15 +337,39 @@ class _Transfer:
             headers["If-Range"] = self.validator
         else:
             self._restart()
-        with self.net.open(self.url, headers=headers) as response:
+            headers.update(self.conditional)
+        while True:
+            if self.refuse_full and not self.conditional:
+                raise _Refused()
+            self.attempts += 1
+            try:
+                response = self.net.open(self.url, headers=headers)
+                break
+            except HTTPError as e:
+                if e.code != 304 or not self.conditional:
+                    raise
+                e.close()
+                if e.geturl() == self.served_before:
+                    raise _NotModified() from None
+                # Not the URL that served the copy: ask for the file itself.
+                for name in self.conditional:
+                    headers.pop(name)
+                self.conditional = {}
+        with response:
             if getattr(response, "status", 200) == 206:
                 if not resume:
                     raise self._abandon_resume("partial content it was not asked for")
                 limit = self._range_length(response.headers)
             else:
                 # A full answer, also to a range request whose copy has changed.
+                if self.refuse_full:
+                    raise _Refused()
                 self._restart()
                 limit = None
+                self.conditional = {}
+                self.etag = response.headers.get("ETag")
+                self.last_modified = response.headers.get("Last-Modified")
+                self.served = getattr(response, "url", None) or self.url
                 self.validator = None
                 if self.resumable and not _encoded(response.headers):
                     self.validator = _validator(response.headers)
@@ -457,6 +530,147 @@ def sources_record(path):
     return Path(os.fspath(path) + ".sources")
 
 
+def validators_record(path):
+    """The file beside ``path`` that records the URL, ``ETag`` and ``Last-Modified`` of its
+    download, the URL that served it and the file it wrote, which a later ``update`` sends
+    back (see :func:`download`)."""
+    return Path(os.fspath(path) + ".validators")
+
+
+def _stored_validators(path, url):
+    """The :func:`validators_record` of the file ``path`` when it records a download from
+    ``url`` that wrote this very file (see :func:`~pyrosm.utils._file_identity`), else
+    None."""
+    try:
+        stored = json.loads(validators_record(path).read_text(encoding="utf-8"))
+        if stored.get("url") == url and stored.get("file") == list(
+            _file_identity(path)
+        ):
+            return stored
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def _conditional_headers(stored):
+    """The ``If-None-Match`` and ``If-Modified-Since`` headers of the record ``stored``
+    (see :func:`_stored_validators`), which ask for the file only if it changed."""
+    headers = {}
+    if stored and stored.get("etag"):
+        headers["If-None-Match"] = stored["etag"]
+    if stored and stored.get("last_modified"):
+        headers["If-Modified-Since"] = stored["last_modified"]
+    return headers
+
+
+def _record_validators(path, transfer):
+    """Record the URL, ``ETag`` and ``Last-Modified`` of ``transfer``, the download of
+    ``path``, the URL that served it and the identity of ``path`` (see
+    :func:`validators_record`); without either header the record is removed. A record that
+    cannot be written, or a ``path`` that is no longer the file ``transfer`` wrote, is left
+    out."""
+    record = validators_record(path)
+    try:
+        if not (transfer.etag or transfer.last_modified):
+            record.unlink(missing_ok=True)
+            return
+        identity = _file_identity(path)
+        if identity[:2] != transfer.file_id:
+            # Another writer replaced the file since.
+            return
+        stored = {
+            "url": transfer.url,
+            "served": transfer.served,
+            "etag": transfer.etag,
+            "last_modified": transfer.last_modified,
+            "file": list(identity),
+        }
+        data = json.dumps(stored).encode("utf-8")
+        write_atomic(record, lambda out: out.write(data))
+    except OSError:
+        pass
+
+
+def _download_log_dir():
+    """The folder of the download logs (see :func:`_download_log`)."""
+    return download_dir() / "download-log"
+
+
+def _download_log(url):
+    """The file that records the full downloads of ``url`` in the last 24 hours, which
+    :func:`download` counts; deleting it resets the count."""
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    return _download_log_dir() / f"{digest}.json"
+
+
+def _lock_dir():
+    """The folder of the host locks (see :func:`_host_lock`)."""
+    return download_dir() / "locks"
+
+
+@contextlib.contextmanager
+def _host_lock(url):
+    """Hold the lock of the host of ``url`` while the block runs, so that the downloads
+    from one host on this machine go one at a time, whatever their folders; logs a line
+    when another download from the host has to finish first."""
+    host = urllib.parse.urlsplit(url).hostname or "unknown"
+    host = re.sub(r"[^a-z0-9.-]", "_", host)
+
+    def waiting():
+        log_event(logger, logging.INFO, "download_waiting", host=host, url=url)
+
+    with exclusive_lock(_lock_dir() / f"{host}.lock", waiting):
+        yield
+
+
+def _logged_time(download):
+    """The time of the ``download`` in a download log, in seconds since the epoch."""
+    return datetime.fromisoformat(download["time"]).timestamp()
+
+
+def _recent_downloads(log, now):
+    """The full downloads that the download log ``log`` records within 24 hours of ``now``
+    (seconds since the epoch), each ``{"time": <ISO 8601>, "bytes": <size>}``; an
+    unreadable log records none."""
+    try:
+        downloads = json.loads(log.read_text(encoding="utf-8"))["downloads"]
+        return [d for d in downloads if abs(now - _logged_time(d)) < _DAY]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError):
+        return []
+
+
+def _log_download(url, log, size, now):
+    """Add a full download of ``url`` (``size`` bytes, at ``now``) to its download log
+    ``log``, leaving out the downloads older than 24 hours; a log that cannot be written is
+    left as it is."""
+    downloads = _recent_downloads(log, now)
+    time_ = datetime.fromtimestamp(now, timezone.utc).isoformat()
+    downloads.append({"time": time_, "bytes": size})
+    data = json.dumps({"url": url, "downloads": downloads}, indent=1).encode("utf-8")
+    try:
+        write_atomic(log, lambda out: out.write(data))
+    except OSError:
+        pass
+
+
+def _refusal(url, log, recent):
+    """The message of the refusal to download ``url`` in full again after the downloads
+    ``recent`` that its download log ``log`` records (see :func:`_recent_downloads`)."""
+    times = sorted(_logged_time(d) for d in recent)
+    until = datetime.fromtimestamp(
+        math.ceil(times[-_FULL_DOWNLOADS_A_DAY] + _DAY), timezone.utc
+    )
+    return (
+        "pyrosm has downloaded '%s' in full %d times in the last 24 hours and refuses to "
+        "download it again before %s UTC. The providers serve these files for free and "
+        "block clients that download them repeatedly. Reuse the file you have: without "
+        "update=True a file that exists is not downloaded again, and with it only a "
+        "changed file is. The downloads are recorded in %s; delete it if they were "
+        "needed. See %s."
+        % (url, len(recent), until.strftime("%Y-%m-%d %H:%M:%S"), log, _RESPONSIBLY)
+    )
+
+
 def _remove_download(path):
     """Remove the file ``path``, the partial files of its interrupted downloads and its
     record (see :func:`sources_record`); returns the number of PBF and partial files
@@ -470,6 +684,7 @@ def _remove_download(path):
     for file in removed:
         file.unlink()
     sources_record(path).unlink(missing_ok=True)
+    validators_record(path).unlink(missing_ok=True)
     return len(removed)
 
 
@@ -496,6 +711,7 @@ def clear_downloads(filepath=None):
     stems = {p.name for p in directory.glob("*.pbf")}
     stems |= {p.name.rsplit(".", 2)[0] for p in directory.glob("*.pbf.*.part")}
     stems |= {p.name[: -len(".sources")] for p in directory.glob("*.pbf.sources")}
+    stems |= {p.name[: -len(".validators")] for p in directory.glob("*.pbf.validators")}
     return sum(_remove_download(directory / stem) for stem in sorted(stems))
 
 
@@ -516,6 +732,20 @@ def download(
     dropped connection is resumed or retried; a failure raises
     :class:`~pyrosm.exceptions.DownloadError`. Returns the file path as a string.
 
+    With ``update``, a file downloaded before is asked for only if it changed: the ``ETag``
+    and ``Last-Modified`` its download gave (see :func:`validators_record`) go with the
+    request, and the server's 304 answer keeps the file as it is.
+
+    Each full download of ``url`` is recorded in a log in pyrosm's temp directory, wherever
+    the file goes. After 3 full downloads of ``url`` in 24 hours, a 4th raises
+    :class:`~pyrosm.exceptions.RequestRefusedError` before the server sends the file; a
+    file that a 304 answer keeps is not a download. Deleting the log, which the error
+    names, resets the count.
+
+    Downloads from one host go one at a time on this machine: while another thread or
+    process downloads from the host, the call waits (logging ``download_waiting``), and a
+    file the other download wrote meanwhile is not downloaded again unless ``update``.
+
     ``progress`` shows the download: ``None`` (default) follows
     :func:`pyrosm.enable_logging`, ``True`` draws a bar on stderr (a widget in Jupyter when
     ipywidgets is installed; without a terminal, only a line naming the file), ``False``
@@ -530,51 +760,87 @@ def download(
     filepath = target_dir.resolve() / Path(filename).name
     net = _Net(headers, timeout, opener)
 
-    # Check if file exists
-    file_exists = False
-    if filepath.exists():
-        file_exists = True
-
-    # Download data to temp if it does not exist or if update is requested
-    if update or file_exists is False:
-
-        def fetch(out_file):
-            transfer = _Transfer(url, filename, out_file, net, report)
-            while True:
-                kept = transfer.written
-                try:
-                    return _retry(transfer.attempt)
-                except _FETCH_ERRORS as e:
-                    # A resumable round that kept more of the file earns another round.
-                    gained = transfer.written > kept
-                    if _retryable(e) and transfer.validator is not None and gained:
-                        continue
-                    n = transfer.attempts
-                    raise DownloadError(
-                        f"Could not download '{url}' ({n} attempt"
-                        f"{'' if n == 1 else 's'}): {e}",
-                        url=url,
-                        status=e.code if isinstance(e, HTTPError) else None,
-                        attempts=n,
-                    ) from e
-
-        # write_atomic moves the file into place only when complete, so a failed download
-        # never leaves a partial file that a later call would reuse. Errors creating or
-        # replacing the local file propagate as they are.
-        start = time.perf_counter()
-        with reporting(progress, "Downloading %s" % filepath.name) as report:
-            try:
-                write_atomic(filepath, fetch)
-            except _LocalWriteError as e:
-                raise e.__cause__
-
-        log_event(
-            logger,
-            logging.INFO,
-            "download",
-            file=filepath.name,
-            megabytes=get_file_size(filepath),
-            seconds=time.perf_counter() - start,
-            path=filepath,
-        )
+    if update or not filepath.exists():
+        with _host_lock(url):
+            # Another download may have written the file while this one waited.
+            if update or not filepath.exists():
+                _fetch_into(filepath, url, filename, net, progress)
     return str(filepath)
+
+
+def _fetch_into(filepath, url, filename, net, progress):
+    """Download ``url`` into ``filepath`` for :func:`download`: conditionally when the
+    record of an earlier download of it is there, refusing a full download that the
+    download log does not allow, and logging and recording what was done."""
+    stored = _stored_validators(filepath, url) if filepath.exists() else None
+    log = _download_log(url)
+    recent = _recent_downloads(log, time.time())
+    refuse = len(recent) >= _FULL_DOWNLOADS_A_DAY
+    transfers = []
+
+    def fetch(out_file):
+        transfer = _Transfer(url, filename, out_file, net, report, stored, refuse)
+        transfers.append(transfer)
+        while True:
+            kept = transfer.written
+            try:
+                _retry(transfer.attempt)
+                # The device and inode of the file written, which its rename keeps.
+                transfer.file_id = _call_local(_file_identity, out_file)[:2]
+                _log_download(url, log, transfer.written, time.time())
+                return
+            except _FETCH_ERRORS as e:
+                # A resumable round that kept more of the file earns another round.
+                gained = transfer.written > kept
+                if _retryable(e) and transfer.validator is not None and gained:
+                    continue
+                n = transfer.attempts
+                raise DownloadError(
+                    f"Could not download '{url}' ({n} attempt"
+                    f"{'' if n == 1 else 's'}): {e}",
+                    url=url,
+                    status=e.code if isinstance(e, HTTPError) else None,
+                    attempts=n,
+                ) from e
+
+    # write_atomic moves the file into place only when complete, so a failed download
+    # never leaves a partial file that a later call would reuse. Errors creating or
+    # replacing the local file propagate as they are.
+    start = time.perf_counter()
+    while True:
+        try:
+            with reporting(progress, "Downloading %s" % filepath.name) as report:
+                try:
+                    write_atomic(filepath, fetch)
+                except _LocalWriteError as e:
+                    raise e.__cause__
+            break
+        except _NotModified:
+            if _stored_validators(filepath, url) == stored:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "download_unchanged",
+                    file=filepath.name,
+                    seconds=time.perf_counter() - start,
+                    path=filepath,
+                )
+                return
+            # The file changed while the server was asked: download it in full.
+            stored = None
+        except _Refused:
+            sent = sum(transfer.attempts for transfer in transfers)
+            raise RequestRefusedError(
+                _refusal(url, log, recent), url=url, attempts=sent
+            ) from None
+    _record_validators(filepath, transfers[-1])
+
+    log_event(
+        logger,
+        logging.INFO,
+        "download",
+        file=filepath.name,
+        megabytes=get_file_size(filepath),
+        seconds=time.perf_counter() - start,
+        path=filepath,
+    )

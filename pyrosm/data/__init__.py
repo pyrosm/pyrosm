@@ -299,6 +299,9 @@ def get_data(
     """
     Get the path to a PBF data file, and download the data if needed.
 
+    See https://pyrosm.readthedocs.io/en/stable/download_responsibly.html
+    for what the data providers ask and how pyrosm keeps to it.
+
     Parameters
     ----------
     dataset : str
@@ -310,7 +313,10 @@ def get_data(
 
     update : bool
         Whether the PBF file should be downloaded/updated if the dataset
-        with the same name exists in the temp.
+        with the same name exists in the temp. A file downloaded before is downloaded again
+        only if the provider's copy changed: pyrosm sends the ``ETag`` and
+        ``Last-Modified`` of the last download, and an answer that it has not changed (HTTP
+        304) keeps the file.
 
     directory : str (optional)
         Path to a directory where the PBF data will be downloaded, created when missing

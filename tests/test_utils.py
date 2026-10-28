@@ -9,6 +9,11 @@ from urllib.error import HTTPError
 import pytest
 from pyrosm import get_data
 
+# The folders of the download logs and host locks, before each test gets its own (see
+# conftest.py).
+from pyrosm.utils.download import _download_log_dir as DOWNLOAD_LOG_DIR
+from pyrosm.utils.download import _lock_dir as LOCK_DIR
+
 
 @pytest.fixture
 def helsinki_history_pbf():
@@ -354,6 +359,289 @@ def test_download_resumes(
     assert seen == requests
 
 
+def test_download_update_asks_only_for_a_changed_file(tmp_path, monkeypatch):
+    """With ``update``, the ETag and Last-Modified of the last download go with the request;
+    a 304 keeps the file, a new copy replaces it, and a file of another size, or a server
+    without validators, gets a plain request."""
+    import json
+    from urllib.error import HTTPError
+
+    from pyrosm.utils import _file_identity
+    from pyrosm.utils import download as dl
+
+    served = {"body": b"a" * 50, "headers": {"ETag": '"v1"', "Last-Modified": "Mon"}}
+    asked = []
+
+    def urlopen(request, context=None, timeout=None):
+        sent = (request.get_header("If-none-match"), request.get_header("If-modified-since"))
+        asked.append(sent)
+        current = (served["headers"].get("ETag"), served["headers"].get("Last-Modified"))
+        by_date = not current[0] and sent[1] and sent[1] == current[1]
+        if sent[0] and sent[0] == current[0] or by_date:
+            if served.get("touch"):  # the file changes while the server is asked
+                path.write_bytes(b"d" * 60)
+            moved = served.get("moved") and "https://example.invalid/moved.osm.pbf"
+            raise HTTPError(moved or request.full_url, 304, "Not Modified", {}, None)
+        return _Served(served["body"], 200, served["headers"])
+
+    monkeypatch.setattr(dl.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(dl, "_FULL_DOWNLOADS_A_DAY", 100)
+    url, path = "https://example.invalid/x.osm.pbf", tmp_path / "x.osm.pbf"
+    record = dl.validators_record(path)
+
+    def update(from_url=url, **server):
+        served.update(server)
+        return dl.download(from_url, "x.osm.pbf", True, tmp_path)
+
+    write_atomic = dl.write_atomic
+
+    def replaced_after_writing(target, write):
+        write_atomic(target, write)
+        if Path(target).name == path.name:
+            (tmp_path / "other").write_bytes(b"e" * 60)
+            (tmp_path / "other").replace(path)
+
+    dl.download(url, "x.osm.pbf", False, tmp_path)
+    assert json.loads(record.read_text()) == {
+        "url": url,
+        "served": url,
+        "etag": '"v1"',
+        "last_modified": "Mon",
+        "file": list(_file_identity(path)),
+    }
+    written = path.stat().st_mtime_ns
+    assert update() == str(path)  # unchanged
+    assert path.stat().st_mtime_ns == written
+    update(body=b"b" * 60, headers={"ETag": '"v2"'})  # changed
+    assert path.read_bytes() == b"b" * 60
+    update()  # unchanged, by its ETag alone
+    update(moved=True)  # a 304 from another URL: asked again in full
+    update(moved=False, touch=True)  # changed while asked: downloaded in full
+    assert path.read_bytes() == b"b" * 60
+    served["touch"] = False
+    update(from_url="https://example.invalid/y.osm.pbf")  # another URL: asked in full
+    path.write_bytes(b"c" * 60)  # changed here, same size: asked for in full
+    update(headers={"Last-Modified": "Tue"})
+    update()  # unchanged, by its date alone
+    with monkeypatch.context() as m:  # replaced by another writer: not recorded
+        m.setattr(dl, "write_atomic", replaced_after_writing)
+        update(headers={"ETag": '"v4"'})
+    assert json.loads(record.read_text())["last_modified"] == "Tue"
+    update(headers={})  # no validators: no record
+    assert not record.exists()
+    record.mkdir()  # a record that cannot be written leaves the download as it is
+    path.write_bytes(b"c" * 70)
+    update(headers={"ETag": '"v3"'})
+    assert asked == [
+        (None, None),
+        ('"v1"', "Mon"),
+        ('"v1"', "Mon"),
+        ('"v2"', None),
+        ('"v2"', None),
+        (None, None),
+        ('"v2"', None),
+        (None, None),
+        (None, None),
+        (None, None),
+        (None, "Tue"),
+        (None, "Tue"),
+        (None, None),
+        (None, None),
+    ]
+    assert path.read_bytes() == b"b" * 60
+    record.rmdir()
+    record.write_text("{}")
+    monkeypatch.setattr(dl, "download_dir", lambda: tmp_path)
+    assert dl.clear_downloads() == 1
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_refuses_a_fourth_full_download_in_a_day(tmp_path, monkeypatch):
+    """Full downloads of a URL are logged; a 4th within 24 hours is refused before the
+    server sends the file, whatever the folder. A 304 is not a download; another URL, a
+    download older than 24 hours or a deleted log does not count."""
+    import json
+    import math
+
+    from pyrosm.exceptions import RequestRefusedError
+    from pyrosm.utils import download as dl
+
+    assert DOWNLOAD_LOG_DIR() == dl.download_dir() / "download-log"
+    served = {}
+    asked = []
+
+    def urlopen(request, context=None, timeout=None):
+        asked.append(request.get_header("If-none-match"))
+        if asked[-1] == served["etag"]:
+            raise HTTPError(request.full_url, 304, "Not Modified", {}, None)
+        return _Served(served["etag"].encode() * 10, 200, {"ETag": served["etag"]})
+
+    monkeypatch.setattr(dl.urllib.request, "urlopen", urlopen)
+    url = "https://example.invalid/x.osm.pbf"
+    log = dl._download_log(url)
+
+    def get(etag, folder="a", from_url=url):
+        served["etag"] = etag
+        return Path(dl.download(from_url, "x.osm.pbf", True, tmp_path / folder))
+
+    get('"v1"')
+    get('"v1"')  # unchanged: not a download
+    assert len(json.loads(log.read_text())["downloads"]) == 1
+    get('"v2"')
+    replace = Path.replace
+
+    def fail_on_the_extract(partial, target):
+        if Path(target).name == "x.osm.pbf":
+            raise PermissionError("in use")
+        return replace(partial, target)
+
+    with monkeypatch.context() as m:  # downloaded, but not moved into place: counted
+        m.setattr(Path, "replace", fail_on_the_extract)
+        with pytest.raises(PermissionError):
+            get('"v2"', folder="b")
+    get('"v2"')  # unchanged: still asked
+    first = json.loads(log.read_text())["downloads"][0]["time"]
+    until = math.ceil(datetime.fromisoformat(first).timestamp() + 24 * 3600)
+    until = datetime.fromtimestamp(until, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    for folder, requests in [("a", 1), ("c", 0)]:  # changed, or not here: refused
+        with pytest.raises(RequestRefusedError, match="in full 3 times") as info:
+            get('"v3"', folder)
+        assert (info.value.url, info.value.attempts) == (url, requests)
+        assert str(log) in str(info.value) and until in str(info.value)
+    assert get('"v2"').read_bytes() == b'"v2"' * 10
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a", "b", "c"]
+    assert list((tmp_path / "b").iterdir()) == list((tmp_path / "c").iterdir()) == []
+    get('"v3"', "c", "https://example.invalid/y.osm.pbf")  # another URL
+    record = json.loads(log.read_text())
+    old = datetime.now(timezone.utc) - timedelta(hours=25)
+    record["downloads"][0]["time"] = old.isoformat()
+    log.write_text(json.dumps(record))
+    get('"v3"')  # the first download is older than 24 hours
+    assert [d["bytes"] for d in json.loads(log.read_text())["downloads"]] == [40] * 3
+    log.unlink()  # the log deleted
+    get('"v4"')
+    now = datetime.now()
+    times = [now.isoformat()] + [now.astimezone(timezone.utc).isoformat()] * 2
+    log.write_text(json.dumps({"downloads": [{"time": t} for t in times]}))
+    with pytest.raises(RequestRefusedError):  # local and UTC times
+        get('"v5"', folder="c")
+    log.unlink()
+    log.mkdir()  # a log that cannot be read or written does not stop downloads
+    get('"v5"')
+    assert asked == [
+        None,
+        '"v1"',
+        '"v1"',
+        None,
+        '"v2"',
+        '"v2"',
+        '"v2"',
+        None,
+        '"v2"',
+        '"v3"',
+        '"v4"',
+    ]
+
+
+def _wait_until(condition, seconds=10):
+    """Wait until ``condition()`` is true, failing after ``seconds``."""
+    import time
+
+    deadline = time.monotonic() + seconds
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.01)
+
+
+def test_download_waits_for_another_download_from_the_host(
+    tmp_path, monkeypatch, caplog
+):
+    """Downloads from one host go one at a time, across threads as across processes (one
+    operating-system lock): a download waits, logging it, and then finds the file the other
+    one wrote; a download from another host does not wait. Where the lock cannot be taken,
+    downloads go on without it."""
+    import errno
+    import logging
+    import threading
+
+    from pyrosm.utils import download as dl
+    from pyrosm.utils import file_lock
+
+    assert LOCK_DIR() == dl.download_dir() / "locks"
+    release = threading.Event()
+    requested = []
+
+    def urlopen(request, context=None, timeout=None):
+        requested.append(request.full_url)
+        if request.full_url.startswith("https://a.invalid/"):
+            assert release.wait(10)
+        return _Served(b"x" * 10, 200, {})
+
+    monkeypatch.setattr(dl.urllib.request, "urlopen", urlopen)
+    caplog.set_level(logging.INFO, logger="pyrosm")
+    url, other = "https://a.invalid/x.osm.pbf", "https://b.invalid/x.osm.pbf"
+
+    def get(url, folder="a", update=False):
+        return dl.download(url, "x.osm.pbf", update, tmp_path / folder)
+
+    threads = [threading.Thread(target=get, args=[url]) for _ in range(2)]
+    threads[0].start()
+    _wait_until(lambda: requested)
+    threads[1].start()
+    _wait_until(lambda: "download_waiting" in caplog.text)
+    get(other, "b")  # another host
+    release.set()
+    for thread in threads:
+        thread.join(10)
+    assert requested == [url, other]
+    assert caplog.text.count("download_waiting") == 1
+    # A lock folder that cannot be made, or a file system that cannot lock.
+    monkeypatch.setattr(dl, "_lock_dir", lambda: tmp_path / "a" / "x.osm.pbf")
+    get(url, update=True)
+    monkeypatch.setattr(dl, "_lock_dir", lambda: tmp_path / "locks")
+
+    # Not at once, or held by another file and then not while waiting.
+    errors = [errno.ENOLCK, errno.EAGAIN, errno.ENOLCK]
+
+    def cannot_lock(*args):
+        raise OSError(errors.pop(0), "lock")
+
+    lock = "fcntl.flock" if file_lock.fcntl is not None else "msvcrt.locking"
+    monkeypatch.setattr(lock, cannot_lock)
+    get(url, update=True)
+    get(other, update=True)
+    assert requested == [url, other, url, url, other]
+    assert caplog.text.count("download_waiting") == 2 and errors == []
+
+
+def test_exclusive_lock_refuses_nesting_and_is_not_kept_by_a_forked_child(tmp_path):
+    """A thread that holds a lock gets an error, not a wait for itself, when it asks for it
+    again, and keeps the lock; a child made by fork lets go of the parent's lock files."""
+    import os
+
+    from pyrosm.utils import file_lock
+
+    path = tmp_path / "host.lock"
+
+    def held_elsewhere():
+        with open(path, "a+b") as other:
+            if not file_lock._try_lock(other):
+                return True
+            file_lock._unlock(other)
+            return False
+
+    with file_lock.exclusive_lock(path, lambda: None):
+        with pytest.raises(RuntimeError, match="already"):
+            with file_lock.exclusive_lock(path, lambda: None):
+                pass
+        assert held_elsewhere()
+        if hasattr(os, "register_at_fork"):
+            file_lock._let_go_in_child()  # as in the child, after fork
+            assert not held_elsewhere()
+    assert not held_elsewhere()
+    assert file_lock._open_fds == file_lock._holders == set()
+
+
 class _Opener:
     """An ``OpenerDirector`` stand-in that records requests and returns ``responses``."""
 
@@ -367,18 +655,24 @@ class _Opener:
 
 def test_open_url_opener_and_timeouts(monkeypatch):
     """An injected opener gets the request and timeout; a (connect, read) pair builds
-    pyrosm's own opener; an opener with a pair is refused."""
+    pyrosm's own opener; an opener with a pair is refused. The User-Agent says ``agent``
+    when an AI coding agent runs pyrosm, unless the caller gives their own."""
+    import pyrosm
     from pyrosm.utils import download as dl
 
     url = "https://example.invalid/x"
-    opener = _Opener("response", "response")
-    # The caller's opener needs no certificates from pyrosm and always gets the timeout.
-    monkeypatch.setattr(dl.ssl, "create_default_context", lambda **k: 1 / 0)
-    assert dl.open_url(url, headers={"User-Agent": "t/1"}, timeout=7, opener=opener)
-    assert dl.open_url(url, opener=opener)
+    opener = _Opener(*["response"] * 4)
+    with monkeypatch.context() as m:
+        # The caller's opener needs no certificates and always gets the timeout.
+        m.setattr(dl.ssl, "create_default_context", lambda **k: 1 / 0)
+        assert dl.open_url(url, headers={"User-Agent": "t/1"}, timeout=7, opener=opener)
+        assert dl.open_url(url, opener=opener)
+        m.setenv("CLAUDECODE", "1")  # run by an AI coding agent
+        assert dl.open_url(url, opener=opener)
+        assert dl.open_url(url, headers={"User-Agent": "t/1"}, opener=opener)
     sent = [(r.get_header("User-agent"), t) for r, t in opener.requests]
-    assert sent == [("t/1", 7), (dl.USER_AGENT, None)]
-    monkeypatch.undo()
+    agent = "pyrosm/%s (+https://github.com/pyrosm/pyrosm; agent)" % pyrosm.__version__
+    assert sent == [("t/1", 7), (dl.USER_AGENT, None), (agent, None), ("t/1", None)]
 
     built, own = [], _Opener("response")
     monkeypatch.setattr(
