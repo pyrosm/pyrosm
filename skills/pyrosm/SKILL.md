@@ -42,10 +42,10 @@ and https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the doc
 - Download only what the user's task needs. When the task names a few areas that the
   files you have do not already contain, pass them together, as one GeoDataFrame,
   GeoSeries or MultiPolygon, to `get_data_by_area(areas, strategy="smallest_total")`: it
-  downloads the smallest extract that contains them all or, when that is less data or that
-  extract's size is unknown, a set of smaller extracts that together cover them, merged
-  into one file. For two cities in different countries, the smallest extract that contains
-  both can be a whole continent. To tell the user the likely files and sizes beforehand,
+  downloads the smallest extract that contains them all or, when a set of extracts that
+  together cover them is smaller in total or that extract's size is unknown, that set,
+  merged into one file. For two cities in different countries, the smallest extract that
+  contains both can be a whole continent. To tell the user the likely files and sizes beforehand,
   run `pyrosm find AREA --contains-only` for each area; for a place name, call
   `pyrosm.find_extracts(pyrosm.geocode(name, user_agent=...), contains_only=True)`, so that
   the geocoding request names the user's application. Download one file after another,
