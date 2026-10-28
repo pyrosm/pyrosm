@@ -78,10 +78,11 @@ removes them.
 
 ### Update only when you need newer data
 
-Pass `update=True` when you want newer data. For a file that pyrosm downloaded from that URL
-and that has not changed on your disk since pyrosm downloaded it, pyrosm asks the provider
-whether the file changed, and downloads it only if it did; any other file is downloaded in
-full (see "What pyrosm does" below). Do not delete a file to get a fresh copy: the provider
+Pass `update=True` when you want newer data. pyrosm then asks the provider whether the file
+changed since pyrosm downloaded it, and downloads it only if it did. This works when pyrosm
+downloaded the file from that URL, the file has not changed on your disk, and the provider
+dated or tagged that version, as Geofabrik does; otherwise the file is downloaded in full
+(see "What pyrosm does" below). Do not delete a file to get a fresh copy: the provider
 then sends the whole file again. To keep a large region current, download it once and
 update it with pyosmium-up-to-date, which downloads only the changes.
 
@@ -104,10 +105,11 @@ helsinki = OSM(fp, bounding_box=cities[0]).get_buildings()
 ```
 
 The smallest extract that contains both cities is Geofabrik's Europe extract, about 35 GB.
-With `strategy="smallest_total"`, pyrosm downloads a set of smaller extracts that together
-cover the areas when that is less data, or when the size of the single extract is unknown:
-here the BBBike extracts of the two cities, about 120 MB together, merged into one file. If
-files that you already have contain the areas, read the areas from those instead.
+`strategy="smallest_total"` downloads a set of smaller extracts that together cover the
+areas when that is less data, or when the size of the single extract is unknown. Here it
+downloads the BBBike extracts of the two cities, about 120 MB together, and merges them
+into one file. If files that you already have contain the areas, read the areas from those
+instead.
 
 ### Download many areas
 
