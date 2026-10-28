@@ -36,17 +36,20 @@ and https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the doc
 
 ## Rules
 
-- Download only what the user's task needs. When it needs several areas, run
-  `pyrosm find AREA --contains-only` on their combined bounding box and on each area, and
-  download whichever is less data: the one extract that contains them all, or the first
-  extract listed for each area, counting a file that covers several areas once. For two
-  cities in different countries, the extract that contains both can be a whole continent.
-  Before downloading, tell the user how many files and roughly how much data that is, and
-  download them one after another, never in parallel.
-- When the user asks for many areas, such as every country of a continent or a grid of
-  tiles, download the one extract that contains them all, even if it is larger, and read
-  each area from it with `OSM(filepath, bounding_box=...)`. Do not work through a list of
-  countries, cities or tiles that the user did not ask for.
+- Download only what the user's task needs. When the task names several areas, run
+  `pyrosm find AREA --contains-only` for each of them. Then download whichever needs less
+  new data: the smallest extract listed for every area, or the first extract listed for
+  each area, counting a file listed first for several areas once. A suitable file that you
+  have already counts as no new data. For two cities in different countries, the only
+  extract listed for both can be a whole continent. Before downloading, tell the user how
+  many files and roughly how much data that is, and download them one after another,
+  never in parallel.
+- When the user asks for a whole set of areas instead of naming them, such as every
+  country of a continent, every city above a size or a grid of tiles, download the one
+  extract that contains them all, even if it is larger, and read each area from it with
+  `OSM(filepath, bounding_box=...)`. If no extract contains them all, point the user to the
+  planet file at https://planet.openstreetmap.org. Do not work through a list of countries,
+  cities or tiles that the user did not ask for.
 - Do not delete a downloaded file to download it again, and do not call `update=True` in a
   loop.
 - Never work around a refusal: do not delete pyrosm's download log, change pyrosm, or fetch
@@ -56,8 +59,8 @@ and https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the doc
   (https://operations.osmfoundation.org/policies/nominatim/: at most one request per second,
   a User-Agent that names the application, no systematic queries), and pass
   `user_agent="<application>/<version> (<contact>)"`. Geocoding the few places that a task
-  names is fine; do not geocode long lists of places with it, nor from several processes at
-  once.
+  names is fine; do not geocode long lists of places with it, nor from several threads or
+  processes at once.
 - For a whole country or continent that must stay current, or for the planet, point the
   user to pyosmium-up-to-date and https://planet.openstreetmap.org instead of downloading
   again.
