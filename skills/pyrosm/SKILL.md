@@ -37,15 +37,16 @@ and https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the doc
 
 ## Rules
 
-- Download only what the user's task needs. When the task names a few areas, list the
-  extracts that contain each of them: `pyrosm find AREA --contains-only` for a bounding
-  box, or `pyrosm.find_extracts(pyrosm.geocode(name, user_agent=...), contains_only=True)`
-  for a place name, so that the geocoding request names the user's application. Then
-  download whichever needs less new data: the smallest extract that appears in all of their
-  lists, or the first extract in each list, counting a file that is first in several lists
-  once. A suitable file that you have already counts as no new data. For two cities in
-  different countries, the only extract in both lists can be a whole continent. Download
-  the files one after another, never in parallel.
+- Download only what the user's task needs. When the task names a few areas, pass them
+  together, as one GeoDataFrame, GeoSeries or MultiPolygon, to
+  `get_data_by_area(areas, strategy="smallest_total")`: it downloads the smallest extract
+  that contains them all or, when that is less data, the extracts of the areas, merged into
+  one file. For two cities in different countries, the smallest extract that contains both
+  can be a whole continent. To tell the user the sizes beforehand, run
+  `pyrosm find AREA --contains-only` for each area; for a place name, call
+  `pyrosm.find_extracts(pyrosm.geocode(name, user_agent=...), contains_only=True)`, so that
+  the geocoding request names the user's application. Download one file after another,
+  never in parallel.
 - When the user asks for a whole set of areas, such as every country of a continent, every
   city above a size or a grid of tiles, download the smallest extract that contains them
   all, even if it is larger than separate files, and read each area from it with
@@ -71,6 +72,9 @@ and https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the doc
 - For a whole country or continent that must stay current, or for the planet, point the
   user to pyosmium-up-to-date and https://planet.openstreetmap.org instead of downloading
   again.
+- In tests and continuous integration, use the files that ship with pyrosm
+  (`get_data("test_pbf")`, `get_data("helsinki_pbf")`), or cache the download folder
+  between runs. Do not write a test or a job that downloads an extract on every run.
 
 ## What pyrosm's refusals mean
 
