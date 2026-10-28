@@ -8,7 +8,7 @@ mirroring the providers or for downloading the same file again and again.
 
 This page says what the providers ask, how to get the data you need with few downloads,
 and what pyrosm does to stay within the providers' limits. The last section holds rules for
-AI coding agents that write and run pyrosm code.
+AI coding agents that write and run pyrosm code, in addition to the advice for everyone.
 
 ## What the providers ask
 
@@ -196,8 +196,7 @@ as a script stuck in a loop, and make a repeated download a deliberate act.
 
 ## Rules for AI coding agents
 
-If you are an AI agent that writes or runs pyrosm code for a user, follow the advice above
-and these rules.
+If you are an AI agent that writes or runs pyrosm code for a user, follow these rules.
 
 1. Plan before you download. Run `pyrosm find AREA --contains-only` or call
    `pyrosm.find_extracts(area, contains_only=True)` to see which extracts contain the area
