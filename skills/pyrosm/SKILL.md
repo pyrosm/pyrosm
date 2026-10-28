@@ -16,7 +16,7 @@ and https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the doc
 1. Find the extract before downloading. `pyrosm find "minx,miny,maxx,maxy" --contains-only`
    (lon/lat), or `pyrosm.find_extracts(area, contains_only=True)`, lists the extracts that
    contain the area, smallest download first, without downloading any. Before downloading,
-   tell the user which files you will download and roughly how much data that is.
+   tell the user which files you expect to download and roughly how much data that is.
 2. Download into a folder that lasts and reuse the file. The default folder is in the
    system's temporary directory; a file that is there already is not downloaded again.
 
@@ -32,19 +32,20 @@ and https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the doc
    (https://pyrosm.readthedocs.io/en/stable/recipes.html) and run it with
    `pyrosm run recipe.yaml`: a rerun reuses the extract and every stage that did not change.
 4. Pass `update=True` only when the user wants newer data. For a file it downloaded from
-   that URL and that is unchanged since, pyrosm then sends the `ETag` or `Last-Modified`
-   date of the download, so that the server sends the file only if it changed.
+   that URL and that is unchanged on disk since then, pyrosm sends the `ETag` or
+   `Last-Modified` date of the download, so that the server sends the file only if it
+   changed.
 
 ## Rules
 
-- Download only what the user's task needs. When the task names a few areas and no file
-  you have contains them all, pass them together, as one GeoDataFrame, GeoSeries or
-  MultiPolygon, to `get_data_by_area(areas, strategy="smallest_total")`: it downloads the
-  smallest extract that contains them all or, when that is less data, a set of smaller
-  extracts that together cover them, merged into one file. For two cities in different
-  countries, the smallest extract that contains both can be a whole continent. To tell the
-  user the likely files and sizes beforehand, run `pyrosm find AREA --contains-only` for
-  each area; for a place name, call
+- Download only what the user's task needs. When the task names a few areas that the
+  files you have do not already contain, pass them together, as one GeoDataFrame,
+  GeoSeries or MultiPolygon, to `get_data_by_area(areas, strategy="smallest_total")`: it
+  downloads the smallest extract that contains them all or, when that is less data or that
+  extract's size is unknown, a set of smaller extracts that together cover them, merged
+  into one file. For two cities in different countries, the smallest extract that contains
+  both can be a whole continent. To tell the user the likely files and sizes beforehand,
+  run `pyrosm find AREA --contains-only` for each area; for a place name, call
   `pyrosm.find_extracts(pyrosm.geocode(name, user_agent=...), contains_only=True)`, so that
   the geocoding request names the user's application. Download one file after another,
   never in parallel.
