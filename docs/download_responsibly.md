@@ -105,8 +105,8 @@ helsinki = OSM(fp, bounding_box=cities[0]).get_buildings()
 ```
 
 The smallest extract that contains both cities is Geofabrik's Europe extract, about 35 GB.
-`strategy="smallest_total"` downloads a set of smaller extracts that together cover the
-areas when that is less data, or when the size of the single extract is unknown. Here it
+`strategy="smallest_total"` downloads a set of extracts that together cover the areas
+when the set is smaller in total, or when the size of the single extract is unknown. Here it
 downloads the BBBike extracts of the two cities, about 120 MB together, and merges them
 into one file. If files that you already have contain the areas, read the areas from those
 instead.
@@ -131,10 +131,10 @@ buildings = {
 
 `OSM(fp, bounding_box=bbox).to_pbf("city.osm.pbf")` writes an area that you read often to
 a smaller file of its own. For the whole world, download the planet file from
-planet.openstreetmap.org. Do not download the areas one by one in a loop: a script that
-works through BBBike's cities is what its robots.txt disallows, and pyrosm's check on
-repeated downloads, which counts the downloads of each URL on its own, does not stop a loop
-over many URLs.
+planet.openstreetmap.org. Do not download the areas one by one in a loop. BBBike's
+robots.txt disallows scripts that work through its city extracts, and pyrosm counts
+repeated downloads for each URL on its own, so its check does not stop a loop over many
+URLs.
 
 ### Use pyrosm in tests, continuous integration and clusters
 
@@ -163,10 +163,11 @@ over many URLs.
 ## What pyrosm does
 
 - A file that is in the download folder already is not downloaded again. With
-  `update=True`, pyrosm sends the `ETag` or `Last-Modified` date of the earlier download
-  with its request, so that the server sends the file only if it changed; a "not modified"
-  answer keeps the file. A file that pyrosm did not download from that URL, one changed
-  since, or one whose server gave neither is downloaded in full.
+  `update=True`, pyrosm sends the `ETag` or `Last-Modified` value that it saved from the
+  earlier download, so that the server sends the file only if it changed; a "not modified"
+  answer keeps the file. A file is downloaded in full if pyrosm did not download it from
+  that URL, if it changed on disk since that download, or if the server gave neither
+  value.
 - pyrosm records each full download in a log per URL in `<tempdir>/pyrosm/download-log/`.
   After 3 full downloads of one URL within 24 hours, a 4th raises
   `pyrosm.exceptions.RequestRefusedError`, whose message names the log file; deleting that
@@ -211,9 +212,9 @@ to give it to Claude Code, copy the `pyrosm` folder into `~/.claude/skills/` or 
 3. Download only what the user's task needs. When the task names a few areas that the
    files you have do not already contain, pass them together to
    `get_data_by_area(areas, strategy="smallest_total")`, as in "Download several areas"
-   above: it downloads the smallest extract that contains them all or, when that is less
-   data or that extract's size is unknown, a set of smaller extracts that together cover
-   them, merged into one file. To tell
+   above: it downloads the smallest extract that contains them all or, when a set of
+   extracts that together cover them is smaller in total or that extract's size is unknown,
+   that set, merged into one file. To tell
    the user the likely files and sizes beforehand, run `pyrosm find AREA --contains-only`
    for each area; for a place name, call
    `pyrosm.find_extracts(pyrosm.geocode(name, user_agent=...), contains_only=True)`, so
