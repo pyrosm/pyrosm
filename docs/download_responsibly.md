@@ -100,8 +100,13 @@ to give it to Claude Code, copy the `pyrosm` folder into `~/.claude/skills/` or 
    which extract covers the area and how large it is, without downloading it.
 2. Download each extract once, into a folder that lasts, and reuse the file. Do not delete a
    file to download it again, and do not call `update=True` in a loop.
-3. Download only what the user's task needs, one area at a time. Do not loop over many
-   areas, countries or tiles, and do not download in parallel.
+3. Download only what the user's task needs. When it needs several areas, use
+   `pyrosm find` to compare the extract that contains them all (their combined bounding box
+   with `--contains-only`) with the extracts of each area, and download whichever is less
+   data: for two cities in different countries, the one extract that contains both can be
+   a whole continent. Before downloading, tell the user how many files and roughly how much
+   data that is. Download one file after another, never in parallel, and do not work
+   through a list of countries, cities or tiles that the user did not ask for.
 4. Never work around a refusal. When pyrosm raises `RequestRefusedError`, stop and show its
    message to the user. Do not delete the download log, change pyrosm, or fetch the file
    another way (curl, wget, a browser).
