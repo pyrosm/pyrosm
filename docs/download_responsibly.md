@@ -44,20 +44,22 @@ writes must follow the policy.
 
 ## Get the data with few downloads
 
-Most analyses need one extract, downloaded once. The advice below keeps it that way as a
-project grows: more areas, newer data, scripts that run again.
+Start with one extract, download it once and reuse it. The advice below keeps the number of
+downloads small as a project grows: more areas, newer data, scripts that run again.
 
 ### Look before you download
 
-`pyrosm find` (see [Command line](command_line.md)) and `pyrosm.find_extracts` list the
-extracts that contain an area, with their sizes, without downloading any:
+With `--contains-only`, `pyrosm find` (see [Command line](command_line.md)) lists the
+extracts that contain an area, smallest first, with their sizes, without downloading any;
+`pyrosm.find_extracts(area, contains_only=True)` does the same in Python:
 
 ```text
 pyrosm find 24.93,60.16,24.96,60.18 --contains-only
 ```
 
 [Downloading data](downloading_data.ipynb) shows how pyrosm picks the smallest extract that
-contains an area, and how to require only the places that matter (`must_cover`).
+contains an area, and how `must_cover` makes the download cover only the places that
+matter, such as transit stops, instead of the whole area.
 
 ### Keep the files and reuse them
 
@@ -76,9 +78,11 @@ removes them.
 
 ### Update only when you need newer data
 
-Pass `update=True` when you want newer data. pyrosm then asks the provider whether the file
-changed since your download, and downloads it only if it did. Do not delete a file to get a
-fresh copy: the provider then sends the whole file again. To keep a large region current,
+Pass `update=True` when you want newer data. For a file that pyrosm downloaded from that URL
+and that has not changed on your disk since, pyrosm asks the provider whether the file
+changed, and downloads it only if it did; any other file is downloaded in full (see
+"What pyrosm does" below). Do not delete a file to get a fresh copy: the provider then
+sends the whole file again. To keep a large region current,
 download it once and update it with pyosmium-up-to-date, which downloads only the changes.
 
 ### Download several areas
@@ -100,8 +104,10 @@ helsinki = OSM(fp, bounding_box=cities[0]).get_buildings()
 ```
 
 The smallest extract that contains both cities is Geofabrik's Europe extract, about 35 GB.
-With `strategy="smallest_total"`, pyrosm downloads the BBBike extracts of the two cities
-instead, about 120 MB together, and merges them into one file.
+With `strategy="smallest_total"`, pyrosm downloads a set of smaller extracts that together
+cover the areas when that is less data, here the BBBike extracts of the two cities, about
+120 MB together, and merges them into one file. If you already have a file that contains
+all the areas, read them from it instead.
 
 ### Download many areas
 
@@ -112,25 +118,33 @@ one extract that contains them all, once, and read each area from it:
 from pyrosm import OSM, get_data
 
 fp = get_data("Finland", directory="data/osm")
-for bbox in city_boxes:  # one [minx, miny, maxx, maxy] per city
-    buildings = OSM(fp, bounding_box=bbox).get_buildings()
+city_boxes = {
+    "Helsinki": [24.90, 60.14, 25.00, 60.20],
+    "Tampere": [23.70, 61.47, 23.83, 61.52],
+}
+buildings = {
+    city: OSM(fp, bounding_box=bbox).get_buildings() for city, bbox in city_boxes.items()
+}
 ```
 
 `OSM(fp, bounding_box=bbox).to_pbf("city.osm.pbf")` writes an area that you read often to
 a smaller file of its own. For the whole world, download the planet file from
-planet.openstreetmap.org. Do not download the areas one by one: a loop over many URLs is
-what the providers ask you not to do, and pyrosm's check on repeated downloads, which counts
-the downloads of each URL, does not stop it.
+planet.openstreetmap.org. Do not download the areas one by one in a loop: a script that
+works through BBBike's cities is what its robots.txt disallows, and pyrosm's check on
+repeated downloads, which counts the downloads of each URL on its own, does not stop a loop
+over many URLs.
 
 ### Use pyrosm in tests, continuous integration and clusters
 
 - `pyrosm.get_data("test_pbf")` and `pyrosm.get_data("helsinki_pbf")` return small files
   that ship with pyrosm, so tests that use them download nothing.
-- A continuous integration job that downloads an extract downloads it on every run, each
-  time on a new machine, so pyrosm's checks do not see the earlier runs. Cache the download
-  folder between runs, for example with GitHub Actions' `actions/cache`.
-- For jobs on a cluster, download the file once before you start them and pass its path to
-  the jobs. pyrosm's checks see only the downloads of one machine.
+- A continuous integration job that runs on a fresh machine, such as a hosted runner,
+  downloads its extract again on every run, and pyrosm's checks do not see the earlier
+  runs. Cache the download folder between runs, for example with GitHub Actions'
+  `actions/cache`.
+- For jobs on a cluster, download the file once, to storage that all the jobs can read,
+  before you start them, and pass its path to the jobs. pyrosm's checks see only the
+  downloads of one machine.
 - For an analysis that you run again, write a [recipe](recipes.md): a rerun reuses the
   extract and every stage that did not change.
 
@@ -187,13 +201,15 @@ and these rules.
    files you will download and roughly how much data that is.
 2. Download each extract once, into a folder that lasts, and reuse the file. Do not delete a
    file to download it again, and do not call `update=True` in a loop.
-3. Download only what the user's task needs. When the task names a few areas, pass them
-   together to `get_data_by_area(areas, strategy="smallest_total")`, as in "Download
-   several areas" above: it downloads the smallest extract that contains them all or, when
-   that is less data, the extracts of the areas, merged into one file. To tell the user the
-   sizes beforehand, run `pyrosm find AREA --contains-only` for each area; for a place name,
-   call `pyrosm.find_extracts(pyrosm.geocode(name, user_agent=...), contains_only=True)`,
-   so that the geocoding request names the user's application (rule 6). Download one file
+3. Download only what the user's task needs. When the task names a few areas and no file
+   you have contains them all, pass them together to
+   `get_data_by_area(areas, strategy="smallest_total")`, as in "Download several areas"
+   above: it downloads the smallest extract that contains them all or, when that is less
+   data, a set of smaller extracts that together cover them, merged into one file. To tell
+   the user the likely files and sizes beforehand, run `pyrosm find AREA --contains-only`
+   for each area; for a place name, call
+   `pyrosm.find_extracts(pyrosm.geocode(name, user_agent=...), contains_only=True)`, so
+   that the geocoding request names the user's application (rule 6). Download one file
    after another, never in parallel.
 4. When the user asks for a whole set of areas, such as every country of a continent,
    every city above a size or a grid of tiles, download the smallest extract that contains
