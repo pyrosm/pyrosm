@@ -647,10 +647,8 @@ cdef _way_winners(sources, touching, nodes_in_bbox, nib_set, pool, progress,
         for i in range(len(sources))
     ]
     blocks = [block for source_blocks in copies for block in source_blocks]
-    src = np.repeat(
-        np.arange(len(sources)),
-        [sum([len(block[0]) for block in source_blocks]) for source_blocks in copies],
-    )
+    counts = [sum([len(block[0]) for block in source]) for source in copies]
+    src = np.repeat(np.arange(len(sources)), counts)
     ids, versions, timestamps, touches, ref_counts, refs = [
         np.concatenate([block[k] for block in blocks]) if blocks
         else np.empty(0, dtype=np.int64)
@@ -658,7 +656,11 @@ cdef _way_winners(sources, touching, nodes_in_bbox, nib_set, pool, progress,
     ]
     del copies, blocks
 
-    winners = _winning_copies(ids, versions, timestamps, src)
+    winners, unsorted = _winning_copies(
+        ids, versions, timestamps, np.cumsum([0] + counts, dtype=np.int64)
+    )
+    if unsorted >= 0:
+        raise _not_sorted(sources[unsorted])
     passing = np.zeros(len(ids), dtype=bool)
     passing[winners] = touches[winners].astype(bool)
     kept_ways = [ids[passing & (src == i)] for i in range(len(sources))]
@@ -3430,6 +3432,12 @@ cdef _element_chunk(decoded, strings, bint is_relation):
     else:
         arrays["members_off"] = decoded["refs_off"]
         arrays["members"] = decoded["refs"]
+    return _with_used_strings(arrays, strings, is_relation)
+
+
+cdef _ElementChunk _with_used_strings(dict arrays, strings, bint is_relation):
+    """An `_ElementChunk` of element arrays whose string ids index `strings`, keeping
+    only the strings they use (`arrays` gets the new string ids)."""
     has_user = (arrays["info_fields"] & _HAS_USER) != 0
     names = ["keys", "vals", "roles"] if is_relation else ["keys", "vals"]
     used = np.unique(np.concatenate(
@@ -3801,6 +3809,37 @@ cdef _slice_meta(meta, sel):
     return {k: v[sel] for k, v in meta.items()}
 
 
+cdef tuple _joined_nodes(list chunks):
+    """Node chunks that share one metadata schema joined into one (ids, lat, lon, tags,
+    meta)."""
+    tags = []
+    for c in chunks:
+        tags.extend(c[3])
+    return (
+        np.concatenate([c[0] for c in chunks]),
+        np.concatenate([c[1] for c in chunks]),
+        np.concatenate([c[2] for c in chunks]),
+        tags,
+        _concat_meta([c[4] for c in chunks]),
+    )
+
+
+cdef _ElementChunk _joined_elements(list chunks):
+    """Way or relation chunks joined into one, the strings of each after those of the
+    chunks before it."""
+    parts, strings = [], []
+    for chunk in chunks:
+        a = dict(chunk.arrays)
+        base = len(strings)
+        for name in ("keys", "vals", "roles"):
+            if name in a:
+                a[name] = a[name] + base
+        a["user_sid"] = np.where(a["info_fields"] & _HAS_USER, a["user_sid"] + base, 0)
+        parts.append(a)
+        strings.extend(chunk.strings)
+    return _ElementChunk(_concat_elements(parts), strings, chunks[0].is_relation)
+
+
 class _Collected(list):
     """The blocks an emit function writes, in order."""
 
@@ -3886,22 +3925,9 @@ cdef class _RepackWriter:
         while self.node_count >= _MAX_GROUP:
             self._emit_full_node_block()
 
-    cdef tuple _joined_nodes(self):
-        """The buffered node chunks joined into one (ids, lat, lon, tags, meta)."""
-        tags = []
-        for c in self.node_chunks:
-            tags.extend(c[3])
-        return (
-            np.concatenate([c[0] for c in self.node_chunks]),
-            np.concatenate([c[1] for c in self.node_chunks]),
-            np.concatenate([c[2] for c in self.node_chunks]),
-            tags,
-            _concat_meta([c[4] for c in self.node_chunks]),
-        )
-
     cdef _emit_full_node_block(self):
         """Write the first `_MAX_GROUP` buffered nodes as one block and keep the rest."""
-        ids, lat, lon, tags, meta = self._joined_nodes()
+        ids, lat, lon, tags, meta = _joined_nodes(self.node_chunks)
         self._emit(True, (
             ids[:_MAX_GROUP], lat[:_MAX_GROUP], lon[:_MAX_GROUP],
             tags[:_MAX_GROUP], _slice_meta(meta, slice(None, _MAX_GROUP))))
@@ -3913,7 +3939,7 @@ cdef class _RepackWriter:
     cdef _flush_nodes(self):
         """Write the buffered nodes as one block."""
         if self.node_count > 0:
-            self._emit(True, self._joined_nodes())
+            self._emit(True, _joined_nodes(self.node_chunks))
         self.node_chunks = []
         self.node_count = 0
 
@@ -4092,7 +4118,8 @@ cdef _repack_write(source_path, output_path, kept_nodes, kept_ways, kept_rel, bo
 # chunks are merged in id order: every id up to the smallest last id of the
 # inputs' current chunks is complete, because the later chunks of each input
 # hold only larger ids. The copies of one id are ranked by version, timestamp
-# and input order, and the winners go through the re-pack writer.
+# and input order, and the winners of each such step go through the re-pack
+# writer, in id order.
 
 cdef _not_sorted(filepath):
     return ValueError(
@@ -4120,7 +4147,8 @@ cdef _take(kind, chunk, idx):
     """The elements of a decoded chunk at the positions `idx`."""
     if kind == _NODES:
         ids, lat, lon, tags, meta = chunk
-        return ids[idx], lat[idx], lon[idx], [tags[i] for i in idx], _slice_meta(meta, idx)
+        return (ids[idx], lat[idx], lon[idx], [tags[i] for i in idx.tolist()],
+                _slice_meta(meta, idx))
     return chunk.take(idx)
 
 
@@ -4197,66 +4225,134 @@ class _ChunkInput:
             yield chunk, _chunk_ids(kind, chunk), versions, timestamps
 
 
-cdef _winning_copies(ids, versions, timestamps, src):
-    """Positions of the winning copy of each id, in id order.
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef tuple _winning_copies(const int64_t[::1] ids, const int64_t[::1] versions,
+                           const int64_t[::1] timestamps, const int64_t[::1] runs):
+    """Positions of the winning copy of each id, in id order, among copies given as runs
+    sorted by id: run r holds the rows ``runs[r]`` to ``runs[r + 1]``.
 
     The copy with the highest version wins, then the one with the latest timestamp,
-    then the one from the earliest input (lowest `src`).
+    then the one from the earliest run. Returns (positions, r), r the first run whose
+    ids do not rise, or -1.
     """
-    order = np.lexsort((src, -timestamps, -versions, ids))
-    first = np.ones(len(order), dtype=bool)
-    first[1:] = ids[order[1:]] != ids[order[:-1]]
-    return order[first]
+    cdef Py_ssize_t k = runs.shape[0] - 1, r, first, win, n = 0, unsorted = -1
+    cdef int64_t low = 0, row
+    cursors = np.array(runs[:k], dtype=np.int64)
+    out = np.empty(ids.shape[0], dtype=np.int64)
+    cdef int64_t[::1] at = cursors, o = out
+    with nogil:
+        while unsorted < 0:
+            first = -1
+            for r in range(k):
+                if at[r] < runs[r + 1] and (first < 0 or ids[at[r]] < low):
+                    first, low = r, ids[at[r]]
+            if first < 0:
+                break
+            win = first
+            for r in range(first + 1, k):
+                row = at[r]
+                if row < runs[r + 1] and ids[row] == low and (
+                    versions[row] > versions[at[win]]
+                    or (versions[row] == versions[at[win]]
+                        and timestamps[row] > timestamps[at[win]])
+                ):
+                    win = r
+            o[n] = at[win]
+            n += 1
+            for r in range(first, k):
+                if at[r] < runs[r + 1] and ids[at[r]] == low:
+                    at[r] += 1
+                    if at[r] < runs[r + 1] and ids[at[r]] <= low:
+                        unsorted = r
+    return out[:n], unsorted
 
 
-cdef _write_winners(_RepackWriter writer, kind, chunk, won, i):
-    """Write winning elements of input `i`; with `won`, only those selected in it."""
+cdef _write_step(_RepackWriter writer, kind, list heads, list starts, list ends,
+                 list won):
+    """Write the winning copies among the rows ``starts[k]:ends[k]`` of the chunks of
+    `heads` (the (chunk, ids, versions, timestamps) of each input, read in order), in id
+    order; with `won`, a copy only when its id is in the set of its input in `won`. Each
+    run of copies whose inputs share a node metadata schema goes to `writer` as one
+    chunk."""
+    bounds = np.cumsum([0] + [e - s for s, e in zip(starts, ends)], dtype=np.int64)
+    ids, versions, timestamps = [
+        np.concatenate([h[f][s:e] for h, s, e in zip(heads, starts, ends)])
+        for f in (1, 2, 3)
+    ]
+    rows = _winning_copies(ids, versions, timestamps, bounds)[0]
+    part = np.searchsorted(bounds, rows, side="right") - 1
     if won is not None:
-        rows = np.flatnonzero(won[i].isin(chunk.ids))
-        if len(rows) == 0:
-            return
-        chunk = chunk.take(rows)
-    writer.add(kind, chunk)
+        keep = np.zeros(len(rows), dtype=bool)
+        for k in range(len(heads)):
+            mine = part == k
+            keep[mine] = won[k].isin(ids[rows[mine]])
+        rows, part = rows[keep], part[keep]
+    in_chunk = rows - bounds[part] + np.asarray(starts, dtype=np.int64)[part]
+
+    if kind == _NODES:
+        schemas = [_meta_schema(h[0][4]) for h in heads]
+        labels = np.array([schemas.index(s) for s in schemas], dtype=np.int64)
+    else:
+        labels = np.zeros(len(heads), dtype=np.int64)
+    label = labels[part]
+    edges = [0] + (np.flatnonzero(label[1:] != label[:-1]) + 1).tolist() + [len(rows)]
+    for a, b in zip(edges[:-1], edges[1:]):
+        if a == b:
+            continue
+        members = np.unique(part[a:b])
+        writer.add(kind, _gathered(
+            kind, [heads[k][0] for k in members.tolist()],
+            np.searchsorted(members, part[a:b]), in_chunk[a:b],
+        ))
+
+
+cdef _gathered(kind, list chunks, member, rows):
+    """The elements of the decoded chunks `chunks` of `kind` at the positions `rows`,
+    each in the chunk `member` names (each chunk's positions rising), in that order, as
+    one chunk; ways and relations taken from several chunks keep only the strings they
+    use."""
+    if len(chunks) == 1:
+        if len(rows) == len(_chunk_ids(kind, chunks[0])):
+            return chunks[0]
+        return _take(kind, chunks[0], rows)
+    pieces = []
+    order = np.empty(len(rows), dtype=np.int64)
+    cdef Py_ssize_t taken = 0
+    for k, chunk in enumerate(chunks):
+        mine = np.flatnonzero(member == k)
+        order[mine] = taken + np.arange(len(mine))
+        taken += len(mine)
+        pieces.append(_take(kind, chunk, rows[mine]))
+    if kind == _NODES:
+        return _take(kind, _joined_nodes(pieces), order)
+    pieces = [
+        _with_used_strings(dict(p.arrays), p.strings, p.is_relation) for p in pieces
+    ]
+    return _joined_elements(pieces).take(order)
 
 
 cdef _merge_kind(inputs, kind, kept, won, _RepackWriter writer):
     """Write the elements of `kind` of all inputs, one copy per id, in id order."""
     streams = [inp.chunks(kind, kept) for inp in inputs]
     heads = [next(s, None) for s in streams]
+    starts = [0] * len(heads)
     while True:
         live = [i for i in range(len(heads)) if heads[i] is not None]
         if not live:
             return
-        if len(live) == 1:
-            i = live[0]
-            _write_winners(writer, kind, heads[i][0], won, i)
-            heads[i] = next(streams[i], None)
-            continue
-
         frontier = min([heads[i][1][-1] for i in live])
-        counts = [int(np.searchsorted(heads[i][1], frontier, side="right")) for i in live]
-        src = np.repeat(np.array(live), counts)
-        pos = np.concatenate([np.arange(n) for n in counts])
-        ids = np.concatenate([heads[i][1][:n] for i, n in zip(live, counts)])
-        versions = np.concatenate([heads[i][2][:n] for i, n in zip(live, counts)])
-        timestamps = np.concatenate([heads[i][3][:n] for i, n in zip(live, counts)])
-
-        winners = _winning_copies(ids, versions, timestamps, src)
-        cuts = np.flatnonzero(src[winners[1:]] != src[winners[:-1]]) + 1
-        for run in np.split(winners, cuts):
-            i = src[run[0]]
-            _write_winners(writer, kind, _take(kind, heads[i][0], pos[run]), won, i)
-
-        for i, n in zip(live, counts):
-            chunk, chunk_ids, chunk_versions, chunk_timestamps = heads[i]
-            if n == len(chunk_ids):
+        ends = [int(np.searchsorted(heads[i][1], frontier, side="right")) for i in live]
+        _write_step(
+            writer, kind, [heads[i] for i in live], [starts[i] for i in live], ends,
+            None if won is None else [won[i] for i in live],
+        )
+        for i, end in zip(live, ends):
+            if end == len(heads[i][1]):
                 heads[i] = next(streams[i], None)
-            elif n > 0:
-                rest = np.arange(n, len(chunk_ids))
-                heads[i] = (
-                    _take(kind, chunk, rest), chunk_ids[n:], chunk_versions[n:],
-                    chunk_timestamps[n:],
-                )
+                starts[i] = 0
+            else:
+                starts[i] = end
 
 
 cdef _header_bounds(headers):
