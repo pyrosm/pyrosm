@@ -111,8 +111,10 @@ html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "")
 llms_txt_summary = (
     "pyrosm reads OpenStreetMap PBF files into GeoPandas GeoDataFrames and downloads "
     "OpenStreetMap extracts from Geofabrik, BBBike and Movisda. Before writing code that "
-    "downloads data or geocodes places, read the Download responsibly page "
-    "(%sdownload_responsibly.html) and follow its rules for AI coding agents." % html_baseurl
+    "downloads data or geocodes places, read and follow the Rules for AI coding agents "
+    "(%sai_agents.html). The Download responsibly page (%sdownload_responsibly.html) "
+    "explains why the rules are needed and shows examples of how to follow them."
+    % (html_baseurl, html_baseurl)
 )
 # Link the rendered pages, which hold the API docstrings and the notebooks without their
 # images' data. No llms-full.txt, the sources in one file, which would be mostly notebook
@@ -124,21 +126,23 @@ llms_txt_full_max_size = 0
 llms_txt_full_size_policy = "info_skip"
 
 
-def _policy_page_first(app, exception):
-    """Move the Download responsibly page to the top of the list of pages in llms.txt."""
+def _agent_pages_first(app, exception):
+    """Put the Rules for AI coding agents page first and Download responsibly second in
+    the list of pages in llms.txt."""
     path = Path(app.outdir) / "llms.txt"
     if exception is not None or not path.exists():
         return
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    policy = [line for line in lines if line.startswith("- [Download responsibly](")]
-    rest = [line for line in lines if line not in policy]
+    titles = ("- [Rules for AI coding agents](", "- [Download responsibly](")
+    pages = [line for title in titles for line in lines if line.startswith(title)]
+    rest = [line for line in lines if line not in pages]
     first = next(i for i, line in enumerate(rest) if line.startswith("- ["))
-    path.write_text("".join(rest[:first] + policy + rest[first:]), encoding="utf-8")
+    path.write_text("".join(rest[:first] + pages + rest[first:]), encoding="utf-8")
 
 
 def setup(app):
     # After sphinx-llms-txt, which writes llms.txt at the default priority, 500.
-    app.connect("build-finished", _policy_page_first, priority=900)
+    app.connect("build-finished", _agent_pages_first, priority=900)
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,

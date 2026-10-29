@@ -110,6 +110,7 @@ See :doc:`How to cite pyrosm <citation>` for the full reference and a BibTeX ent
 
     upgrading.md
     download_responsibly.ipynb
+    ai_agents.md
     faq.md
     benchmarks/benchmarks_scaling.ipynb
 

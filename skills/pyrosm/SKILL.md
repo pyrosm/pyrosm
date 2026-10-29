@@ -7,9 +7,12 @@ description: Use when writing or running Python code that reads OpenStreetMap da
 
 pyrosm reads OpenStreetMap PBF files into GeoPandas GeoDataFrames. It downloads the files
 from Geofabrik, BBBike and Movisda and geocodes place names with Nominatim; these are free
-services shared by everyone. The page
-https://pyrosm.readthedocs.io/en/stable/download_responsibly.html explains the rules below,
-and https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the documentation.
+services shared by everyone. The
+[Rules for AI coding agents](https://pyrosm.readthedocs.io/en/stable/ai_agents.html) page has
+a shorter version of the rules below. The
+[Download responsibly](https://pyrosm.readthedocs.io/en/stable/download_responsibly.html) page
+explains why the rules are needed and shows examples of how to follow them.
+https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the documentation.
 
 ## Plan, then download once
 
