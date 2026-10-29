@@ -93,7 +93,7 @@ for instructions how to use the library.
 
 ## Download responsibly
 
-The data providers that pyrosm downloads from (Geofabrik, BBBike, Movisda) and the Nominatim geocoder are free services shared by everyone. Download an extract once and reuse it, and keep large regions current with `pyosmium-up-to-date` instead of downloading them again. pyrosm refuses a 4th full download of one URL within 24 hours and downloads one file at a time from each host. [Download responsibly](https://pyrosm.readthedocs.io/en/stable/download_responsibly.html) says what the providers ask, how pyrosm keeps to it, and the rules for AI coding agents that run pyrosm.
+The data providers that pyrosm downloads from (Geofabrik, BBBike, Movisda) and the Nominatim geocoder are free services shared by everyone. Download an extract once and reuse it, and keep large regions current with `pyosmium-up-to-date` instead of downloading them again. pyrosm refuses a 4th full download of one URL within 24 hours and downloads one file at a time from each host. [Download responsibly](https://pyrosm.readthedocs.io/en/stable/download_responsibly.html) explains the usage policies of these services and how pyrosm limits its downloads and geocoding requests. AI agents that write or run pyrosm code should follow the [Rules for AI coding agents](https://pyrosm.readthedocs.io/en/stable/ai_agents.html).
 
 ## Get in touch + contributions
 
