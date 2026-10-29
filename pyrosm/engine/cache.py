@@ -6,8 +6,7 @@ GeoParquet under a temp directory, keyed by the source file + the read's paramet
 later read -- in the same session or a different one -- reads that GeoParquet back instead of
 re-decoding the PBF, the same spirit as how ``get_data`` keeps a downloaded ``*.osm.pbf``. Each
 layer is cached separately, so peak memory stays bounded by a single layer (never the whole file's
-features). ``pyarrow`` is optional: without it the read just returns the in-memory frame and writes
-no cache.
+features).
 """
 
 import hashlib

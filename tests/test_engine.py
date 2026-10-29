@@ -178,7 +178,6 @@ def test_engine_buildings_raw_blob_matches(helsinki_pbf, tmp_path):
 
 def test_engine_buildings_output_parquet_matches(helsinki_pbf, tmp_path):
     # The streamed GeoParquet must reload equal to the in-memory frame.
-    pytest.importorskip("pyarrow")
     out = str(tmp_path / "buildings.parquet")
     in_memory = get_buildings(helsinki_pbf)
     returned = get_buildings(helsinki_pbf, output=out)
@@ -192,7 +191,6 @@ def test_engine_buildings_output_parquet_matches(helsinki_pbf, tmp_path):
 def test_engine_buildings_output_is_chunked(helsinki_pbf, tmp_path, monkeypatch):
     # Tiny chunks must stream multiple row groups AND still carry every column: a tag
     # column that first occurs only in a later chunk must not be dropped from the output.
-    pytest.importorskip("pyarrow")
     import pyarrow.parquet as pq
 
     in_memory = OSM(helsinki_pbf, engine="in_memory").get_buildings()
@@ -211,15 +209,6 @@ def test_engine_buildings_output_is_chunked(helsinki_pbf, tmp_path, monkeypatch)
     # to the single-chunk output.
     assert list(chunked_reload.columns) == list(in_memory.columns)
     _assert_full_parity(chunked_reload, full_reload)
-
-
-def test_engine_output_requires_pyarrow(helsinki_pbf, tmp_path, monkeypatch):
-    # Without pyarrow, output= must fail fast with an actionable error (and not decode).
-    from pyrosm.utils import _compat
-
-    monkeypatch.setattr(_compat, "HAS_PYARROW", False)
-    with pytest.raises(ImportError, match="pyarrow"):
-        get_buildings(helsinki_pbf, output=str(tmp_path / "x.parquet"))
 
 
 def _fake_executor(raise_init=None, raise_map=None):
@@ -281,11 +270,8 @@ def test_engine_parallel_decode_falls_back_to_serial(
 def test_engine_parallel_decode_matches_serial(read, helsinki_pbf, monkeypatch):
     # A pool decodes the file in many small tasks and returns their shards in file order, so
     # the read yields exactly the serial result -- same rows in the same order -- and matches
-    # the in-memory reader. HAS_PYARROW=False bypasses the result cache so both reads actually
-    # run; the fake executor runs the pool in-process, without progress reports.
-    from pyrosm.utils import _compat
-
-    monkeypatch.setattr(_compat, "HAS_PYARROW", False)
+    # the in-memory reader. The result cache is cleared between the reads so both decode the
+    # file; the fake executor runs the pool in-process, without progress reports.
     monkeypatch.setattr(pool, "_available_cores", lambda: 8)
     monkeypatch.setattr(pool, "ProcessPoolExecutor", _fake_executor())
 
@@ -297,6 +283,7 @@ def test_engine_parallel_decode_matches_serial(read, helsinki_pbf, monkeypatch):
     }[read]()
 
     parallel = fn(helsinki_pbf, workers=3, progress=False)
+    cache.clear()
     serial = fn(helsinki_pbf, workers=1, progress=False)
     # Identical rows in identical order (the ordering contract), not just the same set.
     assert list(parallel["id"]) == list(serial["id"])
@@ -1083,15 +1070,14 @@ _CRAFTED_WAYS = [
     ids=["all ways", "requested tags with metadata", "no leftovers", "untagged"],
 )
 def test_engine_store_tag_columns_match_the_python_path(
-    ways, tags_as_columns, keep_metadata, keep_other_tags, monkeypatch
+    ways, tags_as_columns, keep_metadata, keep_other_tags
 ):
     # The tag columns a store's ways give, found in C (special ways by their tag dicts),
     # are those the Python path finds in the ways' tag dicts, the tag columns and JSON
     # values built in C are those it routes the tag dicts to, and so are the way arrays
-    # built from the store (tag dicts without pyarrow).
+    # built from the store.
     from pyrosm.engine import collect
     from pyrosm.engine.ways import result_tag_columns, tag_lists
-    from pyrosm.utils import _compat
 
     store = _way_store(_CRAFTED_WAYS[ways])
     keys = None if keep_other_tags else set(tags_as_columns)
@@ -1120,8 +1106,7 @@ def test_engine_store_tag_columns_match_the_python_path(
     columns, json = tag_lists(store, tags_as_columns, keep_metadata, keep_other_tags)
     assert {k: v.tolist() for k, v in columns.items()} == col_lists
     assert json.tolist() == leftover
-    for columns, has_pyarrow in ((None, True), (ref, True), (ref, False)):
-        monkeypatch.setattr(_compat, "HAS_PYARROW", has_pyarrow)
+    for columns in (None, ref):
         expected, got = (
             collect._ways_arrays(
                 cols, tags_as_columns, keep_metadata, keep_other_tags, columns=columns
@@ -1778,7 +1763,6 @@ def test_engine_get_buildings_no_buildings_returns_none(tmp_path):
     fp = str(tmp_path / "no_buildings.osm.pbf")
     _write_pbf_no_buildings(fp)
     assert get_buildings(fp) is None
-    pytest.importorskip("pyarrow")
     assert get_buildings(fp, output=str(tmp_path / "x.parquet")) is None
 
 
@@ -1857,7 +1841,7 @@ def test_engine_collect_empty_and_edge_shards(tmp_path):
 
 
 def test_engine_geoparquet_schema_helpers():
-    pa = pytest.importorskip("pyarrow")
+    import pyarrow as pa
     from pyrosm.engine.geoparquet import _unify_schemas, _align_table
 
     s1 = pa.schema([pa.field("a", pa.int64()), pa.field("c", pa.null())])
@@ -1879,7 +1863,6 @@ def test_engine_stream_parquet_chunk_table_branches(
     # Drive the chunked writer through its relations-only, ways-only, empty-chunk and
     # failed-chunk branches by feeding it crafted variants of the real collected building
     # data.
-    pytest.importorskip("pyarrow")
     import tempfile
     import shutil
     import pyarrow.parquet as pq
@@ -1961,32 +1944,6 @@ def test_engine_stream_parquet_chunk_table_branches(
         assert written and not (tmp_path / "failed.parquet").exists()
     finally:
         shutil.rmtree(shard_dir, ignore_errors=True)
-
-
-def test_compat_has_pyarrow_false_when_unavailable(monkeypatch):
-    # The optional-dependency flag falls back to False (and require_pyarrow then raises)
-    # when pyarrow cannot be imported.
-    import builtins
-    import importlib
-    from pyrosm.utils import _compat
-
-    real_import = builtins.__import__
-
-    def blocked(name, *args, **kwargs):
-        if name == "pyarrow" or name.startswith("pyarrow."):
-            raise ImportError("pyarrow blocked for test")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", blocked)
-    try:
-        importlib.reload(_compat)
-        assert _compat.HAS_PYARROW is False
-        with pytest.raises(ImportError, match="pyarrow"):
-            _compat.require_pyarrow()
-    finally:
-        monkeypatch.undo()
-        importlib.reload(_compat)  # restore the real, pyarrow-present state
-    assert _compat.HAS_PYARROW is True
 
 
 @pytest.fixture
@@ -2265,16 +2222,6 @@ def test_engine_cache_empty_result_is_marked(test_pbf, monkeypatch, fresh_cache)
     assert sum(decodes) == 0
 
 
-def test_engine_cache_pyarrow_absent_falls_back(helsinki_pbf, monkeypatch, fresh_cache):
-    # With pyarrow unavailable the engine returns the in-memory frame and writes no cache file.
-    from pyrosm.utils import _compat
-
-    monkeypatch.setattr(_compat, "HAS_PYARROW", False)
-    mine = get_buildings(helsinki_pbf)
-    _assert_full_parity(mine, OSM(helsinki_pbf, engine="in_memory").get_buildings())
-    assert list(cache.cache_dir().glob("*.parquet")) == []
-
-
 def test_cache_dir_builds_and_creates_tempdir_path(monkeypatch, tmp_path):
     # cache_dir() roots the result cache at <tempdir>/pyrosm/cache and creates it on demand. The
     # fixtures stub the module attribute, so exercise the real implementation captured at import.
@@ -2294,7 +2241,6 @@ def test_engine_boundaries_parity(helsinki_region_pbf):
 
 def test_engine_natural_output_parquet_matches(helsinki_pbf, tmp_path):
     # A point layer (nodes + ways) streamed to GeoParquet must reload equal to the frame.
-    pytest.importorskip("pyarrow")
     out = str(tmp_path / "natural.parquet")
     in_memory = get_natural(helsinki_pbf)
     returned = get_natural(helsinki_pbf, output=out)
@@ -2392,7 +2338,6 @@ def test_engine_boundaries_name_with_output_raises(helsinki_pbf, tmp_path):
 def test_engine_stream_skips_empty_node_chunk(tmp_path, monkeypatch):
     # A node chunk that assembles to nothing is skipped (no row group); with only that
     # chunk present, the writer produces no parts and returns None.
-    pytest.importorskip("pyarrow")
     from pyrosm.config import Conf
     from pyrosm.data_manager import parse_custom_filter
     from pyrosm.engine import geoparquet
@@ -2544,18 +2489,6 @@ def test_engine_network_output_dir_empty_returns_none(test_pbf, tmp_path):
     )
     assert ret is None
     assert not out.exists()
-
-
-def test_engine_network_pyarrow_absent_falls_back(
-    helsinki_pbf, monkeypatch, fresh_cache
-):
-    # With pyarrow unavailable the network read returns the in-memory edges and writes no cache.
-    from pyrosm.utils import _compat
-
-    monkeypatch.setattr(_compat, "HAS_PYARROW", False)
-    mine = get_network(helsinki_pbf, network_type="driving")
-    _assert_full_parity(mine, OSM(helsinki_pbf, engine="in_memory").get_network(network_type="driving"))
-    assert list(cache.cache_dir().glob("*.parquet")) == []
 
 
 def test_engine_network_empty_result_is_marked(test_pbf, monkeypatch, fresh_cache):

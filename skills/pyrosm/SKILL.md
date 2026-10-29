@@ -75,9 +75,14 @@ and https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the doc
 - For a whole country or continent that must stay current, or for the planet, point the
   user to pyosmium-up-to-date and https://planet.openstreetmap.org instead of downloading
   again.
-- In tests and continuous integration, use the files that ship with pyrosm
-  (`get_data("test_pbf")`, `get_data("helsinki_pbf")`), or cache the download folder
-  between runs. Do not write a test or a job that downloads an extract on every run.
+- For tests and continuous integration, store a small PBF file of the user's study area
+  with the code, for example in `tests/data/`, and read this file in the tests instead of
+  downloading an extract. Create the small file once from an extract that has already been
+  downloaded, with `OSM(filepath, bounding_box=...).to_pbf("tests/data/area.osm.pbf")`.
+  If the file is too large to store with the code, save it once on GitHub, for example as
+  a release asset, and let the pipeline fetch it from there. If a pipeline must download
+  an extract, cache the download folder between runs. Do not write a test or a job that
+  downloads an extract on every run.
 
 ## What pyrosm's refusals mean
 

@@ -8,7 +8,6 @@ from pyrosm.engine.bounding_box import _in_box_nodes
 from pyrosm.engine.decode import _is_threaded
 from pyrosm.engine.collect import (
     _ways_arrays,
-    _collect_layer,
     _collect_kept_ways,
     _coordinates,
     _gather_node_records,
@@ -16,14 +15,7 @@ from pyrosm.engine.collect import (
     _needed_node_ids,
     _result_tag_columns,
 )
-from pyrosm.utils import _compat
-from pyrosm.utils.progress import (
-    BUILDING,
-    BUILDING_EDGES,
-    COLLECTING,
-    GATHERING_NODES,
-    start_step,
-)
+from pyrosm.utils.progress import BUILDING_EDGES, GATHERING_NODES, start_step
 
 
 def _assemble_chunk(
@@ -73,52 +65,6 @@ def _assemble_chunk(
     if not keep_other_tags and gdf is not None and "tags" in gdf.columns:
         gdf = gdf.drop(columns=["tags"])
     return gdf
-
-
-def _assemble_layer(
-    shard_paths,
-    tags_as_columns,
-    keep_metadata,
-    filter_spec,
-    keep_ways=True,
-    keep_relations=True,
-    bounding_box=None,
-    complete_relations=False,
-    keep_other_tags=True,
-    keep_node_info=False,
-    steps=None,
-):
-    """Assemble all matching nodes, ways and relations into one in-memory GeoDataFrame,
-    in the steps ``COLLECTING`` and ``BUILDING`` of ``steps`` (a
-    :class:`~pyrosm.utils.progress.Steps`, or None)."""
-    start_step(steps, COLLECTING)
-    collected = _collect_layer(
-        shard_paths,
-        tags_as_columns,
-        keep_metadata,
-        filter_spec,
-        keep_ways,
-        keep_relations,
-        bounding_box,
-        complete_relations,
-    )
-    if collected is None:
-        return None
-    node_features, kept, relations, relation_ways, node_coordinates = collected
-    start_step(steps, BUILDING)
-    return _assemble_chunk(
-        node_coordinates,
-        kept,
-        relations,
-        relation_ways,
-        tags_as_columns,
-        keep_metadata,
-        nodes=node_features,
-        bounding_box=bounding_box,
-        complete_relations=complete_relations,
-        keep_other_tags=keep_other_tags,
-        keep_node_info=keep_node_info,
-    )
 
 
 def _network_kept(shard_paths, filter_spec, bounding_box):
@@ -190,7 +136,7 @@ def _assemble_network(
     :class:`~pyrosm.utils.progress.Steps`, or None)."""
     from pyrosm.frames import prepare_geodataframe
 
-    if not segments and _compat.HAS_PYARROW and _is_threaded(shard_paths):
+    if not segments and _is_threaded(shard_paths):
         start_step(steps, BUILDING_EDGES)
         return _network_frame(
             shard_paths,
