@@ -1227,14 +1227,16 @@ def test_to_pbf_writes_each_kind_of_group(tmp_path):
     # nodes (here without tags and metadata) encoded again; each written block is
     # encoded as protobuf itself encodes it, and a group without elements is left out.
     # A re-packed crop keeps the same elements, each way's and relation's Info fields
-    # as present in the source, and a repeated tag key once, with its last value.
+    # as present in the source, and a repeated tag key once, with its last value, also
+    # a node's key whose text the string table holds twice.
     from pyrosm.pbf_export import _iter_block_data
     from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
 
     blk = PrimitiveBlock(granularity=100, date_granularity=1000)
-    blk.stringtable.s.extend([b"", b"amenity", b"cafe", b"bar"])
+    blk.stringtable.s.extend([b"", b"amenity", b"cafe", b"bar", b"amenity"])
     plain = blk.primitivegroup.add().nodes
-    plain.add(id=1, lat=601700000, lon=249440000, keys=[1], vals=[2]).info.version = 3
+    node = plain.add(id=1, lat=601700000, lon=249440000, keys=[1, 4], vals=[2, 3])
+    node.info.version = 3
     plain.add(id=2, lat=611700000, lon=259440000)
     ways = blk.primitivegroup.add().ways
     ways.add(id=10, refs=[1, 1], keys=[1, 1], vals=[2, 3]).info.version = 4  # nodes 1, 2
@@ -1270,8 +1272,12 @@ def test_to_pbf_writes_each_kind_of_group(tmp_path):
         str(tmp_path / "repacked.osm.pbf"), repack=True
     )
     nodes, _ = _dense_nodes(repacked)
-    assert nodes == {1: (3, {"amenity": "cafe"}), 2: (None, {}), 4: (None, {})}
+    assert nodes == {1: (3, {"amenity": "bar"}), 2: (None, {}), 4: (None, {})}
     blocks = list(_iter_primitive_blocks(repacked))
+    (dense,) = [
+        g.dense for b in blocks for g in b.primitivegroup if g.dense.id[:1] == [1]
+    ]
+    assert list(dense.id) == [1] and len(dense.keys_vals) == 3  # one key, value and 0
     ((way, st),) = [(w, b.stringtable.s) for b in blocks for g in b.primitivegroup
                     for w in g.ways]
     assert way.id == 10 and np.cumsum(way.refs).tolist() == [1, 2]
