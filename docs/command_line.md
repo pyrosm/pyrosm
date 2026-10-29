@@ -13,7 +13,7 @@ pyrosm downloads list
 pyrosm downloads clear [FILE]
 ```
 
-`pyrosm run` and `pyrosm validate` are described with the [recipes](recipes.md#command-line).
+`pyrosm run` and `pyrosm validate` are described on the [Recipes](recipes.ipynb) page.
 
 ## Find the extracts of an area
 
