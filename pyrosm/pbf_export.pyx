@@ -39,8 +39,8 @@ import numpy as np
 cimport cython
 from libc.stdint cimport int32_t, int64_t, uint8_t, uint32_t, uint64_t, uintptr_t
 from cpython.pyport cimport PY_SSIZE_T_MAX
-from libc.stdlib cimport free, realloc
-from libc.string cimport memcpy, memset
+from libc.stdlib cimport calloc, free, realloc
+from libc.string cimport memcmp, memcpy, memset
 
 from google.protobuf.message import DecodeError
 from pyrosm.exceptions import InvalidOSMFileError
@@ -735,12 +735,6 @@ cdef bytes _varint_field(int number, int64_t value):
     return _varint(number << 3) + _varint(<uint64_t>value)
 
 
-cdef bytes _string_table_bytes(list strings):
-    """The bytes of a StringTable holding `strings` in order."""
-    cdef bytes tag = _varint((ST_S << 3) | 2)
-    return b"".join([tag + _varint(len(s)) + s for s in strings])
-
-
 # The block header of the blocks the re-pack writer builds: the standard grid.
 _STANDARD_GRID = {"granularity": 100, "date_granularity": 1000, "lat_offset": 0,
                   "lon_offset": 0}
@@ -807,25 +801,6 @@ cdef tuple _tag_rows(const int64_t[::1] keys_vals, Py_ssize_t n):
             t += 1
             i += 2
     return off, keys, vals
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef _tag_stream(const int64_t[::1] off, const int64_t[::1] keys,
-                 const int64_t[::1] vals):
-    """The tag stream (each node's key and value ids followed by a 0) of nodes with the
-    tags `keys` and `vals` at the offsets `off`."""
-    cdef Py_ssize_t n = off.shape[0] - 1, e, j, t = 0
-    out = np.empty(2 * keys.shape[0] + n, dtype=np.int64)
-    cdef int64_t[::1] o = out
-    for e in range(n):
-        for j in range(off[e], off[e + 1]):
-            o[t] = keys[j]
-            o[t + 1] = vals[j]
-            t += 2
-        o[t] = 0
-        t += 1
-    return out
 
 
 # The group field of each kind of element, indexed by `_NODES`, `_WAYS`, `_RELATIONS`.
@@ -3304,45 +3279,6 @@ def _write_records(nodes, ways, relations, bounds, progress, path):
 # see the guard in `_repack_write`). These emitters are separate from the from-records
 # `_emit_*` so the `write_pbf` path is untouched.
 
-cdef _emit_repack_nodes(out, list chunks):
-    """Write the nodes of the node chunks `chunks`, which share one metadata schema, as
-    one re-packed block, or as two halves (each split again as needed) when it is larger
-    than `_MAX_PACKED_BLOCK_SIZE`. The block's string table holds every node's tags
-    (key, value) in node order, then the users, each string at its first use."""
-    cdef _StringTable st = _StringTable()
-    indexes = [np.zeros(max(len(chunk.strings), 1), dtype=np.int64) for chunk in chunks]
-    for chunk, index in zip(chunks, indexes):
-        tags = np.empty(2 * len(chunk.arrays["keys"]), dtype=np.int64)
-        tags[0::2] = chunk.arrays["keys"]
-        tags[1::2] = chunk.arrays["vals"]
-        _intern_first_uses(st, chunk.strings, tags, index)
-    if "user_sid" in chunks[0].meta:
-        for chunk, index in zip(chunks, indexes):
-            _intern_first_uses(st, chunk.strings, chunk.arrays["user_sid"], index)
-    parts = []
-    for chunk, index in zip(chunks, indexes):
-        part = dict(chunk.arrays)
-        for name in ("keys", "vals", "user_sid"):
-            if name in part:
-                part[name] = index[part[name]]
-        parts.append(part)
-    a = _concat_elements(parts)
-    empty = np.empty(0, dtype=np.int64)
-    dense = {name: a.get(name, empty) for name in _NODE_COLS + _NODE_META}
-    dense["keys_vals"] = (
-        _tag_stream(a["tags_off"], a["keys"], a["vals"]) if len(a["keys"]) else empty
-    )
-    n = len(a["id"])
-    group = _field(GROUP_DENSE, _dense_bytes(dense, np.ones(n, dtype=bool)))
-    block = _block_bytes(_string_table_bytes(st.strings), [group], _STANDARD_GRID)
-    if n > 1 and len(block) > _MAX_PACKED_BLOCK_SIZE:
-        head, tail = _split_chunks(chunks, n // 2)
-        _emit_repack_nodes(out, head)
-        _emit_repack_nodes(out, tail)
-        return
-    out.write(_frame_blob("OSMData", block))
-
-
 # Per-element columns of `_ElementChunk` arrays of ways and relations; `tags_off` and
 # `members_off` are CSR offsets into `keys`/`vals` and into `members` (and a relation's
 # `types`/`roles`).
@@ -3571,57 +3507,6 @@ cdef _ElementChunk _taken(_ElementChunk chunk, rows):
     return _with_used_strings(dict(taken.arrays), taken.strings, taken.kind, taken.meta)
 
 
-cdef _string_order(dict a, bint is_relation):
-    """The string ids of element arrays in the order a re-packed block interns them:
-    each element's tags (key, value), its user, then its roles."""
-    cdef const int64_t[::1] tags_off = a["tags_off"], keys = a["keys"], vals = a["vals"]
-    cdef const int64_t[::1] fields = a["info_fields"], user = a["user_sid"]
-    cdef const int64_t[::1] members_off = a["members_off"]
-    cdef const int64_t[::1] roles = a["roles"] if is_relation else a["members"][:0]
-    cdef int64_t has_user = _HAS_USER
-    cdef Py_ssize_t n = fields.shape[0], e, j, t = 0
-    order = np.empty(2 * keys.shape[0] + n + roles.shape[0], dtype=np.int64)
-    cdef int64_t[::1] o = order
-    for e in range(n):
-        for j in range(tags_off[e], tags_off[e + 1]):
-            o[t] = keys[j]
-            o[t + 1] = vals[j]
-            t += 2
-        if fields[e] & has_user:
-            o[t] = user[e]
-            t += 1
-        if is_relation:
-            for j in range(members_off[e], members_off[e + 1]):
-                o[t] = roles[j]
-                t += 1
-    return order[:t]
-
-
-cdef _intern_first_uses(_StringTable st, strings, order, index):
-    """Intern in `st` the strings `strings[i]` of the string ids `order`, each at its
-    first use, and set `index[i]` to its id in `st`."""
-    if len(order) == 0:
-        return
-    distinct, first = np.unique(order, return_index=True)
-    used = distinct[np.argsort(first, kind="stable")]
-    index[used] = [st.intern(strings[i]) for i in used.tolist()]
-
-
-cdef dict _interned(_ElementChunk chunk, _StringTable st):
-    """`chunk`'s arrays with its string ids replaced by ids into the block's string
-    table `st`, interning the strings in the order `_string_order` gives."""
-    a = chunk.arrays
-    index = np.zeros(max(len(chunk.strings), 1), dtype=np.int64)
-    _intern_first_uses(
-        st, chunk.strings, _string_order(a, chunk.kind == _RELATIONS), index
-    )
-    out = dict(a)
-    for name in ("keys", "vals", "user_sid", "roles"):
-        if name in out:
-            out[name] = index[out[name]]
-    return out
-
-
 cdef inline Py_ssize_t _varint_size(uint64_t x) noexcept nogil:
     """The length of `x` as a protobuf varint."""
     cdef Py_ssize_t n = 1
@@ -3645,123 +3530,411 @@ cdef inline uint64_t _zigzag(int64_t value) noexcept nogil:
     return (<uint64_t>value << 1) ^ <uint64_t>(value >> 63)
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef class _ElementWriter:
-    """Writes the ways or relations of element arrays (string ids into the block's
-    table) in protobuf's encoding: the fields in field-number order, repeated fields
-    packed and left out when empty, `Info` with the fields present only."""
-    cdef const int64_t[::1] ids, tags_off, keys, vals, fields
-    cdef const int64_t[::1] version, timestamp, changeset, uid, user, visible
-    cdef const int64_t[::1] members_off, members, types, roles
-    cdef bint is_relation
+# ---- re-packed blocks encoded without the GIL -----------------------------------
+# `_encoded_block` writes the elements of chunks (see `_ElementChunk`) as one re-packed
+# block. Each chunk is a `_Piece`: pointers to its columns, and its strings laid out one
+# after another. The block's string table (`_Table`) holds each string once, at its
+# first use: for nodes every node's tags (key, value) in node order, then the users; for
+# ways and relations each element's tags, its user, then its roles. Entry 0 is the blank
+# string, which no string is matched to (as in `_StringTable`). The writers below match
+# protobuf's encoding: the fields in field-number order, repeated fields packed and left
+# out when empty, an `Info` with the fields present only.
 
-    def __cinit__(self, dict a, bint is_relation):
-        self.ids = a["id"]
-        self.tags_off = a["tags_off"]
-        self.keys = a["keys"]
-        self.vals = a["vals"]
-        self.fields = a["info_fields"]
-        self.version = a["version"]
-        self.timestamp = a["timestamp"]
-        self.changeset = a["changeset"]
-        self.uid = a["uid"]
-        self.user = a["user_sid"]
-        self.visible = a["visible"]
-        self.members_off = a["members_off"]
-        self.members = a["members"]
-        self.is_relation = is_relation
-        if is_relation:
-            self.types = a["types"]
-            self.roles = a["roles"]
+# The columns of a `_Piece`, in `_PIECE_COLS` order; `_C_VERSION` to `_C_VISIBLE` are
+# also the DenseInfo fields, in their order.
+cdef enum:
+    _C_ID
+    _C_LAT
+    _C_LON
+    _C_VERSION
+    _C_TIMESTAMP
+    _C_CHANGESET
+    _C_UID
+    _C_USER
+    _C_VISIBLE
+    _C_INFO
+    _C_TAGS_OFF
+    _C_KEYS
+    _C_VALS
+    _C_MEMBERS_OFF
+    _C_MEMBERS
+    _C_TYPES
+    _C_ROLES
+    _N_COLS
 
-    cdef Py_ssize_t packed(self, unsigned char* out, Py_ssize_t pos, int field,
-                           const int64_t[::1] values, Py_ssize_t start, Py_ssize_t end,
-                           bint delta) noexcept nogil:
-        """Write `values[start:end]` as a packed field (delta- and zig-zag-coded when
-        `delta`); nothing when empty."""
-        cdef Py_ssize_t j, size = 0
-        cdef int64_t previous = 0
-        if start == end:
-            return pos
-        for j in range(start, end):
-            size += _varint_size(_zigzag(values[j] - previous) if delta
-                                 else <uint64_t>values[j])
-            previous = values[j]
-        pos = _put_varint(out, pos, (field << 3) | 2)
-        pos = _put_varint(out, pos, size)
-        if out == NULL:
-            return pos + size
-        previous = 0
-        for j in range(start, end):
-            pos = _put_varint(out, pos, _zigzag(values[j] - previous) if delta
-                              else <uint64_t>values[j])
-            previous = values[j]
+_PIECE_COLS = ("id", "lat", "lon", "version", "timestamp", "changeset", "uid",
+               "user_sid", "visible", "info_fields", "tags_off", "keys", "vals",
+               "members_off", "members", "types", "roles")
+
+# What an empty column points to.
+cdef int64_t _NO_VALUES[1]
+
+
+cdef struct _Piece:
+    Py_ssize_t n                       # its elements
+    const int64_t* col[_N_COLS]        # its columns, NULL where the chunk has none
+    const unsigned char* text          # its strings, one after another
+    const int64_t* text_end            # where each string ends in `text`
+    int64_t n_strings
+    int64_t* block_id                  # each string's id in the block's table, 0 unused
+
+
+cdef struct _Table:
+    _Buffer data                       # the StringTable message
+    int64_t* slot                      # the id in each hash slot, 0 when free
+    uint64_t mask                      # the slots, a power of two, less one
+    const unsigned char** text         # each id's string
+    int64_t* size                      # and its length
+    int64_t n                          # the ids given, the blank entry 0 included
+
+
+cdef int64_t _table_id(_Table* t, const unsigned char* s, int64_t n) noexcept nogil:
+    """The id of the string `s` (`n` bytes) in the table `t`, added at its end when it
+    is not in it yet; -1 when memory runs out."""
+    cdef uint64_t h = (<uint64_t>0xCBF29CE4 << 32) | <uint64_t>0x84222325  # FNV-1a
+    cdef uint64_t at
+    cdef int64_t i, found
+    for i in range(n):
+        h = (h ^ s[i]) * ((<uint64_t>1 << 40) | <uint64_t>0x1B3)
+    at = h & t.mask
+    while t.slot[at] != 0:
+        found = t.slot[at]
+        if t.size[found] == n and memcmp(t.text[found], s, n) == 0:
+            return found
+        at = (at + 1) & t.mask
+    if (_append_varint(&t.data, (ST_S << 3) | 2) < 0 or _append_varint(&t.data, n) < 0
+            or _append(&t.data, s, n) < 0):
+        return -1
+    found = t.n
+    t.slot[at] = found
+    t.text[found] = s
+    t.size[found] = n
+    t.n += 1
+    return found
+
+
+cdef int64_t _block_string_id(_Table* t, _Piece* p, int64_t s) noexcept nogil:
+    """The block's id of the string `s` of the piece `p`, given at its first use; -1
+    when memory runs out, -2 when `s` is not one of the piece's strings."""
+    cdef int64_t start
+    if s < 0 or s >= p.n_strings:
+        return -2
+    if p.block_id[s] == 0:
+        start = p.text_end[s - 1] if s > 0 else 0
+        p.block_id[s] = _table_id(t, p.text + start, p.text_end[s] - start)
+    return p.block_id[s]
+
+
+cdef int64_t _intern_strings(_Table* t, _Piece* pieces, Py_ssize_t n_pieces,
+                             int kind) noexcept nogil:
+    """Give each string the pieces use its id in the block's table `t`, in the order of
+    first use above; a status of `_block_string_id` when it fails, else 0."""
+    cdef Py_ssize_t k, e, j
+    cdef _Piece* p
+    cdef int64_t got
+    for k in range(n_pieces):
+        p = &pieces[k]
+        for e in range(p.n):
+            for j in range(p.col[_C_TAGS_OFF][e], p.col[_C_TAGS_OFF][e + 1]):
+                got = _block_string_id(t, p, p.col[_C_KEYS][j])
+                if got < 0:
+                    return got
+                got = _block_string_id(t, p, p.col[_C_VALS][j])
+                if got < 0:
+                    return got
+            if kind == _NODES:
+                continue
+            if p.col[_C_INFO][e] & (1 << (INFO_USER_SID - 1)):
+                got = _block_string_id(t, p, p.col[_C_USER][e])
+                if got < 0:
+                    return got
+            if kind == _RELATIONS:
+                for j in range(p.col[_C_MEMBERS_OFF][e], p.col[_C_MEMBERS_OFF][e + 1]):
+                    got = _block_string_id(t, p, p.col[_C_ROLES][j])
+                    if got < 0:
+                        return got
+    if kind == _NODES and pieces[0].col[_C_USER] != NULL:
+        for k in range(n_pieces):
+            p = &pieces[k]
+            for e in range(p.n):
+                got = _block_string_id(t, p, p.col[_C_USER][e])
+                if got < 0:
+                    return got
+    return 0
+
+
+cdef int _append_column(_Buffer* b, _Piece* pieces, Py_ssize_t n_pieces, int col,
+                        bint delta, bint strings) noexcept nogil:
+    """Column `col` of the pieces' elements, one after another, as `_append_packed`
+    writes it; with `strings`, the values are string ids, written as the block's."""
+    cdef Py_ssize_t k, e
+    cdef int64_t v, previous = 0
+    for k in range(n_pieces):
+        if pieces[k].n > PY_SSIZE_T_MAX // 10 or _grow(b, 10 * pieces[k].n) < 0:
+            return -1
+        for e in range(pieces[k].n):
+            v = pieces[k].col[col][e]
+            if strings:
+                v = pieces[k].block_id[v]
+            if delta:
+                b.n += _write_varint(
+                    b.data + b.n, _zigzag(<int64_t>(<uint64_t>v - <uint64_t>previous))
+                )
+                previous = v
+            else:
+                b.n += _write_varint(b.data + b.n, <uint64_t>v)
+    return 0
+
+
+cdef int _append_dense(_Buffer* b, _Piece* pieces, Py_ssize_t n_pieces,
+                       _Buffer* part, _Buffer* info) noexcept nogil:
+    """The DenseNodes of the pieces' nodes, as `_dense_bytes` writes them: ids, the
+    DenseInfo fields the nodes have, coordinates, and the tags when a node has any."""
+    cdef Py_ssize_t k, tags = 0
+    cdef int c
+    part.n = 0
+    if (_append_column(part, pieces, n_pieces, _C_ID, True, False) < 0
+            or _append_field(b, DENSE_ID, part.data, part.n) < 0):
+        return -1
+    info.n = 0
+    for c in range(_C_VERSION, _C_VISIBLE + 1):
+        if pieces[0].col[c] == NULL:
+            continue
+        part.n = 0
+        if (_append_column(part, pieces, n_pieces, c, _info_delta(c - _C_VERSION),
+                           c == _C_USER) < 0
+                or _append_field(info, c - _C_VERSION + 1, part.data, part.n) < 0):
+            return -1
+    if info.n > 0 and _append_field(b, DENSE_DENSEINFO, info.data, info.n) < 0:
+        return -1
+    for c in range(_C_LAT, _C_LON + 1):
+        part.n = 0
+        if (_append_column(part, pieces, n_pieces, c, True, False) < 0
+                or _append_field(b, DENSE_LAT if c == _C_LAT else DENSE_LON,
+                                 part.data, part.n) < 0):
+            return -1
+    for k in range(n_pieces):
+        tags += pieces[k].col[_C_TAGS_OFF][pieces[k].n] - pieces[k].col[_C_TAGS_OFF][0]
+    if tags == 0:
+        return 0
+    part.n = 0
+    for k in range(n_pieces):
+        if _append_tag_stream(part, &pieces[k]) < 0:
+            return -1
+    return _append_field(b, DENSE_KEYS_VALS, part.data, part.n)
+
+
+cdef int _append_tag_stream(_Buffer* b, _Piece* p) noexcept nogil:
+    """The tag stream of the piece's nodes: each node's key and value ids (the block's)
+    followed by a 0."""
+    cdef Py_ssize_t e, j
+    cdef const int64_t* off = p.col[_C_TAGS_OFF]
+    if _grow(b, 20 * (off[p.n] - off[0]) + 10 * p.n) < 0:
+        return -1
+    for e in range(p.n):
+        for j in range(off[e], off[e + 1]):
+            b.n += _write_varint(b.data + b.n, <uint64_t>p.block_id[p.col[_C_KEYS][j]])
+            b.n += _write_varint(b.data + b.n, <uint64_t>p.block_id[p.col[_C_VALS][j]])
+        b.n += _write_varint(b.data + b.n, 0)
+    return 0
+
+
+cdef Py_ssize_t _put_packed(unsigned char* out, Py_ssize_t pos, int field,
+                            const int64_t* values, const int64_t* ids, Py_ssize_t start,
+                            Py_ssize_t end, bint delta) noexcept nogil:
+    """Write `values[start:end]` as a packed field (delta- and zig-zag-coded when
+    `delta`; with `ids`, each value replaced by `ids[value]`), or only measure it when
+    `out` is NULL; nothing when empty."""
+    cdef Py_ssize_t j, size = 0
+    cdef int64_t v, previous = 0
+    if start == end:
         return pos
+    for j in range(start, end):
+        v = ids[values[j]] if ids != NULL else values[j]
+        size += _varint_size(_zigzag(v - previous) if delta else <uint64_t>v)
+        previous = v
+    pos = _put_varint(out, pos, (field << 3) | 2)
+    pos = _put_varint(out, pos, size)
+    if out == NULL:
+        return pos + size
+    previous = 0
+    for j in range(start, end):
+        v = ids[values[j]] if ids != NULL else values[j]
+        pos = _put_varint(out, pos, _zigzag(v - previous) if delta else <uint64_t>v)
+        previous = v
+    return pos
 
-    cdef Py_ssize_t info_fields(self, unsigned char* out, Py_ssize_t pos,
-                                Py_ssize_t e) noexcept nogil:
-        """Write the fields of element `e`'s Info that it has."""
-        cdef int64_t present = self.fields[e]
-        if present & (1 << (INFO_VERSION - 1)):
-            pos = _put_varint(out, pos, INFO_VERSION << 3)
-            pos = _put_varint(out, pos, <uint64_t>self.version[e])
-        if present & (1 << (INFO_TIMESTAMP - 1)):
-            pos = _put_varint(out, pos, INFO_TIMESTAMP << 3)
-            pos = _put_varint(out, pos, <uint64_t>self.timestamp[e])
-        if present & (1 << (INFO_CHANGESET - 1)):
-            pos = _put_varint(out, pos, INFO_CHANGESET << 3)
-            pos = _put_varint(out, pos, <uint64_t>self.changeset[e])
-        if present & (1 << (INFO_UID - 1)):
-            pos = _put_varint(out, pos, INFO_UID << 3)
-            pos = _put_varint(out, pos, <uint64_t>self.uid[e])
-        if present & (1 << (INFO_USER_SID - 1)):
-            pos = _put_varint(out, pos, INFO_USER_SID << 3)
-            pos = _put_varint(out, pos, <uint64_t>self.user[e])
-        if present & (1 << (INFO_VISIBLE - 1)):
-            pos = _put_varint(out, pos, INFO_VISIBLE << 3)
-            pos = _put_varint(out, pos, 1 if self.visible[e] != 0 else 0)
-        return pos
 
-    cdef Py_ssize_t element(self, unsigned char* out, Py_ssize_t pos,
-                            Py_ssize_t e) noexcept nogil:
-        """Write element `e`'s message, or only measure it when `out` is NULL."""
-        cdef Py_ssize_t tags_start = self.tags_off[e], tags_end = self.tags_off[e + 1]
-        cdef Py_ssize_t start = self.members_off[e], end = self.members_off[e + 1]
-        pos = _put_varint(out, pos, WAY_ID << 3)
-        pos = _put_varint(out, pos, <uint64_t>self.ids[e])
-        pos = self.packed(out, pos, WAY_KEYS, self.keys, tags_start, tags_end, False)
-        pos = self.packed(out, pos, WAY_VALS, self.vals, tags_start, tags_end, False)
-        if self.fields[e] != 0:
-            pos = _put_varint(out, pos, (WAY_INFO << 3) | 2)
-            pos = _put_varint(out, pos, self.info_fields(NULL, 0, e))
-            pos = self.info_fields(out, pos, e)
-        if self.is_relation:
-            pos = self.packed(out, pos, REL_ROLES_SID, self.roles, start, end, False)
-            pos = self.packed(out, pos, REL_MEMIDS, self.members, start, end, True)
-            pos = self.packed(out, pos, REL_TYPES, self.types, start, end, False)
+cdef Py_ssize_t _put_info(unsigned char* out, Py_ssize_t pos, _Piece* p,
+                          Py_ssize_t e) noexcept nogil:
+    """Write the fields of element `e`'s Info that it has (the user as the block's
+    string id)."""
+    cdef int64_t present = p.col[_C_INFO][e]
+    cdef int c
+    cdef uint64_t value
+    for c in range(_C_VERSION, _C_VISIBLE + 1):
+        if not present & (1 << (c - _C_VERSION)):
+            continue
+        if c == _C_USER:
+            value = <uint64_t>p.block_id[p.col[c][e]]
+        elif c == _C_VISIBLE:
+            value = 1 if p.col[c][e] != 0 else 0
         else:
-            pos = self.packed(out, pos, WAY_REFS, self.members, start, end, True)
-        return pos
+            value = <uint64_t>p.col[c][e]
+        pos = _put_varint(out, pos, (c - _C_VERSION + 1) << 3)
+        pos = _put_varint(out, pos, value)
+    return pos
 
-    cdef bytes group(self):
-        """The elements as the fields of a primitive group."""
-        cdef int field = GROUP_RELATIONS if self.is_relation else GROUP_WAYS
-        cdef Py_ssize_t n = self.ids.shape[0], e, size = 0, pos = 0
-        lengths = np.empty(n, dtype=np.int64)
-        cdef int64_t[::1] length = lengths
-        for e in range(n):
-            length[e] = self.element(NULL, 0, e)
-            size = _put_varint(NULL, size, (field << 3) | 2)
-            size = _put_varint(NULL, size, length[e]) + length[e]
-        out = np.empty(size, dtype=np.uint8)
-        cdef unsigned char[::1] buffer = out
-        cdef unsigned char* o = &buffer[0] if size > 0 else NULL
-        for e in range(n):
-            pos = _put_varint(o, pos, (field << 3) | 2)
-            pos = _put_varint(o, pos, length[e])
-            pos = self.element(o, pos, e)
-        return out.tobytes()
+
+cdef Py_ssize_t _put_element(unsigned char* out, Py_ssize_t pos, _Piece* p,
+                             Py_ssize_t e, bint relation) noexcept nogil:
+    """Write the way or relation `e` of the piece `p`, or only measure it when `out` is
+    NULL."""
+    cdef const int64_t* tags = p.col[_C_TAGS_OFF]
+    cdef const int64_t* members = p.col[_C_MEMBERS_OFF]
+    cdef Py_ssize_t tags_start = tags[e], tags_end = tags[e + 1]
+    cdef Py_ssize_t start = members[e], end = members[e + 1]
+    pos = _put_varint(out, pos, WAY_ID << 3)
+    pos = _put_varint(out, pos, <uint64_t>p.col[_C_ID][e])
+    pos = _put_packed(out, pos, WAY_KEYS, p.col[_C_KEYS], p.block_id, tags_start,
+                      tags_end, False)
+    pos = _put_packed(out, pos, WAY_VALS, p.col[_C_VALS], p.block_id, tags_start,
+                      tags_end, False)
+    if p.col[_C_INFO][e] != 0:
+        pos = _put_varint(out, pos, (WAY_INFO << 3) | 2)
+        pos = _put_varint(out, pos, _put_info(NULL, 0, p, e))
+        pos = _put_info(out, pos, p, e)
+    if relation:
+        pos = _put_packed(out, pos, REL_ROLES_SID, p.col[_C_ROLES], p.block_id, start,
+                          end, False)
+        pos = _put_packed(out, pos, REL_MEMIDS, p.col[_C_MEMBERS], NULL, start, end,
+                          True)
+        pos = _put_packed(out, pos, REL_TYPES, p.col[_C_TYPES], NULL, start, end, False)
+    else:
+        pos = _put_packed(out, pos, WAY_REFS, p.col[_C_MEMBERS], NULL, start, end, True)
+    return pos
+
+
+cdef int _append_elements(_Buffer* b, _Piece* pieces, Py_ssize_t n_pieces,
+                          bint relation) noexcept nogil:
+    """The pieces' ways or relations as the fields of a primitive group."""
+    cdef int field = GROUP_RELATIONS if relation else GROUP_WAYS
+    cdef Py_ssize_t k, e, size
+    for k in range(n_pieces):
+        for e in range(pieces[k].n):
+            size = _put_element(NULL, 0, &pieces[k], e, relation)
+            if (_append_varint(b, (field << 3) | 2) < 0 or _append_varint(b, size) < 0
+                    or _grow(b, size) < 0):
+                return -1
+            b.n = _put_element(b.data, b.n, &pieces[k], e, relation)
+    return 0
+
+
+cdef int64_t _encode_pieces(_Buffer* out, _Piece* pieces, Py_ssize_t n_pieces, int kind,
+                            _Table* t) noexcept nogil:
+    """Write the re-packed block of the pieces' elements of `kind` to `out`, its string
+    table built in `t`; 0, or a status of `_block_string_id` when it fails."""
+    cdef _Buffer group, dense, part, info
+    cdef int64_t status
+    memset(&group, 0, sizeof(_Buffer))
+    memset(&dense, 0, sizeof(_Buffer))
+    memset(&part, 0, sizeof(_Buffer))
+    memset(&info, 0, sizeof(_Buffer))
+    status = _intern_strings(t, pieces, n_pieces, kind)
+    if status == 0:
+        if kind == _NODES:
+            status = _append_dense(&dense, pieces, n_pieces, &part, &info)
+            if status == 0:
+                status = _append_field(&group, GROUP_DENSE, dense.data, dense.n)
+        else:
+            status = _append_elements(&group, pieces, n_pieces, kind == _RELATIONS)
+    if status == 0 and (
+        _append_field(out, PB_STRINGTABLE, t.data.data, t.data.n) < 0
+        or _append_field(out, PB_PRIMITIVEGROUP, group.data, group.n) < 0
+        or _append_varint(out, PB_GRANULARITY << 3) < 0
+        or _append_varint(out, 100) < 0
+        or _append_varint(out, PB_DATE_GRANULARITY << 3) < 0
+        or _append_varint(out, 1000) < 0
+        or _append_varint(out, PB_LAT_OFFSET << 3) < 0
+        or _append_varint(out, 0) < 0
+        or _append_varint(out, PB_LON_OFFSET << 3) < 0
+        or _append_varint(out, 0) < 0
+    ):
+        status = -1
+    free(group.data)
+    free(dense.data)
+    free(part.data)
+    free(info.data)
+    return status
+
+
+cdef const int64_t* _int64_data(const int64_t[::1] values):
+    """Where the values of `values` start (`_NO_VALUES` when it has none)."""
+    return &values[0] if values.shape[0] > 0 else _NO_VALUES
+
+
+cdef bytes _encoded_block(int kind, list chunks):
+    """The re-packed block (not framed) of the elements of the chunks `chunks` of
+    `kind`, encoded without the GIL (see the comment above)."""
+    cdef Py_ssize_t n_pieces = len(chunks), k, c, strings = 1, given = 0
+    cdef _Piece* pieces = <_Piece*>calloc(max(n_pieces, 1), sizeof(_Piece))
+    cdef int64_t* block_ids = NULL
+    cdef _Table t
+    cdef _Buffer out
+    cdef int64_t status
+    cdef uint64_t slots = 1
+    memset(&t, 0, sizeof(_Table))
+    memset(&out, 0, sizeof(_Buffer))
+    held = []
+    try:
+        if pieces == NULL:
+            raise MemoryError()
+        for chunk in chunks:
+            strings += len(chunk.strings)
+        while slots < 2 * <uint64_t>strings:
+            slots <<= 1
+        block_ids = <int64_t*>calloc(strings, sizeof(int64_t))
+        t.slot = <int64_t*>calloc(slots, sizeof(int64_t))
+        t.text = <const unsigned char**>calloc(strings, sizeof(unsigned char*))
+        t.size = <int64_t*>calloc(strings, sizeof(int64_t))
+        if block_ids == NULL or t.slot == NULL or t.text == NULL or t.size == NULL:
+            raise MemoryError()
+        t.mask = slots - 1
+        t.n = 1
+        if (_append_varint(&t.data, (ST_S << 3) | 2) < 0
+                or _append_varint(&t.data, 0) < 0):
+            raise MemoryError()
+        for k, chunk in enumerate(chunks):
+            for c, name in enumerate(_PIECE_COLS):
+                column = chunk.arrays.get(name)
+                if column is not None:
+                    column = np.ascontiguousarray(column, dtype=np.int64)
+                    held.append(column)
+                    pieces[k].col[c] = _int64_data(column)
+            text = b"".join(chunk.strings)
+            ends = np.cumsum([len(s) for s in chunk.strings], dtype=np.int64)
+            held += [text, ends]
+            pieces[k].n = len(chunk)
+            pieces[k].text = <const unsigned char*><const char*>text
+            pieces[k].text_end = _int64_data(ends)
+            pieces[k].n_strings = len(chunk.strings)
+            pieces[k].block_id = block_ids + given
+            given += len(chunk.strings)
+        with nogil:
+            status = _encode_pieces(&out, pieces, n_pieces, kind, &t)
+        if status == -2:
+            raise IndexError("a string id is outside its chunk's strings")
+        if status < 0:
+            raise MemoryError()
+        return (<const char*>out.data)[:out.n]
+    finally:
+        free(pieces)
+        free(block_ids)
+        free(t.slot)
+        free(t.text)
+        free(t.size)
+        free(t.data.data)
+        free(out.data)
 
 
 cdef _split_chunks(list chunks, Py_ssize_t n):
@@ -3780,23 +3953,6 @@ cdef _split_chunks(list chunks, Py_ssize_t n):
         else:
             tail.append(chunk)
     return head, tail
-
-
-cdef _emit_repack_elements(out, list chunks, bint is_relation):
-    """Write the ways or relations of the element chunks `chunks` as one re-packed
-    block, or as two halves (each split again as needed) when it is larger than
-    `_MAX_PACKED_BLOCK_SIZE`."""
-    cdef _StringTable st = _StringTable()
-    arrays = _concat_elements([_interned(chunk, st) for chunk in chunks])
-    group = _ElementWriter(arrays, is_relation).group()
-    block = _block_bytes(_string_table_bytes(st.strings), [group], _STANDARD_GRID)
-    n = len(arrays["id"])
-    if n > 1 and len(block) > _MAX_PACKED_BLOCK_SIZE:
-        head, tail = _split_chunks(chunks, n // 2)
-        _emit_repack_elements(out, head, is_relation)
-        _emit_repack_elements(out, tail, is_relation)
-        return
-    out.write(_frame_blob("OSMData", block))
 
 
 # ---- decode the kept elements of a source block into re-pack records ----------
@@ -3932,28 +4088,16 @@ cdef _ElementChunk _joined_elements(list chunks):
     return _ElementChunk(_concat_elements(parts), strings, first.kind, first.meta)
 
 
-class _Collected(list):
-    """The blocks an emit function writes, in order."""
-
-    def write(self, data):
-        self.append(data)
-
-
-cdef _emit_blocks(out, int kind, list chunks):
-    """Write to `out` the blocks of the chunks `chunks` of `kind`: of nodes as
-    `_emit_repack_nodes` writes them, of ways or relations as `_emit_repack_elements`
-    does."""
-    if kind == _NODES:
-        _emit_repack_nodes(out, chunks)
-    else:
-        _emit_repack_elements(out, chunks, kind == _RELATIONS)
-
-
 def _encoded_blocks(int kind, list chunks):
-    """The framed blocks that `_emit_blocks` writes for `chunks`, in order."""
-    out = _Collected()
-    _emit_blocks(out, kind, chunks)
-    return out
+    """The framed re-packed blocks of the elements of the chunks `chunks` of `kind`: one
+    block, or two halves (each split again as needed) when it is larger than
+    `_MAX_PACKED_BLOCK_SIZE`."""
+    block = _encoded_block(kind, chunks)
+    n = sum([len(chunk) for chunk in chunks])
+    if n > 1 and len(block) > _MAX_PACKED_BLOCK_SIZE:
+        head, tail = _split_chunks(chunks, n // 2)
+        return _encoded_blocks(kind, head) + _encoded_blocks(kind, tail)
+    return [_frame_blob("OSMData", block)]
 
 
 # How many groups of re-packed blocks the executor may encode ahead of the write.
@@ -3980,10 +4124,11 @@ cdef class _RepackWriter:
         self.pending = deque()
 
     cdef _emit(self, int kind, list chunks):
-        """Encode and write the blocks of `chunks` (see `_emit_blocks`): here, or on the
-        executor, the blocks then written in order."""
+        """Encode and write the blocks of `chunks` (see `_encoded_blocks`): here, or on
+        the executor, the blocks then written in order."""
         if self.executor is None:
-            _emit_blocks(self.out, kind, chunks)
+            for data in _encoded_blocks(kind, chunks):
+                self.out.write(data)
             return
         while len(self.pending) >= _ENCODE_WINDOW:
             self._write_oldest()
@@ -3996,10 +4141,12 @@ cdef class _RepackWriter:
 
     cdef add(self, int kind, _ElementChunk chunk):
         """Buffer the decoded chunk `chunk` of elements of `kind`, writing each full
-        block. The buffered elements of the kinds before it (nodes, then ways) are
-        written first, and the buffered nodes before nodes with other metadata fields: a
-        dense block's DenseInfo is all-or-nothing per field."""
+        block; an empty chunk is left out. The buffered elements of the kinds before it
+        (nodes, then ways) are written first, and the buffered nodes before nodes with
+        other metadata fields: a dense block's DenseInfo is all-or-nothing per field."""
         cdef int before
+        if len(chunk) == 0:
+            return
         for before in range(kind):
             self._flush(before)
         if kind == _NODES:
