@@ -1291,6 +1291,7 @@ def test_to_pbf_writes_each_kind_of_group(tmp_path):
         ("HistoricalInformation", "ValueError", "Cannot crop or merge"),
         ("unsorted ids", "ValueError", "not sorted by type then id"),
         ("unsorted ids, on threads", "ValueError", "not sorted by type then id"),
+        ("unsorted way ids in the box", "ValueError", "not sorted by type then id"),
         ("unsorted ids outside the box", "ValueError", "not sorted by type then id"),
         (
             "unsorted ids outside the box, on threads",
@@ -1331,6 +1332,13 @@ def test_merge_pbf_rejects_bad_input(
         _pbf_file(bad, features=("OsmSchema-V0.6", case))
     elif case.startswith("unsorted ids"):
         _pbf_file(bad, _dense_block([10, 11], True), _dense_block([5, 6], True))
+    elif case.startswith("unsorted way ids"):
+        unsorted_ways = PrimitiveBlock()
+        unsorted_ways.stringtable.s.append(b"")
+        group = unsorted_ways.primitivegroup.add()
+        group.ways.add(id=10, refs=[1])
+        group.ways.add(id=5, refs=[1])
+        _pbf_file(bad, _dense_block([1, 2], True), unsorted_ways)
     elif case.startswith("nodes after ways"):
         _pbf_file(bad, ways, _dense_block([5, 6], True))
     elif case == "output is an input":
@@ -1356,6 +1364,8 @@ def test_merge_pbf_rejects_bad_input(
         inputs = []
     errors = {"InvalidOSMFileError": InvalidOSMFileError, "ValueError": ValueError}
     kwargs = {"bounding_box": [0, 0, 1, 1]} if "outside the box" in case else {}
+    if "in the box" in case:
+        kwargs["bounding_box"] = META_BBOX
     if case.endswith("on threads"):
         kwargs["workers"] = 2
     with pytest.raises(errors[error], match=match) as err:
