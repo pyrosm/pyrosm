@@ -5940,3 +5940,50 @@ def test_dict_as_bracket_filter(custom_filter, bracket):
             assert compiled.matches(tags) == as_compiled_filter(custom_filter).matches(
                 tags
             )
+
+
+def test_reading_does_not_import_the_graph_libraries(tmp_path):
+    """Importing pyrosm's reader imported igraph, networkx, pandana and pandarm, only to
+    learn whether they are installed, which took more than a second in every new process
+    (igraph also loads matplotlib). They are imported when a graph is exported to them."""
+    import os
+    import subprocess
+    import textwrap
+
+    # The child offers all four libraries itself and records each one that is imported.
+    code = textwrap.dedent(
+        """
+        import importlib.abc, importlib.machinery, sys
+
+        LIBRARIES = ("igraph", "networkx", "pandana", "pandarm")
+        imported = []
+
+        class Libraries(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+            def find_spec(self, name, path=None, target=None):
+                if name in LIBRARIES:
+                    return importlib.machinery.ModuleSpec(name, self)
+
+            def create_module(self, spec):
+                return None
+
+            def exec_module(self, module):
+                imported.append(module.__name__)
+
+        sys.meta_path.insert(0, Libraries())
+        import pyrosm.pyrosm
+        from pyrosm.utils import _compat
+
+        assert imported == [], imported
+        assert "matplotlib" not in sys.modules
+        assert _compat.HAS_IGRAPH and _compat.HAS_NETWORKX
+        assert _compat.HAS_PANDANA and _compat.HAS_PANDARM
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=dict(os.environ, MPLCONFIGDIR=str(tmp_path)),
+    )
+    assert result.returncode == 0, result.stderr[-800:]

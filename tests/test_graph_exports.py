@@ -737,29 +737,6 @@ def test_to_graph_pandarm_retain_all(test_pbf):
     assert isinstance(g, pandarm.Network)
 
 
-def test_has_pandarm_false_without_pandarm(monkeypatch):
-    """#270 — _compat.HAS_PANDARM falls back to False when pandarm is absent."""
-    import builtins
-    import importlib
-
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "pandarm":
-            raise ImportError("simulated missing pandarm")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-    import pyrosm.utils._compat as compat
-
-    reloaded = importlib.reload(compat)
-    try:
-        assert reloaded.HAS_PANDARM is False
-    finally:
-        monkeypatch.undo()
-        importlib.reload(compat)
-
-
 @pytest.mark.parametrize(
     "flag,graph_type,message",
     [
@@ -794,28 +771,27 @@ def test_to_graph_raises_when_backend_missing(
         ("igraph", "HAS_IGRAPH"),
         ("networkx", "HAS_NETWORKX"),
         ("pandana", "HAS_PANDANA"),
+        ("pandarm", "HAS_PANDARM"),
     ],
 )
 def test_compat_flag_false_without_dependency(monkeypatch, modname, flag):
-    """#272 — _compat.HAS_* falls back to False when the optional backend is
-    not importable (the pandarm case is covered by
-    test_has_pandarm_false_without_pandarm above in this file)."""
-    import builtins
+    """#270, #272 — _compat.HAS_* is False when the optional backend is not installed."""
     import importlib
+    import importlib.util
 
-    real_import = builtins.__import__
+    real_find_spec = importlib.util.find_spec
+    asked = []
 
-    def fake_import(name, *args, **kwargs):
-        if name == modname:
-            raise ImportError("simulated missing %s" % modname)
-        return real_import(name, *args, **kwargs)
+    def find_spec(name, *args, **kwargs):
+        asked.append(name)
+        return None if name == modname else real_find_spec(name, *args, **kwargs)
 
-    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
     import pyrosm.utils._compat as compat
 
     reloaded = importlib.reload(compat)
     try:
-        assert getattr(reloaded, flag) is False
+        assert modname in asked and getattr(reloaded, flag) is False
     finally:
         monkeypatch.undo()
         importlib.reload(compat)
