@@ -655,23 +655,33 @@ BBBIKE = ("BBBike", "Helsinki", "https://b/Helsinki/Helsinki.osm.pbf", 50)
 MOVISDA = ("Movisda", "N60E024", "https://m/grid/N60W024-latest.osm.pbf", 66)
 
 
-def test_an_extract_contains_an_area_but_for_a_small_gap(tmp_path, monkeypatch):
-    """An extract counts as containing an area when less than ``tolerance`` (0.1 % by
-    default) of the area lies outside it, as when the outline of Iceland or Acre sticks out
-    of the extract of Iceland or Acre; with tolerance=0, or for must_cover, it must contain
-    all of it. A download for the area warns once how much it leaves out and where, and
-    not at all for an area the extract covers."""
-    area = box(24.0, 60.0, 25.0, 60.5)
-    # Far larger than the area, which the share is measured against.
-    near = ("near", 40, box(20.0, 60.0004, 30.0, 70.0))  # leaves 0.08 % outside
-    short = ("short", 30, box(20.0, 60.001, 30.0, 70.0))  # leaves 0.2 % outside
+@pytest.fixture
+def small_gap_extracts(monkeypatch):
+    """Extracts around the area 24-25 E, 60-60.5 N, which it returns: BBBike's ``near``
+    leaves 0.08 % of it outside, ``short`` 0.2 %, and Geofabrik's ``finland`` contains it.
+    The extracts are far larger than the area, which the share is measured against."""
+    near = ("near", 40_000_000, box(20.0, 60.0004, 30.0, 70.0))
+    short = ("short", 30_000_000, box(20.0, 60.001, 30.0, 70.0))
+    finland = ("finland", 700_000_000, box(19, 59, 32, 71))
     frames = {
-        "_geofabrik_extracts": _candidates("Geofabrik", [("finland", 700, box(19, 59, 32, 71))]),
+        "_geofabrik_extracts": _candidates("Geofabrik", [finland]),
         "_bbbike_extracts": _candidates("BBBike", [near, short]),
     }
     for name, frame in frames.items():
         monkeypatch.setattr(ei, name, lambda directory, update, net, frame=frame: frame)
     monkeypatch.setattr(ei, "_movisda_extracts", lambda *a, **k: frames["_bbbike_extracts"][:0])
+    return box(24.0, 60.0, 25.0, 60.5)
+
+
+def test_an_extract_contains_an_area_but_for_a_small_gap(
+    tmp_path, monkeypatch, small_gap_extracts
+):
+    """An extract counts as containing an area when less than ``tolerance`` (0.1 % by
+    default) of the area lies outside it, as when the outline of Iceland or Acre sticks out
+    of the extract of Iceland or Acre; with tolerance=0, or for must_cover, it must contain
+    all of it. A download for the area warns once how much it leaves out and where, and
+    not at all for an area the extract covers."""
+    area = small_gap_extracts
 
     def containing(**options):
         found = pyrosm.find_extracts(area, contains_only=True, directory=tmp_path, **options)
@@ -729,6 +739,89 @@ def test_an_extract_contains_an_area_but_for_a_small_gap(tmp_path, monkeypatch):
         warnings.simplefilter("always")
         pyrosm.get_data_by_bbox(area.bounds, crop=False, directory=tmp_path)
     assert [w for w in caught if "BBBike near leaves out" in str(w.message)]
+
+
+def test_the_error_names_the_extracts_closest_to_containing_the_area(
+    tmp_path, monkeypatch, small_gap_extracts
+):
+    """When no extract contains the area, the error names the extracts that leave out the
+    least of it and, up to 1 %, a tolerance with which the closest one would contain it;
+    must_cover gets no tolerance, and a point in it is not measured."""
+    area = small_gap_extracts
+    monkeypatch.setattr(ei, "_geofabrik_extracts", lambda *a, **k: ei._bbbike_extracts(None, False, None)[:0])
+    area_message = (
+        "No Geofabrik, BBBike or Movisda extract contains enough of the area "
+        "(tolerance=%s)."
+    )
+    closest = (
+        " These extracts cover the largest part of %s:"
+        "\n- BBBike near (40 MB): %s %%\n- BBBike short (30 MB): %s %%"
+    )
+    suggestion = "\nWith tolerance=0.0009, pyrosm can use BBBike near, which leaves out "
+    suggestion += "0.081 % of the area."
+    for where, options, message in (
+        (
+            area.bounds,
+            {"tolerance": 0.0001},
+            area_message % "0.0001" + closest % ("the area", "0.081", "0.2") + suggestion,
+        ),
+        (
+            area.bounds,
+            {"tolerance": 0.0001, "strategy": "smallest_total"},
+            area_message % "0.0001" + closest % ("the area", "0.081", "0.2") + suggestion,
+        ),
+        ([24, 59.9, 25, 60.5], {}, area_message % "0.001" + closest % ("the area", "17", "17")),
+        (
+            area.bounds,
+            {"must_cover": area},
+            "No Geofabrik, BBBike or Movisda extract contains must_cover."
+            + closest % ("must_cover", "0.081", "0.2"),
+        ),
+        (
+            area.bounds,
+            {"must_cover": Point(24.5, 60.0002)},
+            "No Geofabrik, BBBike or Movisda extract contains must_cover.",
+        ),
+        ([0, 0, 1, 1], {}, area_message % "0.001"),
+    ):
+        with pytest.raises(ExtractNotFoundError) as info:
+            pyrosm.get_data_by_bbox(where, download=False, directory=tmp_path, **options)
+        assert str(info.value) == message
+
+
+@pytest.mark.parametrize(
+    "share, tolerance",
+    [(0.00043, 0.0005), (0.0005, 0.0006), (0.000499999, 0.0005), (0.0095, 0.01)],
+)
+def test_tolerance_above(share, tolerance):
+    assert share < ei._tolerance_above(share) == pytest.approx(tolerance)
+
+
+def test_not_found_message_names_three_and_suggests_up_to_one_percent():
+    """The message names the three extracts that leave out the least, and suggests a
+    tolerance only for the area, only up to 1 %, and not for a share of 0."""
+    area = box(0, 0, 1, 1)
+
+    def rows(*gaps):
+        return _rows(
+            *[("Geofabrik", "g%d" % i, 10, box(0, g, 1, 1), False) for i, g in enumerate(gaps)]
+        )
+
+    message = ei._not_found_message("the area", rows(0.0095, 0.02, 0.03, 0.04), area, 0.001)
+    assert "g2 (0.0 MB): 3 %" in message and "g3" not in message
+    assert message.endswith("With tolerance=0.01, pyrosm can use Geofabrik g0, which leaves out 0.95 % of the area.")
+    assert "With tolerance" not in ei._not_found_message("the area", rows(0.01), area, 0.001)
+    assert "With tolerance" not in ei._not_found_message("must_cover", rows(0.0095), area, None)
+    assert ei._not_found_message("the area", rows(0), area, 0.001).endswith("(0.0 MB): 0 %")
+
+
+@pytest.mark.parametrize(
+    "size, text",
+    [(pd.NA, "size unknown"), (461_818, "0.5 MB"), (65_082_181, "65 MB")]
+    + [(4_153_022_169, "4.2 GB")],
+)
+def test_size_text(size, text):
+    assert ei._size_text(size) == text
 
 
 def _ranked(*rows):

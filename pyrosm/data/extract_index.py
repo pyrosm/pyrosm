@@ -25,6 +25,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import numbers
 import os
 import re
@@ -783,11 +784,73 @@ def _contain(outlines, area, tolerance):
     contains = outlines.covers(area)
     near = ~contains & outlines.intersects(area)
     if area.area > 0 and near.any():
-        polygon = _projected(area)
-        shapes = outlines[near].to_crs(_EQUAL_AREA_CRS).values
-        gaps = shapely.area(shapely.difference(polygon, shapes))
-        contains[near] = gaps < _allowed_gap_m2(polygon.area, tolerance)
+        gaps, total = _uncovered_m2(outlines[near], area)
+        contains[near] = gaps < _allowed_gap_m2(total, tolerance)
     return contains
+
+
+def _uncovered_m2(outlines, polygon):
+    """The area (m²) of ``polygon`` outside each of the extract ``outlines`` (a lon/lat
+    GeoSeries), and the area of ``polygon`` (lon/lat), both in the equal-area CRS."""
+    projected = _projected(polygon)
+    shapes = outlines.to_crs(_EQUAL_AREA_CRS).values
+    return shapely.area(shapely.difference(projected, shapes)), projected.area
+
+
+def _size_text(size):
+    """A download size in bytes as text, such as ``65 MB`` or ``4.2 GB``."""
+    if pd.isna(size):
+        return "size unknown"
+    if size >= 1e9:
+        return "%.1f GB" % (size / 1e9)
+    return ("%.1f MB" if size < 1e7 else "%.0f MB") % (size / 1e6)
+
+
+def _tolerance_above(share):
+    """A round tolerance above ``share`` (greater than 0), such as 0.0005 for 0.00043 and
+    0.0006 for 0.0005, also when ``share`` was rounded down a little in its division."""
+    share *= 1 + 1e-9
+    step = 10 ** math.floor(math.log10(share))
+    return float("%g" % ((math.floor(share / step) + 1) * step))
+
+
+def _not_found_message(what, candidates, polygons, tolerance):
+    """The message of :class:`~pyrosm.exceptions.ExtractNotFoundError` for ``what`` (the
+    area or ``must_cover``): up to three of ``candidates`` that leave the least of
+    ``polygons`` outside them and, with a ``tolerance`` (for the area), a tolerance of at
+    most 1 % with which pyrosm could use the first of them."""
+    if tolerance is None:
+        message = "No Geofabrik, BBBike or Movisda extract contains %s." % what
+    else:
+        message = (
+            "No Geofabrik, BBBike or Movisda extract contains enough of %s "
+            "(tolerance=%g)." % (what, tolerance)
+        )
+    if polygons is None or polygons.area == 0:
+        return message
+    overlap = candidates.intersects(polygons) & ~candidates.touches(polygons)
+    overlapping = candidates[overlap]
+    if overlapping.empty:
+        return message
+    gaps, total = _uncovered_m2(overlapping.geometry, polygons)
+    shares = pd.Series(gaps / total, index=overlapping.index).sort_values(kind="stable")
+    closest = overlapping.loc[shares.index[:3]]
+    message += " These extracts cover the largest part of %s:" % what + "".join(
+        "\n- %s %s (%s): %.2g %%"
+        % (e.provider, e.id, _size_text(e.bytes), 100 * shares[i])
+        for i, e in zip(closest.index, closest.itertuples())
+    )
+    best = shares.iloc[0]
+    if tolerance is None or best == 0:
+        return message
+    suggested = _tolerance_above(best)
+    if suggested <= 0.01:
+        first = closest.iloc[0]
+        message += (
+            "\nWith tolerance=%g, pyrosm can use %s %s, which leaves out %.2g %% of %s."
+            % (suggested, first.provider, first.id, 100 * best, what)
+        )
+    return message
 
 
 def _warn_uncovered(chosen, target):
@@ -1362,7 +1425,10 @@ def get_data_by_area(
         or ``tolerance`` is not a number with ``0 <= tolerance < 1``.
     pyrosm.exceptions.ExtractNotFoundError
         If no extract (or set of extracts) contains the whole area, or ``must_cover`` when
-        given (a ``ValueError`` subclass).
+        given (a ``ValueError`` subclass). For an area, or polygons in ``must_cover``, the
+        message names up to three extracts that overlap it and leave out the least of it,
+        with how much, and for the area, when 1 % or less would do, a ``tolerance`` with
+        which the first of them would contain it.
     pyrosm.exceptions.ExtractDownloadError
         If every extract that contains the area failed to download; its ``errors`` hold the
         :class:`~pyrosm.exceptions.DownloadError` of each extract tried.
@@ -1555,9 +1621,24 @@ def _get_area(
                 snapshot=min(snapshots) if snapshots else None,
             )
     if not failed:
-        what = "the whole area" if must_cover is None else "must_cover"
+        if strategy == "single":
+            # The extracts that only overlap the target, which the message measures.
+            candidates = find_extracts(
+                geom,
+                directory=directory,
+                must_cover=must_cover,
+                progress=progress,
+                tolerance=tolerance,
+                **net,
+            )
+        what = "the area" if must_cover is None else "must_cover"
         raise ExtractNotFoundError(
-            "No Geofabrik, BBBike or Movisda extract contains %s." % what
+            _not_found_message(
+                what,
+                candidates,
+                target[0],
+                tolerance if must_cover is None else None,
+            )
         )
     raise ExtractDownloadError(
         "Could not download the extracts for the area; %d downloads failed: %s"
