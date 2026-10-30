@@ -1,8 +1,8 @@
 Changelog
 =========
 
-v0.27.0
--------
+v0.27.0 (Oct 30, 2026)
+----------------------
 
 This release asks the download and geocoding services for less: geocoding paces its requests to Nominatim, caches the answers and stops after 50 requests with pyrosm's own User-Agent, a fourth full download of one URL within 24 hours is refused, downloads from one host go one at a time, and ``update=True`` downloads a file again only when it changed. The ``pyrosm`` command can find the extracts of an area, describe a PBF file and list or clear the downloads, and pyarrow is installed with pyrosm. ``pyrosm.recipes.run`` and ``pyrosm.recipes.validate`` take a recipe given as a Python mapping, so a recipe built in Python does not have to be saved to a file first. Their new ``base_dir`` parameter sets the folder that the recipe's relative paths resolve against. ``merge_pbf`` and re-packed crops are faster: with 8 workers, a merge of two Finland extracts takes 12-14 s instead of 50-52 s in 0.26.0, and 9-10 s instead of 16 s cropped to the Helsinki region, with the same output byte for byte.
 
