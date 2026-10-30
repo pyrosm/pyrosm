@@ -1317,11 +1317,13 @@ cdef int _dense_runs(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
     return 0
 
 
-cdef int _dense_values(const unsigned char* buf, _Dense* d, _CropState* st) noexcept nogil:
-    """Decode the group's values into ``st.values``: ids, lats, lons, then each DenseInfo
-    field's ``n`` values (whether present or not), then the tag stream. 1 when the tags do
-    not end once per node, -1 when memory runs out."""
-    # The layout of ``st.values``: ids at v[0:n], lats at v[n:2n], lons at v[2n:3n],
+cdef int _dense_values(const unsigned char* buf, _Dense* d, int64_t** values,
+                       Py_ssize_t* values_cap) noexcept nogil:
+    """Decode the group's values into ``values[0]`` (room for ``values_cap[0]``, grown as
+    needed): ids, lats, lons, then each DenseInfo field's ``n`` values (whether present or
+    not), then the tag stream. 1 when the tags do not end once per node, -1 when memory
+    runs out."""
+    # The layout of the values: ids at v[0:n], lats at v[n:2n], lons at v[2n:3n],
     # DenseInfo field k + 1 at v[(3 + k)n:(4 + k)n] for k = 0 ... 5, the tag stream at
     # v[9n:]. A field the group lacks leaves its slot unused.
     cdef Py_ssize_t n = d.n, need, k
@@ -1332,14 +1334,14 @@ cdef int _dense_values(const unsigned char* buf, _Dense* d, _CropState* st) noex
         return -1
     need = 9 * d.n + d.n_keys_vals
     if need == 0:
-        return 0  # an empty group: no values, and no pointer into ``st.values``
-    if need > st.values_cap:
-        p = realloc(st.values, need * sizeof(int64_t))
+        return 0  # an empty group: no values, and no pointer into them
+    if need > values_cap[0]:
+        p = realloc(values[0], need * sizeof(int64_t))
         if p == NULL:
             return -1
-        st.values = <int64_t*>p
-        st.values_cap = need
-    v = st.values
+        values[0] = <int64_t*>p
+        values_cap[0] = need
+    v = values[0]
     if (_runs_fill(buf, &d.id, True, True, v) != n
             or _runs_fill(buf, &d.lat, True, True, v + n) != n
             or _runs_fill(buf, &d.lon, True, True, v + 2 * n) != n):
@@ -1448,7 +1450,7 @@ cdef int _crop_group(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
         if field == GROUP_DENSE:
             if _dense_runs(buf, f_start, pos, &d) != 0:
                 return 1
-            status = _dense_values(buf, &d, st)
+            status = _dense_values(buf, &d, &st.values, &st.values_cap)
             if status != 0:
                 return status
             dense_seen = True
@@ -1639,22 +1641,43 @@ cdef struct _Int64s:
     Py_ssize_t cap
 
 
-cdef int _push(_Int64s* a, int64_t value) noexcept nogil:
-    """Append ``value``; -1 when memory runs out."""
-    cdef Py_ssize_t cap
+cdef int64_t* _extend(_Int64s* a, Py_ssize_t n) noexcept nogil:
+    """Make room for ``n`` more values at the end of ``a`` and count them in: where they
+    start, or NULL when memory runs out."""
+    cdef Py_ssize_t cap = a.cap if a.cap else 1024
     cdef void* p
-    if a.n == a.cap:
-        if a.cap > PY_SSIZE_T_MAX // (2 * <Py_ssize_t>sizeof(int64_t)):
-            return -1
-        cap = a.cap * 2 if a.cap else 1024
+    if n > PY_SSIZE_T_MAX // <Py_ssize_t>sizeof(int64_t) - a.n:
+        return NULL
+    if a.data == NULL or a.n + n > a.cap:
+        while cap < a.n + n:
+            if cap > PY_SSIZE_T_MAX // (2 * <Py_ssize_t>sizeof(int64_t)):
+                cap = a.n + n
+                break
+            cap *= 2
         p = realloc(a.data, cap * sizeof(int64_t))
         if p == NULL:
-            return -1
+            return NULL
         a.data = <int64_t*>p
         a.cap = cap
-    a.data[a.n] = value
-    a.n += 1
+    a.n += n
+    return a.data + a.n - n
+
+
+cdef int _push(_Int64s* a, int64_t value) noexcept nogil:
+    """Append ``value``; -1 when memory runs out."""
+    cdef int64_t* at = _extend(a, 1)
+    if at == NULL:
+        return -1
+    at[0] = value
     return 0
+
+
+cdef _int64s_array(_Int64s* a):
+    """The values of ``a``, copied into an int64 array."""
+    out = np.empty(a.n, dtype=np.int64)
+    if a.n:
+        memcpy(<void*><uintptr_t>out.ctypes.data, a.data, a.n * sizeof(int64_t))
+    return out
 
 
 # The order a merge requires of its inputs (types in the order nodes, ways, relations;
@@ -1815,9 +1838,7 @@ def _block_orders(const unsigned char[::1] buffer, const int64_t[::1] starts):
                 at_view[b + 1] = rows.n
         if out_of_memory:
             raise MemoryError()
-        table = np.array(<int64_t[:rows.n]>rows.data, dtype=np.int64) if rows.n else (
-            np.empty(0, dtype=np.int64)
-        )
+        table = _int64s_array(&rows)
     finally:
         free(rows.data)
     table = table.reshape(-1, 4)
@@ -2010,11 +2031,7 @@ def _way_copies_blocks(const unsigned char[::1] buffer, const int64_t[::1] start
             raise MemoryError()
         out = []
         for k in range(6):
-            values = np.empty(arrays[k].n, dtype=np.int64)
-            if arrays[k].n:
-                memcpy(<void*><uintptr_t>values.ctypes.data, arrays[k].data,
-                       arrays[k].n * sizeof(int64_t))
-            out.append(values)
+            out.append(_int64s_array(arrays[k]))
     finally:
         for k in range(6):
             free(arrays[k].data)
@@ -2795,9 +2812,9 @@ def _batch_write(ctx, payloads, buffer, starts):
 def _batch_repack(ctx, payloads, buffer, starts):
     """`_worker_repack` of each payload of a part of a batch (its blocks in ``buffer``),
     with the pool's context ``ctx``: the blocks are cropped by `_crop_blocks` without the
-    GIL, and the elements of each cropped copy decoded; a block `_crop_blocks` leaves to
-    `_crop_block` is copied out of ``buffer``, which is released before the next part, and
-    decoded as `_worker_repack` does."""
+    GIL, and the elements of each cropped copy decoded (see `_kept_chunks`); a block
+    `_crop_blocks` leaves to `_crop_block` is copied out of ``buffer``, which is released
+    before the next part, and decoded as `_worker_repack` does."""
     status, offsets, data = _crop_blocks(
         buffer,
         starts,
@@ -2805,11 +2822,13 @@ def _batch_repack(ctx, payloads, buffer, starts):
         ctx.get_set("kept_ways"),
         ctx.get_set("kept_rel"),
     )
+    cropped = memoryview(data)
     out = []
     for b, payload in enumerate(payloads):
         if status[b] == _CROPPED:
-            cropped = data[offsets[b]:offsets[b + 1]]
-            out.append(_kept_chunks(cropped, payload[0], (None, None, None)))
+            out.append(_kept_chunks(
+                cropped[offsets[b]:offsets[b + 1]], payload[0], (None, None, None)
+            ))
         elif status[b] == _NOTHING_KEPT:
             out.append([])
         else:
@@ -2852,13 +2871,14 @@ def _batch_merge_input(ctx, payloads, buffer, starts):
 
 def _batch_merge_whole(ctx, payloads, buffer, starts):
     """The order of the elements of each block of a part of a batch for a merge of whole
-    inputs (its blocks in ``buffer``; see `_batch_orders`) and all its elements, each
-    block copied out of ``buffer``, which is released before the next part. Only the
-    thread pool runs it: its chunks do not pickle."""
+    inputs (its blocks in ``buffer``; see `_batch_orders`) and all its elements (see
+    `_kept_chunks`, which copies a block it decodes with protobuf out of ``buffer``, which
+    is released before the next part). Only the thread pool runs it: its chunks do not
+    pickle."""
     orders = _batch_orders(payloads, buffer, starts)
     return [
         (orders[b], _kept_chunks(
-            bytes(buffer[starts[b]:starts[b + 1]]), payload[0], (None, None, None)
+            buffer[starts[b]:starts[b + 1]], payload[0], (None, None, None)
         ))
         for b, payload in enumerate(payloads)
     ]
@@ -3588,15 +3608,20 @@ cdef struct _Table:
     int64_t n                          # the ids given, the blank entry 0 included
 
 
+cdef inline uint64_t _fnv1a(const unsigned char* s, int64_t n) noexcept nogil:
+    """The FNV-1a hash of the `n` bytes `s`."""
+    cdef uint64_t h = (<uint64_t>0xCBF29CE4 << 32) | <uint64_t>0x84222325
+    cdef int64_t i
+    for i in range(n):
+        h = (h ^ s[i]) * ((<uint64_t>1 << 40) | <uint64_t>0x1B3)
+    return h
+
+
 cdef int64_t _table_id(_Table* t, const unsigned char* s, int64_t n) noexcept nogil:
     """The id of the string `s` (`n` bytes) in the table `t`, added at its end when it
     is not in it yet; -1 when memory runs out."""
-    cdef uint64_t h = (<uint64_t>0xCBF29CE4 << 32) | <uint64_t>0x84222325  # FNV-1a
-    cdef uint64_t at
-    cdef int64_t i, found
-    for i in range(n):
-        h = (h ^ s[i]) * ((<uint64_t>1 << 40) | <uint64_t>0x1B3)
-    at = h & t.mask
+    cdef uint64_t at = _fnv1a(s, n) & t.mask
+    cdef int64_t found
     while t.slot[at] != 0:
         found = t.slot[at]
         if t.size[found] == n and memcmp(t.text[found], s, n) == 0:
@@ -4205,10 +4230,400 @@ def _iter_groups(filepath, progress=None):
         yield from _block_groups(data, filepath)
 
 
-cdef list _kept_chunks(data, filepath, kept):
-    """The elements of the decompressed block `data` of `filepath` in the id sets `kept`
-    (nodes, ways, relations), as (kind, chunk) pairs in block order (see
-    `_decode_group`)."""
+# ---- the elements of a block decoded without the GIL ----------------------------------
+# `_decoded_chunks` gives the chunks `_kept_chunks` gives without id sets: every element
+# of a block, decoded without the GIL into the columns of all its groups (`_Decoded`),
+# then, with the GIL, one `_ElementChunk` per group that views them. A block it does not
+# decode goes to `_block_groups` and `_decode_group`, which read it or raise its error:
+# a header off the standard grid, several string tables, plain nodes (parsed by
+# protobuf), ways and relations (`decode_elements`), a group with several dense groups,
+# a node giving a key twice (`_dict_tags`), a node's key whose text the table holds at a
+# lower id too (`_node_chunk` maps the keys of one text to one), a string id outside the
+# table, a packed field in more than `_MAX_RUNS` runs, and data `element_layout`
+# refuses.
+#
+# The functions, from the outside in, and the Python code each one matches:
+#   `_decode_block_elements`, `_read_table`  one block: its header values and string
+#                  table (`element_layout`, `_check_standard_grid`, `_Block.strings`);
+#   `_decode_group_elements`  one PrimitiveGroup (`_group_layout`, `_group_kind`);
+#   `_decode_dense`  its dense nodes, read by `_dense_runs` and `_dense_values`
+#                  (`_decode_dense_group`, `_decode_kept_dense_nodes`, `_tag_rows`);
+#   `_keep_used_strings`  the strings a group uses (`_with_used_strings`).
+
+# The values `_open_group` records for a group in `_Decoded.groups`.
+cdef enum:
+    _G_KIND                        # `_NODES`
+    _G_META                        # nodes: bit k for each DenseInfo field k + 1 they have
+    _G_USED                        # where its strings start in `_Decoded.used`
+    _G_COLS                        # where its values of each `_PIECE_COLS` column start
+    _G_SIZE = _G_COLS + _N_COLS
+
+
+# A block's elements as `_decode_block_elements` decodes them: the values of each
+# `_PIECE_COLS` column, one group after another (the `*_off` columns hold each group's
+# offsets from 0, one more than its elements), a record per group and one more after the
+# last, which holds where the columns end.
+cdef struct _Decoded:
+    _Int64s col[_N_COLS]
+    _Int64s groups                 # `_G_SIZE` values per record
+    _Int64s used                   # each group's strings, as ascending ids of the table
+    _Int64s table                  # string i of the table is buf[table[2i]:table[2i + 1]]
+    int64_t* first                 # per string: the lowest id of a string with its text
+    int64_t* seen                  # per string: the last element (row + 1) keyed by it
+    int64_t* mark                  # per string: the last group (from 1) that used it
+    int64_t* position              # per string: its id among its group's strings
+    int64_t* values                # a dense group's values (see `_dense_values`)
+    Py_ssize_t values_cap
+
+
+cdef int _open_group(_Decoded* s, int64_t kind) noexcept nogil:
+    """Add the record of the next group, of `kind` (-1 for the record after the last
+    group); the offset columns of its kind get their first offset, 0. -1 when memory
+    runs out."""
+    cdef int64_t* record = _extend(&s.groups, _G_SIZE)
+    cdef int c
+    if record == NULL:
+        return -1
+    record[_G_KIND] = kind
+    record[_G_META] = 0
+    record[_G_USED] = s.used.n
+    for c in range(_N_COLS):
+        record[_G_COLS + c] = s.col[c].n
+    if kind >= 0 and _push(&s.col[_C_TAGS_OFF], 0) < 0:
+        return -1
+    return 0
+
+
+cdef inline int64_t _group_count(_Decoded* s, int c) noexcept nogil:
+    """How many values column `c` holds for the last group."""
+    return s.col[c].n - s.groups.data[s.groups.n - _G_SIZE + _G_COLS + c]
+
+
+cdef inline int64_t* _group_values(_Decoded* s, int c) noexcept nogil:
+    """Where the values of column `c` of the last group start."""
+    return s.col[c].data + s.groups.data[s.groups.n - _G_SIZE + _G_COLS + c]
+
+
+cdef int _decode_dense(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                       _Decoded* s) noexcept nogil:
+    """Decode the DenseNodes `buf[start:end]` onto the columns of `s` as
+    `_decode_dense_group` reads it, with metadata, in a group of its own (none when it
+    has no nodes); 1 for data left to it, -1 when memory runs out."""
+    cdef _Dense d
+    cdef Py_ssize_t n, i, node, t
+    cdef int k, status
+    cdef const int64_t* v
+    cdef int64_t* at
+    cdef int64_t* off
+    cdef int64_t* keys
+    cdef int64_t* vals
+    if _dense_runs(buf, start, end, &d) != 0:
+        return 1
+    status = _dense_values(buf, &d, &s.values, &s.values_cap)
+    if status != 0 or d.n == 0:
+        return status
+    if _open_group(s, _NODES) < 0:
+        return -1
+    # The values in `_dense_values`'s layout: the ids, lats and lons, then the DenseInfo
+    # fields the group has, then the tag stream.
+    n = d.n
+    v = s.values
+    for k in range(_C_LON + 1):
+        at = _extend(&s.col[_C_ID + k], n)
+        if at == NULL:
+            return -1
+        memcpy(at, v + k * n, n * sizeof(int64_t))
+    for k in range(6):
+        if d.n_info[k] == 0:
+            continue
+        s.groups.data[s.groups.n - _G_SIZE + _G_META] |= <int64_t>1 << k
+        at = _extend(&s.col[_C_VERSION + k], n)
+        if at == NULL:
+            return -1
+        memcpy(at, v + (3 + k) * n, n * sizeof(int64_t))
+    # Each node's key and value ids followed by a 0 (`_dense_values` checked that), read
+    # as `_tag_rows` reads them.
+    t = (d.n_keys_vals - n) // 2 if d.n_keys_vals else 0
+    off = _extend(&s.col[_C_TAGS_OFF], n)
+    keys = _extend(&s.col[_C_KEYS], t)
+    vals = _extend(&s.col[_C_VALS], t)
+    if off == NULL or keys == NULL or vals == NULL:
+        return -1
+    i = 9 * n
+    t = 0
+    for node in range(n):
+        if d.n_keys_vals:
+            while v[i] != 0:
+                keys[t] = v[i]
+                vals[t] = v[i + 1]
+                t += 1
+                i += 2
+            i += 1
+        off[node] = t
+    return 0
+
+
+cdef int _keep_used_strings(_Decoded* s, Py_ssize_t n_table) noexcept nogil:
+    """Check the string ids of the last group's elements and give them as ids of the
+    strings the group uses, which go to `s.used` in table order, as `_with_used_strings`
+    does; 1 for an id outside the table of `n_table` strings, a node that gives a key
+    twice (`_dict_tags`) or a key with a lower id of its text, -1 when memory runs out."""
+    cdef int64_t* record = s.groups.data + s.groups.n - _G_SIZE
+    cdef int64_t group = s.groups.n // _G_SIZE, row = record[_G_COLS + _C_ID], count = 0
+    cdef Py_ssize_t n = _group_count(s, _C_ID), e, j
+    cdef Py_ssize_t i
+    cdef int64_t* off = _group_values(s, _C_TAGS_OFF)
+    cdef int64_t* keys = _group_values(s, _C_KEYS)
+    cdef int64_t* vals = _group_values(s, _C_VALS)
+    cdef int64_t* users = NULL
+    if record[_G_META] & (1 << (DI_USER_SID - 1)):
+        users = _group_values(s, _C_USER)
+    for e in range(n):
+        for j in range(off[e], off[e + 1]):
+            if (keys[j] < 0 or keys[j] >= n_table or vals[j] < 0 or vals[j] >= n_table
+                    or s.seen[keys[j]] == row + e + 1 or s.first[keys[j]] != keys[j]):
+                return 1
+            s.seen[keys[j]] = row + e + 1
+            s.mark[keys[j]] = group
+            s.mark[vals[j]] = group
+        if users != NULL:
+            if users[e] < 0 or users[e] >= n_table:
+                return 1
+            s.mark[users[e]] = group
+    for i in range(n_table):
+        if s.mark[i] == group:
+            s.position[i] = count
+            count += 1
+            if _push(&s.used, i) < 0:
+                return -1
+    for j in range(off[n]):
+        keys[j] = s.position[keys[j]]
+        vals[j] = s.position[vals[j]]
+    for e in range(n if users != NULL else 0):
+        users[e] = s.position[users[e]]
+    return 0
+
+
+cdef int _decode_group_elements(const unsigned char* buf, Py_ssize_t start,
+                                Py_ssize_t end, _Decoded* s,
+                                Py_ssize_t n_table) noexcept nogil:
+    """Decode the elements of the PrimitiveGroup `buf[start:end]` onto `s`, with a record
+    for the group when it holds any, as `_group_layout` and `_decode_group` read them; 1
+    for plain nodes, ways, relations, several dense groups and data they refuse; -1 when
+    memory runs out."""
+    cdef Py_ssize_t pos = start, f_start, records = s.groups.n, n_dense = 0
+    cdef int field, wire, status
+    cdef uint64_t length
+    # Two scans of the group's fields: they are well formed and hold one dense group at
+    # most, then that group decoded.
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if _is_element(field, wire):
+            return 1
+        n_dense += wire == WIRE_LENGTH and field == GROUP_DENSE
+        _skip_field(buf, &pos, end, wire)
+    if pos != end or n_dense > 1:
+        return 1
+    pos = start
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if field != GROUP_DENSE or wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        f_start = pos
+        pos = _field_end(pos, length, end)
+        status = _decode_dense(buf, f_start, pos, s)
+        if status != 0:
+            return status
+    if s.groups.n == records:
+        return 0  # no element, or dense nodes without nodes
+    return _keep_used_strings(s, n_table)
+
+
+cdef int _read_table(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                     _Decoded* s) noexcept nogil:
+    """Where each string of the StringTable `buf[start:end]` lies, into `s.table`, and
+    the lowest id of a string with its text, into `s.first`; 1 for a table with another
+    field than its strings (left to protobuf), -1 when memory runs out."""
+    cdef Py_ssize_t pos = start, f_start, n, i, j
+    cdef int field, wire
+    cdef uint64_t length, slots = 1, at
+    cdef int64_t* slot
+    cdef const int64_t* t
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if field != ST_S or wire != WIRE_LENGTH:
+            return 1
+        length = _read_varint(buf, &pos, end)
+        f_start = pos
+        pos = _field_end(pos, length, end)
+        if pos > end:
+            return 1
+        if _push(&s.table, f_start) < 0 or _push(&s.table, pos) < 0:
+            return -1
+    # The first string of each text goes to the slot of its hash, or the next free one;
+    # a later string with that text meets it on the way there.
+    n = s.table.n // 2
+    t = s.table.data
+    while slots < 2 * <uint64_t>n:
+        slots <<= 1
+    slot = <int64_t*>calloc(slots, sizeof(int64_t))
+    s.first = <int64_t*>calloc(n + 1, sizeof(int64_t))
+    if slot == NULL or s.first == NULL:
+        free(slot)
+        return -1
+    for i in range(n):
+        s.first[i] = i
+        at = _fnv1a(buf + t[2 * i], t[2 * i + 1] - t[2 * i]) & (slots - 1)
+        while slot[at] != 0:
+            j = slot[at] - 1
+            if (t[2 * j + 1] - t[2 * j] == t[2 * i + 1] - t[2 * i]
+                    and memcmp(buf + t[2 * j], buf + t[2 * i], t[2 * i + 1] - t[2 * i]) == 0):
+                s.first[i] = j
+                break
+            at = (at + 1) & (slots - 1)
+        if s.first[i] == i:
+            slot[at] = i + 1
+    free(slot)
+    return 0
+
+
+cdef int _decode_block_elements(const unsigned char* buf, Py_ssize_t end,
+                                _Decoded* s) noexcept nogil:
+    """Decode the elements of the block `buf[:end]` onto `s` (see `_Decoded`); 1 for a
+    block left to `_block_groups`, -1 when memory runs out."""
+    cdef Py_ssize_t pos = 0, f_start, table_start = -1, table_end = -1, n_table
+    cdef int field, wire, status
+    cdef uint64_t length
+    cdef int64_t value, granularity = 100, date_granularity = 1000
+    cdef int64_t lat_offset = 0, lon_offset = 0
+    # Two scans of the block's fields: the header values and the string table, then the
+    # groups.
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire == WIRE_VARINT:
+            value = <int64_t>_read_varint(buf, &pos, end)
+            if field == PB_GRANULARITY:
+                granularity = value
+            elif field == PB_DATE_GRANULARITY:
+                date_granularity = value
+            elif field == PB_LAT_OFFSET:
+                lat_offset = value
+            elif field == PB_LON_OFFSET:
+                lon_offset = value
+        elif wire == WIRE_LENGTH:
+            length = _read_varint(buf, &pos, end)
+            f_start = pos
+            pos = _field_end(pos, length, end)
+            if pos > end:
+                return 1
+            if field == PB_STRINGTABLE:
+                if table_start >= 0:
+                    return 1
+                table_start = f_start
+                table_end = pos
+        else:
+            _skip_field(buf, &pos, end, wire)
+    if (pos != end or granularity != 100 or date_granularity != 1000 or lat_offset != 0
+            or lon_offset != 0):
+        return 1
+    if table_start >= 0:
+        status = _read_table(buf, table_start, table_end, s)
+        if status != 0:
+            return status
+    n_table = s.table.n // 2
+    s.seen = <int64_t*>calloc(n_table + 1, sizeof(int64_t))
+    s.mark = <int64_t*>calloc(n_table + 1, sizeof(int64_t))
+    s.position = <int64_t*>calloc(n_table + 1, sizeof(int64_t))
+    if s.seen == NULL or s.mark == NULL or s.position == NULL:
+        return -1
+    pos = 0
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if field != PB_PRIMITIVEGROUP or wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        f_start = pos
+        pos = _field_end(pos, length, end)
+        status = _decode_group_elements(buf, f_start, pos, s, n_table)
+        if status != 0:
+            return status
+    return _open_group(s, -1)
+
+
+# The tag columns of a chunk, and the column of each name in `_PIECE_COLS`.
+_TAG_COLS = ("tags_off", "keys", "vals")
+_PIECE_COL = {name: c for c, name in enumerate(_PIECE_COLS)}
+
+
+def _decoded_chunks(const unsigned char[::1] data):
+    """The elements of the decompressed block `data` as (kind, chunk) pairs in block
+    order, as `_kept_chunks` gives them all, decoded without the GIL (see the comment
+    above); None for a block left to `_block_groups`."""
+    cdef _Decoded s
+    cdef const unsigned char* buf = &data[0] if data.shape[0] else _NO_BYTES
+    cdef const int64_t[:, ::1] record
+    cdef Py_ssize_t g, j, c
+    cdef int64_t i
+    cdef int status
+    memset(&s, 0, sizeof(_Decoded))
+    try:
+        with nogil:
+            status = _decode_block_elements(buf, data.shape[0], &s)
+        if status < 0:
+            raise MemoryError()
+        if status > 0:
+            return None
+        columns = []
+        for c in range(_N_COLS):
+            columns.append(_int64s_array(&s.col[c]))
+        record = _int64s_array(&s.groups).reshape(-1, _G_SIZE)
+        strings = []
+        for j in range(s.used.n):
+            i = s.used.data[j]
+            strings.append((<const char*>buf)[s.table.data[2 * i]:s.table.data[2 * i + 1]])
+    finally:
+        for c in range(_N_COLS):
+            free(s.col[c].data)
+        free(s.groups.data)
+        free(s.used.data)
+        free(s.table.data)
+        free(s.first)
+        free(s.seen)
+        free(s.mark)
+        free(s.position)
+        free(s.values)
+    out = []
+    for g in range(record.shape[0] - 1):
+        kind = record[g, _G_KIND]
+        meta = tuple([
+            name for k, name in enumerate(_NODE_META) if record[g, _G_META] >> k & 1
+        ])
+        arrays = {}
+        for name in _NODE_COLS + meta + _TAG_COLS:
+            c = _PIECE_COL[name]
+            arrays[name] = columns[c][record[g, _G_COLS + c]:record[g + 1, _G_COLS + c]]
+        if "visible" in meta:
+            arrays["visible"] = arrays["visible"].astype(bool)
+        chunk = _ElementChunk(
+            arrays, strings[record[g, _G_USED]:record[g + 1, _G_USED]], kind, meta
+        )
+        out.append((kind, chunk))
+    return out
+
+
+def _kept_chunks(data, filepath, kept):
+    """The elements of the decompressed block `data` (bytes-like) of `filepath` in the id
+    sets `kept` (nodes, ways, relations), as (kind, chunk) pairs in block order (see
+    `_decode_group`); without id sets, all of them, by `_decoded_chunks` when it decodes
+    the block."""
+    if kept[0] is None and kept[1] is None and kept[2] is None:
+        chunks = _decoded_chunks(data)
+        if chunks is not None:
+            return chunks
+    data = bytes(data)
     return [
         (kind, chunk)
         for kind, block, group in _block_groups(data, filepath)
