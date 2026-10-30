@@ -5891,6 +5891,9 @@ def test_network_dict_filter_without_highway_key_warns(engine):
         hints = [w for w in caught if hint in str(w.message)]
         assert len(hints) == 1 and hints[0].filename == __file__
         assert sum("edges that match custom_filter" in str(w.message) for w in caught) == 1
+    # A dict that has no bracket form gets the warning without one.
+    with pytest.warns(UserWarning, match=r"use the bracket form instead\.$"):
+        osm.get_network(custom_filter={"waterway": []})
     for selects_by_its_keys in ('["waterway"="stream"]', {"waterway": [re.compile("st")]}):
         edges = osm.get_network(custom_filter=selects_by_its_keys)
         assert list(edges["waterway"]) == ["stream"]
