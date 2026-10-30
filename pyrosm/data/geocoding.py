@@ -2,10 +2,10 @@
 
 Public entry points:
 
-- :func:`geocode` -- a place name -> a Shapely polygon for the place, via
-  OpenStreetMap's Nominatim service.
-- :func:`get_data_by_geocoding` -- geocode a place, then download (and by default
-  crop) the data for it as :func:`pyrosm.get_data_by_area` does.
+- :func:`geocode` -- a place name, or a list of them, -> a Shapely polygon for the
+  place(s), via OpenStreetMap's Nominatim service.
+- :func:`get_data_by_geocoding` -- geocode a place (or places), then download (and by
+  default crop) the data for it as :func:`pyrosm.get_data_by_area` does.
 
 No extra dependencies: geocoding uses the stdlib ``urllib`` + ``json`` with the
 bundled ``certifi``, and ``shapely`` (already required) turns the response into a
@@ -30,6 +30,7 @@ import time
 import urllib.parse
 
 from shapely.geometry import box, shape
+from shapely.ops import unary_union
 
 from pyrosm._log import log_event
 from pyrosm.exceptions import RequestRefusedError
@@ -45,6 +46,8 @@ _POLICY_URL = "https://operations.osmfoundation.org/policies/nominatim/"
 _INTERVAL = 1.0
 _CACHE_SECONDS = 7 * 24 * 3600
 _SHARED_AGENT_LIMIT = 50
+# The longest place part of the name of a file cropped to several places.
+_MAX_SLUG = 80
 
 
 class _PublicServer:
@@ -158,15 +161,17 @@ def geocode(
     timeout=_TIMEOUT,
     opener=None,
 ):
-    """Geocode a place name to a Shapely polygon via Nominatim.
+    """Geocode a place name, or several, to a Shapely polygon via Nominatim.
 
     See https://pyrosm.readthedocs.io/en/stable/download_responsibly.html
     for what the data providers ask and how pyrosm keeps to it.
 
     Parameters
     ----------
-    query : str
-        The place name to look up, e.g. ``"Brighton and Hove, UK"``.
+    query : str | list of str
+        The place name to look up, e.g. ``"Brighton and Hove, UK"``, or a list of place
+        names, e.g. ``["Helsinki, Finland", "Espoo, Finland"]``, each looked up in turn and
+        their areas combined into one.
 
     polygon : bool
         When ``True`` (default), return the place's boundary polygon if Nominatim
@@ -200,12 +205,14 @@ def geocode(
     Returns
     -------
     shapely.geometry.Polygon or shapely.geometry.MultiPolygon
-        The place's boundary polygon, or its bounding-box rectangle.
+        The place's boundary polygon, or its bounding-box rectangle; for a list, the union
+        of the places' polygons (or rectangles).
 
     Raises
     ------
     ValueError
-        If ``query`` is empty, the service cannot be reached, or no match is found.
+        If ``query`` is empty or not a place name or a list of them, the service cannot be
+        reached, or no match is found; the message names the place.
     RequestRefusedError
         If the process has sent the public server 50 requests with pyrosm's own User-Agent.
 
@@ -214,11 +221,29 @@ def geocode(
     Each answer is cached for 7 days in ``geocoding`` in pyrosm's default folder, so the
     same query with the same headers (but for the User-Agent) is answered from there. The
     public server gets at most one request a second from a process, as Nominatim's usage
-    policy asks (https://operations.osmfoundation.org/policies/nominatim/).
+    policy asks (https://operations.osmfoundation.org/policies/nominatim/). Each name of a
+    list is a request of its own, cached, spaced and counted in the same way.
     """
-    if not isinstance(query, str) or not query.strip():
-        raise ValueError("'query' should be a non-empty place name.")
+    shapes = [
+        _geocode_place(name, polygon, base_url, user_agent, headers, timeout, opener)
+        for name in _place_names(query)
+    ]
+    return shapes[0] if len(shapes) == 1 else unary_union(shapes)
 
+
+def _place_names(query):
+    """The place names of ``query``, a place name or a list of them; ``ValueError`` when it
+    is neither, or a name is empty."""
+    names = list(query) if isinstance(query, (list, tuple)) else [query]
+    if not names or not all(isinstance(name, str) and name.strip() for name in names):
+        raise ValueError(
+            "'query' should be a non-empty place name or a list of non-empty place names."
+        )
+    return names
+
+
+def _geocode_place(query, polygon, base_url, user_agent, headers, timeout, opener):
+    """The polygon of one place name for :func:`geocode`, whose arguments these are."""
     params = urllib.parse.urlencode(
         {
             "q": query,
@@ -262,7 +287,8 @@ def geocode(
             results = json.loads(_retry(fetch))
         except _FETCH_ERRORS as e:
             raise ValueError(
-                "Could not reach the geocoding service at %s: %s" % (base_url, e)
+                "Could not reach the geocoding service at %s to geocode '%s': %s"
+                % (base_url, query, e)
             )
         _cache(url, sent, results)
 
@@ -285,11 +311,19 @@ def geocode(
     return box(west, south, east, north)
 
 
-def _slug_filename(text):
-    """The name of the file cropped to the place ``text``: ``area_`` and the place in
-    lower case, so it never replaces a downloaded extract named after the place."""
-    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return "area_%s.osm.pbf" % (slug or "place")
+def _slug_filename(query):
+    """The name of the file cropped to the place ``query``: ``area_`` and the place in
+    lower case, so it never replaces a downloaded extract named after the place. For a list
+    of places, their names joined by ``_``; when that is longer than :data:`_MAX_SLUG`
+    characters, it is cut there and followed by a hash of the names."""
+    names = _place_names(query)
+    slug = "_".join(
+        re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "place" for name in names
+    )
+    if len(names) > 1 and len(slug) > _MAX_SLUG:
+        digest = hashlib.sha1(json.dumps(names).encode("utf-8")).hexdigest()[:8]
+        slug = "%s_%s" % (slug[:_MAX_SLUG].rstrip("-_"), digest)
+    return "area_%s.osm.pbf" % slug
 
 
 def get_data_by_geocoding(
@@ -309,26 +343,28 @@ def get_data_by_geocoding(
     must_cover=None,
     workers=None,
 ):
-    """Download (and by default crop) the OSM data for a geocoded place name.
+    """Download (and by default crop) the OSM data for a geocoded place name, or several.
 
     Geocodes ``query`` (:func:`geocode`) and gets the data for the place as
     :func:`pyrosm.get_data_by_area` does: the smallest Geofabrik, BBBike or Movisda
     extract (or set of extracts) that covers it, downloaded and -- by default -- cropped
-    to the place.
+    to the place. For a list of place names, the places' areas are combined into one.
 
     See https://pyrosm.readthedocs.io/en/stable/download_responsibly.html
     for what the data providers ask and how pyrosm keeps to it.
 
     Parameters
     ----------
-    query : str
-        The place name to look up, e.g. ``"Brighton and Hove, UK"``.
+    query : str | list of str
+        The place name to look up, e.g. ``"Brighton and Hove, UK"``, or a list of place
+        names, e.g. ``["Helsinki, Finland", "Espoo, Finland"]`` (see :func:`geocode`).
 
     crop : bool
         When ``True`` (default), crop the downloaded extract to the place (its boundary
         polygon, or its box when the geocoder gives none) and return the cropped file,
-        named after the query (e.g. ``area_brighton-and-hove-uk.osm.pbf``) and used again
-        while it and its extract are unchanged. When ``False``, return the full extract.
+        named after the query (e.g. ``area_brighton-and-hove-uk.osm.pbf``, or
+        ``area_helsinki-finland_espoo-finland.osm.pbf`` for a list) and used again while
+        it and its extract are unchanged. When ``False``, return the full extract.
 
     download : bool
         When ``True`` (default), download the covering extract. When ``False``,

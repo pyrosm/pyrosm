@@ -117,9 +117,44 @@ def test_geocode_no_match_raises(monkeypatch):
         pyrosm.geocode("Nowhereville XYZ 99999")
 
 
-def test_geocode_empty_query_raises():
-    with pytest.raises(ValueError):
-        pyrosm.geocode("   ")
+@pytest.mark.parametrize("query", ["   ", 3, [], ["Helsinki", " "], ["Helsinki", 3]])
+def test_geocode_rejects_a_bad_query(monkeypatch, query):
+    """An empty place name, an empty list, or a list holding an empty name or one that is
+    not text is refused before any request."""
+    monkeypatch.setattr(gc, "open_url", lambda *a, **k: pytest.fail("a request was sent"))
+    for function in (pyrosm.geocode, pyrosm.get_data_by_geocoding):
+        with pytest.raises(ValueError, match="non-empty place name"):
+            function(query)
+
+
+def test_geocode_combines_a_list_of_places(monkeypatch):
+    """Each name of a list is geocoded in turn, a second apart, and the places' polygons (or
+    boxes, for a place without one) are combined into one; a name without a match raises an
+    error that names it."""
+    from shapely.geometry import mapping
+
+    from pyrosm.utils import download
+
+    places = {
+        "West": [{"geojson": mapping(box(0, 0, 1, 1))}],
+        "East": [{"boundingbox": ["0", "1", "1", "2"]}],
+    }
+    asked, waits = [], []
+
+    def fake(request, context=None, timeout=None):
+        query = urllib.parse.urlsplit(request.full_url).query
+        name = urllib.parse.parse_qs(query)["q"][0]
+        asked.append(name)
+        return _FakeResponse(places.get(name, []))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake)
+    monkeypatch.setattr(download, "_sleep", waits.append)
+    assert pyrosm.geocode(["West", "East"]).equals(box(0, 0, 2, 1))
+    assert len(waits) == 1
+    assert pyrosm.geocode(["West"]).equals(pyrosm.geocode("West"))
+    with pytest.raises(ValueError, match="Could not geocode 'Nowhere'"):
+        pyrosm.geocode(["West", "Nowhere"])
+    assert asked == ["West", "East", "Nowhere"]
 
 
 def test_geocode_service_error_raises(monkeypatch):
@@ -129,7 +164,7 @@ def test_geocode_service_error_raises(monkeypatch):
         raise URLError("connection refused")
 
     monkeypatch.setattr("urllib.request.urlopen", fake)
-    with pytest.raises(ValueError, match="Could not reach"):
+    with pytest.raises(ValueError, match="Could not reach .* 'Brighton and Hove, UK'"):
         pyrosm.geocode("Brighton and Hove, UK")
 
 
@@ -241,7 +276,14 @@ def test_geocode_paces_and_limits_the_public_server(monkeypatch):
     assert server.count_lock.acquire(blocking=False)
 
 
-def test_get_data_by_geocoding(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "place, name",
+    [
+        ("Brighton and Hove, UK", "area_brighton-and-hove-uk.osm.pbf"),
+        (["Helsinki, Finland", "Espoo, Finland"], "area_helsinki-finland_espoo-finland.osm.pbf"),
+    ],
+)
+def test_get_data_by_geocoding(monkeypatch, tmp_path, place, name):
     # The place is a Helsinki sub-box, and its extract the bundled Helsinki extract.
     helsinki = pyrosm.get_data("helsinki_pbf")
     url = "https://download.bbbike.org/osm/bbbike/Helsinki/Helsinki.osm.pbf"
@@ -251,11 +293,14 @@ def test_get_data_by_geocoding(monkeypatch, tmp_path):
         crs="EPSG:4326",
     ).assign(bytes=pd.array([50], dtype="Int64"), contains=True)
     monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: found)
-    monkeypatch.setattr(gc, "geocode", lambda q, **k: box(24.93, 60.16, 24.96, 60.18))
+    asked = []
+    monkeypatch.setattr(
+        gc, "geocode", lambda q, **k: asked.append(q) or box(24.93, 60.16, 24.96, 60.18)
+    )
     monkeypatch.setattr("pyrosm.utils.download.download", lambda *a, **k: helsinki)
-    place = "Brighton and Hove, UK"
     out = pyrosm.get_data_by_geocoding(place, directory=tmp_path, progress=False)
-    assert Path(out) == tmp_path / "area_brighton-and-hove-uk.osm.pbf"
+    assert asked == [place]
+    assert Path(out) == tmp_path / name
     assert Path(out).stat().st_size < Path(helsinki).stat().st_size
     assert len(pyrosm.OSM(out).get_buildings()) > 0
     assert pyrosm.get_data_by_geocoding(place, crop=False, progress=False) == helsinki
@@ -282,6 +327,14 @@ def test_slug_filename():
     assert gc._slug_filename("Brighton and Hove, UK") == "area_brighton-and-hove-uk.osm.pbf"
     assert gc._slug_filename("  Some, Place!!  ") == "area_some-place.osm.pbf"
     assert gc._slug_filename("???") == "area_place.osm.pbf"
+    places = ["Helsinki, Finland", "Espoo, Finland"]
+    assert gc._slug_filename(places) == "area_helsinki-finland_espoo-finland.osm.pbf"
+    assert gc._slug_filename(places[:1]) == "area_helsinki-finland.osm.pbf"
+    # A long list is cut at 80 characters and told apart by a hash of its names.
+    many = ["Place %d" % i for i in range(20)]
+    cut = "area_" + "_".join("place-%d" % i for i in range(10))
+    assert gc._slug_filename(many) == cut + "_2a2de63a.osm.pbf"
+    assert gc._slug_filename(many[:-1]) == cut + "_66bc633d.osm.pbf"
 
 
 @pytest.mark.live_download
