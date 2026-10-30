@@ -292,7 +292,10 @@ def test_get_data_by_geocoding(monkeypatch, tmp_path, place, name):
         geometry=[box(24.9, 60.1, 25.0, 60.2)],
         crs="EPSG:4326",
     ).assign(bytes=pd.array([50], dtype="Int64"), contains=True)
-    monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: found)
+    tolerances = []
+    monkeypatch.setattr(
+        ei, "find_extracts", lambda *a, **k: tolerances.append(k["tolerance"]) or found
+    )
     asked = []
     monkeypatch.setattr(
         gc, "geocode", lambda q, **k: asked.append(q) or box(24.93, 60.16, 24.96, 60.18)
@@ -304,7 +307,8 @@ def test_get_data_by_geocoding(monkeypatch, tmp_path, place, name):
     assert Path(out).stat().st_size < Path(helsinki).stat().st_size
     assert len(pyrosm.OSM(out).get_buildings()) > 0
     assert pyrosm.get_data_by_geocoding(place, crop=False, progress=False) == helsinki
-    assert pyrosm.get_data_by_geocoding(place, download=False) == url
+    assert pyrosm.get_data_by_geocoding(place, download=False, tolerance=0.01) == url
+    assert tolerances == [0.001, 0.001, 0.01]
 
 
 @pytest.mark.parametrize(

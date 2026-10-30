@@ -342,6 +342,7 @@ def get_data_by_geocoding(
     strategy="single",
     must_cover=None,
     workers=None,
+    tolerance=0.001,
 ):
     """Download (and by default crop) the OSM data for a geocoded place name, or several.
 
@@ -398,7 +399,7 @@ def get_data_by_geocoding(
         Network options for the geocoding request and for the requests of
         :func:`pyrosm.get_data_by_area`.
 
-    strategy, must_cover, workers
+    strategy, must_cover, workers, tolerance
         As for :func:`pyrosm.get_data_by_area`.
 
     Returns
@@ -426,5 +427,6 @@ def get_data_by_geocoding(
         progress,
         name=_slug_filename(query),
         download=download,
+        tolerance=tolerance,
     )
     return _url_result(result) if not download else result.path

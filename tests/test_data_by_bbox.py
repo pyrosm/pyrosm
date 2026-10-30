@@ -64,7 +64,7 @@ def test_accepts_bbox_input_forms(searches, bbox, bounds):
 def test_download_false_lists_the_urls_of_a_set(monkeypatch):
     found = _found("https://b/a.osm.pbf", "https://b/b.osm.pbf")
     monkeypatch.setattr(ei, "find_extracts", lambda *a, **k: found)
-    monkeypatch.setattr(ei, "_choose", lambda target, candidates, strategy: found)
+    monkeypatch.setattr(ei, "_choose", lambda target, candidates, strategy, tolerance: found)
     urls = get_data_by_bbox(HELSINKI, download=False, strategy="smallest_total")
     assert urls == ["https://b/a.osm.pbf", "https://b/b.osm.pbf"]
 

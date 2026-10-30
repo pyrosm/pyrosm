@@ -655,6 +655,82 @@ BBBIKE = ("BBBike", "Helsinki", "https://b/Helsinki/Helsinki.osm.pbf", 50)
 MOVISDA = ("Movisda", "N60E024", "https://m/grid/N60W024-latest.osm.pbf", 66)
 
 
+def test_an_extract_contains_an_area_but_for_a_small_gap(tmp_path, monkeypatch):
+    """An extract counts as containing an area when less than ``tolerance`` (0.1 % by
+    default) of the area lies outside it, as when the outline of Iceland or Acre sticks out
+    of the extract of Iceland or Acre; with tolerance=0, or for must_cover, it must contain
+    all of it. A download for the area warns once how much it leaves out and where, and
+    not at all for an area the extract covers."""
+    area = box(24.0, 60.0, 25.0, 60.5)
+    # Far larger than the area, which the share is measured against.
+    near = ("near", 40, box(20.0, 60.0004, 30.0, 70.0))  # leaves 0.08 % outside
+    short = ("short", 30, box(20.0, 60.001, 30.0, 70.0))  # leaves 0.2 % outside
+    frames = {
+        "_geofabrik_extracts": _candidates("Geofabrik", [("finland", 700, box(19, 59, 32, 71))]),
+        "_bbbike_extracts": _candidates("BBBike", [near, short]),
+    }
+    for name, frame in frames.items():
+        monkeypatch.setattr(ei, name, lambda directory, update, net, frame=frame: frame)
+    monkeypatch.setattr(ei, "_movisda_extracts", lambda *a, **k: frames["_bbbike_extracts"][:0])
+
+    def containing(**options):
+        found = pyrosm.find_extracts(area, contains_only=True, directory=tmp_path, **options)
+        return found["id"].tolist()
+
+    assert containing() == ["near", "finland"]
+    assert containing(tolerance=0.003) == ["short", "near", "finland"]
+    assert containing(tolerance=0) == containing(must_cover=area) == ["finland"]
+    assert containing(must_cover=Point(24.5, 60.0002)) == ["finland"]
+    left_out = (
+        "2.5 km² (0.081 %) of the area. This part lies within the bounds "
+        "[24.000, 60.000, 25.000, 60.000]."
+    )
+    for where, options, chosen, gaps in (
+        (area.bounds, {}, "near", [left_out]),
+        (area.bounds, {"tolerance": 0}, "finland", []),
+        ([24, 61, 25, 62], {}, "short", []),
+        # Less than 1 m² outside: a sliver, allowed also with tolerance=0, without a warning.
+        ([24.0, 60.0003999, 24.001, 60.1], {"tolerance": 0}, "near", []),
+        # must_cover gets no tolerance, also in a set.
+        (
+            area.bounds,
+            {"strategy": "smallest_total", "tolerance": 0.5, "must_cover": area},
+            "finland",
+            [],
+        ),
+    ):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            url = pyrosm.get_data_by_bbox(
+                where, download=False, directory=tmp_path, **options
+            )
+        assert url.endswith("/" + chosen)
+        assert [str(w.message) for w in caught] == [
+            "BBBike %s leaves out %s" % (chosen, gap)
+            for gap in gaps
+        ]
+
+    # Only the extract that was downloaded is described, not one whose download failed.
+    def download(url, filename, update, directory, **net):
+        if url.endswith("/near"):
+            raise DownloadError("down", url=url, status=503, attempts=3)
+        return pyrosm.get_data("test_pbf")
+
+    monkeypatch.setattr("pyrosm.utils.download.download", download)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        path = pyrosm.get_data_by_bbox(area.bounds, crop=False, directory=tmp_path)
+    assert path == pyrosm.get_data("test_pbf")
+    assert not [w for w in caught if "leaves out" in str(w.message)]
+    monkeypatch.setattr(
+        "pyrosm.utils.download.download", lambda *a, **k: pyrosm.get_data("test_pbf")
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        pyrosm.get_data_by_bbox(area.bounds, crop=False, directory=tmp_path)
+    assert [w for w in caught if "BBBike near leaves out" in str(w.message)]
+
+
 def _ranked(*rows):
     """Candidates in the shape ``find_extracts(..., contains_only=True)`` returns."""
     return gpd.GeoDataFrame(
@@ -767,6 +843,7 @@ def test_get_data_by_area_accepts_area_forms(monkeypatch, area):
         "opener": None,
         "must_cover": None,
         "progress": None,
+        "tolerance": 0.001,
     }
 
 
@@ -786,6 +863,9 @@ def test_get_data_by_area_accepts_area_forms(monkeypatch, area):
         (box(*HELSINKI), {"workers": 1.5}, "'workers' should be"),
         (box(*HELSINKI), {"workers": True}, "'workers' should be"),
         (box(*HELSINKI), {"workers": "many"}, "'workers' should be"),
+        (box(*HELSINKI), {"tolerance": -0.1}, "tolerance must be a share"),
+        (box(*HELSINKI), {"tolerance": 1}, "tolerance must be a share"),
+        (box(*HELSINKI), {"tolerance": True}, "tolerance must be a share"),
     ],
 )
 def test_get_data_by_area_rejects_bad_options(area, options, message):
@@ -908,6 +988,17 @@ NORD_OVEST = ("Geofabrik", "nord-ovest", 450, box(6.6, 44.0, 9.5, 45.9), False)
                 SWITZERLAND,
             ],
             ["nord-ovest", "switzerland"],
+        ),
+        # A set may leave less than 0.1 % of the area uncovered (here 0.004 %), not more.
+        (
+            [ALPS, ("Geofabrik", "west", 450, WEST, False)]
+            + [("Geofabrik", "east", 450, box(7.75002, 45.6, 8.1, 46.2), False)],
+            ["west", "east"],
+        ),
+        (
+            [ALPS, ("Geofabrik", "west", 450, WEST, False)]
+            + [("Geofabrik", "east", 450, box(7.751, 45.6, 8.1, 46.2), False)],
+            ["alps"],
         ),
         # Nothing covers the area: the containing extract, or nothing at all.
         ([ALPS, NORD_OVEST], ["alps"]),
