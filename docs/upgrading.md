@@ -23,6 +23,8 @@ new options that leave the defaults as they were, and fixes of calls that failed
   need macOS 12 or later. On Linux with glibc older than 2.28, pyarrow has wheels up to Python 3.13;
   Python 3.14 and later need glibc 2.28. On older systems, pip has to build pyarrow from
   source.
+- **`pyrosm.recipes.validate` and `run`.** Their first parameter is now called `recipe`,
+  as it takes a file or a mapping; a call that names it `path=` needs `recipe=`.
 
 ## pyrosm 0.26.0
 

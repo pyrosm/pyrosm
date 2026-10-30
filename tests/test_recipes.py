@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 import functools
 import json
@@ -7,6 +8,8 @@ import shutil
 import struct
 import sys
 import textwrap
+import threading
+import types
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -130,8 +133,8 @@ def _keyword(text):
         (_GOOD.replace(PBF, "headless.pbf"), "does not start with an OSM PBF header"),
         (_GOOD.replace("read: network", "read: [network]"), "layers.walk.read: must be one"),
         (_GOOD.replace("walk: {read", "1: {read"), "layer names must be text"),
-        (_keyword("extra_attributes: &a [*a]"), "repeats a list or mapping"),
-        (_keyword("extra_attributes: [&a [x], *a]"), "repeats a list or mapping"),
+        (_keyword("extra_attributes: &a [*a]"), "repeats a list, tuple or mapping"),
+        (_keyword("extra_attributes: [&a [x], *a]"), "repeats a list, tuple or mapping"),
         ("? [a, b]\n: 1\n", "mapping keys must be scalars"),
         ("recipe: pyrosm\nlayers: [walk]\n", "layers: must be a mapping"),
         ("recipe: pyrosm\nlayers: {}\noutputs: {}\n", "needs at least one layer"),
@@ -197,7 +200,8 @@ def _keyword(text):
     ],
 )
 def test_validate_refuses(tmp_path, text, message):
-    """Each mistake is refused by name before anything runs."""
+    """Each mistake is refused by name before anything runs, in a recipe file and with the
+    same message in the recipe given as a mapping (unless it is a mistake of the YAML)."""
     (tmp_path / "a.csv").write_text("x\n1\n")
     (tmp_path / "a.gpkg").write_bytes(b"SQLite format 3\x00")
     (tmp_path / "a.parquet").write_bytes(b"PAR1")
@@ -214,8 +218,113 @@ def test_validate_refuses(tmp_path, text, message):
         os.symlink(tmp_path / "loop.pbf", tmp_path / "loop2.pbf")
     except OSError:
         pass
-    with pytest.raises(ValueError, match=message.replace("[", r"\[")):
-        recipes.validate(_recipe(tmp_path, text))
+    path, pattern = _recipe(tmp_path, text), message.replace("[", r"\[")
+    with pytest.raises(ValueError, match=pattern):
+        recipes.validate(path)
+    try:
+        document = _as_mapping(path)
+    except ValueError:
+        return
+    with pytest.raises(ValueError, match=pattern):
+        recipes.validate(document, base_dir=tmp_path)
+
+
+def _as_mapping(path):
+    """The recipe file ``path`` as a mapping, with the record name the file gets by
+    default."""
+    document = recipes._load_yaml(path)
+    if isinstance(document.get("outputs"), dict):
+        document["outputs"].setdefault("provenance", "%s.provenance.json" % path.stem)
+    return document
+
+
+_MAPPING = {
+    "recipe": "pyrosm",
+    "pbf": {"file": PBF},
+    "layers": {"shops": {"read": "pois"}},
+    "outputs": {"layers": {"shops": "shops.parquet"}, "provenance": "shops.json"},
+}
+
+
+@pytest.mark.parametrize(
+    "recipe, base_dir, error, message",
+    [
+        (42, None, ValueError, "recipe: must be a file path or a mapping, not int"),
+        (b"recipe.yaml", None, ValueError, "or a mapping, not bytes"),
+        (["recipe: pyrosm"], None, ValueError, "or a mapping, not list"),
+        (None, None, ValueError, "or a mapping, not NoneType"),
+        (_MAPPING, 5, ValueError, "base_dir: must be a folder path, not int"),
+        (_MAPPING, "a.txt", ValueError, "a.txt is not a folder"),
+        (
+            dict(_MAPPING, outputs={"layers": {"shops": "shops.parquet"}}),
+            None,
+            ValueError,
+            "outputs.provenance: a recipe given as a mapping needs it",
+        ),
+        ("shared", None, ValueError, "repeats a list, tuple or mapping"),
+        ("lock", None, ValueError, "is not a text, number, true/false, list or mapping"),
+        ("{}", None, FileNotFoundError, "No such file"),
+    ],
+)
+def test_recipe_api_refuses(tmp_path, monkeypatch, recipe, base_dir, error, message):
+    """``validate`` and ``run`` refuse a recipe that is neither a file path nor a mapping, a
+    ``base_dir`` that is not a folder, and a mapping without ``outputs.provenance``, with one
+    list used twice in a keyword or with a keyword value that is no JSON value; a string is a
+    file name, also when it holds JSON."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.txt").write_text("x")
+    if recipe in ("shared", "lock"):
+        values = [["lit"]] * 2 if recipe == "shared" else threading.Lock()
+        recipe = copy.deepcopy(_MAPPING)
+        recipe["layers"]["shops"]["extra_attributes"] = values
+    for call in (recipes.validate, recipes.run):
+        with pytest.raises(error, match=re.escape(message)):
+            call(recipe, base_dir=base_dir)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["a.txt"]
+
+
+def test_validate_a_mapping(tmp_path, monkeypatch):
+    """A recipe given as a mapping (any ``Mapping``, also inside it, and tuples as lists)
+    resolves its relative paths against ``base_dir``, or the current folder without it, has
+    no ``recipe_path``, needs no PyYAML, and leaves the caller's mapping as it was."""
+    base = tmp_path / "base"
+    base.mkdir()
+    for name in ("area.geojson", "stops.geojson"):
+        (base / name).write_text('{"type": "FeatureCollection", "features": []}')
+    shutil.copyfile(PBF, base / "data.osm.pbf")
+    extract = {
+        "recipe": "pyrosm",
+        "extract": {
+            "area": {"file": "area.geojson"},
+            "must_cover": {"file": "stops.geojson"},
+            "directory": "downloads",
+        },
+        "outputs": {"extract": "a.pbf", "provenance": "a.json"},
+    }
+    layers = copy.deepcopy(_MAPPING)
+    layers["pbf"] = types.MappingProxyType({"file": "data.osm.pbf"})
+    layers["layers"]["shops"]["custom_filter"] = {"shop": True}
+    layers["layers"]["shops"]["extra_attributes"] = ("opening_hours",)
+    def snapshot():
+        return json.dumps((extract, layers), default=dict, sort_keys=True)
+
+    before = snapshot()
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    here = base.resolve()
+    for base_dir, cwd in ((base, tmp_path), (None, base)):
+        monkeypatch.chdir(cwd)
+        resolved = recipes.validate(extract, base_dir=base_dir)
+        assert (resolved["recipe_path"], resolved["recipe_dir"]) == (None, here)
+        assert resolved["extract"]["area"]["file"] == {"file": here / "area.geojson"}
+        keywords = resolved["extract"]["keywords"]
+        assert keywords["must_cover"] == {"file": here / "stops.geojson"}
+        assert keywords["directory"] == here / "downloads"
+        resolved = recipes.validate(types.MappingProxyType(layers), base_dir=base_dir)
+        assert resolved["pbf"] == {"file": here / "data.osm.pbf"}
+        keywords = resolved["layers"]["shops"]["keywords"]
+        assert keywords["extra_attributes"] == ["opening_hours"]
+        keywords["custom_filter"]["shop"] = False
+    assert snapshot() == before
 
 
 @pytest.fixture
@@ -478,10 +587,12 @@ def test_examples(tmp_path, name):
         ("record path", None),
     ],
 )
-def test_run_refuses(tmp_path, offline, monkeypatch, case, message):
+@pytest.mark.parametrize("form", ["file", "mapping"])
+def test_run_refuses(tmp_path, offline, monkeypatch, case, message, form):
     """A run that cannot write its outputs safely is refused, and a failed stage leaves the
-    output folder as it was, without a lock or staging folder. An output folder named like
-    the record's file is no obstacle."""
+    output folder as it was, without a lock or staging folder, for a recipe file and the
+    recipe given as a mapping. An output folder named like the record's file is no
+    obstacle."""
     out = tmp_path / "out"
     out.mkdir()
     (out / "recipe.provenance.json").write_text("old")
@@ -543,17 +654,103 @@ def test_run_refuses(tmp_path, offline, monkeypatch, case, message):
 
     monkeypatch.setattr(extract_index, "get_data_by_area", functools.wraps(stub)(replaced))
     text = "recipe: pyrosm\nextract: %s\noutputs: %s\n" % (extract, outputs)
+    recipe, base_dir = _recipe(tmp_path, text), None
+    if form == "mapping":
+        recipe, base_dir = _as_mapping(recipe), tmp_path
     if message is None:
-        recipes.run(_recipe(tmp_path, text), out)
+        recipes.run(recipe, out, base_dir=base_dir)
         assert (out / "m/r.json").is_file()
         return
     with pytest.raises((ValueError, OSError), match=re.escape(message)):
-        recipes.run(_recipe(tmp_path, text), out)
+        recipes.run(recipe, out, base_dir=base_dir)
     if case not in ("input", "bundled"):
         left = sorted(p.name for p in out.iterdir() if p.name not in ("link", "x"))
         lock = [".recipe.provenance.json.lock"] if case in ("lock", "lock garbled") else []
         assert left == lock + ["recipe.provenance.json"]
         assert (out / "recipe.provenance.json").read_text() == "old"
+
+
+_FORMS_RECIPE = """
+recipe: pyrosm
+extract: {area: {file: area.geojson}}
+layers: {shops: {read: pois}}
+outputs: {extract: a.osm.pbf, layers: {shops: shops.parquet}, provenance: osm.json}
+"""
+
+
+def test_run_a_recipe_in_each_form(tmp_path, offline, monkeypatch):
+    """One recipe as a YAML file, a JSON file and a mapping writes the same outputs and
+    records with the same keys. A mapping's outputs go into ``base_dir`` by default, its
+    record names its ``base_dir`` and no recipe file, and its rerun reuses every stage;
+    without ``base_dir`` and ``out_dir``, and without PyYAML, it runs in the current
+    folder."""
+    area = gpd.GeoDataFrame(geometry=[box(24.9, 60.1, 25.0, 60.2)], crs="EPSG:4326")
+    yaml_file = _recipe(tmp_path, _FORMS_RECIPE, name="osm.yaml")
+    document = recipes._load_yaml(yaml_file)
+    json_file = _recipe(tmp_path, json.dumps(document), name="osm.json")
+    for folder in ("", "mapping", "here"):
+        (tmp_path / folder).mkdir(exist_ok=True)
+        area.to_file(tmp_path / folder / "area.geojson")
+    records = {}
+    for form, recipe in (
+        ("yaml", yaml_file),
+        ("json", json_file),
+        ("mapping", document),
+    ):
+        if form == "mapping":
+            base = tmp_path / "mapping"
+            written = recipes.run(recipe, base_dir=base)
+            assert written[-1] == (base / "osm.json").resolve()
+        else:
+            written = recipes.run(recipe, tmp_path / form)
+        records[form] = json.loads(written[-1].read_text(encoding="utf-8"))
+    outputs = [records[form]["outputs"] for form in ("yaml", "json", "mapping")]
+    assert outputs[0] == outputs[1] == outputs[2]
+    assert sorted(outputs[0]) == ["a.osm.pbf", "shops.parquet"]
+    assert sorted(records["yaml"]) == sorted(records["json"]) == sorted(records["mapping"])
+    mapping, base = records["mapping"], (tmp_path / "mapping").resolve().as_posix()
+    recipe, invocation = mapping["recipe"], mapping["invocation"]
+    assert (recipe["recipe_path"], recipe["recipe_dir"]) == (None, base)
+    assert (invocation["recipe"], invocation["base_dir"]) == (None, base)
+    assert records["yaml"]["invocation"]["recipe"] == yaml_file.resolve().as_posix()
+    assert records["yaml"]["invocation"]["base_dir"] is None
+    invocation = {"entry_point": "python", "argv": None}
+    again = recipes._run_recipe(document, None, invocation, base_dir=base)
+    assert list(again.values()) == ["reused", "reused", "written"]
+
+    monkeypatch.chdir(tmp_path / "here")
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    written = recipes.run(document)
+    assert written[-1] == (tmp_path / "here" / "osm.json").resolve()
+    assert json.loads(written[-1].read_text())["outputs"] == mapping["outputs"]
+
+
+def test_run_a_file_with_base_dir(tmp_path, offline, monkeypatch):
+    """With ``base_dir``, a recipe file's relative inputs and default output folder are in
+    ``base_dir``, and its record keeps the file's name and names ``base_dir``; the file's
+    own path and a relative ``out_dir`` stay relative to the current folder. A ``base_dir``
+    that does not exist yet is created as the output folder."""
+    (tmp_path / "recipes").mkdir()
+    (tmp_path / "base").mkdir()
+    area = gpd.GeoDataFrame(geometry=[box(24.9, 60.1, 25.0, 60.2)], crs="EPSG:4326")
+    area.to_file(tmp_path / "base" / "area.geojson")
+    text = "recipe: pyrosm\nextract: {area: {file: area.geojson}}\n"
+    _recipe(tmp_path / "recipes", text + "outputs: {extract: a.pbf}\n", name="osm.yaml")
+    monkeypatch.chdir(tmp_path)
+    base = (tmp_path / "base").resolve()
+    resolved = recipes.validate("recipes/osm.yaml", base_dir="base")
+    assert resolved["recipe_path"] == (tmp_path / "recipes" / "osm.yaml").resolve()
+    assert resolved["recipe_dir"] == base
+    assert resolved["extract"]["area"]["file"] == {"file": base / "area.geojson"}
+    written = recipes.run("recipes/osm.yaml", base_dir="base")
+    assert written == [base / "a.pbf", base / "osm.provenance.json"]
+    record = json.loads(written[-1].read_text(encoding="utf-8"))
+    assert record["invocation"]["base_dir"] == base.as_posix()
+    written = recipes.run("recipes/osm.yaml", "out", base_dir="base")
+    assert written[-1] == (tmp_path / "out" / "osm.provenance.json").resolve()
+
+    written = recipes.run(_MAPPING, base_dir=tmp_path / "new")
+    assert written[-1] == (tmp_path / "new" / "shops.json").resolve()
 
 
 def test_command(tmp_path, offline, capsys, monkeypatch):
