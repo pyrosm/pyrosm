@@ -7,7 +7,7 @@ first; the releases not listed here changed nothing of this kind. Changes in spe
 new options that leave the defaults as they were, and fixes of calls that failed are left out. The
 [changelog](changelog.rst) lists every change.
 
-## Unreleased
+## pyrosm 0.27.0
 
 - **Repeated downloads.** A 4th full download of one URL within 24 hours raises
   `pyrosm.exceptions.RequestRefusedError`, also in `get_data_by_area`, which then stops
