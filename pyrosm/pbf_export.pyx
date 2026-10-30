@@ -4236,11 +4236,11 @@ def _iter_groups(filepath, progress=None):
 # then, with the GIL, one `_ElementChunk` per group that views them. A block it does not
 # decode goes to `_block_groups` and `_decode_group`, which read it or raise its error:
 # a header off the standard grid, several string tables, plain nodes (parsed by
-# protobuf), ways and relations (`decode_elements`), a group with several dense groups,
-# a node giving a key twice (`_dict_tags`), a node's key whose text the table holds at a
-# lower id too (`_node_chunk` maps the keys of one text to one), a string id outside the
-# table, a packed field in more than `_MAX_RUNS` runs, and data `element_layout`
-# refuses.
+# protobuf), a group with several kinds of element or several dense groups, an element
+# giving a key twice (`_dict_tags`) or an Info twice, a node's key whose text the table
+# holds at a lower id too (`_node_chunk` maps the keys of one text to one), a string id
+# outside the table, a packed field in more than `_MAX_RUNS` runs, and data
+# `element_layout` or `decode_elements` refuse.
 #
 # The functions, from the outside in, and the Python code each one matches:
 #   `_decode_block_elements`, `_read_table`  one block: its header values and string
@@ -4248,11 +4248,12 @@ def _iter_groups(filepath, progress=None):
 #   `_decode_group_elements`  one PrimitiveGroup (`_group_layout`, `_group_kind`);
 #   `_decode_dense`  its dense nodes, read by `_dense_runs` and `_dense_values`
 #                  (`_decode_dense_group`, `_decode_kept_dense_nodes`, `_tag_rows`);
+#   `_decode_element`, `_read_info`  one way or relation (`decode_elements`);
 #   `_keep_used_strings`  the strings a group uses (`_with_used_strings`).
 
 # The values `_open_group` records for a group in `_Decoded.groups`.
 cdef enum:
-    _G_KIND                        # `_NODES`
+    _G_KIND                        # `_NODES`, `_WAYS` or `_RELATIONS`
     _G_META                        # nodes: bit k for each DenseInfo field k + 1 they have
     _G_USED                        # where its strings start in `_Decoded.used`
     _G_COLS                        # where its values of each `_PIECE_COLS` column start
@@ -4291,6 +4292,8 @@ cdef int _open_group(_Decoded* s, int64_t kind) noexcept nogil:
         record[_G_COLS + c] = s.col[c].n
     if kind >= 0 and _push(&s.col[_C_TAGS_OFF], 0) < 0:
         return -1
+    if kind > _NODES and _push(&s.col[_C_MEMBERS_OFF], 0) < 0:
+        return -1
     return 0
 
 
@@ -4302,6 +4305,121 @@ cdef inline int64_t _group_count(_Decoded* s, int c) noexcept nogil:
 cdef inline int64_t* _group_values(_Decoded* s, int c) noexcept nogil:
     """Where the values of column `c` of the last group start."""
     return s.col[c].data + s.groups.data[s.groups.n - _G_SIZE + _G_COLS + c]
+
+
+cdef int _append_runs(const unsigned char* buf, _Runs* runs, Py_ssize_t n, bint delta,
+                      _Int64s* col) noexcept nogil:
+    """Append the `n` values of the runs (as `_runs_count` counts them) to `col`, as
+    `_runs_fill` decodes them; -1 when memory runs out."""
+    cdef int64_t* at = _extend(col, n)
+    if at == NULL:
+        return -1
+    _runs_fill(buf, runs, delta, delta, at)
+    return 0
+
+
+cdef int _read_info(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                    int64_t* values, int64_t* present) noexcept nogil:
+    """Read the Info `buf[start:end]` as `_fill_metadata` reads it: the value of each
+    field it has into `values` (version ... visible, in field order) and a bit for it
+    into `present`; 1 when it is not made of well-formed fields."""
+    cdef Py_ssize_t pos = start
+    cdef int field, wire
+    cdef uint64_t value
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire != WIRE_VARINT:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        value = _read_varint(buf, &pos, end)
+        if INFO_VERSION <= field <= INFO_VISIBLE:
+            values[field - INFO_VERSION] = <int64_t>value
+            present[0] |= <int64_t>1 << (field - INFO_VERSION)
+    return 0 if pos == end else 1
+
+
+cdef int _decode_element(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
+                         bint relation, _Decoded* s) noexcept nogil:
+    """Decode the way, or with `relation` the relation, `buf[start:end]` onto the columns
+    of `s` as `decode_elements` reads it; 1 for data left to it, -1 when memory runs
+    out."""
+    cdef _Runs keys, vals, members, types, roles
+    cdef _Runs* runs
+    cdef Py_ssize_t pos = start, f_start, info_start = -1, info_end = -1
+    cdef Py_ssize_t n_tags, n_members
+    cdef int field, wire, k
+    cdef int members_field = <int>REL_MEMIDS if relation else <int>WAY_REFS
+    cdef uint64_t length, value
+    cdef int64_t element_id = 0, present = 0
+    cdef int64_t info[6]
+    keys.n = vals.n = members.n = types.n = roles.n = 0
+    while pos < end:
+        _read_tag(buf, &pos, end, &field, &wire)
+        if wire == WIRE_VARINT:
+            value = _read_varint(buf, &pos, end)
+            if field == WAY_ID:
+                element_id = <int64_t>value
+            continue
+        if wire != WIRE_LENGTH:
+            _skip_field(buf, &pos, end, wire)
+            continue
+        length = _read_varint(buf, &pos, end)
+        f_start = pos
+        pos = _field_end(pos, length, end)
+        if pos > end:
+            return 1
+        runs = NULL
+        if field == WAY_KEYS:
+            runs = &keys
+        elif field == WAY_VALS:
+            runs = &vals
+        elif field == members_field:
+            runs = &members
+        elif relation and field == REL_ROLES_SID:
+            runs = &roles
+        elif relation and field == REL_TYPES:
+            runs = &types
+        elif field == WAY_INFO:
+            if info_start >= 0:
+                return 1  # `decode_elements` reads the last Info
+            info_start = f_start
+            info_end = pos
+        if runs != NULL and _add_span(runs, f_start, pos) < 0:
+            return 1
+    if pos != end:
+        return 1
+    n_tags = _runs_count(buf, &keys)
+    n_members = _runs_count(buf, &members)
+    if n_tags < 0 or n_members < 0 or _runs_count(buf, &vals) != n_tags:
+        return 1
+    if relation and (_runs_count(buf, &types) != n_members
+                     or _runs_count(buf, &roles) != n_members):
+        return 1
+    # Version, timestamp, changeset, uid, user and visible, as `_fill_metadata` gives
+    # them when the Info leaves them out.
+    info[0] = -1
+    for k in range(1, 5):
+        info[k] = 0
+    info[5] = 1
+    if info_start >= 0 and _read_info(buf, info_start, info_end, info, &present) != 0:
+        return 1
+    if _push(&s.col[_C_ID], element_id) < 0 or _push(&s.col[_C_INFO], present) < 0:
+        return -1
+    for k in range(6):
+        if _push(&s.col[_C_VERSION + k], info[k]) < 0:
+            return -1
+    if (_append_runs(buf, &keys, n_tags, False, &s.col[_C_KEYS]) < 0
+            or _append_runs(buf, &vals, n_tags, False, &s.col[_C_VALS]) < 0
+            or _push(&s.col[_C_TAGS_OFF], _group_count(s, _C_KEYS)) < 0
+            or _append_runs(buf, &members, n_members, True, &s.col[_C_MEMBERS]) < 0
+            or _push(&s.col[_C_MEMBERS_OFF], _group_count(s, _C_MEMBERS)) < 0):
+        return -1
+    if relation and (
+        _append_runs(buf, &types, n_members, False, &s.col[_C_TYPES]) < 0
+        or _append_runs(buf, &roles, n_members, False, &s.col[_C_ROLES]) < 0
+    ):
+        return -1
+    return 0
 
 
 cdef int _decode_dense(const unsigned char* buf, Py_ssize_t start, Py_ssize_t end,
@@ -4366,30 +4484,45 @@ cdef int _decode_dense(const unsigned char* buf, Py_ssize_t start, Py_ssize_t en
 cdef int _keep_used_strings(_Decoded* s, Py_ssize_t n_table) noexcept nogil:
     """Check the string ids of the last group's elements and give them as ids of the
     strings the group uses, which go to `s.used` in table order, as `_with_used_strings`
-    does; 1 for an id outside the table of `n_table` strings, a node that gives a key
-    twice (`_dict_tags`) or a key with a lower id of its text, -1 when memory runs out."""
+    does; 1 for an id outside the table of `n_table` strings, an element that gives a key
+    twice (`_dict_tags`) or a node's key with a lower id of its text, -1 when memory runs
+    out."""
     cdef int64_t* record = s.groups.data + s.groups.n - _G_SIZE
     cdef int64_t group = s.groups.n // _G_SIZE, row = record[_G_COLS + _C_ID], count = 0
-    cdef Py_ssize_t n = _group_count(s, _C_ID), e, j
+    cdef Py_ssize_t n = _group_count(s, _C_ID), n_roles = _group_count(s, _C_ROLES), e, j
     cdef Py_ssize_t i
+    cdef bint nodes = record[_G_KIND] == _NODES
     cdef int64_t* off = _group_values(s, _C_TAGS_OFF)
     cdef int64_t* keys = _group_values(s, _C_KEYS)
     cdef int64_t* vals = _group_values(s, _C_VALS)
     cdef int64_t* users = NULL
-    if record[_G_META] & (1 << (DI_USER_SID - 1)):
+    cdef int64_t* info = NULL
+    cdef int64_t* roles = NULL
+    # The users: of the nodes when they have them, of the ways and relations whose Info
+    # gives one (0 for the others).
+    if not nodes or record[_G_META] & (1 << (DI_USER_SID - 1)):
         users = _group_values(s, _C_USER)
+    if not nodes:
+        info = _group_values(s, _C_INFO)
+    if n_roles:
+        roles = _group_values(s, _C_ROLES)
     for e in range(n):
         for j in range(off[e], off[e + 1]):
             if (keys[j] < 0 or keys[j] >= n_table or vals[j] < 0 or vals[j] >= n_table
-                    or s.seen[keys[j]] == row + e + 1 or s.first[keys[j]] != keys[j]):
+                    or s.seen[keys[j]] == row + e + 1
+                    or nodes and s.first[keys[j]] != keys[j]):
                 return 1
             s.seen[keys[j]] = row + e + 1
             s.mark[keys[j]] = group
             s.mark[vals[j]] = group
-        if users != NULL:
+        if users != NULL and (nodes or info[e] & (1 << (INFO_USER_SID - 1))):
             if users[e] < 0 or users[e] >= n_table:
                 return 1
             s.mark[users[e]] = group
+    for j in range(n_roles):
+        if roles[j] < 0 or roles[j] >= n_table:
+            return 1
+        s.mark[roles[j]] = group
     for i in range(n_table):
         if s.mark[i] == group:
             s.position[i] = count
@@ -4400,7 +4533,12 @@ cdef int _keep_used_strings(_Decoded* s, Py_ssize_t n_table) noexcept nogil:
         keys[j] = s.position[keys[j]]
         vals[j] = s.position[vals[j]]
     for e in range(n if users != NULL else 0):
-        users[e] = s.position[users[e]]
+        if nodes or info[e] & (1 << (INFO_USER_SID - 1)):
+            users[e] = s.position[users[e]]
+        else:
+            users[e] = 0
+    for j in range(n_roles):
+        roles[j] = s.position[roles[j]]
     return 0
 
 
@@ -4409,31 +4547,40 @@ cdef int _decode_group_elements(const unsigned char* buf, Py_ssize_t start,
                                 Py_ssize_t n_table) noexcept nogil:
     """Decode the elements of the PrimitiveGroup `buf[start:end]` onto `s`, with a record
     for the group when it holds any, as `_group_layout` and `_decode_group` read them; 1
-    for plain nodes, ways, relations, several dense groups and data they refuse; -1 when
-    memory runs out."""
-    cdef Py_ssize_t pos = start, f_start, records = s.groups.n, n_dense = 0
-    cdef int field, wire, status
+    for plain nodes, a group of several kinds of element or with several dense groups,
+    and data they refuse; -1 when memory runs out."""
+    cdef Py_ssize_t pos = start, f_start, records = s.groups.n
+    cdef Py_ssize_t n_dense = 0, n_ways = 0, n_relations = 0
+    cdef int field, wire, status = 0
     cdef uint64_t length
-    # Two scans of the group's fields: they are well formed and hold one dense group at
-    # most, then that group decoded.
+    # Two scans of the group's fields: they are well formed, and which elements they
+    # are; then the elements decoded.
     while pos < end:
         _read_tag(buf, &pos, end, &field, &wire)
-        if _is_element(field, wire):
-            return 1
-        n_dense += wire == WIRE_LENGTH and field == GROUP_DENSE
+        if wire == WIRE_LENGTH:
+            if field == GROUP_NODES:
+                return 1
+            n_dense += field == GROUP_DENSE
+            n_ways += field == GROUP_WAYS
+            n_relations += field == GROUP_RELATIONS
         _skip_field(buf, &pos, end, wire)
-    if pos != end or n_dense > 1:
+    if pos != end or n_dense > 1 or (n_dense > 0) + (n_ways > 0) + (n_relations > 0) > 1:
         return 1
+    if (n_ways or n_relations) and _open_group(s, _WAYS if n_ways else _RELATIONS) < 0:
+        return -1
     pos = start
     while pos < end:
         _read_tag(buf, &pos, end, &field, &wire)
-        if field != GROUP_DENSE or wire != WIRE_LENGTH:
+        if wire != WIRE_LENGTH:
             _skip_field(buf, &pos, end, wire)
             continue
         length = _read_varint(buf, &pos, end)
         f_start = pos
         pos = _field_end(pos, length, end)
-        status = _decode_dense(buf, f_start, pos, s)
+        if field == GROUP_DENSE:
+            status = _decode_dense(buf, f_start, pos, s)
+        elif field == GROUP_WAYS or field == GROUP_RELATIONS:
+            status = _decode_element(buf, f_start, pos, field == GROUP_RELATIONS, s)
         if status != 0:
             return status
     if s.groups.n == records:
@@ -4553,8 +4700,11 @@ cdef int _decode_block_elements(const unsigned char* buf, Py_ssize_t end,
     return _open_group(s, -1)
 
 
-# The tag columns of a chunk, and the column of each name in `_PIECE_COLS`.
+# The tag columns of a chunk, the columns of a chunk of ways and of relations, and the
+# column of each name in `_PIECE_COLS`.
 _TAG_COLS = ("tags_off", "keys", "vals")
+_WAY_COLS = _ELEMENT_COLS + _TAG_COLS + ("members_off", "members")
+_RELATION_COLS = _WAY_COLS + ("types", "roles")
 _PIECE_COL = {name: c for c, name in enumerate(_PIECE_COLS)}
 
 
@@ -4598,14 +4748,19 @@ def _decoded_chunks(const unsigned char[::1] data):
     out = []
     for g in range(record.shape[0] - 1):
         kind = record[g, _G_KIND]
-        meta = tuple([
-            name for k, name in enumerate(_NODE_META) if record[g, _G_META] >> k & 1
-        ])
+        if kind == _NODES:
+            meta = tuple([
+                name for k, name in enumerate(_NODE_META) if record[g, _G_META] >> k & 1
+            ])
+            names = _NODE_COLS + meta + _TAG_COLS
+        else:
+            meta = None
+            names = _RELATION_COLS if kind == _RELATIONS else _WAY_COLS
         arrays = {}
-        for name in _NODE_COLS + meta + _TAG_COLS:
+        for name in names:
             c = _PIECE_COL[name]
             arrays[name] = columns[c][record[g, _G_COLS + c]:record[g + 1, _G_COLS + c]]
-        if "visible" in meta:
+        if meta and "visible" in meta:
             arrays["visible"] = arrays["visible"].astype(bool)
         chunk = _ElementChunk(
             arrays, strings[record[g, _G_USED]:record[g + 1, _G_USED]], kind, meta

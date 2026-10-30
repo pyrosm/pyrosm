@@ -1592,9 +1592,10 @@ def test_crop_blocks_corrupt_blocks(corrupted_copies):
 
 def _decode_blocks():
     """Blocks for the GIL-free decode of re-packed crops and merges: dense nodes with every
-    DenseInfo field (the blank string twice in the table, as osmium writes it); then
-    blocks it leaves to protobuf: a node key whose text the table holds at a lower id too,
-    a node giving a key twice, and a string id outside the table."""
+    DenseInfo field, ways and a relation with Info fields present and absent (the blank
+    string twice in the table, as osmium writes it); then blocks it leaves to protobuf: a
+    node key whose text the table holds at a lower id too, a node and a way giving a key
+    twice, and a string id outside the table."""
     from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
 
     def block(*strings):
@@ -1623,10 +1624,23 @@ def _decode_blocks():
         (info.uid, [3, -3, 0]), (info.user_sid, [4, -3, 0]), (info.visible, [True, False, True]),
     ):
         field.extend(values)
+    ways = block(b"", b"", b"highway", b"path", b"bob")
+    group = ways.primitivegroup.add()
+    way = group.ways.add(id=80, keys=[2], vals=[3], refs=[1, 1])
+    way.info.version, way.info.timestamp, way.info.changeset = 2, 9, 4
+    way.info.uid, way.info.user_sid, way.info.visible = 5, 4, False
+    group.ways.add(id=81, refs=[2]).info.timestamp = 3
+    group.ways.add(id=82, keys=[2], vals=[1])
+    rel = ways.primitivegroup.add().relations.add(
+        id=90, memids=[80, 1], types=[1, 1], roles_sid=[1, 3]
+    )
+    rel.info.user_sid = 1
     later_text = one_node([3, 2, 0], b"", b"amenity", b"cafe", b"amenity")
     repeated = one_node([1, 2, 1, 1, 0], b"", b"amenity", b"cafe")
+    repeated_way = block(b"", b"highway", b"path")
+    repeated_way.primitivegroup.add().ways.add(id=1, keys=[1, 1], vals=[2, 2])
     outside = one_node([9, 1, 0], b"", b"amenity")
-    return [dense, later_text, repeated, outside]
+    return [dense, ways, later_text, repeated, repeated_way, outside]
 
 
 class _EveryId:
@@ -1648,10 +1662,10 @@ def _chunk_values(chunks):
 
 @pytest.mark.parametrize("source", ["crafted", "helsinki"])
 def test_decoded_chunks_are_those_of_protobuf(tmp_path, helsinki_pbf, source):
-    """_decoded_chunks decodes each block of dense nodes into the chunks _kept_chunks gives
-    for all its elements through protobuf, and leaves to that path (None) a block it does
-    not handle: ids in more packed runs than it keeps, plain nodes, ways, relations, and
-    the last three of _decode_blocks, the last one refused there."""
+    """_decoded_chunks decodes each block into the chunks _kept_chunks gives for all its
+    elements through protobuf, and leaves to that path (None) a block it does not handle:
+    ids in more packed runs than it keeps, plain nodes, a group of ways and relations, and
+    the last four of _decode_blocks, the last one refused there."""
     from pyrosm.pbf_export import _decoded_chunks, _iter_block_data, _kept_chunks
 
     if source == "crafted":
@@ -1664,17 +1678,13 @@ def test_decoded_chunks_are_those_of_protobuf(tmp_path, helsinki_pbf, source):
     every = (_EveryId(),) * 3
     if source == "crafted":
         assert [chunks is not None for chunks in decoded] == [
-            True, True, False, False, False, False, False, True, True, False, False, False,
+            True, True, False, False, False, True, True, True, True, True, False, False,
+            False, False,
         ]
         with pytest.raises(IndexError):
             _kept_chunks(blocks.pop(), path, every)
     else:
-        only_dense = [
-            not any(g.nodes or g.ways or g.relations for g in pb.primitivegroup)
-            for pb in _iter_primitive_blocks(path)
-        ]
-        assert [chunks is not None for chunks in decoded] == only_dense
-        assert any(only_dense)
+        assert None not in decoded
     for data, chunks in zip(blocks, decoded):
         if chunks is not None:
             assert _chunk_values(chunks) == _chunk_values(_kept_chunks(data, path, every))
@@ -1687,7 +1697,8 @@ def test_decoded_chunks_corrupt_blocks(corrupted_copies):
     from pyrosm.pbf_export import _decoded_chunks, _kept_chunks
 
     every = (_EveryId(),) * 3
-    blocks = _decode_blocks()[:1] + _crafted_blocks(standard_grid=True)[:1]
+    crafted = _crafted_blocks(standard_grid=True)
+    blocks = _decode_blocks()[:2] + [crafted[0], crafted[5]]
     for seed, block in enumerate(blocks):
         for data in corrupted_copies(block.SerializeToString(), 200, seed=seed):
             chunks = _decoded_chunks(data)
