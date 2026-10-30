@@ -5804,3 +5804,68 @@ def test_get_data_by_area_keeps_the_downloaded_part_of_a_refusing_provider(
         )
     assert downloads == [extracts[0][2], extracts[1][2], extracts[2][2]]
     assert (got.provider, got.extract) == ("Geofabrik+BBBike", "left+east")
+
+
+@pytest.mark.parametrize("first", ["get_data", "get_data_by_area"])
+def test_get_data_and_get_data_by_area_share_a_download(tmp_path, monkeypatch, first):
+    """``get_data("helsinki")`` saved BBBike's Helsinki extract as ``Helsinki.osm.pbf``,
+    ``get_data_by_area`` as ``bbbike_Helsinki.osm.pbf``, so whichever came second
+    downloaded the same URL again. A file downloaded from the URL into the folder is used
+    again under either name, and ``update`` asks only whether it changed."""
+    import io
+    from urllib.error import HTTPError
+
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import box
+
+    import pyrosm
+    from pyrosm.data import extract_index as ei
+    from pyrosm.utils import download as dl
+
+    url = "https://download.bbbike.org/osm/bbbike/Helsinki/Helsinki.osm.pbf"
+    body = Path(pyrosm.get_data("helsinki_pbf")).read_bytes()
+    asked = []
+
+    class Opener:
+        def open(self, request, timeout=None):
+            etag = request.get_header("If-none-match")
+            asked.append((request.full_url, etag))
+            if etag == '"v1"':
+                raise HTTPError(request.full_url, 304, "Not Modified", {}, None)
+            response = io.BytesIO(body)
+            response.status, response.headers = 200, {"ETag": '"v1"'}
+            return response
+
+    found = gpd.GeoDataFrame(
+        {
+            "provider": ["BBBike"],
+            "id": ["Helsinki"],
+            "name": ["Helsinki"],
+            "url": [url],
+            "bytes": pd.array([len(body)], dtype="Int64"),
+            "contains": [True],
+        },
+        geometry=[box(24.5, 60.0, 25.5, 60.5)],
+        crs="EPSG:4326",
+    )
+    monkeypatch.setattr(ei, "find_extracts", lambda geom, **k: found)
+    monkeypatch.setattr(dl, "download_dir", lambda: tmp_path / "pyrosm")
+    net = dict(directory=tmp_path, opener=Opener(), progress=False)
+
+    def by_name(update=False):
+        return pyrosm.get_data("helsinki", update=update, **net)
+
+    def by_area(update=False):
+        area = box(24.92, 60.16, 24.94, 60.17)
+        return pyrosm.get_data_by_area(area, crop=False, update=update, **net).path
+
+    calls = [by_name, by_area] if first == "get_data" else [by_area, by_name]
+    paths = [calls[0](), calls[1](), calls[1](update=True)]
+    assert len(set(paths)) == 1
+    assert [p.name for p in tmp_path.glob("*.pbf")] == [Path(paths[0]).name]
+    assert asked == [(url, None), (url, '"v1"')]
+    # A download of another URL gets its own file.
+    other = Path(pyrosm.get_data("helsinki_region_pbf", **net))
+    assert other.name == "Helsinki_region.osm.pbf"
+    assert len(list(tmp_path.glob("*.pbf"))) == 2

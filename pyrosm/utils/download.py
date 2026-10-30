@@ -736,6 +736,10 @@ def download(
     and ``Last-Modified`` its download gave (see :func:`validators_record`) go with the
     request, and the server's 304 answer keeps the file as it is.
 
+    A file that ``target_dir`` holds under another name counts as there when its record
+    says it was downloaded from ``url`` and is unchanged since: that file is returned, and
+    with ``update`` asked for again, instead of ``<filename>``.
+
     Each full download of ``url`` is recorded in a log in pyrosm's temp directory, wherever
     the file goes. After 3 full downloads of ``url`` in 24 hours, a 4th raises
     :class:`~pyrosm.exceptions.RequestRefusedError` before the server sends the file; a
@@ -760,12 +764,27 @@ def download(
     filepath = target_dir.resolve() / Path(filename).name
     net = _Net(headers, timeout, opener)
 
-    if update or not filepath.exists():
+    path = _existing_download(filepath, url)
+    if update or path is None:
         with _host_lock(url):
             # Another download may have written the file while this one waited.
-            if update or not filepath.exists():
-                _fetch_into(filepath, url, filename, net, progress)
-    return str(filepath)
+            path = _existing_download(filepath, url) or filepath
+            if update or not path.exists():
+                _fetch_into(path, url, path.name, net, progress)
+    return str(path)
+
+
+def _existing_download(path, url):
+    """``path`` when it is there, else the file beside it whose record (see
+    :func:`validators_record`) says it was downloaded from ``url`` and is unchanged since,
+    else None."""
+    if path.exists():
+        return path
+    for record in sorted(path.parent.glob("*.validators")):
+        other = record.with_name(record.name[: -len(".validators")])
+        if _stored_validators(other, url) is not None:
+            return other
+    return None
 
 
 def _fetch_into(filepath, url, filename, net, progress):
