@@ -13,7 +13,7 @@ def _parser():
     )
     commands = parser.add_subparsers(dest="command", required=True)
     runner = commands.add_parser("run", help="run a recipe and write its outputs")
-    runner.add_argument("recipe", help="the recipe YAML file")
+    runner.add_argument("recipe", help="the recipe file (YAML or JSON)")
     runner.add_argument(
         "-o", "--out", help="the output folder (default: the recipe's folder)"
     )
@@ -23,7 +23,7 @@ def _parser():
         help="run every stage, changed or not, and download the extract again",
     )
     checker = commands.add_parser("validate", help="check a recipe without running it")
-    checker.add_argument("recipe", help="the recipe YAML file")
+    checker.add_argument("recipe", help="the recipe file (YAML or JSON)")
     finder = commands.add_parser(
         "find",
         help="list the extracts of an area, best download first, downloading none",

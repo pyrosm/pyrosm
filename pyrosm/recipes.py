@@ -1,8 +1,9 @@
-"""Recipes: a YAML file that says how the OSM data of an analysis is obtained (``extract``),
-read into layers (``layers``) and turned into a graph (``graph``). pyrosm checks a recipe with
-:func:`validate` and runs it with :func:`run`, which records how each output was made; the file
-is the reproducible method."""
+"""Recipes: a YAML (or JSON) file, or a mapping in the same format, that says how the OSM data
+of an analysis is obtained (``extract``), read into layers (``layers``) and turned into a graph
+(``graph``). pyrosm checks a recipe with :func:`validate` and runs it with :func:`run`, which
+records how each output was made; the recipe is the reproducible method."""
 
+import collections.abc
 import contextlib
 import dataclasses
 import functools
@@ -105,16 +106,17 @@ def _reject_foreign(mapping, allowed, where):
 
 
 def _json_safe(value, where, seen=None):
-    """Refuse a value a provenance record could not hold as JSON. A list or mapping that occurs
-    twice (a YAML alias, possibly of itself) is refused too, so a value can neither loop nor
-    multiply when written out; ``seen`` holds the ids of the lists and mappings met so far.
+    """Refuse a value a provenance record could not hold as JSON. A list, tuple or mapping that
+    occurs twice (a YAML alias, possibly of itself, or one object used twice in a recipe given
+    as a mapping) is refused too, so a value can neither loop nor multiply when written out;
+    ``seen`` holds the ids of the lists, tuples and mappings met so far.
     """
     seen = set() if seen is None else seen
     if isinstance(value, (dict, list, tuple)):
         if id(value) in seen:
             raise ValueError(
-                "%s: repeats a list or mapping through a YAML alias; write it out"
-                % where
+                "%s: repeats a list, tuple or mapping (a YAML alias, or one object used "
+                "twice); write it out" % where
             )
         seen.add(id(value))
     if isinstance(value, dict):
@@ -406,6 +408,8 @@ def _output_path(value, where, suffix):
 
 
 def _validate_outputs(section, stem, extract, layers, graph):
+    """The output names of the ``outputs`` section, checked; ``stem`` names the default
+    provenance record, which a recipe given as a mapping (``stem`` None) has none of."""
     _mapping(section, "outputs")
     _reject_foreign(section, ("extract", "layers", "graph", "provenance"), "outputs")
     outputs = {"extract": None, "layers": {}, "graph": None}
@@ -438,6 +442,11 @@ def _validate_outputs(section, stem, extract, layers, graph):
         }
     elif "graph" in section:
         raise ValueError("outputs.graph: the recipe has no graph stage")
+    if stem is None and "provenance" not in section:
+        raise ValueError(
+            "outputs.provenance: a recipe given as a mapping needs it, as there is no file "
+            "to name the record after"
+        )
     outputs["provenance"] = _output_path(
         section.get("provenance", "%s.provenance.json" % stem),
         "outputs.provenance",
@@ -466,36 +475,82 @@ def _validate_outputs(section, stem, extract, layers, graph):
     return outputs
 
 
-def validate(path):
-    """Check a recipe file without running it and return it resolved.
+def _copied(value, memo):
+    """``value`` with its mappings copied as dicts and its lists and tuples as lists, as a
+    YAML or JSON file gives them; an object met twice (in ``memo``, by id) is copied once so
+    that it stays shared, other values are kept as they are."""
+    if not isinstance(value, (collections.abc.Mapping, list, tuple)):
+        return value
+    if id(value) in memo:
+        return memo[id(value)]
+    if isinstance(value, collections.abc.Mapping):
+        memo[id(value)] = {}
+        for key, item in value.items():
+            memo[id(value)][key] = _copied(item, memo)
+    else:
+        memo[id(value)] = []
+        memo[id(value)].extend(_copied(item, memo) for item in value)
+    return memo[id(value)]
+
+
+def _recipe_document(recipe, base_dir):
+    """The recipe's document, its file (None for a mapping) and the folder its relative paths
+    resolve against: ``base_dir`` when given, else the file's folder or the current folder.
+    A mapping is copied (see :func:`_copied`), so the caller's is left as it is."""
+    if base_dir is not None:
+        if not isinstance(base_dir, (str, os.PathLike)):
+            raise ValueError(
+                "base_dir: must be a folder path, not %s" % type(base_dir).__name__
+            )
+        base_dir = _resolve(base_dir, "base_dir")
+        if base_dir.exists() and not base_dir.is_dir():
+            raise ValueError("base_dir: %s is not a folder" % base_dir)
+    if isinstance(recipe, (str, os.PathLike)):
+        recipe_path = _resolve(recipe, "recipe")
+        return _load_yaml(recipe_path), recipe_path, base_dir or recipe_path.parent
+    if isinstance(recipe, collections.abc.Mapping):
+        return _copied(recipe, {}), None, base_dir or _resolve(".", "base_dir")
+    raise ValueError(
+        "recipe: must be a file path or a mapping, not %s" % type(recipe).__name__
+    )
+
+
+def validate(recipe, base_dir=None):
+    """Check a recipe without running it and return it resolved.
 
     Every section is checked eagerly: the keys, the area, the input files (they must exist; a
     PBF must start with an OSM header), every keyword against the function it is
     passed to, and the output paths, which must be relative, portable and named once. Raises
-    ``ValueError`` naming the key that is wrong, or ``ImportError`` when PyYAML is missing.
+    ``ValueError`` naming the key that is wrong, or ``ImportError`` when PyYAML is missing
+    for a recipe file.
 
     Parameters
     ----------
-    path : str | pathlib.Path
-        The recipe YAML file.
+    recipe : str | pathlib.Path | Mapping
+        The recipe file (YAML or JSON), or the recipe as a mapping in the same format, such as
+        ``json.loads(text)``; a mapping needs ``outputs.provenance``. A string is always a
+        file name.
+    base_dir : str | pathlib.Path, optional
+        The folder that the recipe's relative paths (the area file, ``must_cover``,
+        ``extract.directory``, ``pbf``) resolve against, and the default output folder.
+        Default: the recipe file's folder, or the current folder for a mapping.
 
     Returns
     -------
     dict
-        The resolved recipe: ``recipe_path``, ``recipe_dir``, ``version``, ``extract``,
-        ``pbf``, ``reader``, ``layers``, ``graph`` and ``outputs``.
+        The resolved recipe: ``recipe_path`` (None for a mapping), ``recipe_dir`` (the folder
+        relative paths resolved against), ``version``, ``extract``, ``pbf``, ``reader``,
+        ``layers``, ``graph`` and ``outputs``.
     """
     from pyrosm import OSM
 
-    recipe_path = _resolve(path, "recipe")
-    document = _load_yaml(recipe_path)
+    document, recipe_path, recipe_dir = _recipe_document(recipe, base_dir)
     _reject_foreign(document, _TOP_KEYS, "recipe")
     if document.get("recipe") != "pyrosm":
         raise ValueError("recipe: must be 'pyrosm', got %r" % document.get("recipe"))
     version = document.get("version", 1)
     if type(version) is not int or version not in _VERSIONS:
         raise ValueError("version: %r is not a known recipe version (1)" % (version,))
-    recipe_dir = recipe_path.parent
     extract = pbf = graph = None
     layers = {}
     if "extract" in document:
@@ -526,9 +581,8 @@ def validate(path):
         )
     if "outputs" not in document:
         raise ValueError("recipe: needs an outputs section")
-    outputs = _validate_outputs(
-        document["outputs"], recipe_path.stem, extract, layers, graph
-    )
+    stem = None if recipe_path is None else recipe_path.stem
+    outputs = _validate_outputs(document["outputs"], stem, extract, layers, graph)
     return {
         "recipe_path": recipe_path,
         "recipe_dir": recipe_dir,
@@ -629,14 +683,15 @@ def _run_extract(extract, target, update=False):
 
 
 def _out_root(recipe, out_dir):
-    """The output folder, checked: no output may resolve outside it or onto the recipe or an
-    input, and the extract's download folder must lie apart from it."""
+    """The output folder (default: the recipe's ``recipe_dir``), checked: no output may
+    resolve outside it or onto the recipe file or an input, and the extract's download folder
+    must lie apart from it."""
     from pyrosm.data import _resolve_dataset
     from pyrosm.utils.download import download_dir
 
     root = _resolve(recipe["recipe_dir"] if out_dir is None else out_dir, "out_dir")
     outputs, extract = recipe["outputs"], recipe["extract"]
-    protected = [recipe["recipe_path"]]
+    protected = [recipe["recipe_path"]] if recipe["recipe_path"] is not None else []
     protected += [source["file"] for source in _input_sources(recipe)]
     if extract is not None and "name" in extract["area"]:
         kind, found = _resolve_dataset(extract["area"]["name"])
@@ -718,11 +773,11 @@ def _publish(root, staging, staged, record, provenance):
     os.replace(temporary, provenance)
 
 
-def run(path, out_dir=None, force=False):
+def run(recipe, out_dir=None, force=False, base_dir=None):
     """Run a recipe and write its outputs and provenance record; returns their paths.
 
-    The outputs are written into ``out_dir`` (default: the recipe's folder) under the names
-    the recipe gives them. They are made in a staging folder and moved into place only when
+    The outputs are written into ``out_dir`` (default: ``base_dir``, or the recipe file's
+    folder) under the names the recipe gives them. They are made in a staging folder and moved into place only when
     every stage has succeeded, so a failed stage leaves the previous outputs and record as they
     were; a run interrupted while moving them leaves no record. A lock file
     ``.<record name>.lock`` keeps two runs of a recipe from writing at once, and a run is
@@ -735,16 +790,23 @@ def run(path, out_dir=None, force=False):
     ``update: true`` always runs.
 
     The provenance record (JSON) holds the package versions, the resolved recipe, the SHA-256
-    of each input and output, where the extract came from, how the run was invoked and when.
+    of each input and output, where the extract came from, how the run was invoked (with the
+    recipe file, ``out_dir`` and ``base_dir``) and when.
 
     Parameters
     ----------
-    path : str | pathlib.Path
-        The recipe YAML file.
+    recipe : str | pathlib.Path | Mapping
+        The recipe file (YAML or JSON), or the recipe as a mapping in the same format, such as
+        ``json.loads(text)``; a mapping needs ``outputs.provenance``. A string is always a
+        file name.
     out_dir : str | pathlib.Path, optional
-        The output folder, created when missing.
+        The output folder, created when missing; a relative one is relative to the current
+        folder.
     force : bool
         Run every stage, whether or not it changed, and download the extract again.
+    base_dir : str | pathlib.Path, optional
+        The folder that the recipe's relative paths resolve against, and the default output
+        folder (see :func:`validate`).
 
     Returns
     -------
@@ -752,9 +814,8 @@ def run(path, out_dir=None, force=False):
         The paths of the outputs, written or reused, in the recipe's order, and the
         provenance record last.
     """
-    return list(
-        _run_recipe(path, out_dir, {"entry_point": "python", "argv": None}, force)
-    )
+    invocation = {"entry_point": "python", "argv": None}
+    return list(_run_recipe(recipe, out_dir, invocation, force, base_dir))
 
 
 def _recorded(recipe):
@@ -910,14 +971,14 @@ def _stage_entry(work, previous, inputs, files, run, reusable=True):
     return dict(entry, fingerprint=fingerprint, outputs=written)
 
 
-def _run_recipe(path, out_dir, invocation, force=False):
+def _run_recipe(recipe, out_dir, invocation, force=False, base_dir=None):
     """:func:`run` with ``invocation`` (how pyrosm was called) in the record: returns each
     output's status, ``{path: "written" or "reused"}``, the provenance record last."""
     from pyrosm import OSM
     from pyrosm.data.extract_index import _sha256
     from pyrosm.utils import _file_identity
 
-    recipe = validate(path)
+    recipe = validate(recipe, base_dir)
     root = _out_root(recipe, out_dir)
     outputs, reader = recipe["outputs"], recipe["reader"]
     provenance = root / outputs["provenance"]
@@ -934,7 +995,10 @@ def _run_recipe(path, out_dir, invocation, force=False):
                 "recipe": _recorded(recipe),
                 "inputs": {s["file"].as_posix(): _sha256(s["file"]) for s in sources},
                 "invocation": dict(
-                    invocation, recipe=recipe["recipe_path"], out_dir=root
+                    invocation,
+                    recipe=recipe["recipe_path"],
+                    out_dir=root,
+                    base_dir=None if base_dir is None else recipe["recipe_dir"],
                 ),
             }
             for source in sources:
