@@ -263,7 +263,7 @@ _MAPPING = {
         ),
         ("shared", None, ValueError, "repeats a list, tuple or mapping"),
         ("lock", None, ValueError, "is not a text, number, true/false, list or mapping"),
-        ('{"recipe": "pyrosm"}', None, FileNotFoundError, "No such file"),
+        ("{}", None, FileNotFoundError, "No such file"),
     ],
 )
 def test_recipe_api_refuses(tmp_path, monkeypatch, recipe, base_dir, error, message):
@@ -700,7 +700,7 @@ def test_run_a_recipe_in_each_form(tmp_path, offline, monkeypatch):
         if form == "mapping":
             base = tmp_path / "mapping"
             written = recipes.run(recipe, base_dir=base)
-            assert written[-1] == base / "osm.json"
+            assert written[-1] == (base / "osm.json").resolve()
         else:
             written = recipes.run(recipe, tmp_path / form)
         records[form] = json.loads(written[-1].read_text(encoding="utf-8"))
