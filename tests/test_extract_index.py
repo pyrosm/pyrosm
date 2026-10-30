@@ -789,6 +789,81 @@ def test_the_error_names_the_extracts_closest_to_containing_the_area(
         assert str(info.value) == message
 
 
+def test_a_large_download_names_a_smaller_extract_that_leaves_out_little(
+    tmp_path, monkeypatch, small_gap_extracts
+):
+    """Before downloading 1 GB or more, a warning names the smallest extract of at most a
+    tenth of the size that leaves out less than 1 % of the area, and for the area the
+    tolerance with which pyrosm can use it. There is none for smaller downloads, without
+    such an extract, for points in must_cover, for sizes not known, or without a download;
+    an extract whose download failed is not named."""
+    area = small_gap_extracts
+    failing = []
+
+    def download(url, filename, update, directory, **net):
+        if url in failing:
+            raise DownloadError("down", url=url, status=500, attempts=3)
+        return pyrosm.get_data("test_pbf")
+
+    monkeypatch.setattr("pyrosm.utils.download.download", download)
+    # A size that the index does not give stays unknown.
+    monkeypatch.setattr(ei, "_download_sizes", lambda *a, **k: {})
+
+    def warned(where, **options):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            pyrosm.get_data_by_bbox(where, crop=False, directory=tmp_path, **options)
+        return [str(w.message) for w in caught if "about to download" in str(w.message)]
+
+    def geofabrik(size):
+        frame = _candidates("Geofabrik", [("finland", size, box(19, 59, 32, 71))])
+        monkeypatch.setattr(ei, "_geofabrik_extracts", lambda *a, **k: frame)
+
+    assert warned(area.bounds, tolerance=0.0001) == []  # finland is 700 MB
+    geofabrik(None)
+    assert warned(area.bounds, tolerance=0.0001) == []
+    geofabrik(2_000_000_000)
+    downloads = "pyrosm is about to download Geofabrik finland (2.0 GB). BBBike short (30 MB) "
+    short = downloads + "leaves out only 0.2 % of the area. With tolerance=0.003, pyrosm "
+    short += "can use BBBike short instead."
+    assert warned(area.bounds, tolerance=0.0001) == [short]
+    url = pyrosm.get_data_by_bbox(area.bounds, download=False, tolerance=0.003, directory=tmp_path)
+    assert url == "https://BBBike/short"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        pyrosm.get_data_by_bbox(area.bounds, download=False, tolerance=0.0001, directory=tmp_path)
+    assert not [w for w in caught if "about to download" in str(w.message)]
+    assert warned(area.bounds, must_cover=area) == [
+        downloads + "leaves out only 0.2 % of must_cover."
+    ]
+    assert warned(area.bounds, must_cover=Point(24.5, 60.0002)) == []
+    assert warned([24, 59.9, 25, 60.5]) == []  # the others leave out 17 %
+    assert warned([19.5, 59.5, 19.9, 59.9]) == []  # no other extract overlaps
+    # A small extract that leaves out 0.002 % fails; finland follows, and short is named.
+    exact = _candidates("BBBike", [("exact", 10_000_000, box(23, 60.00001, 26, 61))])
+    others = ei._bbbike_extracts(None, False, None)
+    both = pd.concat([others, exact], ignore_index=True)
+    monkeypatch.setattr(ei, "_bbbike_extracts", lambda *a, **k: both)
+    failing.append("https://BBBike/exact")
+    assert warned(area.bounds, tolerance=0.0001) == [short]
+
+
+def test_a_large_set_can_name_its_own_small_member():
+    """A small extract of a large set that leaves out little of the area is named too."""
+    area = box(24.0, 60.0, 25.0, 60.5)
+    chosen = _rows(
+        ("BBBike", "small", 30_000_000, box(20.0, 60.001, 30.0, 70.0), False),
+        ("Geofabrik", "big", 2_000_000_000, box(19, 59, 32, 71), False),
+    )
+    with pytest.warns(UserWarning) as caught:
+        ei._warn_large_download(chosen, {}, lambda: chosen, area, 0.0001)
+    assert [str(w.message) for w in caught] == [
+        "pyrosm is about to download BBBike small + Geofabrik big (2.0 GB). BBBike small "
+        "(30 MB) leaves out only 0.2 % of the area. With tolerance=0.003, pyrosm can use "
+        "BBBike small instead."
+    ]
+
+
 @pytest.mark.parametrize(
     "share, tolerance",
     [(0.00043, 0.0005), (0.0005, 0.0006), (0.000499999, 0.0005), (0.0095, 0.01)],

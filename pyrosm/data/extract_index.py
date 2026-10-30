@@ -94,6 +94,9 @@ _SLIVER_M2 = 1.0
 # The default share of an area that may lie outside the extract or extracts that count as
 # containing it (``tolerance``).
 _TOLERANCE = 0.001
+# A download of this many bytes or more is checked for a smaller extract that leaves out
+# little of the area: one of at most a tenth of its size that leaves out less than 1 %.
+_LARGE_DOWNLOAD = 1e9
 # Radius (m) that gives the points and lines of ``must_cover`` an area for the greedy steps.
 _POINT_RADIUS_M = 1.0
 
@@ -814,6 +817,57 @@ def _tolerance_above(share):
     return float("%g" % ((math.floor(share / step) + 1) * step))
 
 
+def _warn_large_download(chosen, downloaded, overlapping, polygons, tolerance):
+    """Warn before the extracts ``chosen`` not ``downloaded`` yet (URLs) are downloaded
+    when their sizes are known and total at least :data:`_LARGE_DOWNLOAD` bytes, and an
+    extract that ``overlapping()`` gives (also one of a set ``chosen``), of at most a
+    tenth of that size, leaves out more than nothing but less than 1 % of ``polygons``:
+    naming the smallest such extract, what it leaves out and, with a ``tolerance`` (for
+    the area), a tolerance of at most 1 % with which pyrosm can use it."""
+    pending = chosen[~chosen["url"].isin(list(downloaded))]
+    sizes = pending["bytes"]
+    if sizes.isna().any() or sizes.sum() < _LARGE_DOWNLOAD:
+        return
+    if polygons is None or polygons.area == 0:
+        return
+    size = sizes.sum()
+    overlapping = overlapping()
+    smaller = overlapping[(overlapping["bytes"] <= size / 10).fillna(False)]
+    if len(chosen) == 1:
+        smaller = smaller[smaller["url"] != chosen["url"].iloc[0]]
+    smaller = smaller[smaller.intersects(polygons) & ~smaller.touches(polygons)]
+    if smaller.empty:
+        return
+    gaps, total = _uncovered_m2(smaller.geometry, polygons)
+    shares = pd.Series(gaps / total, index=smaller.index)
+    near = smaller[(shares > 0) & (shares < 0.01)].sort_values("bytes", kind="stable")
+    if near.empty:
+        return
+    other = near.iloc[0]
+    share = shares[other.name]
+    names = " + ".join("%s %s" % e for e in zip(pending["provider"], pending["id"]))
+    message = (
+        "pyrosm is about to download %s (%s). %s %s (%s) leaves out only %.2g %% of %s."
+        % (
+            names,
+            _size_text(size),
+            other.provider,
+            other.id,
+            _size_text(other.bytes),
+            100 * share,
+            "the area" if tolerance is not None else "must_cover",
+        )
+    )
+    suggested = None if tolerance is None else _tolerance_above(share)
+    if suggested is not None and suggested <= 0.01:
+        message += " With tolerance=%g, pyrosm can use %s %s instead." % (
+            suggested,
+            other.provider,
+            other.id,
+        )
+    warnings.warn(message)
+
+
 def _not_found_message(what, candidates, polygons, tolerance):
     """The message of :class:`~pyrosm.exceptions.ExtractNotFoundError` for ``what`` (the
     area or ``must_cover``): up to three of ``candidates`` that leave the least of
@@ -1304,13 +1358,15 @@ def get_data_by_area(
     tolerance=tolerance)``, which shows the choice without downloading). An extract may
     leave less than ``tolerance`` (0.1 % by default) of the area outside it; when it
     leaves 1 m² or more, a warning says how much of the area the data leaves out, and
-    where. With ``strategy="smallest_total"`` it may instead
-    download several extracts that together cover the area and merge them into one file
-    (see ``strategy``). A download that fails with a network error or HTTP status 408,
-    425, 429 or 5xx is tried up to three times, waiting 1 s, 2 s or the server's
-    ``Retry-After`` in between; when it still fails, the choice is made again without
-    it, and when its provider answered 429 or 503, its request to slow down, also
-    without the provider's other extracts that are not downloaded yet. An extract
+    where. Before a download of 1 GB or more, a warning names the smallest extract, of at
+    most a tenth of that size, that leaves out less than 1 % of the area (or of the
+    polygons in ``must_cover``), when there is one. With ``strategy="smallest_total"`` it
+    may instead download several extracts that together cover the area and merge them
+    into one file (see ``strategy``). A download that fails with a network error or HTTP
+    status 408, 425, 429 or 5xx is tried up to three times, waiting 1 s, 2 s or the
+    server's ``Retry-After`` in between; when it still fails, the choice is made again
+    without it, and when its provider answered 429 or 503, its request to slow down,
+    also without the provider's other extracts that are not downloaded yet. An extract
     already downloaded is not downloaded again in the same call. By default the file is
     then cropped to the area's bounding box, or with ``crop="polygon"`` to the area
     itself.
@@ -1535,8 +1591,29 @@ def _get_area(
     )
     # must_cover is covered without a tolerance.
     choice_tolerance = tolerance if parts is None else 0.0
+    area_tolerance = tolerance if parts is None else None
+
+    def overlapping():
+        """The candidates that overlap the target, also those that do not contain it,
+        without those left out after failed downloads."""
+        if strategy != "single":
+            return candidates
+        found = find_extracts(
+            geom,
+            directory=directory,
+            must_cover=must_cover,
+            progress=progress,
+            tolerance=tolerance,
+            **net,
+        )
+        for extract, error in left_out:
+            found, _ = _without_failed(found, extract, error, downloaded)
+        return found
+
     # The paths of the extracts downloaded so far, by URL: a choice made again reuses them.
     failed, errors, downloaded = [], [], {}
+    # The extracts whose download failed, with their errors.
+    left_out = []
     download_seconds = 0.0
     while (
         chosen := _choose(target, candidates, strategy, choice_tolerance)
@@ -1544,6 +1621,7 @@ def _get_area(
         if not download:
             _warn_uncovered(chosen, target)
             return list(chosen["url"])
+        _warn_large_download(chosen, downloaded, overlapping, target[0], area_tolerance)
         sources = []
         for extract in chosen.itertuples():
             path = downloaded.get(extract.url)
@@ -1574,6 +1652,7 @@ def _get_area(
             except DownloadError as e:
                 failed.append((extract.url, str(e)))
                 errors.append(e)
+                left_out.append((extract, e))
                 candidates, provider = _without_failed(
                     candidates, extract, e, downloaded
                 )
@@ -1621,24 +1700,9 @@ def _get_area(
                 snapshot=min(snapshots) if snapshots else None,
             )
     if not failed:
-        if strategy == "single":
-            # The extracts that only overlap the target, which the message measures.
-            candidates = find_extracts(
-                geom,
-                directory=directory,
-                must_cover=must_cover,
-                progress=progress,
-                tolerance=tolerance,
-                **net,
-            )
         what = "the area" if must_cover is None else "must_cover"
         raise ExtractNotFoundError(
-            _not_found_message(
-                what,
-                candidates,
-                target[0],
-                tolerance if must_cover is None else None,
-            )
+            _not_found_message(what, overlapping(), target[0], area_tolerance)
         )
     raise ExtractDownloadError(
         "Could not download the extracts for the area; %d downloads failed: %s"
