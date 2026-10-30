@@ -365,6 +365,27 @@ def as_compiled_filter(custom_filter):
     return CompiledFilter(_dict_to_groups(custom_filter))
 
 
+def dict_as_bracket_filter(custom_filter):
+    """The bracket filter that keeps what ``custom_filter``, a plain dict as
+    :func:`pyrosm.utils.validate_custom_filter` returns it, keeps: a string for one
+    condition, otherwise a list of strings (their OR). None when the dict has no
+    condition, or a key or value holds both quote characters, which a bracket cannot
+    quote."""
+    brackets = []
+    for key, values in custom_filter.items():
+        for value in values:
+            quoted = []
+            for part in [key] if value is True else [key, value]:
+                quote = "'" if '"' in part else '"'
+                if quote in part:
+                    return None
+                quoted.append(quote + part + quote)
+            brackets.append("[%s]" % "=".join(quoted))
+    if not brackets:
+        return None
+    return brackets[0] if len(brackets) == 1 else brackets
+
+
 def compile_custom_filter(custom_filter):
     """Turn any ``custom_filter`` the user passed into the form the readers expect.
 

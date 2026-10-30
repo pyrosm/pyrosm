@@ -1,4 +1,3 @@
-from pyrosm.utils import warn_empty_result
 from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
 
@@ -41,7 +40,6 @@ def get_network_data(
 
     # If there weren't any data, return None
     if ways is None:
-        warn_empty_result("network")
         return None, None
 
     # Prepare GeoDataFrame

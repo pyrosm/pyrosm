@@ -5869,3 +5869,74 @@ def test_get_data_and_get_data_by_area_share_a_download(tmp_path, monkeypatch, f
     other = Path(pyrosm.get_data("helsinki_region_pbf", **net))
     assert other.name == "Helsinki_region.osm.pbf"
     assert len(list(tmp_path.glob("*.pbf"))) == 2
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_network_dict_filter_without_highway_key_warns(engine):
+    """A dict ``custom_filter`` of ``get_network`` keeps only ways that have a ``highway``
+    tag, so ``{"waterway": ["stream"]}`` found nothing and the only warning blamed the area.
+    It now warns that the dict keeps highway ways only and shows the bracket filter, which
+    finds the stream as a regex dict does, and the empty-result warning names the filter."""
+    import re
+    import warnings
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
+    stream = {"waterway": ["stream"]}
+    hint = """custom_filter='["waterway"="stream"]'"""
+    for read in (osm.get_network, osm.get_network, osm.get_graph):
+        with pytest.warns(UserWarning) as caught:
+            assert read(custom_filter=stream) is None
+        hints = [w for w in caught if hint in str(w.message)]
+        assert len(hints) == 1 and hints[0].filename == __file__
+        assert sum("edges that match custom_filter" in str(w.message) for w in caught) == 1
+    for selects_by_its_keys in ('["waterway"="stream"]', {"waterway": [re.compile("st")]}):
+        edges = osm.get_network(custom_filter=selects_by_its_keys)
+        assert list(edges["waterway"]) == ["stream"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for highway_ways in (
+            {"custom_filter": {"highway": ["residential"], "bicycle": ["yes"]}},
+            {"custom_filter": {"service": ["private"]}, "filter_type": "exclude"},
+        ):
+            assert len(osm.get_network(**highway_ways)) > 0
+
+
+@pytest.mark.parametrize(
+    "custom_filter, bracket",
+    [
+        ({"waterway": ["river"]}, '["waterway"="river"]'),
+        (
+            {"waterway": ["river", "canal"], "railway": [True]},
+            ['["waterway"="river"]', '["waterway"="canal"]', '["railway"]'],
+        ),
+        ({"name": ['Joe"s']}, """["name"='Joe"s']"""),
+        ({'"quoted"': [True]}, """['"quoted"']"""),
+        ({"name": ["""a"b'c"""]}, None),
+        ({"waterway": []}, None),
+        ({}, None),
+    ],
+)
+def test_dict_as_bracket_filter(custom_filter, bracket):
+    """The bracket string a dict filter's warning shows keeps the same ways as the dict; a
+    value that holds both quote characters cannot be written as one."""
+    from pyrosm.filter_compiler import (
+        as_compiled_filter,
+        compile_custom_filter,
+        dict_as_bracket_filter,
+    )
+
+    assert dict_as_bracket_filter(custom_filter) == bracket
+    if bracket is not None:
+        compiled = compile_custom_filter(bracket)
+        for tags in (
+            {"waterway": "river"},
+            {"railway": "x"},
+            {"name": 'Joe"s'},
+            {'"quoted"': "x"},
+            {},
+        ):
+            assert compiled.matches(tags) == as_compiled_filter(custom_filter).matches(
+                tags
+            )
