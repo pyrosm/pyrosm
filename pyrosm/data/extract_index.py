@@ -1631,7 +1631,7 @@ def _get_area(
             log_event(
                 logger,
                 logging.INFO,
-                "download_extract",
+                "choose_extract",
                 provider=extract.provider,
                 extract=extract.name,
                 megabytes=(
