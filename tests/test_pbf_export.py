@@ -1227,14 +1227,16 @@ def test_to_pbf_writes_each_kind_of_group(tmp_path):
     # nodes (here without tags and metadata) encoded again; each written block is
     # encoded as protobuf itself encodes it, and a group without elements is left out.
     # A re-packed crop keeps the same elements, each way's and relation's Info fields
-    # as present in the source, and a repeated tag key once, with its last value.
+    # as present in the source, and a repeated tag key once, with its last value, also
+    # a node's key whose text the string table holds twice.
     from pyrosm.pbf_export import _iter_block_data
     from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
 
     blk = PrimitiveBlock(granularity=100, date_granularity=1000)
-    blk.stringtable.s.extend([b"", b"amenity", b"cafe", b"bar"])
+    blk.stringtable.s.extend([b"", b"amenity", b"cafe", b"bar", b"amenity"])
     plain = blk.primitivegroup.add().nodes
-    plain.add(id=1, lat=601700000, lon=249440000, keys=[1], vals=[2]).info.version = 3
+    node = plain.add(id=1, lat=601700000, lon=249440000, keys=[1, 4], vals=[2, 3])
+    node.info.version = 3
     plain.add(id=2, lat=611700000, lon=259440000)
     ways = blk.primitivegroup.add().ways
     ways.add(id=10, refs=[1, 1], keys=[1, 1], vals=[2, 3]).info.version = 4  # nodes 1, 2
@@ -1270,8 +1272,12 @@ def test_to_pbf_writes_each_kind_of_group(tmp_path):
         str(tmp_path / "repacked.osm.pbf"), repack=True
     )
     nodes, _ = _dense_nodes(repacked)
-    assert nodes == {1: (3, {"amenity": "cafe"}), 2: (None, {}), 4: (None, {})}
+    assert nodes == {1: (3, {"amenity": "bar"}), 2: (None, {}), 4: (None, {})}
     blocks = list(_iter_primitive_blocks(repacked))
+    (dense,) = [
+        g.dense for b in blocks for g in b.primitivegroup if g.dense.id[:1] == [1]
+    ]
+    assert list(dense.id) == [1] and len(dense.keys_vals) == 3  # one key, value and 0
     ((way, st),) = [(w, b.stringtable.s) for b in blocks for g in b.primitivegroup
                     for w in g.ways]
     assert way.id == 10 and np.cumsum(way.refs).tolist() == [1, 2]
@@ -1582,6 +1588,123 @@ def test_crop_blocks_corrupt_blocks(corrupted_copies):
             status, offsets, out = _crop_blocks(buffer, starts, *kept)
             assert status[0] in (0, 1, 2)
             assert offsets.tolist() == [0, len(out)]
+
+
+def _decode_blocks():
+    """Blocks for the GIL-free decode of re-packed crops and merges: dense nodes with every
+    DenseInfo field, ways and a relation with Info fields present and absent (the blank
+    string twice in the table, as osmium writes it); then blocks it leaves to protobuf: a
+    node key whose text the table holds at a lower id too, a node and a way giving a key
+    twice, and a string id outside the table."""
+    from pyrosm.proto.osmformat_pb2 import PrimitiveBlock
+
+    def block(*strings):
+        blk = PrimitiveBlock(granularity=100, date_granularity=1000)
+        blk.stringtable.s.extend(strings)
+        return blk
+
+    def one_node(keys_vals, *strings):
+        blk = block(*strings)
+        d = blk.primitivegroup.add().dense
+        d.id.append(1)
+        d.lat.append(0)
+        d.lon.append(0)
+        d.keys_vals.extend(keys_vals)
+        return blk
+
+    dense = block(b"", b"", b"amenity", b"cafe", b"carol")
+    d = dense.primitivegroup.add().dense
+    d.id.extend([5, 1, 1])
+    d.lat.extend([600000000, 1, 1])
+    d.lon.extend([250000000, 1, 1])
+    d.keys_vals.extend([2, 3, 0, 0, 2, 1, 0])
+    info = d.denseinfo
+    for field, values in (
+        (info.version, [1, 2, 3]), (info.timestamp, [5, 1, 1]), (info.changeset, [7, 0, 1]),
+        (info.uid, [3, -3, 0]), (info.user_sid, [4, -3, 0]), (info.visible, [True, False, True]),
+    ):
+        field.extend(values)
+    ways = block(b"", b"", b"highway", b"path", b"bob")
+    group = ways.primitivegroup.add()
+    way = group.ways.add(id=80, keys=[2], vals=[3], refs=[1, 1])
+    way.info.version, way.info.timestamp, way.info.changeset = 2, 9, 4
+    way.info.uid, way.info.user_sid, way.info.visible = 5, 4, False
+    group.ways.add(id=81, refs=[2]).info.timestamp = 3
+    group.ways.add(id=82, keys=[2], vals=[1])
+    rel = ways.primitivegroup.add().relations.add(
+        id=90, memids=[80, 1], types=[1, 1], roles_sid=[1, 3]
+    )
+    rel.info.user_sid = 1
+    later_text = one_node([3, 2, 0], b"", b"amenity", b"cafe", b"amenity")
+    repeated = one_node([1, 2, 1, 1, 0], b"", b"amenity", b"cafe")
+    repeated_way = block(b"", b"highway", b"path")
+    repeated_way.primitivegroup.add().ways.add(id=1, keys=[1, 1], vals=[2, 2])
+    outside = one_node([9, 1, 0], b"", b"amenity")
+    return [dense, ways, later_text, repeated, repeated_way, outside]
+
+
+class _EveryId:
+    """An id set holding every id, for decoding all elements through protobuf."""
+
+    def isin(self, values):
+        return np.ones(len(values), dtype=bool)
+
+
+def _chunk_values(chunks):
+    """The kinds, DenseInfo fields, strings and arrays (with their dtypes) of (kind, chunk)
+    pairs, for comparing them."""
+    return [
+        (kind, chunk.kind, chunk.meta, list(chunk.strings),
+         {name: (v.dtype.str, v.tolist()) for name, v in chunk.arrays.items()})
+        for kind, chunk in chunks
+    ]
+
+
+@pytest.mark.parametrize("source", ["crafted", "helsinki"])
+def test_decoded_chunks_are_those_of_protobuf(tmp_path, helsinki_pbf, source):
+    """_decoded_chunks decodes each block into the chunks _kept_chunks gives for all its
+    elements through protobuf, and leaves to that path (None) a block it does not handle:
+    ids in more packed runs than it keeps, plain nodes, a group of ways and relations, and
+    the last four of _decode_blocks, the last one refused there."""
+    from pyrosm.pbf_export import _decoded_chunks, _iter_block_data, _kept_chunks
+
+    if source == "crafted":
+        blocks = _crafted_blocks(standard_grid=True) + _decode_blocks()
+        path = _pbf_file(tmp_path / "crafted.osm.pbf", *blocks)
+    else:
+        path = helsinki_pbf
+    blocks = list(_iter_block_data(path))
+    decoded = [_decoded_chunks(data) for data in blocks]
+    every = (_EveryId(),) * 3
+    if source == "crafted":
+        assert [chunks is not None for chunks in decoded] == [
+            True, True, False, False, False, True, True, True, True, True, False, False,
+            False, False,
+        ]
+        with pytest.raises(IndexError):
+            _kept_chunks(blocks.pop(), path, every)
+    else:
+        assert None not in decoded
+    for data, chunks in zip(blocks, decoded):
+        if chunks is not None:
+            assert _chunk_values(chunks) == _chunk_values(_kept_chunks(data, path, every))
+    assert _decoded_chunks(b"") == []
+
+
+def test_decoded_chunks_corrupt_blocks(corrupted_copies):
+    """A corrupted block is decoded into the chunks protobuf gives for it, or left to that
+    path; _decoded_chunks never reads outside it."""
+    from pyrosm.pbf_export import _decoded_chunks, _kept_chunks
+
+    every = (_EveryId(),) * 3
+    crafted = _crafted_blocks(standard_grid=True)
+    blocks = _decode_blocks()[:2] + [crafted[0], crafted[5]]
+    for seed, block in enumerate(blocks):
+        for data in corrupted_copies(block.SerializeToString(), 200, seed=seed):
+            chunks = _decoded_chunks(data)
+            if chunks is not None:
+                expected = _kept_chunks(data, "corrupt.osm.pbf", every)
+                assert _chunk_values(chunks) == _chunk_values(expected)
 
 
 def _expected_way_copies(block, candidates, nodes_in_box):
