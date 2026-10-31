@@ -5990,3 +5990,82 @@ def test_reading_does_not_import_the_graph_libraries(tmp_path):
         env=dict(os.environ, MPLCONFIGDIR=str(tmp_path)),
     )
     assert result.returncode == 0, result.stderr[-800:]
+
+
+_ALONG = "of the area. This part lies along the edge of the area."
+_SPREAD = "of the area. This part is spread across the area."
+
+
+@pytest.mark.parametrize(
+    "call, layout, left_out",
+    [
+        ("get_data_by_area", "strip", "230 km² (0.08 %) " + _ALONG),
+        ("get_data_by_bbox", "strip", "230 km² (0.08 %) " + _ALONG),
+        ("get_data_by_geocoding", "holes", "110 km² (0.04 %) " + _SPREAD),
+        ("get_data_by_area", "island", "140 km² (0.047 %) " + _SPREAD),
+    ],
+)
+def test_left_out_part_warning_is_readable_and_points_at_the_call(
+    tmp_path, monkeypatch, call, layout, left_out
+):
+    """#832 — the warning about the part of the area that the chosen extract leaves
+    out prints plain numbers (it printed ``1.5e+02 km²``). For a part along the whole
+    edge it says so, and for holes in the extract or a whole island left out it says
+    that the part is spread across the area, instead of giving the area's own bounds as
+    where the part lies. It points at the user's call, not at pyrosm's code."""
+    import warnings
+
+    from shapely.geometry import MultiPolygon, Polygon, box
+
+    import pyrosm
+    from pyrosm.data import extract_index as ei
+    from pyrosm.data import geocoding
+
+    area = box(20.0, 60.0, 30.0, 65.0)
+    if layout == "strip":
+        # A strip of about 100 m along every side of the area lies outside the extract.
+        outline = box(20.002, 60.001, 29.998, 64.999)
+    elif layout == "holes":
+        # Two small holes in the extract, at opposite corners inside the area.
+        corners = [box(20.5, 60.5, 20.6, 60.6), box(29.4, 64.4, 29.5, 64.5)]
+        outline = Polygon(box(19, 59, 31, 66).exterior, [c.exterior for c in corners])
+    else:
+        # A strip along the north and east sides lies outside the extract, and so does
+        # a small island that touches the area in a point, where the strip's inner
+        # side meets the west side.
+        island = Polygon([(20.0, 64.999), (19.9, 64.95), (19.9, 65.05)])
+        area = MultiPolygon([area, island])
+        outline = box(20.0, 60.0, 29.998, 64.999)
+    extract = ei._candidate_frame(
+        "BBBike", ["x"], ["x"], ["https://BBBike/x"], [40_000_000], [outline]
+    )
+    monkeypatch.setattr(ei, "_bbbike_extracts", lambda *a, **k: extract)
+    monkeypatch.setattr(ei, "_geofabrik_extracts", lambda *a, **k: extract[:0])
+    monkeypatch.setattr(ei, "_movisda_extracts", lambda *a, **k: extract[:0])
+    monkeypatch.setattr(
+        "pyrosm.utils.download.download", lambda *a, **k: pyrosm.get_data("test_pbf")
+    )
+    monkeypatch.setattr(geocoding, "geocode", lambda query, **k: area)
+    queries = {"get_data_by_bbox": area.bounds, "get_data_by_geocoding": "X"}
+    query = queries.get(call, area)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        line = sys._getframe().f_lineno + 1
+        getattr(pyrosm, call)(query, crop=False, directory=tmp_path)
+    [warning] = [w for w in caught if "leaves out" in str(w.message)]
+    assert str(warning.message) == "BBBike x leaves out " + left_out
+    assert (warning.filename, warning.lineno) == (__file__, line)
+
+
+def test_a_piece_borders_a_line_along_it_not_at_its_end():
+    """#832 — a piece left out of the area borders a line on its boundary only along the
+    line, also a line of 1 µm, not where it only touches the line's end: a whole island
+    that touches another piece's seam in a point does not lie along the edge."""
+    from shapely.geometry import LineString, Polygon, box
+
+    from pyrosm.data import extract_index as ei
+
+    sliver = box(0.0, 0.0, 1e-6, 1.0)
+    island = Polygon([(1e-6, 1.0), (1.0, 2.0), (-1.0, 2.0)])  # touches the seam's end
+    seam = LineString([(1e-6, 1.0 - 1e-6), (1e-6, 1.0)])  # 1 µm on the sliver's side
+    assert ei._pieces_bordering([sliver, island], seam).tolist() == [True, False]

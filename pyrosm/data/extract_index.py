@@ -37,6 +37,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import shapely
 from shapely.geometry import box, shape
@@ -59,7 +60,12 @@ from pyrosm.exceptions import (
     ExtractNotFoundError,
     RequestRefusedError,
 )
-from pyrosm.utils import _file_identity, check_bounds, validate_workers
+from pyrosm.utils import (
+    _file_identity,
+    _stacklevel_outside_pyrosm,
+    check_bounds,
+    validate_workers,
+)
 from pyrosm.utils.progress import stepping, validate_progress
 from pyrosm.utils.download import (
     _CHUNK,
@@ -809,6 +815,14 @@ def _size_text(size):
     return ("%.1f MB" if size < 1e7 else "%.0f MB") % (size / 1e6)
 
 
+def _number_text(value):
+    """``value`` as text with two significant digits and no exponent, such as ``150``,
+    ``0.085`` or ``0.00004``."""
+    return np.format_float_positional(
+        value, precision=2, unique=False, fractional=False, trim="-"
+    )
+
+
 def _tolerance_above(share):
     """A round tolerance above ``share`` (greater than 0), such as 0.0005 for 0.00043 and
     0.0006 for 0.0005, also when ``share`` was rounded down a little in its division."""
@@ -847,14 +861,14 @@ def _warn_large_download(chosen, downloaded, overlapping, polygons, tolerance):
     share = shares[other.name]
     names = " + ".join("%s %s" % e for e in zip(pending["provider"], pending["id"]))
     message = (
-        "pyrosm is about to download %s (%s). %s %s (%s) leaves out only %.2g %% of %s."
+        "pyrosm is about to download %s (%s). %s %s (%s) leaves out only %s %% of %s."
         % (
             names,
             _size_text(size),
             other.provider,
             other.id,
             _size_text(other.bytes),
-            100 * share,
+            _number_text(100 * share),
             "the area" if tolerance is not None else "must_cover",
         )
     )
@@ -865,7 +879,7 @@ def _warn_large_download(chosen, downloaded, overlapping, polygons, tolerance):
             other.provider,
             other.id,
         )
-    warnings.warn(message)
+    warnings.warn(message, stacklevel=_stacklevel_outside_pyrosm())
 
 
 def _not_found_message(what, candidates, polygons, tolerance):
@@ -890,8 +904,8 @@ def _not_found_message(what, candidates, polygons, tolerance):
     shares = pd.Series(gaps / total, index=overlapping.index).sort_values(kind="stable")
     closest = overlapping.loc[shares.index[:3]]
     message += " These extracts cover the largest part of %s:" % what + "".join(
-        "\n- %s %s (%s): %.2g %%"
-        % (e.provider, e.id, _size_text(e.bytes), 100 * shares[i])
+        "\n- %s %s (%s): %s %%"
+        % (e.provider, e.id, _size_text(e.bytes), _number_text(100 * shares[i]))
         for i, e in zip(closest.index, closest.itertuples())
     )
     best = shares.iloc[0]
@@ -901,15 +915,16 @@ def _not_found_message(what, candidates, polygons, tolerance):
     if suggested <= 0.01:
         first = closest.iloc[0]
         message += (
-            "\nWith tolerance=%g, pyrosm can use %s %s, which leaves out %.2g %% of %s."
-            % (suggested, first.provider, first.id, 100 * best, what)
+            "\nWith tolerance=%g, pyrosm can use %s %s, which leaves out %s %% of %s."
+            % (suggested, first.provider, first.id, _number_text(100 * best), what)
         )
     return message
 
 
 def _warn_uncovered(chosen, target):
     """Warn when the extracts ``chosen`` leave more than a sliver of the polygons of
-    ``target`` (see :func:`_smallest_cover`) outside them, naming how much and where."""
+    ``target`` (see :func:`_smallest_cover`) outside them, naming how much and where (see
+    :func:`_where_left_out`)."""
     polygons = target[0]
     if polygons is None or polygons.area == 0:
         return
@@ -920,19 +935,59 @@ def _warn_uncovered(chosen, target):
     gap = polygon.difference(outlines)
     if gap.area < _SLIVER_M2:
         return
-    bounds = gpd.GeoSeries([gap], crs=_EQUAL_AREA_CRS).to_crs("EPSG:4326").total_bounds
     names = " + ".join("%s %s" % e for e in zip(chosen["provider"], chosen["id"]))
     warnings.warn(
-        "%s %s out %.2g km² (%.2g %%) of the area. This part lies within the bounds "
-        "[%s]."
+        "%s %s out %s km² (%s %%) of the area.%s"
         % (
             names,
             "leaves" if len(chosen) == 1 else "leave",
-            gap.area / 1e6,
-            100 * gap.area / polygon.area,
-            ", ".join("%.3f" % b for b in bounds),
-        )
+            _number_text(gap.area / 1e6),
+            _number_text(100 * gap.area / polygon.area),
+            _where_left_out(gap, polygon),
+        ),
+        stacklevel=_stacklevel_outside_pyrosm(),
     )
+
+
+def _where_left_out(gap, polygon):
+    """Where the part ``gap`` of ``polygon`` (both in the equal-area CRS) lies, as a
+    sentence: within its bounds (lon/lat) when they span at most half of the polygon's
+    width or height, else along the polygon's edge when every piece of it borders both
+    the edge and the rest of the polygon along a line (a whole island left out borders
+    no rest, a hole in the extracts no edge), else spread across the polygon."""
+    gap_x0, gap_y0, gap_x1, gap_y1 = gap.bounds
+    x0, y0, x1, y1 = polygon.bounds
+    if gap_x1 - gap_x0 <= (x1 - x0) / 2 or gap_y1 - gap_y0 <= (y1 - y0) / 2:
+        bounds = (
+            gpd.GeoSeries([gap], crs=_EQUAL_AREA_CRS).to_crs("EPSG:4326").total_bounds
+        )
+        return " This part lies within the bounds [%s]." % ", ".join(
+            "%.3f" % b for b in bounds
+        )
+    pieces = shapely.get_parts(gap)
+    outline, edge = gap.boundary, polygon.boundary
+    along = _pieces_bordering(pieces, outline.intersection(edge)) & _pieces_bordering(
+        pieces, outline.difference(edge)
+    )
+    if along.all():
+        return " This part lies along the edge of the area."
+    return " This part is spread across the area."
+
+
+def _pieces_bordering(pieces, lines):
+    """Whether each of the polygons ``pieces`` has one of ``lines`` (parts of their
+    boundaries) along its boundary, found by the middle point of each line, so that a
+    piece that only touches a line at its end does not count."""
+    parts = shapely.get_parts(lines)
+    parts = parts[shapely.length(parts) > 0]
+    found = np.zeros(len(pieces), dtype=bool)
+    if len(parts):
+        middles = shapely.line_interpolate_point(parts, 0.5, normalized=True)
+        # Within 1 µm, but closer to the middle than to the line's ends.
+        near = np.minimum(1e-6, shapely.length(parts) / 4)
+        tree = shapely.STRtree(pieces)
+        found[tree.query(middles, predicate="dwithin", distance=near)[1]] = True
+    return found
 
 
 def _covers(chosen, shapes, outlines, polygons, exact, allowed):
