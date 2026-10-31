@@ -6069,3 +6069,24 @@ def test_a_piece_borders_a_line_along_it_not_at_its_end():
     island = Polygon([(1e-6, 1.0), (1.0, 2.0), (-1.0, 2.0)])  # touches the seam's end
     seam = LineString([(1e-6, 1.0 - 1e-6), (1e-6, 1.0)])  # 1 µm on the sliver's side
     assert ei._pieces_bordering([sliver, island], seam).tolist() == [True, False]
+
+
+def test_widget_bar_ends_at_100_percent(monkeypatch):
+    """In Jupyter, a crop's bar, cleared at its end in a terminal, ends drawn at 100 % with
+    the "success" style, also when its last report comes within tqdm's ``mininterval`` of
+    the redraw before; it ended at that redraw's 93 %, with no style (#833)."""
+    pytest.importorskip("ipywidgets")
+    from tqdm import notebook
+
+    from pyrosm.utils import progress
+
+    monkeypatch.setattr(progress, "_bar_class", lambda: (notebook.tqdm, False))
+    with progress.stepping(True, "Cropping x.osm.pbf", leave=False, timed=True) as steps:
+        advance = steps.start_step("writing the file")
+        advance(93, 100)
+        steps.report.bar.refresh()  # the last redraw, as every second while open
+        advance(100, 100)
+    label, bar, _ = steps.report.bar.container.children
+    assert label.value.endswith("100%")
+    assert (bar.value, bar.bar_style) == (100, "success")
+    assert steps.report.bar.container.layout.visibility != "hidden"
