@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- FIXED: `get_data_by_area`, `get_data_by_bbox` and `get_data_by_geocoding` warn you when the chosen extract does not cover the whole area. Previously, the warning used scientific notation for areas of 100 km² or more, such as "1.5e+02 km²" for Iceland. When the outline came from Nominatim, the extract usually left out thin pieces along the whole border or coastline. In these cases, the warning showed the bounds of the whole area. Those bounds did not show where the thin pieces were. The warning also pointed to one of pyrosm's own lines of code. It did not point to the line where you called the function. The warning now prints plain numbers, such as "150 km² (0.085 %)". The `ExtractNotFoundError` message and the warning before a large download now show percentages as plain numbers too. The warning gives the bounds only if the part left out spans no more than half the area's width or no more than half its height. Otherwise, the warning says that the part lies along the edge of the area or is spread across it. When you call one of these functions in your code, its warning now points to the line where you made the call. The warning before a large download now points to that line as well ([#832](https://github.com/pyrosm/pyrosm/issues/832))
+
 v0.28.0
 -------
 

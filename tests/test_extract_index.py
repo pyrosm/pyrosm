@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import time
 import warnings
 import zlib
@@ -812,8 +813,12 @@ def test_a_large_download_names_a_smaller_extract_that_leaves_out_little(
     def warned(where, **options):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
+            line = sys._getframe().f_lineno + 1
             pyrosm.get_data_by_bbox(where, crop=False, directory=tmp_path, **options)
-        return [str(w.message) for w in caught if "about to download" in str(w.message)]
+        found = [w for w in caught if "about to download" in str(w.message)]
+        # The warning points at the call (#832).
+        assert all((w.filename, w.lineno) == (__file__, line) for w in found)
+        return [str(w.message) for w in found]
 
     def geofabrik(size):
         frame = _candidates("Geofabrik", [("finland", size, box(19, 59, 32, 71))])
