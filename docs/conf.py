@@ -16,7 +16,7 @@ copyright = f"2020-{current_year}, Henrikki Tenkanen + pyrosm contributors"
 author = "Henrikki Tenkanen + pyrosm contributors"
 
 # The full version, including alpha/beta/rc tags
-version = release = "0.27.0"
+version = release = "0.28.0"
 
 # -- General configuration ---------------------------------------------------
 
