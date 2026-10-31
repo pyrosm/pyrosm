@@ -13,19 +13,23 @@ new options that leave the defaults as they were, and fixes of calls that failed
   `foot` tag can now stay in the `walking` network, and a `highway=footway` with a `bicycle` tag
   in the `cycling` network. The tag counts as on any other way: `no` or `private` leaves the way
   out, and other values, such as `designated`, `yes`, `use_sidepath` or `dismount`, let it stay
-  unless another rule of the filter leaves it out. A cycle way without a `foot` tag and a foot way
-  without a `bicycle` tag are still left out. Earlier versions followed OSMnx and left every cycle
-  way out of the walking network and every foot way out of the cycling network. In the Helsinki
-  region, the walking network grows from 14,662 km to 17,962 km and the cycling network from
-  14,288 km to 14,803 km. To get the ways that an earlier version would have selected, read a
-  walking network with this version and then drop every row whose `highway` tag is `cycleway`.
-  Also drop the rows where `cycleway` is one of several `highway` values, as in
-  `cycleway;footway`. For a cycling network, drop the rows whose `highway` tag is or contains
-  `footway` in the same way. In a filter built from `get_osm_filter("walking")` or
-  `Conf.network_filters.walking`, `cycleway` is no longer in the `highway` list. In the walking
-  filter, the `access` entry now decides whether to keep these cycle ways. This entry is an
-  `AccessRule` with `other_mode_highway=["cycleway"]`. The cycling filter uses its own `access`
-  entry to decide whether to keep foot ways.
+  unless another rule of the filter leaves it out. For a cycle way without a `foot` tag, or a foot
+  way without a `bicycle` tag, pyrosm finds the country of the way's first node and applies that
+  country's default. Pedestrians may use cycle ways by default in 18 countries, including Finland,
+  Sweden, the United Kingdom and the United States, and cyclists may use foot ways in Australia,
+  Belarus, Iceland and Norway. Elsewhere, and where pyrosm finds no country for the first node,
+  such a way is left out. Earlier versions followed OSMnx and left every cycle way out of the
+  walking network and every foot way out of the cycling network. In the Helsinki region, the
+  walking network grows from 14,662 km to 17,996 km and the cycling network from 14,288 km to
+  14,803 km. To get the ways that an earlier version would have selected, read a walking network
+  with this version and then drop every row whose `highway` tag is `cycleway`. Also drop the rows
+  where `cycleway` is one of several `highway` values, as in `cycleway;footway`. For a cycling
+  network, drop the rows whose `highway` tag is or contains `footway` in the same way. In a filter
+  built from `get_osm_filter("walking")` or `Conf.network_filters.walking`, `cycleway` is no
+  longer in the `highway` list. In the walking filter, the `access` entry now leaves out the cycle
+  ways without a `foot` tag, and `get_network` and `get_graph` keep those of them that their
+  country allows. This entry is an `AccessRule` with `other_mode_highway=["cycleway"]`. The
+  cycling filter's `access` entry does the same for foot ways.
 
 ## pyrosm 0.28.0
 
