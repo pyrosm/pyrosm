@@ -154,10 +154,12 @@ Unlike OSMnx, pyrosm follows OSM's access hierarchy. It uses the most specific a
 a way to decide whether to leave that way out. For example, `access=no` leaves a way out
 of the walking network unless a more specific tag such as `foot=yes` allows walking.
 
-OSMnx leaves every cycle way out of `walk` and every foot way out of `bike`. pyrosm leaves
-out a cycle way that has no `foot` tag. A cycle way with a `foot` tag, such as
-`foot=designated`, can stay in the walking network unless the tag is `no` or `private`.
-The cycling network treats a foot way and its `bicycle` tag in the same way.
+OSMnx leaves every cycle way out of `walk` and every foot way out of `bike`. In pyrosm, a
+cycle way with a `foot` tag, such as `foot=designated`, can stay in the walking network
+unless the tag is `no` or `private`. A cycle way without a `foot` tag follows the default
+of the country it lies in. It stays in countries such as Finland, where pedestrians
+may use cycle ways by default, and is left out in other countries and where pyrosm finds
+no country. The cycling network treats a foot way and its `bicycle` tag in the same way.
 
 A network exported with `to_graph(..., graph_type="networkx")` is OSMnx-compatible as
 well: the node and edge attributes are named as OSMnx expects, so its functions work on

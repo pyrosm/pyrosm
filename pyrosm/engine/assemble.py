@@ -6,12 +6,14 @@ import numpy as np
 
 from pyrosm.engine.bounding_box import _in_box_nodes
 from pyrosm.engine.decode import _is_threaded
+from pyrosm.config.osm_filters import country_rule
 from pyrosm.engine.collect import (
     _ways_arrays,
     _collect_kept_ways,
     _coordinates,
     _gather_node_records,
     _keep_fn,
+    _kept_by_country,
     _needed_node_ids,
     _result_tag_columns,
 )
@@ -70,11 +72,17 @@ def _assemble_chunk(
 def _network_kept(shard_paths, filter_spec, bounding_box):
     """The highway ways a network read keeps (see
     :func:`~pyrosm.engine.collect._collect_kept_ways`), or ``None``. A ``None``
-    ``data_filter`` (network types ``all`` / ``driving_psv``) keeps every highway way.
-    """
-    keep = _keep_fn(filter_spec)
+    ``data_filter`` (network types ``all`` / ``driving_psv``) keeps every highway way. A
+    way built for another mode without a tag of the mode stays where its country lets
+    the mode use it (see :func:`~pyrosm.config.osm_filters.country_rule`)."""
+    osm_keys, data_filter, filter_type = filter_spec
+    data_filter, rule = country_rule(data_filter, filter_type)
+    keep = _keep_fn((osm_keys, data_filter, filter_type))
     in_box = _in_box_nodes(shard_paths) if bounding_box is not None else None
-    return _collect_kept_ways(shard_paths, np.empty(0, np.int64), keep, in_box)
+    kept = _collect_kept_ways(shard_paths, np.empty(0, np.int64), keep, in_box)
+    if rule is None or kept is None:
+        return kept
+    return _kept_by_country(shard_paths, kept, osm_keys, rule)
 
 
 def _network_ways(
