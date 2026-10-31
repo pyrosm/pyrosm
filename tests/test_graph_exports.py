@@ -214,7 +214,7 @@ def test_igraph_immutable_counts(test_pbf):
 
     assert isinstance(g, igraph.Graph)
     # Check that the edge count matches
-    assert g.ecount() == 3012
+    assert g.ecount() == 3064
     assert g.vcount() == n_nodes
 
 
@@ -273,7 +273,7 @@ def test_nxgraph_immutable_counts(test_pbf):
 
     assert isinstance(g, nx.MultiDiGraph)
     # Check that the edge count matches
-    assert nx.number_of_edges(g) == 3012
+    assert nx.number_of_edges(g) == 3064
     assert nx.number_of_nodes(g) == n_nodes
 
 
@@ -338,8 +338,8 @@ def test_connected_component(immutable_nodes_and_edges):
     assert len(cn) <= len(nodes)
 
     # Test exact shape
-    assert ce.shape == (2962, 23)
-    assert cn.shape == (1348, 9)
+    assert ce.shape == (3044, 23)
+    assert cn.shape == (1385, 9)
 
 
 def test_igraph_connectivity(immutable_nodes_and_edges):
@@ -369,8 +369,8 @@ def test_igraph_connectivity(immutable_nodes_and_edges):
     arr = np.array(shortest_paths[0])
     arr[arr == np.inf] = 0
     assert arr.min() == 0
-    assert arr.max().round(0) == 2694
-    assert arr.mean().round(0) == 1448
+    assert arr.max().round(0) == 2673
+    assert arr.mean().round(0) == 1449
 
 
 def test_nxgraph_connectivity(immutable_nodes_and_edges):
@@ -404,8 +404,8 @@ def test_nxgraph_connectivity(immutable_nodes_and_edges):
     arr = np.array(shortest_paths)
     arr[arr == np.inf] = 0
     assert arr.min() == 0
-    assert arr.max().round(0) == 2694
-    assert arr.mean().round(0) == 1448
+    assert arr.max().round(0) == 2673
+    assert arr.mean().round(0) == 1449
 
 
 @_pandana_unsupported_on_win

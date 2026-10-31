@@ -1983,9 +1983,16 @@ def test_shared_foot_and_cycle_paths_join_walking_and_cycling(
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
-def test_network_of_ways_all_left_out_by_their_country(engine, tmp_path):
-    """A walking read whose only way is a cycle way without a foot tag, in a country whose
-    default keeps pedestrians off cycle ways (Germany), finds no edges."""
+@pytest.mark.parametrize(
+    "lon, walking",
+    [(6.85, [10, 11]), (7.62, None)],
+    ids=["NL and DE", "DE only"],
+)
+def test_shared_paths_by_the_country_of_each_way(engine, lon, walking, tmp_path):
+    """In a file whose area spans countries with different defaults (the Netherlands, where
+    pedestrians may use a cycle way without a foot tag, and Germany, where they may not),
+    each such cycle way follows the country of its first node; with only German ones, the
+    walking read finds no edges."""
     import warnings
 
     import numpy as np
@@ -1993,26 +2000,42 @@ def test_network_of_ways_all_left_out_by_their_country(engine, tmp_path):
     from pyrosm import OSM
     from pyrosm.pbf_export import write_pbf_from_records
 
+    # Way 10 lies at lon, way 11 (a cycle way without a foot tag) too; way 12, the same
+    # kind of cycle way, in Germany.
+    lons = [lon, lon + 0.001, lon + 0.002, 7.62, 7.621]
     nodes = {
-        "id": np.array([1, 2], dtype=np.int64),
-        "lon": np.array([13.400, 13.401]),
-        "lat": np.array([52.52, 52.52]),
-        "version": np.ones(2, dtype=np.int64),
-        "timestamp": np.full(2, 1600000000, dtype=np.int64),
-        "changeset": np.zeros(2, dtype=np.int64),
-        "tags": [None, None],
+        "id": np.arange(1, 6, dtype=np.int64),
+        "lon": np.array(lons),
+        "lat": np.array([52.22, 52.22, 52.22, 51.96, 51.96]),
+        "version": np.ones(5, dtype=np.int64),
+        "timestamp": np.full(5, 1600000000, dtype=np.int64),
+        "changeset": np.zeros(5, dtype=np.int64),
+        "tags": [None] * 5,
     }
-    way = {"id": 10, "refs": [1, 2], "version": 1, "timestamp": 1600000000}
+    tags = {10: {"highway": "residential"}, 11: {"highway": "cycleway"}}
+    refs = {10: [1, 2], 11: [2, 3], 12: [4, 5]}
+    # Only the German way has a surface: its column goes with the way.
+    tags[12] = {"highway": "cycleway", "surface": "asphalt"}
+    records = [
+        {"id": i, "refs": refs[i], "version": 1, "timestamp": 1600000000, "tags": tags[i]}
+        for i in (11, 12) + ((10,) if walking else ())
+    ]
     path = write_pbf_from_records(
-        nodes,
-        [dict(way, tags={"highway": "cycleway"})],
-        [],
-        str(tmp_path / "cycleway.osm.pbf"),
-        (13.4, 52.52, 13.401, 52.52),
+        nodes, records, [], str(tmp_path / "ways.osm.pbf"), (6.8, 51.9, 7.7, 52.3)
     )
+    osm = OSM(path, engine=engine)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        assert OSM(path, engine=engine).get_network(network_type="walking") is None
+        edges = osm.get_network(network_type="walking")
+    if walking is None:
+        assert edges is None
+        return
+    assert sorted(edges["id"].tolist()) == walking
+    assert "surface" not in edges.columns
+    node_frame, _ = osm.get_network(network_type="walking", nodes=True)
+    assert set(node_frame["id"]) == {1, 2, 3}
+    graph = osm.get_graph("walking", graph_type="networkx", retain_all=True, simplify=False)
+    assert {osmid for *_, osmid in graph.edges(data="osmid")} == set(walking)
 
 
 @pytest.mark.parametrize("kernel", ["cython", "reference"])

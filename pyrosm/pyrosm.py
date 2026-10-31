@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 from pyrosm._log import log_event, logged, timed
 from pyrosm.config import Conf
-from pyrosm.config.osm_filters import get_osm_filter
+from pyrosm.config.osm_filters import filter_for_read, get_osm_filter
 from pyrosm.filter_compiler import CompiledFilter, dict_as_bracket_filter
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm.frames import create_nodes_gdf
@@ -698,6 +698,9 @@ class OSM:
 
         tags_as_columns = read_tag_columns(
             self.conf.tags.highway, extra_attributes, tags_to_keep, column_keys
+        )
+        network_filter = filter_for_read(
+            network_filter, filter_type, self.filepath, self.bounding_box
         )
 
         # Read pbf and filter network data with given filter

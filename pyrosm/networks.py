@@ -2,6 +2,7 @@ import numpy as np
 from rapidjson import loads
 
 from pyrosm.config.osm_filters import country_rule
+from pyrosm.data.countries import way_points
 from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
 
@@ -73,7 +74,8 @@ def get_network_data(
 def _ways_by_country(ways, node_coordinates, rule, tags_as_columns):
     """The way arrays ``ways`` without the ways that the access rule ``rule`` leaves to
     their country (:meth:`~pyrosm.config.osm_filters.AccessRule.lacks_mode_tag`) and whose
-    country, by their first node in ``node_coordinates``, does not let the mode use them;
+    country, by their first node in ``node_coordinates`` (see
+    :func:`~pyrosm.data.countries.way_points`), does not let the mode use them;
     ``None`` when none is left. The mode's tag is read from its column, or else from the
     JSON ``tags`` column of the other tags. A column of ``tags_as_columns`` that only the
     dropped ways had a value in is left out, as for the ways a read never selects."""
@@ -91,11 +93,9 @@ def _ways_by_country(ways, node_coordinates, rule, tags_as_columns):
     if not rows:
         return ways
     rows = np.asarray(rows)
-    nodes = ways["nodes"]
-    first = np.array(
-        [nodes[row][0] if len(nodes[row]) else -1 for row in rows], dtype=np.int64
-    )
-    _, lon, lat = node_coordinates.gather(first)
+    node_lists = [np.asarray(ways["nodes"][row], dtype=np.int64) for row in rows]
+    lengths = [len(nodes) for nodes in node_lists]
+    lon, lat = way_points(np.concatenate(node_lists), lengths, node_coordinates)
     keep = np.ones(len(highway), dtype=bool)
     keep[rows[~rule.allowed_in(highway[rows], lon, lat)]] = False
     if not keep.any():
