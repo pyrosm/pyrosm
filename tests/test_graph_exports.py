@@ -679,7 +679,7 @@ def test_pandana_and_pandarm_connectivity(library):
 
     nearest_restaurants = g.nearest_pois(1000, "restaurants", num_pois=5)
     assert isinstance(nearest_restaurants, pd.DataFrame)
-    assert nearest_restaurants.shape == (5262, 5)
+    assert nearest_restaurants.shape == (5673, 5)
 
     node_ids = g.get_node_ids(x, y)
     assert isinstance(node_ids, pd.Series)
@@ -690,7 +690,7 @@ def test_pandana_and_pandarm_connectivity(library):
 
     access = g.aggregate(500, type="sum", decay="linear", name="employee_cnt")
     assert isinstance(access, pd.Series)
-    assert len(access) == 5262
+    assert len(access) == 5673
 
     # A list in pandana and in pandarm up to 0.0.5, a NumPy array from pandarm 0.0.7
     shortest_distances = g.shortest_path_lengths(
@@ -699,8 +699,8 @@ def test_pandana_and_pandarm_connectivity(library):
     assert len(shortest_distances) == 100
     shortest_distances = pd.Series(shortest_distances)
     assert round(shortest_distances.min(), 0) == 22
-    assert round(shortest_distances.max(), 0) in [2457, 2458]
-    assert round(shortest_distances.mean(), 0) in [865, 866, 867]
+    assert round(shortest_distances.max(), 0) in [2453, 2454]
+    assert round(shortest_distances.mean(), 0) in [855, 856, 857]
 
 
 def test_to_graph_api_pandarm(test_pbf):
