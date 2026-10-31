@@ -157,7 +157,7 @@ of the walking network unless a more specific tag such as `foot=yes` allows walk
 OSMnx leaves every cycle way out of `walk` and every foot way out of `bike`. In pyrosm, a
 cycle way with a `foot` tag, such as `foot=designated`, can stay in the walking network
 unless the tag is `no` or `private`. A cycle way without a `foot` tag follows the default
-of the country of its first node. It stays in countries such as Finland, where pedestrians
+of the country it lies in. It stays in countries such as Finland, where pedestrians
 may use cycle ways by default, and is left out in other countries and where pyrosm finds
 no country. The cycling network treats a foot way and its `bicycle` tag in the same way.
 
