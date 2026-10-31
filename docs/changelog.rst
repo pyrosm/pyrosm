@@ -1,8 +1,8 @@
 Changelog
 =========
 
-v0.28.0
--------
+v0.28.0 (Oct 31, 2026)
+----------------------
 
 With this release, pyrosm can choose an extract even when a small part of the area lies outside the extract. By default, the part left out must be smaller than 0.1 % of the area. If 0.1 % of the area is less than 1 m², the 1 m² limit applies instead. The new ``tolerance`` sets the share of the area that may lie outside the extract. Earlier versions allowed only parts smaller than 1 m². The outline that Nominatim gives for a place often includes a strip of sea or a small spot on the other side of a border. The extract of the place may not cover this extra part. For example, ``get_data_by_geocoding("Iceland")`` now downloads Movisda's Iceland extract (61 MB) instead of raising ``ExtractNotFoundError``. A query for "Acre, Brazil" now downloads Movisda's Acre extract (16 MB) instead of Geofabrik's South America extract (4.15 GB). If no extract covers enough of the area, the error lists the extracts that cover the largest part of it. Before downloading an extract of 1 GB or more, pyrosm also looks for a smaller extract. It warns if another extract is at most a tenth as large as the planned extract and leaves out less than 1 % of the area.
 
