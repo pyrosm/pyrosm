@@ -67,12 +67,16 @@ class AccessRule:
     tag of the mode, the first of ``mode_keys`` (``foot`` for walking). With that tag,
     it is closed only when the tag is ``no`` or ``private``, as any other way is: a
     cycleway with ``foot=designated`` or ``foot=use_sidepath`` stays in a walking
-    network, and one with ``foot=no`` or without a ``foot`` tag is excluded.
+    network, and one with ``foot=no`` or without a ``foot`` tag is excluded. With
+    ``by_country``, a network read keeps such a way without a tag of the mode where its
+    country lets the mode use it (see :func:`filter_for_extent` and
+    :func:`country_rule`).
     """
 
-    def __init__(self, *mode_keys, other_mode_highway=()):
+    def __init__(self, *mode_keys, other_mode_highway=(), by_country=False):
         self.keys = mode_keys + ("access",)
         self.other_mode_highway = MultiValue(other_mode_highway)
+        self.by_country = by_country
 
     def closes(self, tags):
         """Whether ``tags`` close the way. A way whose ``highway`` value is one of
@@ -92,6 +96,11 @@ class AccessRule:
         """This rule's access hierarchy alone, without ``other_mode_highway``."""
         return AccessRule(*self.keys[:-1])
 
+    def without_country(self):
+        """This rule with ``by_country`` off: a way built for another mode without a tag of
+        the mode is closed, whatever its country."""
+        return AccessRule(*self.keys[:-1], other_mode_highway=self.other_mode_highway)
+
     def lacks_mode_tag(self, tags):
         """Whether the way of ``tags`` is built for another mode (by its ``highway`` tag)
         and has no tag of the mode, the first of ``mode_keys``."""
@@ -103,12 +112,16 @@ class AccessRule:
         """Whether the country of each way, by a point of it (``lon``, ``lat`` in
         EPSG:4326), lets the mode use it without a tag of the mode, by the way's
         ``highway`` value (one of ``other_mode_highway``, also among several values; see
-        :func:`pyrosm.data.countries.countries_allowing`). A way without a country, or
-        without coordinates (NaN), is not allowed."""
+        :func:`pyrosm.data.countries.countries_allowing`). ``highway`` may be None when
+        ``other_mode_highway`` has one value. A way without a country, or without
+        coordinates (NaN), is not allowed."""
         from pyrosm.data.countries import countries_allowing, country_codes
 
         mode = self.keys[0]
         codes = country_codes(lon, lat)
+        if len(self.other_mode_highway) == 1:
+            allowed = countries_allowing(mode, self.other_mode_highway[0])
+            return np.isin(codes, list(allowed))
         return np.fromiter(
             (
                 code is not None
@@ -124,10 +137,14 @@ class AccessRule:
         )
 
     def __repr__(self):
-        return "AccessRule(keys=%r, closed=%r, other_mode_highway=%r)" % (
-            self.keys,
-            list(_CLOSED),
-            list(self.other_mode_highway),
+        return (
+            "AccessRule(keys=%r, closed=%r, other_mode_highway=%r, by_country=%r)"
+            % (
+                self.keys,
+                list(_CLOSED),
+                list(self.other_mode_highway),
+                self.by_country,
+            )
         )
 
 
@@ -235,7 +252,7 @@ def walking_filter():
     """
     return dict(
         area=MultiValue(["yes"]),
-        access=AccessRule("foot", other_mode_highway=["cycleway"]),
+        access=AccessRule("foot", other_mode_highway=["cycleway"], by_country=True),
         highway=MultiValue(
             _ALWAYS_EXCLUDED_HIGHWAY + ["bus_guideway"] + _MOTOR_HIGHWAY
         ),
@@ -262,7 +279,9 @@ def cycling_filter():
     """
     return dict(
         area=MultiValue(["yes"]),
-        access=AccessRule("bicycle", "vehicle", other_mode_highway=["footway"]),
+        access=AccessRule(
+            "bicycle", "vehicle", other_mode_highway=["footway"], by_country=True
+        ),
         highway=MultiValue(
             _ALWAYS_EXCLUDED_HIGHWAY
             + ["bus_guideway", "corridor", "elevator", "escalator", "steps"]
@@ -288,17 +307,66 @@ def all_filter(public_only=False):
     return network_filter
 
 
-def country_rule(data_filter, filter_type):
-    """``(data_filter, rule)`` for a network read: when the ``exclude`` filter
-    ``data_filter`` has an access rule with ``other_mode_highway``, the filter with that
-    rule's access hierarchy alone and the rule; otherwise ``(data_filter, None)``. The read
-    filters with the first and then drops the ways the rule leaves to their country
-    (:meth:`AccessRule.lacks_mode_tag`) where the country of their first node does not let
-    the mode use them (:meth:`AccessRule.allowed_in`)."""
+def _country_rule_of(data_filter, filter_type):
+    """The access rule of the ``exclude`` filter ``data_filter`` that leaves the ways built
+    for another mode without a tag of the mode to their country (``by_country``), or
+    None."""
     rule = data_filter.get("access") if isinstance(data_filter, dict) else None
     if filter_type != "exclude" or not isinstance(rule, AccessRule):
-        return data_filter, None
-    if not rule.other_mode_highway:
+        return None
+    if not (rule.other_mode_highway and rule.by_country):
+        return None
+    return rule
+
+
+def filter_for_extent(data_filter, filter_type, extent):
+    """``data_filter`` for a network read of the area ``extent`` (a shapely geometry in
+    EPSG:4326, or None for an unknown area). When its access rule leaves the ways built for
+    another mode without a tag of the mode to their country and the countries ``extent``
+    touches all let the mode use such ways, the filter with the rule's access hierarchy
+    alone, which keeps them; when none of them does, the filter with the rule's
+    ``by_country`` off, which leaves them out. Otherwise ``data_filter`` itself, whose ways
+    a read decides by their own country (see :func:`country_rule`). So a way that reaches
+    beyond ``extent`` follows the decision for ``extent``, and so does a way out at sea
+    beyond every country's coastal water."""
+    from pyrosm.data.countries import countries_allowing, countries_in
+
+    rule = _country_rule_of(data_filter, filter_type)
+    if rule is None or extent is None:
+        return data_filter
+    allows = [
+        countries_allowing(rule.keys[0], highway) for highway in rule.other_mode_highway
+    ]
+    codes = countries_in(extent)
+    if codes and all(code in allowed for code in codes for allowed in allows):
+        return dict(data_filter, access=rule.without_other_mode())
+    if not any(code in allowed for code in codes for allowed in allows):
+        return dict(data_filter, access=rule.without_country())
+    return data_filter
+
+
+def filter_for_read(data_filter, filter_type, filepath, bounding_box=None):
+    """``data_filter`` for a network read of ``filepath`` within ``bounding_box`` (see
+    :func:`filter_for_extent` and :func:`pyrosm.data.countries.read_extent`). The file's
+    header is read only for a filter that leaves ways to their country."""
+    if _country_rule_of(data_filter, filter_type) is None:
+        return data_filter
+    from pyrosm.data.countries import read_extent
+
+    extent = read_extent(filepath, bounding_box)
+    return filter_for_extent(data_filter, filter_type, extent)
+
+
+def country_rule(data_filter, filter_type):
+    """``(data_filter, rule)`` for a network read: when the ``exclude`` filter
+    ``data_filter`` has an access rule that leaves the ways built for another mode without
+    a tag of the mode to their country (``by_country``), the filter with that rule's
+    access hierarchy alone and the rule; otherwise ``(data_filter, None)``. The read
+    filters with the first and then drops the ways the rule leaves to their country
+    (:meth:`AccessRule.lacks_mode_tag`) where the country of their first node with
+    coordinates does not let the mode use them (:meth:`AccessRule.allowed_in`)."""
+    rule = _country_rule_of(data_filter, filter_type)
+    if rule is None:
         return data_filter, None
     return dict(data_filter, access=rule.without_other_mode()), rule
 

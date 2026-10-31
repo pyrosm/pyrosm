@@ -75,7 +75,7 @@ CYCLING_COLUMNS = [
 @pytest.mark.parametrize(
     "network_type, shape, columns, excluded_highways",
     [
-        ("walking", (314, 21), WALKING_COLUMNS, ["motorway"]),
+        ("walking", (318, 21), WALKING_COLUMNS, ["motorway"]),
         ("driving", (171, 17), DRIVING_COLUMNS, ["footway", "path"]),
         (
             "driving+service",
@@ -255,7 +255,7 @@ def test_adding_extra_attribute(helsinki_pbf):
 @pytest.mark.parametrize(
     "bounding_box, edges_shape, nodes_shape",
     [
-        (None, (1506, 23), (1378, 9)),
+        (None, (1532, 23), (1397, 9)),
         # #236: edges crossing the box edge are returned complete, with their nodes.
         # #199: the nodes frame keeps every endpoint of the kept edges, also those
         # just outside the box, so the nodes/edges pair stays consistent for graph
