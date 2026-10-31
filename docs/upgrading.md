@@ -7,6 +7,27 @@ first; the releases not listed here changed nothing of this kind. Changes in spe
 new options that leave the defaults as they were, and fixes of calls that failed are left out. The
 [changelog](changelog.rst) lists every change.
 
+## pyrosm 0.28.0
+
+- **Which extract pyrosm downloads.** `find_extracts`, `get_data_by_area`, `get_data_by_bbox`
+  and `get_data_by_geocoding` can now choose an extract even when a small part of the area lies
+  outside the extract. By default, the part left out must be smaller than 0.1 % of the area. If
+  0.1 % of the area is less than 1 m², the 1 m² limit applies instead. Earlier versions allowed
+  only parts smaller than 1 m². As a result, pyrosm may choose a smaller extract than before.
+  The downloaded data then leaves out the part of the area that falls outside the extract. When
+  that part is 1 m² or more, a warning gives its size and bounds. Pass `tolerance=0` to choose
+  extracts as earlier versions did. If the extract must contain a particular part of the area,
+  pass that part as `must_cover`. In a recipe, set `tolerance: 0` in the `extract` section.
+- **Reusing an existing download.** Before downloading an extract, the downloading functions
+  look in the download folder for a file that pyrosm 0.27.0 or later downloaded from the
+  extract's URL. If the file has not changed since that download, the function reuses it. It
+  returns the file's actual path, even when the file has a different name from the one the
+  function would normally use. Use the path a function returns instead of building it from the
+  extract's name.
+- **The `download_extract` log event.** When `get_data_by_area` chooses an extract, it now logs
+  a `choose_extract` event. If your code checks pyrosm's log for `download_extract`, change the
+  code to check for `choose_extract` instead.
+
 ## pyrosm 0.27.0
 
 - **Repeated downloads.** A 4th full download of one URL within 24 hours raises
