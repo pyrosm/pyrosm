@@ -1906,12 +1906,28 @@ def test_network_access_follows_the_most_specific_tag(network_type, tags, kept):
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
-def test_shared_foot_and_cycle_paths_join_walking_and_cycling(engine, tmp_path):
+@pytest.mark.parametrize(
+    "lon, lat, walking, cycling",
+    [
+        # Germany: OSM's worldwide defaults
+        (13.40, 52.52, [10, 11, 14, 15, 16, 17], [10, 11, 12, 13, 14]),
+        # Finland: pedestrians may use a cycle way without a foot tag
+        (24.94, 60.17, [10, 11, 13, 14, 15, 16, 17, 18], [10, 11, 12, 13, 14]),
+        # Norway: cyclists may also use a foot way without a bicycle tag
+        (10.75, 59.91, [10, 11, 13, 14, 15, 16, 17, 18], [10, 11, 12, 13, 14, 16, 17, 18]),
+    ],
+    ids=["DE", "FI", "NO"],
+)
+def test_shared_foot_and_cycle_paths_join_walking_and_cycling(
+    engine, lon, lat, walking, cycling, tmp_path
+):
     """The walking network left out every cycle way and the cycling network every foot
     way, also the shared foot and cycle paths: in the Helsinki region, about 3,300 km of
     cycle ways tagged foot=designated or foot=yes were missing from the walking network.
     A cycle way is walkable and a foot way cyclable when it has a tag of the mode that does
-    not close it; the driving and 'all' networks are unchanged."""
+    not close it; without such a tag, when the default of the way's country lets the mode
+    use it. The driving and 'all' networks are unchanged, and get_graph selects the same
+    ways."""
     import numpy as np
 
     from pyrosm import OSM
@@ -1924,33 +1940,79 @@ def test_shared_foot_and_cycle_paths_join_walking_and_cycling(engine, tmp_path):
         13: {"highway": "cycleway"},
         14: {"highway": "footway", "bicycle": "yes"},
         15: {"highway": "footway", "bicycle": "no"},
+        16: {"highway": "footway"},
+        17: {"highway": "footway", "vehicle": "yes"},  # no bicycle tag: its country decides
+        18: {"highway": "cycleway;footway"},
     }
     nodes = {
-        "id": np.arange(1, 8, dtype=np.int64),
-        "lon": 24.94 + 0.001 * np.arange(7),
-        "lat": np.full(7, 60.17),
-        "version": np.ones(7, dtype=np.int64),
-        "timestamp": np.full(7, 1600000000, dtype=np.int64),
-        "changeset": np.zeros(7, dtype=np.int64),
-        "tags": [None] * 7,
+        "id": np.arange(1, 11, dtype=np.int64),
+        "lon": lon + 0.001 * np.arange(10),
+        "lat": np.full(10, lat),
+        "version": np.ones(10, dtype=np.int64),
+        "timestamp": np.full(10, 1600000000, dtype=np.int64),
+        "changeset": np.zeros(10, dtype=np.int64),
+        "tags": [None] * 10,
     }
     records = [
         {"id": i, "refs": [i - 9, i - 8], "version": 1, "timestamp": 1600000000, "tags": t}
         for i, t in ways.items()
     ]
     path = write_pbf_from_records(
-        nodes, records, [], str(tmp_path / "paths.osm.pbf"), (24.94, 60.17, 24.946, 60.17)
+        nodes, records, [], str(tmp_path / "paths.osm.pbf"), (lon, lat, lon + 0.009, lat)
     )
     osm = OSM(path, engine=engine)
     expected = {
-        "walking": [10, 11, 14, 15],
-        "cycling": [10, 11, 12, 13, 14],
+        "walking": walking,
+        "cycling": cycling,
         "driving": [10],
-        "all": [10, 11, 12, 13, 14, 15],
+        "all": [10, 11, 12, 13, 14, 15, 16, 17, 18],
     }
     for network_type, ids in expected.items():
         edges = osm.get_network(network_type=network_type)
         assert sorted(edges["id"].tolist()) == ids, network_type
+    for network_type in ("walking", "cycling"):
+        # The nodes are those of the kept ways, without those of the ways left out.
+        node_frame, _ = osm.get_network(network_type=network_type, nodes=True)
+        ids = expected[network_type]
+        assert set(node_frame["id"]) == {n for i in ids for n in (i - 9, i - 8)}
+        graph = osm.get_graph(
+            network_type, graph_type="networkx", retain_all=True, simplify=False
+        )
+        osmids = {osmid for *_, osmid in graph.edges(data="osmid")}
+        assert sorted(osmids) == expected[network_type], network_type
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_network_of_ways_all_left_out_by_their_country(engine, tmp_path):
+    """A walking read whose only way is a cycle way without a foot tag, in a country whose
+    default keeps pedestrians off cycle ways (Germany), finds no edges."""
+    import warnings
+
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    nodes = {
+        "id": np.array([1, 2], dtype=np.int64),
+        "lon": np.array([13.400, 13.401]),
+        "lat": np.array([52.52, 52.52]),
+        "version": np.ones(2, dtype=np.int64),
+        "timestamp": np.full(2, 1600000000, dtype=np.int64),
+        "changeset": np.zeros(2, dtype=np.int64),
+        "tags": [None, None],
+    }
+    way = {"id": 10, "refs": [1, 2], "version": 1, "timestamp": 1600000000}
+    path = write_pbf_from_records(
+        nodes,
+        [dict(way, tags={"highway": "cycleway"})],
+        [],
+        str(tmp_path / "cycleway.osm.pbf"),
+        (13.4, 52.52, 13.401, 52.52),
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert OSM(path, engine=engine).get_network(network_type="walking") is None
 
 
 @pytest.mark.parametrize("kernel", ["cython", "reference"])

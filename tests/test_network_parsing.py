@@ -75,7 +75,7 @@ CYCLING_COLUMNS = [
 @pytest.mark.parametrize(
     "network_type, shape, columns, excluded_highways",
     [
-        ("walking", (264, 21), WALKING_COLUMNS, ["motorway"]),
+        ("walking", (314, 21), WALKING_COLUMNS, ["motorway"]),
         ("driving", (171, 17), DRIVING_COLUMNS, ["footway", "path"]),
         (
             "driving+service",
@@ -161,7 +161,7 @@ def test_parse_network_with_bbox(test_pbf, as_polygon):
 
     # Test shape (#236: edges crossing the bbox edge are now returned complete
     # rather than cut, so boundary-crossing edges are included)
-    assert gdf.shape == (80, 21)
+    assert gdf.shape == (109, 21)
     for col in WALKING_COLUMNS + BASE_COLUMNS:
         assert col in gdf.columns
 
@@ -255,12 +255,12 @@ def test_adding_extra_attribute(helsinki_pbf):
 @pytest.mark.parametrize(
     "bounding_box, edges_shape, nodes_shape",
     [
-        (None, (1202, 23), (1135, 9)),
+        (None, (1506, 23), (1378, 9)),
         # #236: edges crossing the box edge are returned complete, with their nodes.
         # #199: the nodes frame keeps every endpoint of the kept edges, also those
         # just outside the box, so the nodes/edges pair stays consistent for graph
         # export.
-        ([26.94, 60.525, 26.96, 60.535], (343, 23), (340, 9)),
+        ([26.94, 60.525, 26.96, 60.535], (484, 23), (451, 9)),
     ],
     ids=["whole file", "bounding box"],
 )
