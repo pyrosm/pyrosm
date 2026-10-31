@@ -55,6 +55,12 @@ def _bar_class():
     return notebook.tqdm, False
 
 
+def _is_widget(tqdm):
+    """Whether the bar class ``tqdm`` (see :func:`_bar_class`) is the Jupyter widget."""
+    notebook = sys.modules.get("tqdm.notebook")
+    return notebook is not None and issubclass(tqdm, notebook.tqdm)
+
+
 def validate_progress(progress, allow_none=True):
     """Raise ``ValueError`` unless ``progress`` is ``True``, ``False``, a callable, the
     :class:`Steps` of an operation in progress, or ``None`` with ``allow_none``."""
@@ -94,11 +100,12 @@ class Bar:
 
     The bar opens at the first call and starts over when ``done`` goes back or ``total``
     changes, keeping its start time. It shows only once it has run ``delay`` seconds, is
-    redrawn every second while open, and ``leave=False`` clears it when it closes. A bar
-    of the ``unit`` ``"%"`` shows the percentage and the times. :meth:`describe`
-    changes the label it shows. When the bar is hidden, ``desc`` is printed once as a
-    line when it opens, or with ``timed`` a line ``"<desc> took <time>"`` when it
-    closes, if it ran at least ``delay`` seconds.
+    redrawn every second while open, and ``leave=False`` clears a text bar when it
+    closes; a widget bar in Jupyter that was shown stays, redrawn at its end. A bar of
+    the ``unit`` ``"%"`` shows the percentage and the times. :meth:`describe` changes the
+    label it shows. When the bar is hidden, ``desc`` is printed once as a line when it
+    opens, or with ``timed`` a line ``"<desc> took <time>"`` when it closes, if it ran at
+    least ``delay`` seconds.
     """
 
     def __init__(self, desc, delay=0.0, leave=True, timed=False, unit="B"):
@@ -136,7 +143,9 @@ class Bar:
                 mininterval=0.2,
                 dynamic_ncols=True,
                 delay=self.delay,
-                leave=self.leave,
+                # A widget that closes hidden still shows in a saved notebook, at its last
+                # redraw; one that stays is drawn at its end.
+                leave=True if _is_widget(tqdm) else self.leave,
                 disable=disable,
                 **percent,
             )

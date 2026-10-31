@@ -15,6 +15,7 @@ dependencies:
   - tqdm>=4.66
   - pyyaml
   # optional
+  - ipywidgets
   - networkx
   - pandana
   - pandarm
