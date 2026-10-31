@@ -1,4 +1,5 @@
-"""The country of a location on land, from the vendored borders of country-coder."""
+"""The country of a location on land, from the vendored borders of country-coder, and
+the countries' access defaults for shared paths, from the vendored table of Valhalla."""
 
 import functools
 import gzip
@@ -10,6 +11,7 @@ import shapely
 from shapely.geometry import shape
 
 _BORDERS_PATH = Path(__file__).with_name("country_borders.geojson.gz")
+_ACCESS_PATH = Path(__file__).with_name("country_access.json")
 
 
 @functools.lru_cache(maxsize=None)
@@ -45,3 +47,13 @@ def country_codes(lon, lat):
     single = found[first] == found[last]
     result[point[first][single]] = found[first][single]
     return result
+
+
+@functools.lru_cache(maxsize=None)
+def countries_allowing(mode_key, highway):
+    """The ISO codes of the countries whose default lets the mode of ``mode_key`` use a way
+    tagged ``highway`` that has no ``mode_key`` tag: ``("foot", "cycleway")`` gives the
+    countries where pedestrians may use a cycle way, ``("bicycle", "footway")`` those where
+    cyclists may use a foot way. Empty for any other pair."""
+    allowed = json.loads(_ACCESS_PATH.read_text(encoding="utf-8"))["allowed"]
+    return frozenset(allowed.get(mode_key, {}).get(highway, ()))

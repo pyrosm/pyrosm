@@ -76,3 +76,57 @@ def test_country_borders_refresh(tmp_path, monkeypatch):
         borders = json.load(f)
     assert [f["properties"]["iso"] for f in borders["features"]] == ["FI", "FI", "NO"]
     assert (out / "country_borders.LICENSE.md").read_bytes() == b"ISC License\n"
+
+
+def test_countries_allowing():
+    """The countries where pedestrians may use a cycle way and cyclists a foot way without
+    a tag for the mode, from Valhalla's table."""
+    from pyrosm.data.countries import countries_allowing
+
+    assert countries_allowing("foot", "cycleway") == {
+        "BE", "BY", "CH", "DK", "FI", "GB", "GR", "HU", "IS",
+        "NL", "NO", "OM", "PH", "PL", "SE", "TH", "TR", "US",
+    }  # fmt: skip
+    assert countries_allowing("bicycle", "footway") == {"AU", "BY", "IS", "NO"}
+    assert countries_allowing("foot", "path") == frozenset()
+
+
+def test_country_access_refresh(tmp_path, monkeypatch):
+    """The refresh script reads the shared paths from Valhalla's table, leaves out the
+    parts of the United Kingdom and stops at a country it has no ISO code for."""
+    import importlib.util
+    import json
+    from pathlib import Path
+
+    import pytest
+
+    script = Path(__file__).parents[1] / "scripts" / "update_country_data.py"
+    if not script.exists():
+        pytest.skip("The maintainer script %s is not in this source tree." % script.name)
+    spec = importlib.util.spec_from_file_location("update_country_data", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    ped, bike = "baldr::kPedestrianAccess", "baldr::kBicycleAccess"
+    table = (
+        "const std::unordered_map<std::string, std::vector<int>>\n"
+        '    kCountryAccess{{"Finland", {-1, -1, -1, -1, (%s), -1, (%s | %s), -1, -1}},\n'
+        '                   {"Norway", {-1, -1, -1, (%s | %s), -1, -1, (%s), -1, -1}},\n'
+        '                   {"England", {-1, -1, -1, -1, -1, -1, (%s), -1, -1}},\n'
+        '                   {"Austria", {-1, -1, -1, -1, -1, -1, -1, (%s), -1}}};\n'
+    ) % (ped, ped, bike, ped, bike, ped, ped, ped)
+    assert module.country_access(table)["allowed"] == {
+        "foot": {"cycleway": ["FI", "NO"]},
+        "bicycle": {"footway": ["NO"]},
+    }
+    with pytest.raises(ValueError, match="Atlantis"):
+        module.country_access(table.replace("Austria", "Atlantis"))
+    source = tmp_path / "adminconstants.h"
+    source.write_text(table, encoding="utf-8")
+    license = tmp_path / "COPYING"
+    license.write_bytes(b"MIT License\n")
+    monkeypatch.setattr(module, "DATA_DIR", tmp_path)
+    module.update_access(source, license)
+    written = json.loads((tmp_path / "country_access.json").read_text())
+    assert written["allowed"]["foot"]["cycleway"] == ["FI", "NO"]
+    assert (tmp_path / "country_access.LICENSE.md").read_bytes() == b"MIT License\n"
