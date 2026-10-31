@@ -1,13 +1,14 @@
 import contextlib
 import logging
 import math
+import warnings
 from pathlib import Path
 
 import pandas as pd
 from pyrosm._log import log_event, logged, timed
 from pyrosm.config import Conf
 from pyrosm.config.osm_filters import get_osm_filter
-from pyrosm.filter_compiler import CompiledFilter
+from pyrosm.filter_compiler import CompiledFilter, dict_as_bracket_filter
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm.frames import create_nodes_gdf
 from pyrosm.utils import (
@@ -31,6 +32,7 @@ from pyrosm.utils import (
     get_unix_time,
     warn_about_timestamp_not_set,
     warn_empty_result,
+    _stacklevel_outside_pyrosm,
 )
 from pyrosm.utils.download import get_file_size
 from pyrosm.utils.progress import (
@@ -110,6 +112,36 @@ def _network_read_filter(args):
         args["custom_filter"], args["filter_type"]
     )
     return custom_filter if filter_type == "keep" else {"highway": [True]}
+
+
+def _warn_highway_ways_only(custom_filter, filter_type):
+    """Warn that ``custom_filter``, a plain dict without a ``highway`` key that keeps
+    ways, keeps only ways that also have a ``highway`` tag in a network read, and show
+    the bracket filter that selects ways by the filter's own keys."""
+    if (
+        not isinstance(custom_filter, dict)
+        or filter_type != "keep"
+        or "highway" in custom_filter
+    ):
+        return
+    bracket = dict_as_bracket_filter(custom_filter)
+    hint = ""
+    if bracket is not None:
+        hint = " For this filter, write custom_filter=%r." % (bracket,)
+    warnings.warn(
+        "The custom_filter dictionary %r has no 'highway' key. When custom_filter is "
+        "a plain dictionary, get_network() and get_graph() only consider ways that "
+        "also have a 'highway' tag. To select ways by tags other than 'highway', "
+        "use the bracket form instead.%s" % (custom_filter, hint),
+        UserWarning,
+        stacklevel=_stacklevel_outside_pyrosm(),
+    )
+
+
+def _warn_no_edges(custom_filter):
+    """Warn that a network read found no edges, naming the filter when ``custom_filter``
+    was given."""
+    warn_empty_result("network" if custom_filter is None else "custom_network", 3)
 
 
 def _custom_read_filter(args):
@@ -581,14 +613,18 @@ class OSM:
             are added as columns to the result. Three forms are supported:
 
               - a dict like `{'highway': ['footway', 'residential'], 'bicycle': ['yes']}`
-                (exact values, combined with OR; only ways having a `highway` tag are
-                considered);
+                (exact values, combined with OR). Only ways having a `highway` tag are
+                considered, so `{'waterway': ['river']}` finds no rivers; a dict without
+                a `highway` key that keeps ways gives a warning that shows the same
+                filter in the bracket form, when it can be written in that form;
               - a dict with compiled regex values, e.g. `{'ref': [re.compile(r'I[ -]?20')]}`;
               - an Overpass-style bracket string, or a list of them, e.g.
                 `['["highway"~"cycleway"]', '["highway"~"path"]["bicycle"~"designated"]']`
-                (each string is the AND of its brackets, a list is their OR). These select
-                ways by the filter's own keys, so non-highway networks (e.g. `railway`,
-                `cycleway`) are supported.
+                (each string is the AND of its brackets, a list is their OR).
+
+            The regex dict and the bracket strings select ways by the filter's own keys,
+            so they also build networks of other ways than streets, e.g.
+            `'["waterway"="river"]'` or `'["railway"="tram"]'`.
 
         filter_type : str (optional)
             Whether `custom_filter` should `'keep'` or `'exclude'` the matching ways. Only
@@ -626,6 +662,7 @@ class OSM:
         # Resolve the custom filter and filter_type once, so the engine and in-memory paths
         # agree.
         custom_filter, filter_type = _network_filter_type(custom_filter, filter_type)
+        _warn_highway_ways_only(custom_filter, filter_type)
         advanced_filter = isinstance(custom_filter, CompiledFilter)
 
         if self._use_engine():
@@ -641,7 +678,7 @@ class OSM:
                 tags_to_keep=tags_to_keep,
             )
             if (result[1] if nodes else result) is None:
-                warn_empty_result("network")
+                _warn_no_edges(custom_filter)
             return result
 
         # Get filter (also validates network_type, which still drives the graph
@@ -681,6 +718,8 @@ class OSM:
             )
 
         edges = self._drop_node_lists(edges)
+        if edges is None:
+            _warn_no_edges(custom_filter)
 
         # In case both edges and nodes are requested
         if nodes:
@@ -1671,6 +1710,9 @@ class OSM:
             timed=True,
         ) as steps, self._progress_as(steps):
             if simplify and self._use_engine():
+                _warn_highway_ways_only(
+                    *_network_filter_type(custom_filter, filter_type)
+                )
                 nodes, edges = self._read_engine(
                     graph_network,
                     timestamp,
@@ -1682,7 +1724,7 @@ class OSM:
                     tags_to_keep=tags_to_keep,
                 )
                 if edges is None:
-                    warn_empty_result("network")
+                    _warn_no_edges(custom_filter)
             else:
                 nodes, edges = self.get_network(
                     network_type,

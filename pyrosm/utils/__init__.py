@@ -606,6 +606,9 @@ _EMPTY_RESULT_MESSAGES = {
     "landuse": "Could not find any landuse elements for given area.",
     "natural": "Could not find any natural elements for given area.",
     "network": "Could not find any edges for given area.",
+    "custom_network": (
+        "Could not find any edges that match custom_filter in given area."
+    ),
     "pois": "Could not find any POIs for given area.",
     "custom": "Could not find any OSM data for given area.",
 }

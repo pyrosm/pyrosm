@@ -5804,3 +5804,189 @@ def test_get_data_by_area_keeps_the_downloaded_part_of_a_refusing_provider(
         )
     assert downloads == [extracts[0][2], extracts[1][2], extracts[2][2]]
     assert (got.provider, got.extract) == ("Geofabrik+BBBike", "left+east")
+
+
+@pytest.mark.parametrize("first", ["get_data", "get_data_by_area"])
+def test_get_data_and_get_data_by_area_share_a_download(tmp_path, monkeypatch, first):
+    """``get_data("helsinki")`` saved BBBike's Helsinki extract as ``Helsinki.osm.pbf``,
+    ``get_data_by_area`` as ``bbbike_Helsinki.osm.pbf``, so whichever came second
+    downloaded the same URL again. A file downloaded from the URL into the folder is used
+    again under either name, and ``update`` asks only whether it changed."""
+    import io
+    from urllib.error import HTTPError
+
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import box
+
+    import pyrosm
+    from pyrosm.data import extract_index as ei
+    from pyrosm.utils import download as dl
+
+    url = "https://download.bbbike.org/osm/bbbike/Helsinki/Helsinki.osm.pbf"
+    body = Path(pyrosm.get_data("helsinki_pbf")).read_bytes()
+    asked = []
+
+    class Opener:
+        def open(self, request, timeout=None):
+            etag = request.get_header("If-none-match")
+            asked.append((request.full_url, etag))
+            if etag == '"v1"':
+                raise HTTPError(request.full_url, 304, "Not Modified", {}, None)
+            response = io.BytesIO(body)
+            response.status, response.headers = 200, {"ETag": '"v1"'}
+            return response
+
+    found = gpd.GeoDataFrame(
+        {
+            "provider": ["BBBike"],
+            "id": ["Helsinki"],
+            "name": ["Helsinki"],
+            "url": [url],
+            "bytes": pd.array([len(body)], dtype="Int64"),
+            "contains": [True],
+        },
+        geometry=[box(24.5, 60.0, 25.5, 60.5)],
+        crs="EPSG:4326",
+    )
+    monkeypatch.setattr(ei, "find_extracts", lambda geom, **k: found)
+    monkeypatch.setattr(dl, "download_dir", lambda: tmp_path / "pyrosm")
+    net = dict(directory=tmp_path, opener=Opener(), progress=False)
+
+    def by_name(update=False):
+        return pyrosm.get_data("helsinki", update=update, **net)
+
+    def by_area(update=False):
+        area = box(24.92, 60.16, 24.94, 60.17)
+        return pyrosm.get_data_by_area(area, crop=False, update=update, **net).path
+
+    calls = [by_name, by_area] if first == "get_data" else [by_area, by_name]
+    paths = [calls[0](), calls[1](), calls[1](update=True)]
+    assert len(set(paths)) == 1
+    assert [p.name for p in tmp_path.glob("*.pbf")] == [Path(paths[0]).name]
+    assert asked == [(url, None), (url, '"v1"')]
+    # A download of another URL gets its own file.
+    other = Path(pyrosm.get_data("helsinki_region_pbf", **net))
+    assert other.name == "Helsinki_region.osm.pbf"
+    assert len(list(tmp_path.glob("*.pbf"))) == 2
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_network_dict_filter_without_highway_key_warns(engine):
+    """A dict ``custom_filter`` of ``get_network`` keeps only ways that have a ``highway``
+    tag, so ``{"waterway": ["stream"]}`` found nothing and the only warning blamed the area.
+    It now warns that the dict keeps highway ways only and shows the bracket filter, which
+    finds the stream as a regex dict does, and the empty-result warning names the filter."""
+    import re
+    import warnings
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
+    stream = {"waterway": ["stream"]}
+    hint = """custom_filter='["waterway"="stream"]'"""
+    for read in (osm.get_network, osm.get_network, osm.get_graph):
+        with pytest.warns(UserWarning) as caught:
+            assert read(custom_filter=stream) is None
+        hints = [w for w in caught if hint in str(w.message)]
+        assert len(hints) == 1 and hints[0].filename == __file__
+        assert sum("edges that match custom_filter" in str(w.message) for w in caught) == 1
+    # A dict that has no bracket form gets the warning without one.
+    with pytest.warns(UserWarning, match=r"use the bracket form instead\.$"):
+        osm.get_network(custom_filter={"waterway": []})
+    for selects_by_its_keys in ('["waterway"="stream"]', {"waterway": [re.compile("st")]}):
+        edges = osm.get_network(custom_filter=selects_by_its_keys)
+        assert list(edges["waterway"]) == ["stream"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for highway_ways in (
+            {"custom_filter": {"highway": ["residential"], "bicycle": ["yes"]}},
+            {"custom_filter": {"service": ["private"]}, "filter_type": "exclude"},
+        ):
+            assert len(osm.get_network(**highway_ways)) > 0
+
+
+@pytest.mark.parametrize(
+    "custom_filter, bracket",
+    [
+        ({"waterway": ["river"]}, '["waterway"="river"]'),
+        (
+            {"waterway": ["river", "canal"], "railway": [True]},
+            ['["waterway"="river"]', '["waterway"="canal"]', '["railway"]'],
+        ),
+        ({"name": ['Joe"s']}, """["name"='Joe"s']"""),
+        ({'"quoted"': [True]}, """['"quoted"']"""),
+        ({"name": ["""a"b'c"""]}, None),
+        ({"waterway": []}, None),
+        ({}, None),
+    ],
+)
+def test_dict_as_bracket_filter(custom_filter, bracket):
+    """The bracket string a dict filter's warning shows keeps the same ways as the dict; a
+    value that holds both quote characters cannot be written as one."""
+    from pyrosm.filter_compiler import (
+        as_compiled_filter,
+        compile_custom_filter,
+        dict_as_bracket_filter,
+    )
+
+    assert dict_as_bracket_filter(custom_filter) == bracket
+    if bracket is not None:
+        compiled = compile_custom_filter(bracket)
+        for tags in (
+            {"waterway": "river"},
+            {"railway": "x"},
+            {"name": 'Joe"s'},
+            {'"quoted"': "x"},
+            {},
+        ):
+            assert compiled.matches(tags) == as_compiled_filter(custom_filter).matches(
+                tags
+            )
+
+
+def test_reading_does_not_import_the_graph_libraries(tmp_path):
+    """Importing pyrosm's reader imported igraph, networkx, pandana and pandarm, only to
+    learn whether they are installed, which took more than a second in every new process
+    (igraph also loads matplotlib). They are imported when a graph is exported to them."""
+    import os
+    import subprocess
+    import textwrap
+
+    # The child offers all four libraries itself and records each one that is imported.
+    code = textwrap.dedent(
+        """
+        import importlib.abc, importlib.machinery, sys
+
+        LIBRARIES = ("igraph", "networkx", "pandana", "pandarm")
+        imported = []
+
+        class Libraries(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+            def find_spec(self, name, path=None, target=None):
+                if name in LIBRARIES:
+                    return importlib.machinery.ModuleSpec(name, self)
+
+            def create_module(self, spec):
+                return None
+
+            def exec_module(self, module):
+                imported.append(module.__name__)
+
+        sys.meta_path.insert(0, Libraries())
+        import pyrosm.pyrosm
+        from pyrosm.utils import _compat
+
+        assert imported == [], imported
+        assert "matplotlib" not in sys.modules
+        assert _compat.HAS_IGRAPH and _compat.HAS_NETWORKX
+        assert _compat.HAS_PANDANA and _compat.HAS_PANDARM
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=dict(os.environ, MPLCONFIGDIR=str(tmp_path)),
+    )
+    assert result.returncode == 0, result.stderr[-800:]

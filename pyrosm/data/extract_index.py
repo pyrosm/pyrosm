@@ -25,6 +25,8 @@ import hashlib
 import io
 import json
 import logging
+import math
+import numbers
 import os
 import re
 import time
@@ -89,6 +91,12 @@ _STRATEGIES = ("single", "smallest_total")
 # Uncovered area (m²) below which a set of extracts counts as covering the area; provider
 # outlines are simplified, so their edges leave slivers.
 _SLIVER_M2 = 1.0
+# The default share of an area that may lie outside the extract or extracts that count as
+# containing it (``tolerance``).
+_TOLERANCE = 0.001
+# A download of this many bytes or more is checked for a smaller extract that leaves out
+# little of the area: one of at most a tenth of its size that leaves out less than 1 %.
+_LARGE_DOWNLOAD = 1e9
 # Radius (m) that gives the points and lines of ``must_cover`` an area for the greedy steps.
 _POINT_RADIUS_M = 1.0
 
@@ -578,6 +586,7 @@ def find_extracts(
     opener=None,
     must_cover=None,
     progress=None,
+    tolerance=_TOLERANCE,
 ):
     """List the OSM extracts that overlap ``area``, best download first, without downloading.
 
@@ -590,6 +599,12 @@ def find_extracts(
     first. Extracts whose size cannot be read come last in their group, smallest extent first.
     With its default ``strategy="single"``, :func:`get_data_by_area` downloads the first
     extract that contains the area (or ``must_cover``).
+
+    An extract contains the area also when the part of the area outside it is less than
+    ``tolerance`` (0.1 % by default) of the area, such as a strip of sea that a city's
+    boundary reaches past the edge of a regional extract. ``must_cover`` gets no tolerance:
+    an extract contains its polygons when less than 1 m² of them lies outside it, and its
+    points and lines when they lie inside it.
 
     When Movisda's indexes cannot be fetched and no copy is cached, its administrative areas are
     left out and its grid tiles come from the copy vendored with pyrosm, each with a warning.
@@ -640,21 +655,30 @@ def find_extracts(
         and the sizes are read, ``False`` shows nothing, and a callable is called as
         ``progress(done, 100)`` with the percentage done.
 
+    tolerance : float
+        The share of the area (``0 <= tolerance < 1``) that may lie outside an extract that
+        counts as containing it, or 1 m² when that is more; 0.001 (0.1 %) by default. With
+        ``0``, only slivers smaller than 1 m², which the simplified outlines of extracts
+        leave, may lie outside. Not used with ``must_cover``.
+
     Returns
     -------
     GeoDataFrame
         One row per extract with the columns ``provider`` (``"Geofabrik"``, ``"BBBike"`` or
         ``"Movisda"``), ``id``, ``name``, ``url``, ``bytes`` (the download size, ``<NA>`` when
         it cannot be read), ``contains`` (whether the extract contains the whole area, or
-        ``must_cover`` when given) and ``geometry`` (the extract's extent, EPSG:4326).
+        ``must_cover`` when given, as described above) and ``geometry``
+        (the extract's extent, EPSG:4326).
 
     Raises
     ------
     ValueError
         If the area is empty, or has no width or no height, or ``must_cover`` is empty, or
-        ``progress`` is not ``True``, ``False``, ``None`` or a callable.
+        ``progress`` is not ``True``, ``False``, ``None`` or a callable, or ``tolerance`` is
+        not a number with ``0 <= tolerance < 1``.
     """
     validate_progress(progress)
+    tolerance = _validate_tolerance(tolerance)
     area = _area_geometry(area)
     parts = None if must_cover is None else _must_cover_parts(must_cover)
     directory = Path(directory) if directory is not None else download_dir()
@@ -684,12 +708,14 @@ def find_extracts(
             pd.concat(frames, ignore_index=True), crs="EPSG:4326"
         )
         if parts is None:
-            candidates["contains"] = candidates.covers(area)
+            candidates["contains"] = _contain(candidates.geometry, area, tolerance)
         else:
+            polygons, exact = parts
             candidates["contains"] = True
-            for part in parts:
-                if part is not None:
-                    candidates["contains"] &= candidates.covers(part)
+            if polygons is not None:
+                candidates["contains"] &= _contain(candidates.geometry, polygons, 0)
+            if exact is not None:
+                candidates["contains"] &= candidates.covers(exact)
         if contains_only:
             found = candidates[candidates["contains"]].copy()
         else:
@@ -724,15 +750,200 @@ def find_extracts(
     return ranked[_COLUMNS].reset_index(drop=True)
 
 
-def _covers(chosen, shapes, outlines, polygons, exact):
-    """Whether the extracts ``chosen`` cover the polygon part (all but a sliver, measured on
-    the projected ``shapes``) and the point and line part (exactly, on the lon/lat
-    ``outlines``) of a coverage target."""
+def _allowed_gap_m2(polygon_m2, tolerance):
+    """The area (m²) of a polygon target of ``polygon_m2`` m² that may lie outside the
+    extracts that count as containing it: a sliver, or the share ``tolerance`` of the
+    target when that is more."""
+    return max(_SLIVER_M2, tolerance * polygon_m2)
+
+
+def _validate_tolerance(tolerance):
+    """``tolerance`` as a float, or ``ValueError`` when it is not a number from 0 up to
+    (not including) 1."""
+    if (
+        isinstance(tolerance, bool)
+        or not isinstance(tolerance, numbers.Real)
+        or not 0 <= tolerance < 1
+    ):
+        raise ValueError(
+            "tolerance must be a share of the area from 0 up to 1, such as 0.001; got %r."
+            % (tolerance,)
+        )
+    return float(tolerance)
+
+
+def _projected(geom):
+    """``geom`` (lon/lat) in the equal-area CRS, which measures areas in m²; ``None`` for
+    ``None``."""
+    if geom is None:
+        return None
+    return gpd.GeoSeries([geom], crs="EPSG:4326").to_crs(_EQUAL_AREA_CRS).iloc[0]
+
+
+def _contain(outlines, area, tolerance):
+    """Whether each of the extract ``outlines`` (a lon/lat GeoSeries) contains ``area``:
+    covers it, or, for a polygonal ``area``, leaves less than :func:`_allowed_gap_m2` of
+    it outside with ``tolerance``."""
+    contains = outlines.covers(area)
+    near = ~contains & outlines.intersects(area)
+    if area.area > 0 and near.any():
+        gaps, total = _uncovered_m2(outlines[near], area)
+        contains[near] = gaps < _allowed_gap_m2(total, tolerance)
+    return contains
+
+
+def _uncovered_m2(outlines, polygon):
+    """The area (m²) of ``polygon`` outside each of the extract ``outlines`` (a lon/lat
+    GeoSeries), and the area of ``polygon`` (lon/lat), both in the equal-area CRS."""
+    projected = _projected(polygon)
+    shapes = outlines.to_crs(_EQUAL_AREA_CRS).values
+    return shapely.area(shapely.difference(projected, shapes)), projected.area
+
+
+def _size_text(size):
+    """A download size in bytes as text, such as ``65 MB`` or ``4.2 GB``."""
+    if pd.isna(size):
+        return "size unknown"
+    if size >= 1e9:
+        return "%.1f GB" % (size / 1e9)
+    return ("%.1f MB" if size < 1e7 else "%.0f MB") % (size / 1e6)
+
+
+def _tolerance_above(share):
+    """A round tolerance above ``share`` (greater than 0), such as 0.0005 for 0.00043 and
+    0.0006 for 0.0005, also when ``share`` was rounded down a little in its division."""
+    share *= 1 + 1e-9
+    step = 10 ** math.floor(math.log10(share))
+    return float("%g" % ((math.floor(share / step) + 1) * step))
+
+
+def _warn_large_download(chosen, downloaded, overlapping, polygons, tolerance):
+    """Warn before the extracts ``chosen`` not ``downloaded`` yet (URLs) are downloaded
+    when their sizes are known and total at least :data:`_LARGE_DOWNLOAD` bytes, and an
+    extract that ``overlapping()`` gives (also one of a set ``chosen``), of at most a
+    tenth of that size, leaves out more than nothing but less than 1 % of ``polygons``:
+    naming the smallest such extract, what it leaves out and, with a ``tolerance`` (for
+    the area), a tolerance of at most 1 % with which pyrosm can use it."""
+    pending = chosen[~chosen["url"].isin(list(downloaded))]
+    sizes = pending["bytes"]
+    if sizes.isna().any() or sizes.sum() < _LARGE_DOWNLOAD:
+        return
+    if polygons is None or polygons.area == 0:
+        return
+    size = sizes.sum()
+    overlapping = overlapping()
+    smaller = overlapping[(overlapping["bytes"] <= size / 10).fillna(False)]
+    if len(chosen) == 1:
+        smaller = smaller[smaller["url"] != chosen["url"].iloc[0]]
+    smaller = smaller[smaller.intersects(polygons) & ~smaller.touches(polygons)]
+    if smaller.empty:
+        return
+    gaps, total = _uncovered_m2(smaller.geometry, polygons)
+    shares = pd.Series(gaps / total, index=smaller.index)
+    near = smaller[(shares > 0) & (shares < 0.01)].sort_values("bytes", kind="stable")
+    if near.empty:
+        return
+    other = near.iloc[0]
+    share = shares[other.name]
+    names = " + ".join("%s %s" % e for e in zip(pending["provider"], pending["id"]))
+    message = (
+        "pyrosm is about to download %s (%s). %s %s (%s) leaves out only %.2g %% of %s."
+        % (
+            names,
+            _size_text(size),
+            other.provider,
+            other.id,
+            _size_text(other.bytes),
+            100 * share,
+            "the area" if tolerance is not None else "must_cover",
+        )
+    )
+    suggested = None if tolerance is None else _tolerance_above(share)
+    if suggested is not None and suggested <= 0.01:
+        message += " With tolerance=%g, pyrosm can use %s %s instead." % (
+            suggested,
+            other.provider,
+            other.id,
+        )
+    warnings.warn(message)
+
+
+def _not_found_message(what, candidates, polygons, tolerance):
+    """The message of :class:`~pyrosm.exceptions.ExtractNotFoundError` for ``what`` (the
+    area or ``must_cover``): up to three of ``candidates`` that leave the least of
+    ``polygons`` outside them and, with a ``tolerance`` (for the area), a tolerance of at
+    most 1 % with which pyrosm could use the first of them."""
+    if tolerance is None:
+        message = "No Geofabrik, BBBike or Movisda extract contains %s." % what
+    else:
+        message = (
+            "No Geofabrik, BBBike or Movisda extract contains enough of %s "
+            "(tolerance=%g)." % (what, tolerance)
+        )
+    if polygons is None or polygons.area == 0:
+        return message
+    overlap = candidates.intersects(polygons) & ~candidates.touches(polygons)
+    overlapping = candidates[overlap]
+    if overlapping.empty:
+        return message
+    gaps, total = _uncovered_m2(overlapping.geometry, polygons)
+    shares = pd.Series(gaps / total, index=overlapping.index).sort_values(kind="stable")
+    closest = overlapping.loc[shares.index[:3]]
+    message += " These extracts cover the largest part of %s:" % what + "".join(
+        "\n- %s %s (%s): %.2g %%"
+        % (e.provider, e.id, _size_text(e.bytes), 100 * shares[i])
+        for i, e in zip(closest.index, closest.itertuples())
+    )
+    best = shares.iloc[0]
+    if tolerance is None or best == 0:
+        return message
+    suggested = _tolerance_above(best)
+    if suggested <= 0.01:
+        first = closest.iloc[0]
+        message += (
+            "\nWith tolerance=%g, pyrosm can use %s %s, which leaves out %.2g %% of %s."
+            % (suggested, first.provider, first.id, 100 * best, what)
+        )
+    return message
+
+
+def _warn_uncovered(chosen, target):
+    """Warn when the extracts ``chosen`` leave more than a sliver of the polygons of
+    ``target`` (see :func:`_smallest_cover`) outside them, naming how much and where."""
+    polygons = target[0]
+    if polygons is None or polygons.area == 0:
+        return
+    if shapely.union_all(chosen.geometry.values).covers(polygons):
+        return
+    polygon = _projected(polygons)
+    outlines = shapely.union_all(chosen.geometry.to_crs(_EQUAL_AREA_CRS).values)
+    gap = polygon.difference(outlines)
+    if gap.area < _SLIVER_M2:
+        return
+    bounds = gpd.GeoSeries([gap], crs=_EQUAL_AREA_CRS).to_crs("EPSG:4326").total_bounds
+    names = " + ".join("%s %s" % e for e in zip(chosen["provider"], chosen["id"]))
+    warnings.warn(
+        "%s %s out %.2g km² (%.2g %%) of the area. This part lies within the bounds "
+        "[%s]."
+        % (
+            names,
+            "leaves" if len(chosen) == 1 else "leave",
+            gap.area / 1e6,
+            100 * gap.area / polygon.area,
+            ", ".join("%.3f" % b for b in bounds),
+        )
+    )
+
+
+def _covers(chosen, shapes, outlines, polygons, exact, allowed):
+    """Whether the extracts ``chosen`` cover the polygon part (all but ``allowed`` m²,
+    measured on the projected ``shapes``) and the point and line part (exactly, on the
+    lon/lat ``outlines``) of a coverage target."""
     if not chosen:
         return False
     if polygons is not None:
         left = polygons.difference(shapely.union_all(shapes.loc[chosen]))
-        if left.area >= _SLIVER_M2:
+        if left.area >= allowed:
             return False
     return exact is None or shapely.union_all(outlines.loc[chosen]).covers(exact)
 
@@ -746,14 +957,14 @@ def _prune(chosen, sizes, covered):
     return chosen
 
 
-def _greedy_cover(target, shapes, sizes, chosen, pool):
-    """Extend ``chosen`` with extracts from ``pool`` while they leave a sliver or more of
-    ``target`` uncovered, each time taking the lowest ``bytes`` per area newly covered; stop
-    when no extract adds area. ``None`` when nothing at all was chosen."""
+def _greedy_cover(target, shapes, sizes, chosen, pool, allowed):
+    """Extend ``chosen`` with extracts from ``pool`` while they leave ``allowed`` m² or more
+    of ``target`` uncovered, each time taking the lowest ``bytes`` per area newly covered;
+    stop when no extract adds area. ``None`` when nothing at all was chosen."""
     chosen, pool = list(chosen), list(pool)
     remaining = target.difference(shapely.union_all(shapes.loc[chosen]))
     # At least one extract, even for an area smaller than a sliver.
-    while not chosen or remaining.area >= _SLIVER_M2:
+    while not chosen or remaining.area >= allowed:
         gains = {i: shapes[i].intersection(remaining).area for i in pool}
         useful = [i for i in pool if gains[i] > 0]
         if not useful:
@@ -781,13 +992,14 @@ def _repair(chosen, pool, sizes, outlines, exact):
     return chosen
 
 
-def _smallest_cover(target, candidates):
+def _smallest_cover(target, candidates, tolerance=_TOLERANCE):
     """The extracts that together cover ``target`` with a small total download, in merge
     order, or ``None`` when they cannot cover it.
 
     ``target`` is ``(polygons, points_and_lines)`` in lon/lat, either part ``None``: polygons
-    count as covered when less than 1 m² of them is left; points and lines must be covered
-    exactly (for the greedy steps they are buffered by 1 m, which only guides the choice).
+    count as covered when less than :func:`_allowed_gap_m2` of them is left with
+    ``tolerance``; points and lines must be covered exactly (for the greedy steps they are buffered by 1 m, which
+    only guides the choice).
     Candidates are rows of :func:`find_extracts`, in its ranking order. Geofabrik and BBBike
     extracts and Movisda administrative extracts with a known size may be used, at most one of
     them from Movisda; Movisda grid tiles never are (they drop closed ways at tile edges). The
@@ -801,16 +1013,14 @@ def _smallest_cover(target, candidates):
     admin = movisda & known["url"].str.contains("/admin/", regex=False)
     known = known[~movisda | admin]
 
-    def project(geom):
-        if geom is None:
-            return None
-        return gpd.GeoSeries([geom], crs="EPSG:4326").to_crs(_EQUAL_AREA_CRS).iloc[0]
-
-    polygons, exact = project(target[0]), target[1]
+    polygons, exact = _projected(target[0]), target[1]
     guide = [polygons] if polygons is not None else []
     if exact is not None:
-        guide.append(project(exact).buffer(_POINT_RADIUS_M))
+        guide.append(_projected(exact).buffer(_POINT_RADIUS_M))
     guide = shapely.union_all(guide)
+    allowed = _SLIVER_M2
+    if polygons is not None:
+        allowed = _allowed_gap_m2(polygons.area, tolerance)
     # Projected and clipped to the target once, so the greedy steps work on small shapes;
     # the lon/lat outlines decide exact coverage; sizes stay exact Python integers.
     outlines = known.geometry
@@ -820,15 +1030,17 @@ def _smallest_cover(target, candidates):
     best = None
     for seed in [None] + list(known.index[known["provider"] == "Movisda"]):
         start = [] if seed is None else [seed]
-        chosen = _greedy_cover(guide, shapes, sizes, start, others)
+        chosen = _greedy_cover(guide, shapes, sizes, start, others, allowed)
         if chosen is not None:
             chosen = _repair(chosen, others, sizes, outlines, exact)
-        if chosen is None or not _covers(chosen, shapes, outlines, polygons, exact):
+        if chosen is None or not _covers(
+            chosen, shapes, outlines, polygons, exact, allowed
+        ):
             continue
         chosen = _prune(
             chosen,
             sizes,
-            lambda rest: _covers(rest, shapes, outlines, polygons, exact),
+            lambda rest: _covers(rest, shapes, outlines, polygons, exact, allowed),
         )
         key = (sum(sizes[i] for i in chosen), len(chosen))
         if best is None or key < best[0]:
@@ -839,14 +1051,15 @@ def _smallest_cover(target, candidates):
     return known.loc[order]
 
 
-def _choose(target, candidates, strategy):
+def _choose(target, candidates, strategy, tolerance=_TOLERANCE):
     """The extract(s) to download, or ``None``: the first extract that contains ``target``
-    (see :func:`_smallest_cover`); with ``strategy="smallest_total"`` a set of extracts when
-    its total is smaller than that extract, or when that extract's size is unknown."""
+    (see :func:`_smallest_cover`, with ``tolerance``); with ``strategy="smallest_total"``
+    a set of extracts when its total is smaller than that extract, or when that extract's
+    size is unknown."""
     single = candidates[candidates["contains"]].iloc[:1]
     if strategy == "single":
         return single if len(single) else None
-    cover = _smallest_cover(target, candidates)
+    cover = _smallest_cover(target, candidates, tolerance)
     if cover is None:
         return single if len(single) else None
     size = single["bytes"].iloc[0] if len(single) else pd.NA
@@ -1133,6 +1346,7 @@ def get_data_by_area(
     must_cover=None,
     workers=None,
     progress=None,
+    tolerance=_TOLERANCE,
 ):
     """Download the OSM data for ``area``: the smallest single extract that contains it, or a
     smaller set of extracts merged into one file.
@@ -1140,14 +1354,19 @@ def get_data_by_area(
     Compares Geofabrik extracts, BBBike city extracts and Movisda administrative areas
     and 1°/10° grid tiles, keeps those that contain the whole area (or ``must_cover``
     when given), and downloads the one with the smallest file (the first row of
-    ``find_extracts(area, contains_only=True, must_cover=must_cover)``, which shows the
-    choice without downloading). With ``strategy="smallest_total"`` it may instead
-    download several extracts that together cover the area and merge them into one file
-    (see ``strategy``). A download that fails with a network error or HTTP status 408,
-    425, 429 or 5xx is tried up to three times, waiting 1 s, 2 s or the server's
-    ``Retry-After`` in between; when it still fails, the choice is made again without
-    it, and when its provider answered 429 or 503, its request to slow down, also
-    without the provider's other extracts that are not downloaded yet. An extract
+    ``find_extracts(area, contains_only=True, must_cover=must_cover,
+    tolerance=tolerance)``, which shows the choice without downloading). An extract may
+    leave less than ``tolerance`` (0.1 % by default) of the area outside it; when it
+    leaves 1 m² or more, a warning says how much of the area the data leaves out, and
+    where. Before a download of 1 GB or more, a warning names the smallest extract, of at
+    most a tenth of that size, that leaves out less than 1 % of the area (or of the
+    polygons in ``must_cover``), when there is one. With ``strategy="smallest_total"`` it
+    may instead download several extracts that together cover the area and merge them
+    into one file (see ``strategy``). A download that fails with a network error or HTTP
+    status 408, 425, 429 or 5xx is tried up to three times, waiting 1 s, 2 s or the
+    server's ``Retry-After`` in between; when it still fails, the choice is made again
+    without it, and when its provider answered 429 or 503, its request to slow down,
+    also without the provider's other extracts that are not downloaded yet. An extract
     already downloaded is not downloaded again in the same call. By default the file is
     then cropped to the area's bounding box, or with ``crop="polygon"`` to the area
     itself.
@@ -1210,7 +1429,8 @@ def get_data_by_area(
     must_cover : shapely geometry | GeoDataFrame | GeoSeries, optional
         What the download must cover, in place of the whole area, e.g. the transit stops that
         routing needs, so sea or unserved edges of the area do not force a larger extract.
-        Points and lines are covered exactly, polygons except for less than 1 m². To also
+        Points and lines are covered exactly, polygons but for less than 1 m² (``tolerance``
+        does not apply). To also
         require the streets around each stop, pass the stops buffered in a local metric CRS,
         e.g. ``stops.to_crs(stops.estimate_utm_crs()).buffer(300)``, or a hull of them to
         require the streets between stops as well. A GeoDataFrame or GeoSeries in another CRS
@@ -1240,6 +1460,13 @@ def get_data_by_area(
         way; a callable is then called with the percentage of the search (see
         :func:`find_extracts`) or of the crop or merge done (see :func:`pyrosm.merge_pbf`).
 
+    tolerance : float
+        The share of the area (``0 <= tolerance < 1``) that may lie outside the extract or
+        extracts that count as containing it, or 1 m² when that is more; 0.001 (0.1 %) by
+        default, so that a strip of sea or a spot at a border that a place's outline adds
+        does not rule out the extract of that place. With ``0``, only slivers smaller than
+        1 m² may lie outside. Not used with ``must_cover``.
+
     Returns
     -------
     AreaExtract
@@ -1250,10 +1477,14 @@ def get_data_by_area(
     ValueError
         If the area is empty, or has no width or no height, or ``must_cover`` is empty, or
         ``crop`` is a string other than ``"polygon"``, or ``crop="polygon"`` and the area is
-        not a (Multi)Polygon, or ``workers`` is neither an integer of at least 1 nor ``"auto"``.
+        not a (Multi)Polygon, or ``workers`` is neither an integer of at least 1 nor ``"auto"``,
+        or ``tolerance`` is not a number with ``0 <= tolerance < 1``.
     pyrosm.exceptions.ExtractNotFoundError
         If no extract (or set of extracts) contains the whole area, or ``must_cover`` when
-        given (a ``ValueError`` subclass).
+        given (a ``ValueError`` subclass). For an area, or polygons in ``must_cover``, the
+        message names up to three extracts that overlap it and leave out the least of it,
+        with how much, and for the area, when 1 % or less would do, a ``tolerance`` with
+        which the first of them would contain it.
     pyrosm.exceptions.ExtractDownloadError
         If every extract that contains the area failed to download; its ``errors`` hold the
         :class:`~pyrosm.exceptions.DownloadError` of each extract tried.
@@ -1274,6 +1505,7 @@ def get_data_by_area(
         must_cover,
         workers,
         progress,
+        tolerance=tolerance,
     )
 
 
@@ -1321,6 +1553,7 @@ def _get_area(
     progress,
     name=None,
     download=True,
+    tolerance=_TOLERANCE,
 ):
     """:func:`get_data_by_area`, whose arguments these are, with the file pyrosm writes
     named ``name`` instead of after the area; without ``download`` it returns the URLs of
@@ -1336,6 +1569,7 @@ def _get_area(
     if isinstance(crop, str) and crop != "polygon":
         raise ValueError('crop must be True, False or "polygon"; got %r.' % (crop,))
     workers = validate_workers(workers)
+    tolerance = _validate_tolerance(tolerance)
     parts = None if must_cover is None else _must_cover_parts(must_cover)
     geom = _area_geometry(area() if callable(area) else area)
     if crop == "polygon" and geom.geom_type not in ("Polygon", "MultiPolygon"):
@@ -1352,14 +1586,42 @@ def _get_area(
         directory=directory,
         must_cover=must_cover,
         progress=progress,
+        tolerance=tolerance,
         **net,
     )
+    # must_cover is covered without a tolerance.
+    choice_tolerance = tolerance if parts is None else 0.0
+    area_tolerance = tolerance if parts is None else None
+
+    def overlapping():
+        """The candidates that overlap the target, also those that do not contain it,
+        without those left out after failed downloads."""
+        if strategy != "single":
+            return candidates
+        found = find_extracts(
+            geom,
+            directory=directory,
+            must_cover=must_cover,
+            progress=progress,
+            tolerance=tolerance,
+            **net,
+        )
+        for extract, error in left_out:
+            found, _ = _without_failed(found, extract, error, downloaded)
+        return found
+
     # The paths of the extracts downloaded so far, by URL: a choice made again reuses them.
     failed, errors, downloaded = [], [], {}
+    # The extracts whose download failed, with their errors.
+    left_out = []
     download_seconds = 0.0
-    while (chosen := _choose(target, candidates, strategy)) is not None:
+    while (
+        chosen := _choose(target, candidates, strategy, choice_tolerance)
+    ) is not None:
         if not download:
+            _warn_uncovered(chosen, target)
             return list(chosen["url"])
+        _warn_large_download(chosen, downloaded, overlapping, target[0], area_tolerance)
         sources = []
         for extract in chosen.itertuples():
             path = downloaded.get(extract.url)
@@ -1369,7 +1631,7 @@ def _get_area(
             log_event(
                 logger,
                 logging.INFO,
-                "download_extract",
+                "choose_extract",
                 provider=extract.provider,
                 extract=extract.name,
                 megabytes=(
@@ -1390,6 +1652,7 @@ def _get_area(
             except DownloadError as e:
                 failed.append((extract.url, str(e)))
                 errors.append(e)
+                left_out.append((extract, e))
                 candidates, provider = _without_failed(
                     candidates, extract, e, downloaded
                 )
@@ -1406,6 +1669,7 @@ def _get_area(
             downloaded[extract.url] = path
             sources.append(_extract_source(extract, path))
         else:
+            _warn_uncovered(chosen, target)
             start = time.perf_counter()
             path, provenance = _write_with_provenance(
                 geom,
@@ -1436,9 +1700,9 @@ def _get_area(
                 snapshot=min(snapshots) if snapshots else None,
             )
     if not failed:
-        what = "the whole area" if must_cover is None else "must_cover"
+        what = "the area" if must_cover is None else "must_cover"
         raise ExtractNotFoundError(
-            "No Geofabrik, BBBike or Movisda extract contains %s." % what
+            _not_found_message(what, overlapping(), target[0], area_tolerance)
         )
     raise ExtractDownloadError(
         "Could not download the extracts for the area; %d downloads failed: %s"

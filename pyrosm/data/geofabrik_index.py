@@ -117,6 +117,7 @@ def get_data_by_bbox(
     strategy="single",
     must_cover=None,
     workers=None,
+    tolerance=0.001,
 ):
     """Download (and by default crop) the OSM data covering a bounding box.
 
@@ -162,7 +163,7 @@ def get_data_by_bbox(
         The crop shows its progress the same way; a callable is then called with the
         percentage of the crop done.
 
-    headers, timeout, opener, strategy, must_cover, workers
+    headers, timeout, opener, strategy, must_cover, workers, tolerance
         As for :func:`pyrosm.get_data_by_area`.
 
     Returns
@@ -194,5 +195,6 @@ def get_data_by_bbox(
         workers,
         progress,
         download=download,
+        tolerance=tolerance,
     )
     return _url_result(result) if not download else result.path
