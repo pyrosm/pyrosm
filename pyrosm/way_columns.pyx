@@ -34,6 +34,7 @@ cdef enum:
     C_FILTER_MULTI = 1
     C_FILTER_ACCESS = 2
     C_FILTER_ANY = 3
+    C_FILTER_OTHER_MODE = 4
     # what ``value_filter`` decides for a way
     C_DROP = 0
     C_KEEP = 1
@@ -54,6 +55,7 @@ FILTER_VALUES = C_FILTER_VALUES
 FILTER_MULTI = C_FILTER_MULTI
 FILTER_ACCESS = C_FILTER_ACCESS
 FILTER_ANY = C_FILTER_ANY
+FILTER_OTHER_MODE = C_FILTER_OTHER_MODE
 KEEP = C_KEEP
 CHECK = C_CHECK
 LINESTRING = C_LINESTRING
@@ -585,7 +587,8 @@ cdef int _filter_decision(const _Filter* f, const int64_t* pk, const int64_t* pv
     if f.n_entries == 0:
         return C_KEEP if f.keep else C_DROP
     # 4. The first entry the way matches decides: an access rule by the value of the first
-    # of its keys the way has, the others by the value of their key (any value for
+    # of its keys the way has, a way built for another mode by its highway value when it
+    # has no tag of the mode, the others by the value of their key (any value for
     # FILTER_ANY). An entry the way does not match passes to the next.
     for k in range(f.n_entries):
         e = &f.entries[k]
@@ -603,6 +606,23 @@ cdef int _filter_decision(const _Filter* f, const int64_t* pk, const int64_t* pv
             if r == 1:
                 return C_KEEP if f.keep else C_DROP
             continue
+        if e.kind == C_FILTER_OTHER_MODE:
+            kk = e.keys_start
+            p = _value_of(f.key_text + f.key_off[kk], f.key_off[kk + 1] - f.key_off[kk], pk,
+                          pv, p0, p1, so, sd)
+            if p < 0:
+                continue
+            v = pv[p]
+            r = _in_multi(f, e, sd + so[v], so[v + 1] - so[v])
+            if r == 2:
+                return C_CHECK
+            if r == 0:
+                continue
+            kk = e.keys_start + 1
+            if _value_of(f.key_text + f.key_off[kk], f.key_off[kk + 1] - f.key_off[kk], pk,
+                         pv, p0, p1, so, sd) >= 0:
+                continue
+            return C_KEEP if f.keep else C_DROP
         kk = e.keys_start
         p = _value_of(f.key_text + f.key_off[kk], f.key_off[kk + 1] - f.key_off[kk], pk, pv,
                       p0, p1, so, sd)
@@ -637,8 +657,9 @@ def value_filter(pairs_off, pair_key, pair_val, str_off, str_data, valid, rows, 
     path decides) per way, as ``record_should_be_kept`` decides for a dict filter.
     ``osm_keys`` are the keys a way must have one of (bytes); ``entries`` the filter's
     entries in order, ``(kind, keys, values)`` with ``kind`` one of the FILTER_ values,
-    ``keys`` the entry's key (an access rule's keys in order) and ``values`` its values, all
-    bytes; ``keep`` is the filter type; ``valid`` whether each string is valid UTF-8
+    ``keys`` the entry's key (an access rule's keys in order; for the ways built for another
+    mode, FILTER_OTHER_MODE, ``highway`` and the mode's own tag) and ``values`` its values,
+    all bytes; ``keep`` is the filter type; ``valid`` whether each string is valid UTF-8
     (``string_columns``)."""
     pairs_off = _contiguous(pairs_off, np.int64)
     pair_key = _contiguous(pair_key, np.int64)
@@ -651,10 +672,16 @@ def value_filter(pairs_off, pair_key, pair_val, str_off, str_data, valid, rows, 
     if valid.shape[0] != str_off.shape[0] - 1:
         raise ValueError("valid must have one flag per string")
     for kind, keys, values in entries:
-        if kind not in (C_FILTER_VALUES, C_FILTER_MULTI, C_FILTER_ACCESS, C_FILTER_ANY):
+        if kind not in (C_FILTER_VALUES, C_FILTER_MULTI, C_FILTER_ACCESS, C_FILTER_ANY,
+                        C_FILTER_OTHER_MODE):
             raise ValueError("an entry's kind must be one of the FILTER_ values")
-        if len(keys) == 0 or (kind != C_FILTER_ACCESS and len(keys) != 1):
-            raise ValueError("an entry has one key, an access rule one or more")
+        if len(keys) == 0 or (kind == C_FILTER_OTHER_MODE and len(keys) != 2) or (
+            kind not in (C_FILTER_ACCESS, C_FILTER_OTHER_MODE) and len(keys) != 1
+        ):
+            raise ValueError(
+                "an entry must have one key, FILTER_ACCESS one or more keys and "
+                "FILTER_OTHER_MODE two"
+            )
     osm_off, osm_text = _offsets_and_text(list(osm_keys))
     all_keys, all_values = [], []
     cdef _Filter f

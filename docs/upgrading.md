@@ -7,6 +7,26 @@ first; the releases not listed here changed nothing of this kind. Changes in spe
 new options that leave the defaults as they were, and fixes of calls that failed are left out. The
 [changelog](changelog.rst) lists every change.
 
+## Unreleased
+
+- **Shared foot and cycle paths in the walking and cycling networks.** A `highway=cycleway` with a
+  `foot` tag can now stay in the `walking` network, and a `highway=footway` with a `bicycle` tag
+  in the `cycling` network. The tag counts as on any other way: `no` or `private` leaves the way
+  out, and other values, such as `designated`, `yes`, `use_sidepath` or `dismount`, let it stay
+  unless another rule of the filter leaves it out. A cycle way without a `foot` tag and a foot way
+  without a `bicycle` tag are still left out. Earlier versions followed OSMnx and left every cycle
+  way out of the walking network and every foot way out of the cycling network. In the Helsinki
+  region, the walking network grows from 14,662 km to 17,962 km and the cycling network from
+  14,288 km to 14,803 km. To get the ways that an earlier version would have selected, read a
+  walking network with this version and then drop every row whose `highway` tag is `cycleway`.
+  Also drop the rows where `cycleway` is one of several `highway` values, as in
+  `cycleway;footway`. For a cycling network, drop the rows whose `highway` tag is or contains
+  `footway` in the same way. In a filter built from `get_osm_filter("walking")` or
+  `Conf.network_filters.walking`, `cycleway` is no longer in the `highway` list. In the walking
+  filter, the `access` entry now decides whether to keep these cycle ways. This entry is an
+  `AccessRule` with `other_mode_highway=["cycleway"]`. The cycling filter uses its own `access`
+  entry to decide whether to keep foot ways.
+
 ## pyrosm 0.28.0
 
 - **Which extract pyrosm downloads.** `find_extracts`, `get_data_by_area`, `get_data_by_bbox`

@@ -75,7 +75,7 @@ CYCLING_COLUMNS = [
 @pytest.mark.parametrize(
     "network_type, shape, columns, excluded_highways",
     [
-        ("walking", (237, 19), WALKING_COLUMNS, ["motorway"]),
+        ("walking", (264, 21), WALKING_COLUMNS, ["motorway"]),
         ("driving", (171, 17), DRIVING_COLUMNS, ["footway", "path"]),
         (
             "driving+service",
@@ -161,7 +161,7 @@ def test_parse_network_with_bbox(test_pbf, as_polygon):
 
     # Test shape (#236: edges crossing the bbox edge are now returned complete
     # rather than cut, so boundary-crossing edges are included)
-    assert gdf.shape == (71, 19)
+    assert gdf.shape == (80, 21)
     for col in WALKING_COLUMNS + BASE_COLUMNS:
         assert col in gdf.columns
 
@@ -255,12 +255,12 @@ def test_adding_extra_attribute(helsinki_pbf):
 @pytest.mark.parametrize(
     "bounding_box, edges_shape, nodes_shape",
     [
-        (None, (1025, 21), (977, 9)),
+        (None, (1202, 23), (1135, 9)),
         # #236: edges crossing the box edge are returned complete, with their nodes.
         # #199: the nodes frame keeps every endpoint of the kept edges, also those
         # just outside the box, so the nodes/edges pair stays consistent for graph
         # export.
-        ([26.94, 60.525, 26.96, 60.535], (278, 21), (281, 9)),
+        ([26.94, 60.525, 26.96, 60.535], (343, 23), (340, 9)),
     ],
     ids=["whole file", "bounding box"],
 )
@@ -308,7 +308,7 @@ def test_reading_network_from_osh(helsinki_history_pbf):
 
     assert isinstance(gdf, GeoDataFrame)
     assert isinstance(gdf.loc[0, "geometry"], LineString)
-    assert gdf.shape == (171, 22)
+    assert gdf.shape == (179, 22)
 
     required_cols = ["highway", "id", "timestamp", "version", "geometry"]
 
@@ -372,5 +372,6 @@ def test_osh_network_does_not_leak_empty_tag_columns(helsinki_history_pbf):
     # version of each way is taken whole (#379); 24 before that, 25 before the network-filter fix and 27 with the
     # #248 NA-leak bug). The row count dropped by one with the OSMnx-parity filters
     # (#369), by one more with #379, as a way lost its highway tag before 2010, and by
-    # 33 ways that were deleted before 2010.
-    assert gdf.shape == (171, 22)
+    # 33 ways that were deleted before 2010. It grew by 8 cycle ways that the foot tag
+    # opens to pedestrians.
+    assert gdf.shape == (179, 22)

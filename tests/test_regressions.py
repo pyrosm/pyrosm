@@ -1761,8 +1761,9 @@ def test_network_filters_match_osmnx_way_filters():
     """#369 — the values each network type excludes, as OSMnx's way filters exclude
     them. OSMnx writes its exclusions as unanchored regular expressions, so its "motor"
     stands for the motor/motorway/motorway_link values written out here. The exceptions:
-    the access tags follow OSM's access hierarchy, and driving also excludes busway,
-    ladder and trail."""
+    the access tags follow OSM's access hierarchy, walking and cycling leave the ways
+    built for the other mode to the access rule (which keeps those the mode's tag opens),
+    and driving also excludes busway, ladder and trail."""
     from pyrosm.config.osm_filters import get_osm_filter
 
     lifecycle = {
@@ -1814,7 +1815,7 @@ def test_network_filters_match_osmnx_way_filters():
         },
         "walking": {
             "area": {"yes"},
-            "highway": lifecycle | {"bus_guideway", "cycleway"} | motor,
+            "highway": lifecycle | {"bus_guideway"} | motor,
             "service": {"private"},
             "sidewalk": {"separate"},
             "sidewalk:both": {"separate"},
@@ -1824,7 +1825,7 @@ def test_network_filters_match_osmnx_way_filters():
         "cycling": {
             "area": {"yes"},
             "highway": lifecycle
-            | {"bus_guideway", "corridor", "elevator", "escalator", "footway", "steps"}
+            | {"bus_guideway", "corridor", "elevator", "escalator", "steps"}
             | motor,
             "service": {"private"},
         },
@@ -1836,28 +1837,31 @@ def test_network_filters_match_osmnx_way_filters():
             "service": {"private"},
         },
     }
-    # The access tags each network type reads, from the most specific one.
+    # The access tags each network type reads, from the most specific one, and the
+    # highway values of the ways built for another mode.
     vehicle = ("motorcar", "motor_vehicle", "vehicle", "access")
     access = {
-        "driving": vehicle,
-        "driving+service": vehicle,
-        "walking": ("foot", "access"),
-        "cycling": ("bicycle", "vehicle", "access"),
+        "driving": (vehicle, set()),
+        "driving+service": (vehicle, set()),
+        "walking": (("foot", "access"), {"cycleway"}),
+        "cycling": (("bicycle", "vehicle", "access"), {"footway"}),
         "all": None,
-        "all_public": ("access",),
+        "all_public": (("access",), set()),
     }
 
     for network_type, exclusions in expected.items():
         network_filter = dict(get_osm_filter(network_type))
         rule = network_filter.pop("access", None)
-        assert (rule and rule.keys) == access[network_type], network_type
+        assert (
+            rule and (rule.keys, set(rule.other_mode_highway))
+        ) == access[network_type], network_type
         assert {
             k: set(v) for k, v in network_filter.items()
         } == exclusions, network_type
 
 
 @pytest.mark.parametrize(
-    "network_type, access_tags, kept",
+    "network_type, tags, kept",
     [
         ("walking", {"access": "no"}, False),
         ("walking", {"access": "no", "foot": "yes"}, True),
@@ -1870,20 +1874,28 @@ def test_network_filters_match_osmnx_way_filters():
         ("driving", {"motor_vehicle": "no", "motorcar": "yes"}, True),
         ("driving", {"access": "yes", "motorcar": "no"}, False),
         ("all_public", {"access": "no"}, False),
+        # A way built for another mode needs a tag of the mode, which then decides.
+        ("walking", {"highway": "cycleway", "foot": "use_sidepath"}, True),
+        ("walking", {"highway": "cycleway", "access": "no", "foot": "yes"}, True),
+        ("walking", {"highway": "cycleway", "foot": "no;yes"}, False),
+        ("walking", {"highway": "cycleway", "access": "yes"}, False),
+        ("cycling", {"highway": "footway", "bicycle": "dismount"}, True),
+        ("cycling", {"highway": "footway", "vehicle": "yes"}, False),
     ],
 )
-def test_network_access_follows_the_most_specific_tag(network_type, access_tags, kept):
+def test_network_access_follows_the_most_specific_tag(network_type, tags, kept):
     """The predefined networks follow OSM's access hierarchy: a tag of the network's
     mode overrides the general access tag, the most specific tag present decides, and
     the way is excluded when it is 'no' or 'private'. access=no used to be kept, so the
     Suomenlinna maintenance tunnel (access=no, no foot tag) joined the island to the
-    mainland in the walking network of Helsinki."""
+    mainland in the walking network of Helsinki. A cycle way is walkable and a foot way
+    cyclable only with a tag of the mode, which the hierarchy then reads."""
     from pyrosm.config import Conf
     from pyrosm.config.osm_filters import get_osm_filter
     from pyrosm.data_filter import element_should_be_kept
     from pyrosm.data_manager import _get_osm_ways_and_relations
 
-    way = {"id": 1, "highway": "residential", "nodes": [1, 2], **access_tags}
+    way = {"id": 1, "highway": "residential", "nodes": [1, 2], **tags}
     network_filter = get_osm_filter(network_type)
     # The way path of the in-memory reader, and the element path of the out-of-core one.
     ways = _get_osm_ways_and_relations(
@@ -1891,6 +1903,54 @@ def test_network_access_follows_the_most_specific_tag(network_type, access_tags,
     )[0]
     assert (ways is not None) == kept
     assert element_should_be_kept(way, ["highway"], network_filter, "exclude") == kept
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_shared_foot_and_cycle_paths_join_walking_and_cycling(engine, tmp_path):
+    """The walking network left out every cycle way and the cycling network every foot
+    way, also the shared foot and cycle paths: in the Helsinki region, about 3,300 km of
+    cycle ways tagged foot=designated or foot=yes were missing from the walking network.
+    A cycle way is walkable and a foot way cyclable when it has a tag of the mode that does
+    not close it; the driving and 'all' networks are unchanged."""
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    ways = {
+        10: {"highway": "residential"},
+        11: {"highway": "cycleway", "foot": "designated"},
+        12: {"highway": "cycleway", "foot": "no"},
+        13: {"highway": "cycleway"},
+        14: {"highway": "footway", "bicycle": "yes"},
+        15: {"highway": "footway", "bicycle": "no"},
+    }
+    nodes = {
+        "id": np.arange(1, 8, dtype=np.int64),
+        "lon": 24.94 + 0.001 * np.arange(7),
+        "lat": np.full(7, 60.17),
+        "version": np.ones(7, dtype=np.int64),
+        "timestamp": np.full(7, 1600000000, dtype=np.int64),
+        "changeset": np.zeros(7, dtype=np.int64),
+        "tags": [None] * 7,
+    }
+    records = [
+        {"id": i, "refs": [i - 9, i - 8], "version": 1, "timestamp": 1600000000, "tags": t}
+        for i, t in ways.items()
+    ]
+    path = write_pbf_from_records(
+        nodes, records, [], str(tmp_path / "paths.osm.pbf"), (24.94, 60.17, 24.946, 60.17)
+    )
+    osm = OSM(path, engine=engine)
+    expected = {
+        "walking": [10, 11, 14, 15],
+        "cycling": [10, 11, 12, 13, 14],
+        "driving": [10],
+        "all": [10, 11, 12, 13, 14, 15],
+    }
+    for network_type, ids in expected.items():
+        edges = osm.get_network(network_type=network_type)
+        assert sorted(edges["id"].tolist()) == ids, network_type
 
 
 @pytest.mark.parametrize("kernel", ["cython", "reference"])

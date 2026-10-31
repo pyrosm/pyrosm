@@ -205,6 +205,14 @@ def _encoded_entries(data_filter):
                     [v.encode("utf-8") for v in _CLOSED],
                 )
             )
+            if values.other_mode_highway:
+                entries.append(
+                    (
+                        wc.FILTER_OTHER_MODE,
+                        [b"highway", values.keys[0].encode("utf-8")],
+                        [v.encode("utf-8") for v in values.other_mode_highway],
+                    )
+                )
             continue
         if values is True or (isinstance(values, list) and values == [True]):
             entries.append((wc.FILTER_ANY, [key.encode("utf-8")], []))

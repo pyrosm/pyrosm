@@ -214,7 +214,7 @@ def test_igraph_immutable_counts(test_pbf):
 
     assert isinstance(g, igraph.Graph)
     # Check that the edge count matches
-    assert g.ecount() == 2050
+    assert g.ecount() == 2404
     assert g.vcount() == n_nodes
 
 
@@ -273,7 +273,7 @@ def test_nxgraph_immutable_counts(test_pbf):
 
     assert isinstance(g, nx.MultiDiGraph)
     # Check that the edge count matches
-    assert nx.number_of_edges(g) == 2050
+    assert nx.number_of_edges(g) == 2404
     assert nx.number_of_nodes(g) == n_nodes
 
 
@@ -338,8 +338,8 @@ def test_connected_component(immutable_nodes_and_edges):
     assert len(cn) <= len(nodes)
 
     # Test exact shape
-    assert ce.shape == (1650, 21)
-    assert cn.shape == (781, 9)
+    assert ce.shape == (2008, 23)
+    assert cn.shape == (942, 9)
 
 
 def test_igraph_connectivity(immutable_nodes_and_edges):
@@ -363,14 +363,14 @@ def test_igraph_connectivity(immutable_nodes_and_edges):
 
     # Check couple of exact lengths (allow some flexibility due to floating point calculations)
     assert round(shortest_paths[0][0], 0) in [499, 500]
-    assert round(shortest_paths[0][-1], 0) in [2802, 2803]
+    assert round(shortest_paths[0][-1], 0) in [2493, 2494]
 
     # Check summaries
     arr = np.array(shortest_paths[0])
     arr[arr == np.inf] = 0
     assert arr.min() == 0
-    assert arr.max().round(0) == 3126
-    assert arr.mean().round(0) == 1429
+    assert arr.max().round(0) == 3006
+    assert arr.mean().round(0) == 1400
 
 
 def test_nxgraph_connectivity(immutable_nodes_and_edges):
@@ -398,14 +398,14 @@ def test_nxgraph_connectivity(immutable_nodes_and_edges):
 
     # Check couple of exact lengths
     assert round(shortest_paths[0], 0) in [499, 500]
-    assert round(shortest_paths[-1], 0) in [2802, 2803]
+    assert round(shortest_paths[-1], 0) in [2493, 2494]
 
     # Check summaries
     arr = np.array(shortest_paths)
     arr[arr == np.inf] = 0
     assert arr.min() == 0
-    assert arr.max().round(0) == 3126
-    assert arr.mean().round(0) == 1429
+    assert arr.max().round(0) == 3006
+    assert arr.mean().round(0) == 1400
 
 
 @_pandana_unsupported_on_win

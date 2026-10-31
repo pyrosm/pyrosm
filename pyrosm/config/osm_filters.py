@@ -2,12 +2,18 @@
 
 Each filter is an "exclude" dict of ``{osm_key: [values]}``: a way is dropped when it
 carries one of the listed values for that key. The filters follow the way filters of
-OSMnx (``osmnx._overpass._get_network_filter``) closely and in most cases select the same
-ways, with the OSMnx regular expressions written out as the OSM values they match
-(``"motor"`` matches ``motor``, ``motorway`` and ``motorway_link``). Where the two differ,
-the filters follow OSM's access rules: the ``access`` entry of a filter is an
+OSMnx (``osmnx._overpass._get_network_filter``) closely and in most cases select the
+same ways, with the OSMnx regular expressions written out as the OSM values they match
+(``"motor"`` matches ``motor``, ``motorway`` and ``motorway_link``). Where the two
+differ, the filters follow OSM's access rules: the ``access`` entry of a filter is an
 :class:`AccessRule`, so ``access=no`` excludes a way unless a tag of the network's mode
-of transport, such as ``foot=yes``, allows the use.
+of transport, such as ``foot=yes``, allows the use. A way built for another mode is left
+out when it has no tag of the network's mode: the walking filter leaves out a
+``highway=cycleway`` without a ``foot`` tag, and the cycling filter a
+``highway=footway`` without a ``bicycle`` tag. With such a tag, the access rule decides
+as on any other way, so ``foot=designated`` lets a cycle way stay in the walking network
+and ``foot=no`` leaves it out. OSMnx leaves all cycle ways out of its 'walk' network and
+all foot ways out of its 'bike' network.
 """
 
 
@@ -46,21 +52,39 @@ class AccessRule:
     (``private;delivery``). In a walking network, ``access=no`` with ``foot=yes`` and
     ``access=private`` with ``foot=yes`` stay, while ``access=no`` alone and with
     ``foot=private`` are excluded.
+
+    ``other_mode_highway`` lists the ``highway`` values of ways built for another mode,
+    such as ``cycleway`` in a walking network. Such a way is also closed when it has no
+    tag of the mode, the first of ``mode_keys`` (``foot`` for walking). With that tag,
+    it is closed only when the tag is ``no`` or ``private``, as any other way is: a
+    cycleway with ``foot=designated`` or ``foot=use_sidepath`` stays in a walking
+    network, and one with ``foot=no`` or without a ``foot`` tag is excluded.
     """
 
-    def __init__(self, *mode_keys):
+    def __init__(self, *mode_keys, other_mode_highway=()):
         self.keys = mode_keys + ("access",)
+        self.other_mode_highway = MultiValue(other_mode_highway)
 
     def closes(self, tags):
-        """Whether the access tags in ``tags`` close the way."""
+        """Whether ``tags`` close the way. A way whose ``highway`` value is one of
+        ``other_mode_highway`` is also closed when it has no tag of the first of
+        ``mode_keys``."""
         for key in self.keys:
             value = tags.get(key)
             if value is not None:
-                return value in _CLOSED
+                if value in _CLOSED:
+                    return True
+                break
+        if tags.get("highway") in self.other_mode_highway:
+            return tags.get(self.keys[0]) is None
         return False
 
     def __repr__(self):
-        return "AccessRule(keys=%r, closed=%r)" % (self.keys, list(_CLOSED))
+        return "AccessRule(keys=%r, closed=%r, other_mode_highway=%r)" % (
+            self.keys,
+            list(_CLOSED),
+            list(self.other_mode_highway),
+        )
 
 
 # Excluded by every network type: areas are not routable ways, and these highway values
@@ -154,17 +178,21 @@ def driving_filter(include_service_roads=False):
 def walking_filter():
     """Walkable ways, following OSMnx's 'walk'.
 
-    Filters out cycle ways, motor ways, and ways closed to pedestrians (foot and access
-    tags, see AccessRule).
+    Filters out motorways and the ways that AccessRule closes, including ways with
+    ``foot=no`` or with ``access=no`` and no ``foot`` tag. A cycle way without a
+    ``foot`` tag is filtered out. With a ``foot`` tag, AccessRule decides as for any
+    other way, so the shared foot and cycle paths and the sidewalks mapped as cycle
+    ways, tagged ``foot=designated`` or ``foot=yes``, can stay in the network. OSMnx
+    leaves all cycle ways out.
     Service roads are kept, permitting things like parking lot lanes and alleys that you
     *can* walk on even if they are not exactly pleasant walks. Ways whose sidewalk is
     mapped as a separate way are excluded, so that the sidewalk is not counted twice.
     """
     return dict(
         area=MultiValue(["yes"]),
-        access=AccessRule("foot"),
+        access=AccessRule("foot", other_mode_highway=["cycleway"]),
         highway=MultiValue(
-            _ALWAYS_EXCLUDED_HIGHWAY + ["bus_guideway", "cycleway"] + _MOTOR_HIGHWAY
+            _ALWAYS_EXCLUDED_HIGHWAY + ["bus_guideway"] + _MOTOR_HIGHWAY
         ),
         service=MultiValue(["private"]),
         sidewalk=MultiValue(["separate"]),
@@ -179,22 +207,19 @@ def walking_filter():
 def cycling_filter():
     """Cyclable ways, following OSMnx's 'bike'.
 
-    Filters out foot ways, motor ways, and ways closed to cyclists (bicycle, vehicle and
-    access tags, see AccessRule).
+    Filters out motorways and the ways that AccessRule closes, including ways with
+    ``bicycle=no`` or with ``access=no`` and no ``bicycle`` or ``vehicle`` tag. A foot
+    way without a ``bicycle`` tag is filtered out. With a ``bicycle`` tag, AccessRule
+    decides as for any other way, so ``bicycle=yes`` or ``bicycle=dismount`` can keep a
+    foot way in the network and ``bicycle=no`` leaves it out. OSMnx leaves all foot ways
+    out.
     """
     return dict(
         area=MultiValue(["yes"]),
-        access=AccessRule("bicycle", "vehicle"),
+        access=AccessRule("bicycle", "vehicle", other_mode_highway=["footway"]),
         highway=MultiValue(
             _ALWAYS_EXCLUDED_HIGHWAY
-            + [
-                "bus_guideway",
-                "corridor",
-                "elevator",
-                "escalator",
-                "footway",
-                "steps",
-            ]
+            + ["bus_guideway", "corridor", "elevator", "escalator", "steps"]
             + _MOTOR_HIGHWAY
         ),
         service=MultiValue(["private"]),
