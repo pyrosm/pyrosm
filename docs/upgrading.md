@@ -15,8 +15,11 @@ new options that leave the defaults as they were, and fixes of calls that failed
   out, and other values, such as `designated`, `yes`, `use_sidepath` or `dismount`, let it stay
   unless another rule of the filter leaves it out. A cycle way without a `foot` tag, or a foot way
   without a `bicycle` tag, follows the default of the country it lies in. Pedestrians may use
-  cycle ways by default in 18 countries, including Finland, Sweden, the United Kingdom and the
-  United States, and cyclists may use foot ways in Australia, Belarus, Iceland and Norway.
+  cycle ways by default in 23 countries, including Estonia, Finland, Sweden, the United Kingdom
+  and the United States, and cyclists may use foot ways in Australia, Belarus, Iceland and
+  Norway. Estonia, Lithuania, New Zealand, Portugal and Ukraine are among them because their
+  traffic laws let pedestrians walk on cycle paths, in Lithuania, Portugal and Ukraine where
+  there is no sidewalk or footpath.
   Elsewhere, and where pyrosm finds no country for the way, such a way is left out. Earlier
   versions followed OSMnx and left every cycle way out of the walking network and every foot way
   out of the cycling network. In the Helsinki region, the walking network grows from 14,662 km to

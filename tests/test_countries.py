@@ -80,12 +80,13 @@ def test_country_borders_refresh(tmp_path, monkeypatch):
 
 def test_countries_allowing():
     """The countries where pedestrians may use a cycle way and cyclists a foot way without
-    a tag for the mode, from Valhalla's table."""
+    a tag for the mode, from Valhalla's table and, for Estonia, Lithuania, New Zealand,
+    Portugal and Ukraine, from their traffic law."""
     from pyrosm.data.countries import countries_allowing
 
     assert countries_allowing("foot", "cycleway") == {
-        "BE", "BY", "CH", "DK", "FI", "GB", "GR", "HU", "IS",
-        "NL", "NO", "OM", "PH", "PL", "SE", "TH", "TR", "US",
+        "BE", "BY", "CH", "DK", "EE", "FI", "GB", "GR", "HU", "IS", "LT", "NL",
+        "NO", "NZ", "OM", "PH", "PL", "PT", "SE", "TH", "TR", "UA", "US",
     }  # fmt: skip
     assert countries_allowing("bicycle", "footway") == {"AU", "BY", "IS", "NO"}
     assert countries_allowing("foot", "path") == frozenset()
@@ -93,7 +94,8 @@ def test_countries_allowing():
 
 def test_country_access_refresh(tmp_path, monkeypatch):
     """The refresh script reads the shared paths from Valhalla's table, leaves out the
-    parts of the United Kingdom and stops at a country it has no ISO code for."""
+    parts of the United Kingdom, adds the countries of its traffic-law table with their
+    provisions and stops at a country it has no ISO code for."""
     import importlib.util
     import json
     from pathlib import Path
@@ -115,8 +117,9 @@ def test_country_access_refresh(tmp_path, monkeypatch):
         '                   {"England", {-1, -1, -1, -1, -1, -1, (%s), -1, -1}},\n'
         '                   {"Austria", {-1, -1, -1, -1, -1, -1, -1, (%s), -1}}};\n'
     ) % (ped, ped, bike, ped, bike, ped, ped, ped)
+    law = sorted(module.TRAFFIC_LAW["foot", "cycleway"])
     assert module.country_access(table)["allowed"] == {
-        "foot": {"cycleway": ["FI", "NO"]},
+        "foot": {"cycleway": sorted(["FI", "NO"] + law)},
         "bicycle": {"footway": ["NO"]},
     }
     with pytest.raises(ValueError, match="Atlantis"):
@@ -127,8 +130,9 @@ def test_country_access_refresh(tmp_path, monkeypatch):
     license.write_bytes(b"MIT License\n")
     monkeypatch.setattr(module, "DATA_DIR", tmp_path)
     module.update_access(source, license)
-    written = json.loads((tmp_path / "country_access.json").read_text())
-    assert written["allowed"]["foot"]["cycleway"] == ["FI", "NO"]
+    written = json.loads((tmp_path / "country_access.json").read_text(encoding="utf-8"))
+    assert written["allowed"]["foot"]["cycleway"] == sorted(["FI", "NO"] + law)
+    assert written["law"] == {"foot": {"cycleway": module.TRAFFIC_LAW["foot", "cycleway"]}}
     assert (tmp_path / "country_access.LICENSE.md").read_bytes() == b"MIT License\n"
 
 
