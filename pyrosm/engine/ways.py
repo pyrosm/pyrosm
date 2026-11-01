@@ -193,7 +193,7 @@ def _filter_entries(data_filter):
 def _encoded_entries(data_filter):
     """The entries of :func:`_filter_entries` for a dict filter, its strings encoded; raises
     ``UnicodeEncodeError`` for a string UTF-8 cannot encode."""
-    from pyrosm.config.osm_filters import _CLOSED, AccessRule, MultiValue
+    from pyrosm.config.osm_filters import AccessRule, MultiValue
 
     entries = []
     for key, values in data_filter.items():
@@ -202,7 +202,7 @@ def _encoded_entries(data_filter):
                 (
                     wc.FILTER_ACCESS,
                     [k.encode("utf-8") for k in values.keys],
-                    [v.encode("utf-8") for v in _CLOSED],
+                    [v.encode("utf-8") for v in values.closed],
                 )
             )
             if values.other_mode_highway:
