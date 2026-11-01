@@ -214,7 +214,7 @@ def test_igraph_immutable_counts(test_pbf):
 
     assert isinstance(g, igraph.Graph)
     # Check that the edge count matches
-    assert g.ecount() == 2050
+    assert g.ecount() == 3064
     assert g.vcount() == n_nodes
 
 
@@ -273,7 +273,7 @@ def test_nxgraph_immutable_counts(test_pbf):
 
     assert isinstance(g, nx.MultiDiGraph)
     # Check that the edge count matches
-    assert nx.number_of_edges(g) == 2050
+    assert nx.number_of_edges(g) == 3064
     assert nx.number_of_nodes(g) == n_nodes
 
 
@@ -338,8 +338,8 @@ def test_connected_component(immutable_nodes_and_edges):
     assert len(cn) <= len(nodes)
 
     # Test exact shape
-    assert ce.shape == (1650, 21)
-    assert cn.shape == (781, 9)
+    assert ce.shape == (3044, 23)
+    assert cn.shape == (1385, 9)
 
 
 def test_igraph_connectivity(immutable_nodes_and_edges):
@@ -363,14 +363,14 @@ def test_igraph_connectivity(immutable_nodes_and_edges):
 
     # Check couple of exact lengths (allow some flexibility due to floating point calculations)
     assert round(shortest_paths[0][0], 0) in [499, 500]
-    assert round(shortest_paths[0][-1], 0) in [2802, 2803]
+    assert round(shortest_paths[0][-1], 0) in [2397, 2398]
 
     # Check summaries
     arr = np.array(shortest_paths[0])
     arr[arr == np.inf] = 0
     assert arr.min() == 0
-    assert arr.max().round(0) == 3126
-    assert arr.mean().round(0) == 1429
+    assert arr.max().round(0) == 2673
+    assert arr.mean().round(0) == 1449
 
 
 def test_nxgraph_connectivity(immutable_nodes_and_edges):
@@ -398,14 +398,14 @@ def test_nxgraph_connectivity(immutable_nodes_and_edges):
 
     # Check couple of exact lengths
     assert round(shortest_paths[0], 0) in [499, 500]
-    assert round(shortest_paths[-1], 0) in [2802, 2803]
+    assert round(shortest_paths[-1], 0) in [2397, 2398]
 
     # Check summaries
     arr = np.array(shortest_paths)
     arr[arr == np.inf] = 0
     assert arr.min() == 0
-    assert arr.max().round(0) == 3126
-    assert arr.mean().round(0) == 1429
+    assert arr.max().round(0) == 2673
+    assert arr.mean().round(0) == 1449
 
 
 @_pandana_unsupported_on_win
@@ -679,7 +679,7 @@ def test_pandana_and_pandarm_connectivity(library):
 
     nearest_restaurants = g.nearest_pois(1000, "restaurants", num_pois=5)
     assert isinstance(nearest_restaurants, pd.DataFrame)
-    assert nearest_restaurants.shape == (5262, 5)
+    assert nearest_restaurants.shape == (5673, 5)
 
     node_ids = g.get_node_ids(x, y)
     assert isinstance(node_ids, pd.Series)
@@ -690,7 +690,7 @@ def test_pandana_and_pandarm_connectivity(library):
 
     access = g.aggregate(500, type="sum", decay="linear", name="employee_cnt")
     assert isinstance(access, pd.Series)
-    assert len(access) == 5262
+    assert len(access) == 5673
 
     # A list in pandana and in pandarm up to 0.0.5, a NumPy array from pandarm 0.0.7
     shortest_distances = g.shortest_path_lengths(
@@ -699,8 +699,8 @@ def test_pandana_and_pandarm_connectivity(library):
     assert len(shortest_distances) == 100
     shortest_distances = pd.Series(shortest_distances)
     assert round(shortest_distances.min(), 0) == 22
-    assert round(shortest_distances.max(), 0) in [2457, 2458]
-    assert round(shortest_distances.mean(), 0) in [865, 866, 867]
+    assert round(shortest_distances.max(), 0) in [2453, 2454]
+    assert round(shortest_distances.mean(), 0) in [855, 856, 857]
 
 
 def test_to_graph_api_pandarm(test_pbf):

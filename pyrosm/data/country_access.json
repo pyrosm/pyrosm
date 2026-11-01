@@ -1,0 +1,35 @@
+{
+ "source": "Valhalla 3.9.1, valhalla/mjolnir/adminconstants.h, kCountryAccess (MIT licence)",
+ "allowed": {
+  "foot": {
+   "cycleway": [
+    "BE",
+    "BY",
+    "CH",
+    "DK",
+    "FI",
+    "GB",
+    "GR",
+    "HU",
+    "IS",
+    "NL",
+    "NO",
+    "OM",
+    "PH",
+    "PL",
+    "SE",
+    "TH",
+    "TR",
+    "US"
+   ]
+  },
+  "bicycle": {
+   "footway": [
+    "AU",
+    "BY",
+    "IS",
+    "NO"
+   ]
+  }
+ }
+}

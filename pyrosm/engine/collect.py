@@ -14,6 +14,7 @@ from rapidjson import dumps
 from pyrosm._arrays import columns_to_arrays
 from pyrosm.tagparser import explode_node_tag_array
 from pyrosm.data_filter import element_should_be_kept
+from pyrosm.data.countries import way_points
 from pyrosm.geometry import AREA_BY_TAGS, tags_make_area
 from pyrosm.engine.decode import (
     _is_threaded,
@@ -24,6 +25,7 @@ from pyrosm.engine.decode import (
 from pyrosm.engine.bounding_box import _in_box_nodes
 from pyrosm.engine.ways import (
     ElementStore,
+    keep_mask,
     node_coordinates,
     node_record_blocks,
     node_features,
@@ -382,6 +384,59 @@ def _collect_kept_ways(shard_paths, exclude_ids, keep, in_box=None):
     return _filter_way_columns(
         _read_way_columns(shard_paths), exclude_ids, keep, in_box
     )
+
+
+# No node ids, to concatenate with.
+_NO_IDS = np.empty(0, dtype=np.int64)
+
+
+def _kept_by_country(shard_paths, kept, osm_keys, rule):
+    """The ways ``kept`` without those that the access rule ``rule`` leaves to their country
+    (:meth:`~pyrosm.config.osm_filters.AccessRule.lacks_mode_tag`) and whose country, by
+    their first located node (see :func:`~pyrosm.data.countries.way_points`), does not let
+    the mode use them; ``None`` when none is left. ``kept`` is a threaded read's
+    :class:`~pyrosm.engine.ways.ElementStore` or way columns."""
+    threaded = _is_threaded(shard_paths)
+    if threaded:
+        # Of the ways the access hierarchy keeps, the rule closes those it leaves to
+        # their country.
+        candidate = keep_mask(kept, (osm_keys, {"access": rule}, "keep"))
+        rows = np.flatnonzero(candidate)
+        highway = (
+            None
+            if len(rule.other_mode_highway) == 1
+            else [kept.tags(w, {"highway"})["highway"] for w in rows]
+        )
+        start = kept.refs_off[rows]
+        lengths = kept.refs_off[rows + 1] - start
+        offsets = np.cumsum(lengths) - lengths
+        refs = kept.refs[np.repeat(start - offsets, lengths) + np.arange(lengths.sum())]
+    else:
+        tags = kept["tags"]
+        candidate = np.fromiter(
+            (rule.lacks_mode_tag(t) for t in tags), dtype=bool, count=len(tags)
+        )
+        rows = np.flatnonzero(candidate)
+        highway = [tags[w]["highway"] for w in rows]
+        node_lists = kept["nodes"][rows]
+        lengths = np.array([len(nodes) for nodes in node_lists], dtype=np.int64)
+        refs = np.concatenate([np.asarray(n, np.int64) for n in node_lists] + [_NO_IDS])
+    if len(rows) == 0:
+        return kept
+    ids = np.unique(refs)
+    store = (
+        node_coordinates(shard_paths, [ids])
+        if threaded
+        else _node_lookup(shard_paths, ids)
+    )
+    lon, lat = way_points(refs, lengths, store)
+    keep = np.ones(len(candidate), dtype=bool)
+    keep[rows[~rule.allowed_in(highway, lon, lat)]] = False
+    if not keep.any():
+        return None
+    if threaded:
+        return kept.take(np.flatnonzero(keep))
+    return {k: v[keep] for k, v in kept.items()}
 
 
 def _collect_relations(shard_paths, keep):

@@ -810,6 +810,14 @@ _FILTER_WAYS = [
     (11, [1, 2], [(b"building", b"roof")]),
     (12, [1, 2], []),
     (13, [1, 2], [(b"building", b"\xff")]),
+    (14, [1, 2], [(b"highway", b"cycleway"), (b"foot", b"designated")]),
+    (15, [1, 2], [(b"highway", b"cycleway"), (b"foot", b"no")]),
+    (16, [1, 2], [(b"highway", b"cycleway"), (b"access", b"no"), (b"foot", b"yes")]),
+    (17, [1, 2], [(b"highway", b"cycleway;footway"), (b"foot", b"use_sidepath; yes")]),
+    (18, [1, 2], [(b"highway", b"footway"), (b"bicycle", b"dismount")]),
+    (19, [1, 2], [(b"highway", b"footway"), (b"bicycle", "\u00a0yes;x".encode())]),
+    (20, [1, 2], [(b"highway", "\u00a0x;cycleway".encode())]),
+    (21, [1, 2], [(b"highway", b"cycleway"), (b"foot", b"no;yes")]),
 ]
 
 
@@ -822,6 +830,7 @@ _FILTER_WAYS = [
         {"highway": ["footway"]},
         "driving",
         "walking",
+        "cycling",
         {"building": "yes"},
         {"building": ["\ufffd"]},
         {"building": ["\ud800"]},
@@ -839,7 +848,7 @@ def test_engine_way_value_filter_matches_python(custom_filter, filter_type):
 
     if custom_filter is None:
         spec = (None, None, filter_type)
-    elif custom_filter in ("driving", "walking"):
+    elif custom_filter in ("driving", "walking", "cycling"):
         spec = (["highway"], get_osm_filter(custom_filter), filter_type)
     elif isinstance(custom_filter, str):
         compiled = validate_custom_filter(custom_filter)

@@ -132,9 +132,9 @@ Two things related to filtering that are good to understand:
 
 :::{dropdown} Are the network types the same as in OSMnx?
 
-Yes. `network_type` follows the [way filters of OSMnx](https://osmnx.readthedocs.io/en/stable/user-reference.html),
-so reading a network with pyrosm selects the same streets as the equivalent OSMnx query,
-and the OSMnx names work as network types as well:
+Mostly. The `network_type` filters follow the [way filters of OSMnx](https://osmnx.readthedocs.io/en/stable/user-reference.html),
+so pyrosm selects nearly the same streets as the equivalent OSMnx query. The OSMnx names
+work as network types as well:
 
 | pyrosm | OSMnx |
 | --- | --- |
@@ -147,7 +147,19 @@ and the OSMnx names work as network types as well:
 
 `driving` leaves out the service roads (alleys, driveways, parking aisles). Use
 `driving+service` when those matter for reachability, for example when routing to
-individual buildings.
+individual buildings. The `driving` network also leaves out busways, ladders and trails,
+which OSMnx keeps in `drive`.
+
+Unlike OSMnx, pyrosm follows OSM's access hierarchy. It uses the most specific access tag on
+a way to decide whether to leave that way out. For example, `access=no` leaves a way out
+of the walking network unless a more specific tag such as `foot=yes` allows walking.
+
+OSMnx leaves every cycle way out of `walk` and every foot way out of `bike`. In pyrosm, a
+cycle way with a `foot` tag, such as `foot=designated`, can stay in the walking network
+unless the tag is `no` or `private`. A cycle way without a `foot` tag follows the default
+of the country it lies in. It stays in countries such as Finland, where pedestrians
+may use cycle ways by default, and is left out in other countries and where pyrosm finds
+no country. The cycling network treats a foot way and its `bicycle` tag in the same way.
 
 A network exported with `to_graph(..., graph_type="networkx")` is OSMnx-compatible as
 well: the node and edge attributes are named as OSMnx expects, so its functions work on

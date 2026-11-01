@@ -697,6 +697,7 @@ def get_network(
         network_type, extra_attributes, custom_filter, filter_type, tags_to_keep
     )
     bounding_box = _normalize_bounding_box(bounding_box)
+    filter_spec = _filter_spec_for_read(filter_spec, filepath, bounding_box)
 
     shares = NETWORK_NODES_SHARES if nodes else NETWORK_SHARES
     with read_steps(filepath, progress, shares) as steps:
@@ -762,6 +763,16 @@ def get_network(
             steps=steps,
         )
         return record_network_type(_node_lists(result), network_type)
+
+
+def _filter_spec_for_read(filter_spec, filepath, bounding_box):
+    """``filter_spec`` with its filter for a read of ``filepath`` within ``bounding_box``
+    (see :func:`~pyrosm.config.osm_filters.filter_for_read`)."""
+    from pyrosm.config.osm_filters import filter_for_read
+
+    osm_keys, data_filter, filter_type = filter_spec
+    data_filter = filter_for_read(data_filter, filter_type, filepath, bounding_box)
+    return osm_keys, data_filter, filter_type
 
 
 def _network_spec(
@@ -853,6 +864,7 @@ def graph_network(
         network_type, extra_attributes, custom_filter, filter_type, tags_to_keep
     )
     bounding_box = _normalize_bounding_box(bounding_box)
+    filter_spec = _filter_spec_for_read(filter_spec, filepath, bounding_box)
 
     def assemble(shard_paths, steps):
         return _assemble_graph_network(

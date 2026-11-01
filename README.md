@@ -131,7 +131,7 @@ A BibTeX entry and version-specific DOIs are available in the [documentation](ht
 
 ## License and copyright
 
-Pyrosm is licensed under the BSD 3-Clause License (see [license](LICENSE)).
+Pyrosm is licensed under the BSD 3-Clause License (see [license](LICENSE)). pyrosm includes country borders from [country-coder](https://github.com/rapideditor/country-coder) under the ISC License and a country access table from [Valhalla](https://github.com/valhalla/valhalla) under the MIT License. Their licence files are stored with the data in `pyrosm/data`.
 
 The OSM data is downloaded from two sources:
 

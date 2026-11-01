@@ -1,3 +1,8 @@
+import numpy as np
+from rapidjson import loads
+
+from pyrosm.config.osm_filters import country_rule
+from pyrosm.data.countries import way_points
 from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
 
@@ -18,7 +23,9 @@ def get_network_data(
     GeoDataFrames, read from the in-memory reader's parsed arrays, the ways sliced into
     edges between their nodes with ``slice_to_segments`` (nodes is None otherwise). The
     selection and the edges are steps of ``steps`` (a
-    :class:`~pyrosm.utils.progress.Steps`, or None)."""
+    :class:`~pyrosm.utils.progress.Steps`, or None). A way built for another mode without
+    a tag of the mode stays where its country lets the mode use it (see
+    :func:`~pyrosm.config.osm_filters.country_rule`)."""
     # Structural columns are always kept; element metadata only when requested.
     tags_as_columns += ["id", "nodes"]
     if keep_metadata:
@@ -26,6 +33,7 @@ def get_network_data(
 
     # Call signature for fetching network data. Predefined networks keep only ways with a
     # 'highway' tag; an advanced custom filter selects ways by its own positive keys instead.
+    network_filter, rule = country_rule(network_filter, filter_type)
     nodes, ways, relation_ways, relations = get_osm_data(
         node_arrays=None,
         way_records=way_records,
@@ -37,6 +45,9 @@ def get_network_data(
         keep_metadata=keep_metadata,
         steps=steps,
     )
+
+    if ways is not None and rule is not None:
+        ways = _ways_by_country(ways, node_coordinates, rule, tags_as_columns)
 
     # If there weren't any data, return None
     if ways is None:
@@ -58,3 +69,41 @@ def get_network_data(
     )
 
     return edges, nodes
+
+
+def _ways_by_country(ways, node_coordinates, rule, tags_as_columns):
+    """The way arrays ``ways`` without the ways that the access rule ``rule`` leaves to
+    their country (:meth:`~pyrosm.config.osm_filters.AccessRule.lacks_mode_tag`) and whose
+    country, by their first node in ``node_coordinates`` (see
+    :func:`~pyrosm.data.countries.way_points`), does not let the mode use them;
+    ``None`` when none is left. The mode's tag is read from its column, or else from the
+    JSON ``tags`` column of the other tags. A column of ``tags_as_columns`` that only the
+    dropped ways had a value in is left out, as for the ways a read never selects."""
+    mode = rule.keys[0]
+    highway = ways["highway"]
+    rows = []
+    for row in np.flatnonzero([h in rule.other_mode_highway for h in highway]):
+        if mode in ways:
+            value = ways[mode][row]
+        else:
+            other = ways["tags"][row] if "tags" in ways else None
+            value = loads(other).get(mode) if isinstance(other, str) else None
+        if rule.lacks_mode_tag({"highway": highway[row], mode: value}):
+            rows.append(row)
+    if not rows:
+        return ways
+    rows = np.asarray(rows)
+    node_lists = [np.asarray(ways["nodes"][row], dtype=np.int64) for row in rows]
+    lengths = [len(nodes) for nodes in node_lists]
+    lon, lat = way_points(np.concatenate(node_lists), lengths, node_coordinates)
+    keep = np.ones(len(highway), dtype=bool)
+    keep[rows[~rule.allowed_in(highway[rows], lon, lat)]] = False
+    if not keep.any():
+        return None
+    kept = {}
+    for key, values in ways.items():
+        values = values[keep]
+        if key in tags_as_columns and all(v is None for v in values):
+            continue
+        kept[key] = values
+    return kept
