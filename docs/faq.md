@@ -166,9 +166,13 @@ without a `foot` tag and every foot way without a `bicycle` tag, as OSM's worldw
 defaults do. With `shared_paths="all"`, they keep all of them, also where the country's
 rules do not allow it, for a network of the ways people walk and cycle on in practice.
 A tag such as `foot=no` or `bicycle=no` leaves the way out with every setting.
-`foot=use_sidepath` and `bicycle=use_sidepath` say that pedestrians or cyclists must use
-a way mapped beside this one, such as a sidewalk or a cycle track. They leave the way out
-with `"tagged"` and `"local"`, and `shared_paths="all"` keeps it.
+`foot=use_sidepath` says that pedestrians must use a sidewalk mapped beside the way. It
+leaves the way out of the walking network with `"tagged"` and `"local"`, and
+`shared_paths="all"` keeps it. The cycling network keeps a way tagged
+`bicycle=use_sidepath`: cyclists must ride on the cycle track beside it, but often the
+road is the only link to the places on its far side. To leave these ways out, also where
+`use_sidepath` is one of several values such as `use_sidepath;destination`, keep
+`edges[~edges["bicycle"].fillna("").str.contains("use_sidepath")]`.
 
 A network exported with `to_graph(..., graph_type="networkx")` is OSMnx-compatible as
 well: the node and edge attributes are named as OSMnx expects, so its functions work on

@@ -52,7 +52,7 @@ def _parts(value):
 _CLOSED = MultiValue(["no", "private"])
 
 # These and the value that sends the mode to the way mapped beside this one, such as a
-# sidewalk or a cycle track.
+# sidewalk.
 _CLOSED_OR_SIDEPATH = MultiValue(["no", "private", "use_sidepath"])
 
 
@@ -64,10 +64,10 @@ class AccessRule:
     ``access`` tag. The most specific of them that a way carries decides: the way is
     closed when the value of that tag is one of the values in ``closed`` (``no`` and
     ``private`` by default), also as one of several values (``private;delivery``). In a
-    walking network, ``access=no``
-    with ``foot=yes`` and ``access=private`` with ``foot=yes`` stay, while ``access=no``
-    alone and with ``foot=private`` are excluded. The walking and cycling networks also
-    close a way tagged ``use_sidepath``, which sends the mode to the way mapped beside it.
+    walking network, ``access=no`` with ``foot=yes`` and ``access=private`` with
+    ``foot=yes`` stay, while ``access=no`` alone and with ``foot=private`` are excluded.
+    The walking network also closes a way tagged ``foot=use_sidepath``, which sends
+    pedestrians to the sidewalk mapped beside it.
 
     ``other_mode_highway`` lists the ``highway`` values of ways built for another mode,
     such as ``cycleway`` in a walking network. Such a way is also closed when it has no
@@ -219,10 +219,11 @@ def with_shared_paths(network_filter, shared_paths):
     without a ``bicycle`` tag in a cycling network) kept as ``shared_paths`` says:
     ``"tagged"`` leaves them out, ``"local"`` keeps them where their country lets the
     mode use them, and ``"all"`` keeps them all. A tag of the mode decides as on any other
-    way; ``use_sidepath``, which sends the mode to the way mapped beside it, closes the
-    way with ``"tagged"`` and ``"local"`` and not with ``"all"``. Raises a ValueError for
-    any other level, and for ``"tagged"`` or ``"all"`` with a filter that has no such
-    ways: the driving and 'all' filters, and a ``custom_filter``."""
+    way; in the walking network, ``foot=use_sidepath``, which sends pedestrians to the
+    sidewalk mapped beside the way, closes the way with ``"tagged"`` and ``"local"`` and
+    not with ``"all"``. Raises a ValueError for any other level, and for ``"tagged"`` or
+    ``"all"`` with a filter that has no such ways: the driving and 'all' filters, and a
+    ``custom_filter``."""
     if shared_paths not in SHARED_PATHS:
         raise ValueError(_UNKNOWN_SHARED_PATHS)
     if shared_paths == "local":
@@ -314,22 +315,18 @@ def cycling_filter():
     """Cyclable ways, following OSMnx's 'bike'.
 
     Filters out motorways and the ways that AccessRule closes, including ways with
-    ``bicycle=no``, ``bicycle=use_sidepath`` (cyclists use the cycle track mapped beside
-    the way) or ``access=no`` and no ``bicycle`` or ``vehicle`` tag. A foot
+    ``bicycle=no`` or with ``access=no`` and no ``bicycle`` or ``vehicle`` tag. A foot
     way without a ``bicycle`` tag is filtered out; a network read keeps it where the
     way's country lets cyclists use foot ways (see country_rule). With a ``bicycle``
     tag, AccessRule decides as for any other way, so ``bicycle=yes`` or
     ``bicycle=dismount`` can keep a foot way in the network and ``bicycle=no`` leaves it
-    out. OSMnx leaves all foot ways out.
+    out. A way tagged ``bicycle=use_sidepath`` stays in the network. OSMnx leaves all
+    foot ways out.
     """
     return dict(
         area=MultiValue(["yes"]),
         access=AccessRule(
-            "bicycle",
-            "vehicle",
-            other_mode_highway=["footway"],
-            by_country=True,
-            closed=_CLOSED_OR_SIDEPATH,
+            "bicycle", "vehicle", other_mode_highway=["footway"], by_country=True
         ),
         highway=MultiValue(
             _ALWAYS_EXCLUDED_HIGHWAY

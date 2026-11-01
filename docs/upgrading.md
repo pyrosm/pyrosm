@@ -11,9 +11,9 @@ new options that leave the defaults as they were, and fixes of calls that failed
 
 - **Shared foot and cycle paths in the walking and cycling networks.** A `highway=cycleway` with a
   `foot` tag can now stay in the `walking` network, and a `highway=footway` with a `bicycle` tag
-  in the `cycling` network. The tag counts as on any other way: `no`, `private` or `use_sidepath`
-  leaves the way out, and other values, such as `designated`, `yes` or `dismount`, let it stay
-  unless another rule of the filter leaves it out. A cycle way without a `foot` tag, or a foot way
+  in the `cycling` network. The tag counts as on any other way: `no` or `private` leaves the way
+  out, and so does `foot=use_sidepath` in the walking network. Other values, such as
+  `designated`, `yes` or `dismount`, let it stay unless another rule of the filter leaves it out. A cycle way without a `foot` tag, or a foot way
   without a `bicycle` tag, follows the default of the country it lies in. Pedestrians may use
   cycle ways by default in 23 countries, including Estonia, Finland, Sweden, the United Kingdom
   and the United States, and cyclists may use foot ways in Australia, Belarus, Iceland and
@@ -33,13 +33,12 @@ new options that leave the defaults as they were, and fixes of calls that failed
   and `get_graph` keep those of them that their country allows. This entry is an `AccessRule` with
   `other_mode_highway=["cycleway"]`. The cycling filter's `access` entry does the same for foot
   ways.
-- **Ways tagged `use_sidepath`.** The `walking` network leaves out every way tagged
-  `foot=use_sidepath`, and the `cycling` network every way tagged `bicycle=use_sidepath`. The tag
-  says that pedestrians or cyclists must use a way mapped beside this one, such as a sidewalk or
-  a cycle track, and that way stays in the network. Earlier versions kept these ways. In the
-  Helsinki region, the cycling network shrinks from 14,803 km to 13,386 km, because 18,066 roads
-  there are tagged `bicycle=use_sidepath`. To keep these ways, pass `shared_paths="all"`, which
-  also keeps every cycle way without a `foot` tag and every foot way without a `bicycle` tag.
+- **Ways tagged `foot=use_sidepath`.** The `walking` network leaves out every way tagged
+  `foot=use_sidepath`. The tag says that pedestrians must use a sidewalk mapped beside the way,
+  and that sidewalk stays in the network. Earlier versions kept these ways. In the Helsinki
+  region, the walking network shrinks from 17,996 km to 17,901 km. To keep these ways, pass
+  `shared_paths="all"`, which also keeps every cycle way without a `foot` tag. The `cycling`
+  network still keeps the ways tagged `bicycle=use_sidepath`.
 
 ## pyrosm 0.28.0
 

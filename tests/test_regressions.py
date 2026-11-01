@@ -1874,8 +1874,9 @@ def test_network_filters_match_osmnx_way_filters():
         ("driving", {"motor_vehicle": "no", "motorcar": "yes"}, True),
         ("driving", {"access": "yes", "motorcar": "no"}, False),
         ("all_public", {"access": "no"}, False),
-        # use_sidepath sends the mode to the way mapped beside this one.
-        ("cycling", {"bicycle": "use_sidepath"}, False),
+        # foot=use_sidepath sends pedestrians to the sidewalk mapped beside the way; the
+        # cycling network keeps bicycle=use_sidepath.
+        ("cycling", {"bicycle": "use_sidepath"}, True),
         ("walking", {"highway": "cycleway", "foot": "use_sidepath"}, False),
         # A way built for another mode needs a tag of the mode, which then decides.
         ("walking", {"highway": "cycleway", "access": "no", "foot": "yes"}, True),
@@ -1888,8 +1889,8 @@ def test_network_filters_match_osmnx_way_filters():
 def test_network_access_follows_the_most_specific_tag(network_type, tags, kept):
     """The predefined networks follow OSM's access hierarchy: a tag of the network's
     mode overrides the general access tag, the most specific tag present decides, and
-    the way is excluded when it is 'no' or 'private', in the walking and cycling networks
-    also when it is 'use_sidepath'. access=no used to be kept, so the
+    the way is excluded when it is 'no' or 'private', in the walking network also when it
+    is 'use_sidepath'. access=no used to be kept, so the
     Suomenlinna maintenance tunnel (access=no, no foot tag) joined the island to the
     mainland in the walking network of Helsinki. A cycle way is walkable and a foot way
     cyclable only with a tag of the mode, which the hierarchy then reads."""
@@ -1913,15 +1914,15 @@ def test_network_access_follows_the_most_specific_tag(network_type, tags, kept):
     "lon, lat, walking, cycling",
     [
         # Germany: OSM's worldwide defaults
-        (13.40, 52.52, [10, 11, 14, 15, 16, 17, 20], [10, 11, 12, 13, 14, 19]),
+        (13.40, 52.52, [10, 11, 14, 15, 16, 17, 20], [10, 11, 12, 13, 14, 19, 20]),
         # Finland: pedestrians may use a cycle way without a foot tag
-        (24.94, 60.17, [10, 11, 13, 14, 15, 16, 17, 18, 20], [10, 11, 12, 13, 14, 19]),
+        (24.94, 60.17, [10, 11, 13, 14, 15, 16, 17, 18, 20], [10, 11, 12, 13, 14, 19, 20]),
         # Norway: cyclists may also use a foot way without a bicycle tag
         (
             10.75,
             59.91,
             [10, 11, 13, 14, 15, 16, 17, 18, 20],
-            [10, 11, 12, 13, 14, 16, 17, 18, 19],
+            [10, 11, 12, 13, 14, 16, 17, 18, 19, 20],
         ),
     ],
     ids=["DE", "FI", "NO"],
@@ -1936,9 +1937,9 @@ def test_shared_foot_and_cycle_paths_join_walking_and_cycling(
     not close it; without such a tag, when the default of the way's country lets the mode
     use it. The driving and 'all' networks are unchanged, and get_graph selects the same
     ways. shared_paths="tagged" gives OSM's worldwide defaults and shared_paths="all"
-    keeps every such way that no tag closes, in every country. foot=use_sidepath and
-    bicycle=use_sidepath, which send the mode to the way mapped beside it, close the way
-    except with shared_paths="all"."""
+    keeps every such way that no tag closes, in every country. foot=use_sidepath, which
+    sends pedestrians to the sidewalk mapped beside the way, closes the way except with
+    shared_paths="all"; the cycling network keeps bicycle=use_sidepath at every level."""
     import numpy as np
 
     from pyrosm import OSM
@@ -1996,7 +1997,7 @@ def test_shared_foot_and_cycle_paths_join_walking_and_cycling(
     levels = {
         "tagged": {
             "walking": [10, 11, 14, 15, 16, 17, 20],
-            "cycling": [10, 11, 12, 13, 14, 19],
+            "cycling": [10, 11, 12, 13, 14, 19, 20],
         },
         "all": {
             "walking": [10, 11, 13, 14, 15, 16, 17, 18, 19, 20],

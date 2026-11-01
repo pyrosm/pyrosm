@@ -664,11 +664,12 @@ class OSM:
 
             A tag of the mode decides at every level as on any other way: `foot=no`
             leaves a cycle way out of the walking network and `bicycle=yes` keeps a
-            foot way in the cycling network. `foot=use_sidepath` and
-            `bicycle=use_sidepath`, which send the mode to a way mapped beside this
-            one, leave the way out with `'tagged'` and `'local'` and not with
-            `'all'`. `'tagged'` and `'all'` apply only to the walking and cycling
-            networks without a `custom_filter`.
+            foot way in the cycling network. `foot=use_sidepath`, which sends
+            pedestrians to a sidewalk mapped beside the way, leaves the way out of
+            the walking network with `'tagged'` and `'local'` and not with `'all'`;
+            the cycling network keeps a way tagged `bicycle=use_sidepath`. `'tagged'`
+            and `'all'` apply only to the walking and cycling networks without a
+            `custom_filter`.
 
         Returns
         -------
