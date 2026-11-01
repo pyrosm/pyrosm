@@ -1874,8 +1874,10 @@ def test_network_filters_match_osmnx_way_filters():
         ("driving", {"motor_vehicle": "no", "motorcar": "yes"}, True),
         ("driving", {"access": "yes", "motorcar": "no"}, False),
         ("all_public", {"access": "no"}, False),
+        # use_sidepath sends the mode to the way mapped beside this one.
+        ("cycling", {"bicycle": "use_sidepath"}, False),
+        ("walking", {"highway": "cycleway", "foot": "use_sidepath"}, False),
         # A way built for another mode needs a tag of the mode, which then decides.
-        ("walking", {"highway": "cycleway", "foot": "use_sidepath"}, True),
         ("walking", {"highway": "cycleway", "access": "no", "foot": "yes"}, True),
         ("walking", {"highway": "cycleway", "foot": "no;yes"}, False),
         ("walking", {"highway": "cycleway", "access": "yes"}, False),
@@ -1886,7 +1888,8 @@ def test_network_filters_match_osmnx_way_filters():
 def test_network_access_follows_the_most_specific_tag(network_type, tags, kept):
     """The predefined networks follow OSM's access hierarchy: a tag of the network's
     mode overrides the general access tag, the most specific tag present decides, and
-    the way is excluded when it is 'no' or 'private'. access=no used to be kept, so the
+    the way is excluded when it is 'no' or 'private', in the walking and cycling networks
+    also when it is 'use_sidepath'. access=no used to be kept, so the
     Suomenlinna maintenance tunnel (access=no, no foot tag) joined the island to the
     mainland in the walking network of Helsinki. A cycle way is walkable and a foot way
     cyclable only with a tag of the mode, which the hierarchy then reads."""
@@ -1910,11 +1913,16 @@ def test_network_access_follows_the_most_specific_tag(network_type, tags, kept):
     "lon, lat, walking, cycling",
     [
         # Germany: OSM's worldwide defaults
-        (13.40, 52.52, [10, 11, 14, 15, 16, 17], [10, 11, 12, 13, 14]),
+        (13.40, 52.52, [10, 11, 14, 15, 16, 17, 20], [10, 11, 12, 13, 14, 19]),
         # Finland: pedestrians may use a cycle way without a foot tag
-        (24.94, 60.17, [10, 11, 13, 14, 15, 16, 17, 18], [10, 11, 12, 13, 14]),
+        (24.94, 60.17, [10, 11, 13, 14, 15, 16, 17, 18, 20], [10, 11, 12, 13, 14, 19]),
         # Norway: cyclists may also use a foot way without a bicycle tag
-        (10.75, 59.91, [10, 11, 13, 14, 15, 16, 17, 18], [10, 11, 12, 13, 14, 16, 17, 18]),
+        (
+            10.75,
+            59.91,
+            [10, 11, 13, 14, 15, 16, 17, 18, 20],
+            [10, 11, 12, 13, 14, 16, 17, 18, 19],
+        ),
     ],
     ids=["DE", "FI", "NO"],
 )
@@ -1928,7 +1936,9 @@ def test_shared_foot_and_cycle_paths_join_walking_and_cycling(
     not close it; without such a tag, when the default of the way's country lets the mode
     use it. The driving and 'all' networks are unchanged, and get_graph selects the same
     ways. shared_paths="tagged" gives OSM's worldwide defaults and shared_paths="all"
-    keeps every such way that no tag closes, in every country."""
+    keeps every such way that no tag closes, in every country. foot=use_sidepath and
+    bicycle=use_sidepath, which send the mode to the way mapped beside it, close the way
+    except with shared_paths="all"."""
     import numpy as np
 
     from pyrosm import OSM
@@ -1944,29 +1954,31 @@ def test_shared_foot_and_cycle_paths_join_walking_and_cycling(
         16: {"highway": "footway"},
         17: {"highway": "footway", "vehicle": "yes"},  # no bicycle tag: its country decides
         18: {"highway": "cycleway;footway"},
+        19: {"highway": "cycleway", "foot": "use_sidepath"},
+        20: {"highway": "residential", "bicycle": "use_sidepath"},
     }
     nodes = {
-        "id": np.arange(1, 11, dtype=np.int64),
-        "lon": lon + 0.001 * np.arange(10),
-        "lat": np.full(10, lat),
-        "version": np.ones(10, dtype=np.int64),
-        "timestamp": np.full(10, 1600000000, dtype=np.int64),
-        "changeset": np.zeros(10, dtype=np.int64),
-        "tags": [None] * 10,
+        "id": np.arange(1, 13, dtype=np.int64),
+        "lon": lon + 0.001 * np.arange(12),
+        "lat": np.full(12, lat),
+        "version": np.ones(12, dtype=np.int64),
+        "timestamp": np.full(12, 1600000000, dtype=np.int64),
+        "changeset": np.zeros(12, dtype=np.int64),
+        "tags": [None] * 12,
     }
     records = [
         {"id": i, "refs": [i - 9, i - 8], "version": 1, "timestamp": 1600000000, "tags": t}
         for i, t in ways.items()
     ]
     path = write_pbf_from_records(
-        nodes, records, [], str(tmp_path / "paths.osm.pbf"), (lon, lat, lon + 0.009, lat)
+        nodes, records, [], str(tmp_path / "paths.osm.pbf"), (lon, lat, lon + 0.011, lat)
     )
     osm = OSM(path, engine=engine)
     expected = {
         "walking": walking,
         "cycling": cycling,
-        "driving": [10],
-        "all": [10, 11, 12, 13, 14, 15, 16, 17, 18],
+        "driving": [10, 20],
+        "all": list(range(10, 21)),
     }
     for network_type, ids in expected.items():
         edges = osm.get_network(network_type=network_type)
@@ -1982,10 +1994,13 @@ def test_shared_foot_and_cycle_paths_join_walking_and_cycling(
         osmids = {osmid for *_, osmid in graph.edges(data="osmid")}
         assert sorted(osmids) == expected[network_type], network_type
     levels = {
-        "tagged": {"walking": [10, 11, 14, 15, 16, 17], "cycling": [10, 11, 12, 13, 14]},
+        "tagged": {
+            "walking": [10, 11, 14, 15, 16, 17, 20],
+            "cycling": [10, 11, 12, 13, 14, 19],
+        },
         "all": {
-            "walking": [10, 11, 13, 14, 15, 16, 17, 18],
-            "cycling": [10, 11, 12, 13, 14, 16, 17, 18],
+            "walking": [10, 11, 13, 14, 15, 16, 17, 18, 19, 20],
+            "cycling": [10, 11, 12, 13, 14, 16, 17, 18, 19, 20],
         },
     }
     for shared_paths, by_type in levels.items():
