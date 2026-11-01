@@ -7,7 +7,11 @@ from pathlib import Path
 import pandas as pd
 from pyrosm._log import log_event, logged, timed
 from pyrosm.config import Conf
-from pyrosm.config.osm_filters import filter_for_read, get_osm_filter
+from pyrosm.config.osm_filters import (
+    filter_for_read,
+    get_osm_filter,
+    with_shared_paths,
+)
 from pyrosm.filter_compiler import CompiledFilter, dict_as_bracket_filter
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm.frames import create_nodes_gdf
@@ -523,9 +527,10 @@ class OSM:
             )
         return self._drop_node_lists(gdf)
 
-    def _get_network_filter(self, net_type):
-        """Resolve a predefined network type to its filter, raising for an unknown one."""
-        return get_osm_filter(net_type)
+    def _get_network_filter(self, net_type, shared_paths="local"):
+        """Resolve a predefined network type to its filter with ``shared_paths``, raising
+        for an unknown one."""
+        return get_osm_filter(net_type, shared_paths)
 
     def _set_current_time(self, timestamp):
         """Set the time a history read selects each element's version at: ``timestamp``,
@@ -561,6 +566,7 @@ class OSM:
         custom_filter=None,
         filter_type=None,
         tags_to_keep=None,
+        shared_paths="local",
     ):
         """
         Parses street networks from OSM
@@ -643,6 +649,24 @@ class OSM:
             but not newer (records having exactly the selected timestamp will be kept). In case only a date is given,
             the time will represent midnight of the given day, such as "2021-01-01 00:00:00".
 
+        shared_paths : str (default: 'local')
+            Which ways built for the other mode the `'walking'` and `'cycling'`
+            networks keep when the way has no tag of the network's mode: a cycle way
+            without a `foot` tag in the walking network, a foot way without a
+            `bicycle` tag in the cycling network.
+
+              - `'tagged'`: none of them, OSM's worldwide default.
+              - `'local'`: those that the way's country lets the mode use (in
+                Finland, pedestrians may use cycle ways; in Norway, cyclists may also
+                use foot ways).
+              - `'all'`: all of them, also where the country's rules do not allow
+                the mode on them.
+
+            A tag of the mode decides at every level as on any other way: `foot=no`
+            leaves a cycle way out of the walking network and `bicycle=yes` keeps a
+            foot way in the cycling network. `'tagged'` and `'all'` apply only to the
+            walking and cycling networks without a `custom_filter`.
+
         Returns
         -------
 
@@ -676,6 +700,7 @@ class OSM:
                 custom_filter=custom_filter,
                 filter_type=filter_type,
                 tags_to_keep=tags_to_keep,
+                shared_paths=shared_paths,
             )
             if (result[1] if nodes else result) is None:
                 _warn_no_edges(custom_filter)
@@ -683,14 +708,14 @@ class OSM:
 
         # Get filter (also validates network_type, which still drives the graph
         # semantics even when a custom_filter is provided)
-        network_filter = self._get_network_filter(network_type)
+        network_filter = self._get_network_filter(network_type, shared_paths)
         # Predefined networks select ways by 'highway'; an advanced custom filter selects by
         # its own positive keys (so railway/cycleway networks work).
         network_osm_keys = "highway"
         column_keys = ["highway"]
 
         if custom_filter is not None:
-            network_filter = custom_filter
+            network_filter = with_shared_paths(custom_filter, shared_paths)
             # The filter keys are columns too (e.g. 'bicycle', 'service').
             column_keys = custom_filter.keys()
             if advanced_filter:
@@ -1652,6 +1677,7 @@ class OSM:
         filter_type=None,
         tags_to_keep=None,
         timestamp=None,
+        shared_paths="local",
     ):
         """
         Read the street network of ``network_type`` as a routable graph: the graph of
@@ -1670,7 +1696,7 @@ class OSM:
         Parameters
         ----------
 
-        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep, timestamp
+        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep, timestamp, shared_paths
             As in :meth:`get_network`. With ``tags_to_keep``, the tags the graph is built
             from are read too: those of its edges' directions (``oneway`` and
             ``junction``, and ``oneway:bicycle`` for cycling) and, with ``simplify``, the
@@ -1725,6 +1751,7 @@ class OSM:
                     custom_filter=custom_filter,
                     filter_type=filter_type,
                     tags_to_keep=tags_to_keep,
+                    shared_paths=shared_paths,
                 )
                 if edges is None:
                     _warn_no_edges(custom_filter)
@@ -1737,6 +1764,7 @@ class OSM:
                     custom_filter=custom_filter,
                     filter_type=filter_type,
                     tags_to_keep=tags_to_keep,
+                    shared_paths=shared_paths,
                 )
             if edges is None:
                 return None

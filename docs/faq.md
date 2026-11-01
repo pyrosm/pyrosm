@@ -160,6 +160,11 @@ unless the tag is `no` or `private`. A cycle way without a `foot` tag follows th
 of the country it lies in. It stays in countries such as Finland, where pedestrians
 may use cycle ways by default, and is left out in other countries and where pyrosm finds
 no country. The cycling network treats a foot way and its `bicycle` tag in the same way.
+With `shared_paths="tagged"`, `get_network` and `get_graph` leave out every cycle way
+without a `foot` tag and every foot way without a `bicycle` tag, as OSM's worldwide
+defaults do. With `shared_paths="all"`, they keep all of them, also where the country's
+rules do not allow it, for a network of the ways people walk and cycle on in practice.
+A tag such as `foot=no` or `bicycle=no` leaves the way out with every setting.
 
 A network exported with `to_graph(..., graph_type="networkx")` is OSMnx-compatible as
 well: the node and edge attributes are named as OSMnx expects, so its functions work on

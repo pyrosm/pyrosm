@@ -582,12 +582,12 @@ def _network_filter_type(custom_filter, filter_type):
     raise ValueError("'filter_type' -parameter should be either 'keep' or 'exclude'.")
 
 
-def _network_filter(network_type):
-    """Resolve a predefined ``network_type`` to its filter dict, mirroring
-    ``OSM._get_network_filter``."""
+def _network_filter(network_type, shared_paths="local"):
+    """Resolve a predefined ``network_type`` to its filter dict with ``shared_paths``,
+    mirroring ``OSM._get_network_filter``."""
     from pyrosm.config.osm_filters import get_osm_filter
 
-    return get_osm_filter(network_type)
+    return get_osm_filter(network_type, shared_paths)
 
 
 def _write_result_parquet(gdf, path, steps=None):
@@ -668,6 +668,7 @@ def get_network(
     progress=None,
     keep_node_info=False,
     unix_time=None,
+    shared_paths="local",
 ):
     """Read a street network (``highway=*`` ways as LineString edges + a ``length`` column)
     from ``filepath`` with the out-of-core engine, with the same columns as
@@ -688,13 +689,20 @@ def get_network(
     ``nodes.parquet`` into the ``path`` directory and returns the directory. ``progress`` shows the read as for ``OSM(..., progress=...)``, including the second
     pass of ``nodes=True``; a cached read has nothing to show. ``unix_time`` (seconds), for
     a history file (``.osh.pbf``), reads each element's version at that time, as
-    ``OSM(...).get_network(timestamp=...)`` does."""
+    ``OSM(...).get_network(timestamp=...)`` does. ``shared_paths`` sets which ways built
+    for another mode a walking or cycling network keeps (see
+    :func:`~pyrosm.config.osm_filters.with_shared_paths`)."""
     from pyrosm.graphs import record_network_type
 
     validate_progress(progress)
     workers = default_workers(workers)
     tags_as_columns, filter_spec = _network_spec(
-        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep
+        network_type,
+        extra_attributes,
+        custom_filter,
+        filter_type,
+        tags_to_keep,
+        shared_paths,
     )
     bounding_box = _normalize_bounding_box(bounding_box)
     filter_spec = _filter_spec_for_read(filter_spec, filepath, bounding_box)
@@ -776,18 +784,25 @@ def _filter_spec_for_read(filter_spec, filepath, bounding_box):
 
 
 def _network_spec(
-    network_type, extra_attributes, custom_filter, filter_type, tags_to_keep
+    network_type,
+    extra_attributes,
+    custom_filter,
+    filter_type,
+    tags_to_keep,
+    shared_paths="local",
 ):
     """The tag columns and the filter of a network read: ``(tags_as_columns,
     filter_spec)``, the filter ``(network_keys, data_filter, filter_type)`` with the keys
-    whose ways are read."""
+    whose ways are read, and the ways built for another mode kept as ``shared_paths``
+    says (see :func:`~pyrosm.config.osm_filters.with_shared_paths`)."""
     from pyrosm.config import Conf
+    from pyrosm.config.osm_filters import with_shared_paths
     from pyrosm.utils import read_tag_columns
     from pyrosm.filter_compiler import CompiledFilter
 
     # The network type drives the graph semantics even with a custom_filter, so it is
     # validated for every read, as the in-memory reader does.
-    _network_filter(network_type)
+    network_filter = _network_filter(network_type, shared_paths)
 
     # Predefined networks select 'highway' ways; an advanced custom filter selects ways by its
     # own positive keys (so railway/cycleway networks work).
@@ -796,13 +811,12 @@ def _network_spec(
     if custom_filter is not None:
         custom_filter, filter_type = _network_filter_type(custom_filter, filter_type)
         advanced_filter = isinstance(custom_filter, CompiledFilter)
-        network_filter = custom_filter
+        network_filter = with_shared_paths(custom_filter, shared_paths)
         # The filter keys are columns too (e.g. 'bicycle', 'service').
         column_keys = custom_filter.keys()
         if advanced_filter:
             network_keys = list(custom_filter.positive_keys)
     else:
-        network_filter = _network_filter(network_type)
         # Predefined networks are always exclude filters keyed on 'highway'.
         filter_type = "exclude"
     tags_as_columns = read_tag_columns(
@@ -853,6 +867,7 @@ def graph_network(
     progress=None,
     keep_node_info=False,
     unix_time=None,
+    shared_paths="local",
 ):
     """The network that :func:`get_network` with ``nodes=True`` reads, for graph export:
     ``(nodes, edges)``, readers of its node and edge tables that do not build them (see
@@ -861,7 +876,12 @@ def graph_network(
     validate_progress(progress)
     workers = default_workers(workers)
     tags_as_columns, filter_spec = _network_spec(
-        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep
+        network_type,
+        extra_attributes,
+        custom_filter,
+        filter_type,
+        tags_to_keep,
+        shared_paths,
     )
     bounding_box = _normalize_bounding_box(bounding_box)
     filter_spec = _filter_spec_for_read(filter_spec, filepath, bounding_box)

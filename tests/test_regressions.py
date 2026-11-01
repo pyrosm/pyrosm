@@ -1927,7 +1927,8 @@ def test_shared_foot_and_cycle_paths_join_walking_and_cycling(
     A cycle way is walkable and a foot way cyclable when it has a tag of the mode that does
     not close it; without such a tag, when the default of the way's country lets the mode
     use it. The driving and 'all' networks are unchanged, and get_graph selects the same
-    ways."""
+    ways. shared_paths="tagged" gives OSM's worldwide defaults and shared_paths="all"
+    keeps every such way that no tag closes, in every country."""
     import numpy as np
 
     from pyrosm import OSM
@@ -1980,6 +1981,30 @@ def test_shared_foot_and_cycle_paths_join_walking_and_cycling(
         )
         osmids = {osmid for *_, osmid in graph.edges(data="osmid")}
         assert sorted(osmids) == expected[network_type], network_type
+    levels = {
+        "tagged": {"walking": [10, 11, 14, 15, 16, 17], "cycling": [10, 11, 12, 13, 14]},
+        "all": {
+            "walking": [10, 11, 13, 14, 15, 16, 17, 18],
+            "cycling": [10, 11, 12, 13, 14, 16, 17, 18],
+        },
+    }
+    for shared_paths, by_type in levels.items():
+        for network_type, ids in by_type.items():
+            edges = osm.get_network(network_type, shared_paths=shared_paths)
+            assert sorted(edges["id"].tolist()) == ids, (shared_paths, network_type)
+            graph = osm.get_graph(
+                network_type,
+                graph_type="networkx",
+                retain_all=True,
+                shared_paths=shared_paths,
+            )
+            # The simplified graph lists the ways of an edge.
+            osmids = {
+                i
+                for *_, osmid in graph.edges(data="osmid")
+                for i in np.ravel(osmid).tolist()
+            }
+            assert sorted(osmids) == ids, (shared_paths, network_type)
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
@@ -2559,6 +2584,30 @@ def test_network_read_with_custom_filter_refuses_unknown_network_type(engine):
     osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
     with pytest.raises(ValueError, match="should be one of"):
         osm.get_network("drivng", custom_filter={"highway": ["primary"]})
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"shared_paths": "some"}, "'shared_paths' should be one of"),
+        ({"network_type": "driving", "shared_paths": "all"}, "apply only to"),
+        (
+            {"custom_filter": {"highway": ["cycleway"]}, "shared_paths": "tagged"},
+            "apply only to",
+        ),
+    ],
+    ids=["unknown level", "driving", "custom filter"],
+)
+def test_network_read_refuses_an_unusable_shared_paths(engine, kwargs, message):
+    """shared_paths takes one of its three levels, and 'tagged' and 'all' only for the
+    walking and cycling networks read without a custom_filter, the networks with ways
+    built for the other mode, with either engine."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
+    with pytest.raises(ValueError, match=message):
+        osm.get_network(**kwargs)
 
 
 @pytest.mark.parametrize("nodes", [False, True])

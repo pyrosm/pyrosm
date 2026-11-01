@@ -14,8 +14,9 @@ out when it has no tag of the network's mode: the walking filter leaves out a
 as on any other way, so ``foot=designated`` lets a cycle way stay in the walking network
 and ``foot=no`` leaves it out. A network read keeps a way without a tag of the network's
 mode where the default of the way's country lets the mode use it (see
-:func:`country_rule`). OSMnx leaves all cycle ways out of its 'walk' network and all
-foot ways out of its 'bike' network.
+:func:`country_rule`); ``shared_paths`` leaves all of them out or keeps them all instead
+(see :func:`with_shared_paths`). OSMnx leaves all cycle ways out of its 'walk' network
+and all foot ways out of its 'bike' network.
 """
 
 import numpy as np
@@ -183,18 +184,41 @@ def normalize_network_type(network_type):
     return NETWORK_TYPE_ALIASES.get(net_type, net_type)
 
 
-def get_osm_filter(network_type):
+def get_osm_filter(network_type, shared_paths="local"):
     """Get the OSM filter for a network type.
 
     Accepts the pyrosm names ('driving', 'driving+service', 'walking', 'cycling',
     'all', 'all_public') and their OSMnx aliases ('drive', 'drive_service', 'walk',
-    'bike'), and raises a ValueError for anything else.
+    'bike'), and raises a ValueError for anything else. ``shared_paths`` sets which ways
+    built for another mode the walking and cycling filters keep (see
+    :func:`with_shared_paths`).
     """
     try:
         builder = _NETWORK_FILTERS[normalize_network_type(network_type)]
     except KeyError:
         raise ValueError(_UNKNOWN_NETWORK_TYPE) from None
-    return builder()
+    return with_shared_paths(builder(), shared_paths)
+
+
+def with_shared_paths(network_filter, shared_paths):
+    """``network_filter`` with the ways built for another mode that have no tag of the
+    network's mode (a cycle way without a ``foot`` tag in a walking network, a foot way
+    without a ``bicycle`` tag in a cycling network) kept as ``shared_paths`` says:
+    ``"tagged"`` leaves them out, ``"local"`` keeps them where their country lets the
+    mode use them, and ``"all"`` keeps them all. A tag of the mode decides at every level,
+    as on any other way. Raises a ValueError for any other level, and for ``"tagged"`` or
+    ``"all"`` with a filter that has no such ways: the driving and 'all' filters, and a
+    ``custom_filter``."""
+    if shared_paths not in SHARED_PATHS:
+        raise ValueError(_UNKNOWN_SHARED_PATHS)
+    if shared_paths == "local":
+        return network_filter
+    rule = network_filter.get("access") if isinstance(network_filter, dict) else None
+    if not (isinstance(rule, AccessRule) and rule.other_mode_highway):
+        raise ValueError(_SHARED_PATHS_NETWORKS)
+    if shared_paths == "tagged":
+        return dict(network_filter, access=rule.without_country())
+    return dict(network_filter, access=rule.without_other_mode())
 
 
 def driving_filter(include_service_roads=False):
@@ -385,4 +409,15 @@ NETWORK_TYPES = list(_NETWORK_FILTERS) + list(NETWORK_TYPE_ALIASES)
 
 _UNKNOWN_NETWORK_TYPE = "'network_type' should be one of the following: " + ", ".join(
     NETWORK_TYPES
+)
+
+# The levels of ``shared_paths``, from the fewest ways built for another mode to all.
+SHARED_PATHS = ("tagged", "local", "all")
+
+_UNKNOWN_SHARED_PATHS = "'shared_paths' should be one of the following: " + ", ".join(
+    SHARED_PATHS
+)
+_SHARED_PATHS_NETWORKS = (
+    "The shared_paths values 'tagged' and 'all' apply only to the 'walking' and "
+    "'cycling' networks read without a custom_filter"
 )
