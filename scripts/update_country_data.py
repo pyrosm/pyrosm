@@ -17,7 +17,8 @@ tables) and writes ``pyrosm/data/country_access.json``: for each shared path, th
 countries whose default lets the mode use it without the mode's tag (``foot`` on a
 ``cycleway``, ``bicycle`` on a ``footway``), with the licence as
 ``pyrosm/data/country_access.LICENSE.md``. Valhalla names the countries; the entries of
-parts of the United Kingdom are left out, as the United Kingdom's entry covers them::
+parts of the United Kingdom are left out, as the United Kingdom's entry covers them. The
+countries of ``TRAFFIC_LAW`` are added, with their provisions in the ``law`` member::
 
     python scripts/update_country_data.py access
     python scripts/update_country_data.py access --source adminconstants.h --license COPYING
@@ -106,6 +107,20 @@ SHARED_PATHS = [
 ]
 
 
+# Countries added to Valhalla's table from their traffic law: for each shared path, the
+# countries whose law lets the mode use such a way, also those that allow it only where
+# no way of the mode runs beside it, with the provision.
+TRAFFIC_LAW = {
+    ("foot", "cycleway"): {
+        "EE": "Liiklusseadus (Traffic Act), § 22(2)",
+        "LT": "Kelių eismo taisyklės (Road Traffic Rules), point 48.5",
+        "NZ": "Land Transport (Road User) Rule 2004, clause 1.6, cycle path",
+        "PT": "Código da Estrada, articles 78(4) and 99(2)(b) and (3)",
+        "UA": "Правила дорожнього руху (Traffic Rules, resolution 1306/2001), point 4.1",
+    },
+}
+
+
 def _download(url):
     """The bytes at ``url``."""
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -181,9 +196,10 @@ def _top_level_items(text):
 
 
 def country_access(adminconstants):
-    """The vendored access defaults from the text of Valhalla's ``adminconstants.h``: for
-    each mode's tag and highway value, the sorted ISO codes of the countries whose default
-    lets the mode use such a way. Raises ``ValueError`` for a country it has no ISO code
+    """The vendored access defaults from the text of Valhalla's ``adminconstants.h`` and
+    ``TRAFFIC_LAW``: for each mode's tag and highway value, the sorted ISO codes of the
+    countries whose default lets the mode use such a way, and the provisions of the
+    countries added from their law. Raises ``ValueError`` for a country it has no ISO code
     for."""
     start = adminconstants.index("kCountryAccess{")
     table = adminconstants[start : adminconstants.index("};", start)]
@@ -198,13 +214,19 @@ def country_access(adminconstants):
         for mode, highway, flag in SHARED_PATHS:
             if re.search(r"\b%s\b" % flag, values[highway]):
                 allowed[mode][highway].add(code)
+    law = {}
+    for (mode, highway), provisions in TRAFFIC_LAW.items():
+        allowed[mode][highway].update(provisions)
+        law.setdefault(mode, {})[highway] = dict(sorted(provisions.items()))
     return {
         "source": "Valhalla %s, valhalla/mjolnir/adminconstants.h, kCountryAccess "
-        "(MIT licence)" % VALHALLA_RELEASE,
+        "(MIT licence); the countries in 'law' from their traffic law"
+        % VALHALLA_RELEASE,
         "allowed": {
             mode: {highway: sorted(codes) for highway, codes in by_highway.items()}
             for mode, by_highway in allowed.items()
         },
+        "law": law,
     }
 
 
@@ -221,7 +243,9 @@ def update_access(source=None, license=None):
         license_bytes = Path(license).read_bytes()
     access = country_access(source_bytes.decode("utf-8"))
     path = DATA_DIR / "country_access.json"
-    path.write_text(json.dumps(access, indent=1) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(access, indent=1, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
     (DATA_DIR / "country_access.LICENSE.md").write_bytes(license_bytes)
     print("wrote %s" % path)
 

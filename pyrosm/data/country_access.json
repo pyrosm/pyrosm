@@ -1,5 +1,5 @@
 {
- "source": "Valhalla 3.9.1, valhalla/mjolnir/adminconstants.h, kCountryAccess (MIT licence)",
+ "source": "Valhalla 3.9.1, valhalla/mjolnir/adminconstants.h, kCountryAccess (MIT licence); the countries in 'law' from their traffic law",
  "allowed": {
   "foot": {
    "cycleway": [
@@ -7,19 +7,24 @@
     "BY",
     "CH",
     "DK",
+    "EE",
     "FI",
     "GB",
     "GR",
     "HU",
     "IS",
+    "LT",
     "NL",
     "NO",
+    "NZ",
     "OM",
     "PH",
     "PL",
+    "PT",
     "SE",
     "TH",
     "TR",
+    "UA",
     "US"
    ]
   },
@@ -30,6 +35,17 @@
     "IS",
     "NO"
    ]
+  }
+ },
+ "law": {
+  "foot": {
+   "cycleway": {
+    "EE": "Liiklusseadus (Traffic Act), § 22(2)",
+    "LT": "Kelių eismo taisyklės (Road Traffic Rules), point 48.5",
+    "NZ": "Land Transport (Road User) Rule 2004, clause 1.6, cycle path",
+    "PT": "Código da Estrada, articles 78(4) and 99(2)(b) and (3)",
+    "UA": "Правила дорожнього руху (Traffic Rules, resolution 1306/2001), point 4.1"
+   }
   }
  }
 }
