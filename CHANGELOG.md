@@ -1,6 +1,11 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+- FIXED: In the guide to releasing, the release's pull request re-runs the docs notebooks and adds the release date to the heading in `docs/changelog.rst`, before the tag. Read the Docs builds the stable docs from the latest tag. For 0.28.0, the notebooks were re-run after the tag, so the docs of 0.28.0 show outputs made with 0.27.0 ([#860](https://github.com/pyrosm/pyrosm/issues/860), [#861](https://github.com/pyrosm/pyrosm/pull/861))
+
 v0.29.0
 -------
 
