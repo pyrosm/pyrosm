@@ -168,11 +168,30 @@ rules do not allow it, for a network of the ways people walk and cycle on in pra
 A tag such as `foot=no` or `bicycle=no` leaves the way out with every setting.
 `foot=use_sidepath` says that pedestrians must use a sidewalk mapped beside the way. It
 leaves the way out of the walking network with `"tagged"` and `"local"`, and
-`shared_paths="all"` keeps it. The cycling network keeps a way tagged
-`bicycle=use_sidepath`: cyclists must ride on the cycle track beside it, but often the
-road is the only link to the places on its far side. To leave these ways out, also where
-`use_sidepath` is one of several values such as `use_sidepath;destination`, keep
-`edges[~edges["bicycle"].fillna("").str.contains("use_sidepath")]`.
+`shared_paths="all"` keeps it.
+
+The cycling network keeps the ways tagged `bicycle=use_sidepath`. The tag sends cyclists to
+a cycle track mapped beside the road. Driveways, yards and side streets on the side of the
+road without the track often join only the road: cyclists cross the road to reach the
+track, and OSM maps no way for that crossing. Without the road, these places would be cut
+off from the network. To make routes follow the cycle track where there is one, give these
+roads a higher cost and route with it, for example with `weight="cost"` in NetworkX:
+
+```python
+nodes, edges = osm.get_network("cycling", nodes=True)
+sidepath = edges["bicycle"].fillna("").str.contains("use_sidepath")
+edges["cost"] = edges["length"].where(~sidepath, edges["length"] * 3)
+G = osm.to_graph(
+    nodes, edges, graph_type="networkx", simplify_kwargs={"length_cols": ["length", "cost"]}
+)
+```
+
+The factor 3 is only an example. Listing `cost` in `length_cols` sums it along each
+simplified edge, as `length` is summed. `str.contains` also finds `use_sidepath` among
+several values, such as `use_sidepath;destination`. To leave these ways out instead, keep
+`edges[~sidepath]`. Neither looks at `bicycle:forward=use_sidepath` or
+`bicycle:backward=use_sidepath`, which apply in one direction only and are in the `tags`
+column.
 
 A network exported with `to_graph(..., graph_type="networkx")` is OSMnx-compatible as
 well: the node and edge attributes are named as OSMnx expects, so its functions work on
