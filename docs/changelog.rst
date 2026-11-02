@@ -1,8 +1,8 @@
 Changelog
 =========
 
-v0.29.0
--------
+v0.29.0 (Nov 2, 2026)
+---------------------
 
 With this release, the ``walking`` and ``cycling`` networks keep the shared foot and cycle paths that pedestrians or cyclists may use. A cycle way with a ``foot`` tag can stay in the walking network, and a foot way with a ``bicycle`` tag in the cycling network. A cycle way without a ``foot`` tag, or a foot way without a ``bicycle`` tag, follows the default of the country it lies in: pedestrians may use cycle ways by default in 23 countries, including Finland, Sweden, the United Kingdom and the United States. Earlier versions followed OSMnx and left all of these ways out. By default, the walking network now also leaves out the ways tagged ``foot=use_sidepath``, because pedestrians must use the sidewalk mapped beside them. With both changes, the walking network of the Helsinki region grows from 14,662 km to 17,901 km, and its cycling network from 14,288 km to 14,803 km. The new ``shared_paths`` of ``get_network`` and ``get_graph`` sets whether the ways without the tag follow the country's default, are all left out or are all kept; with ``"all"``, the walking network also keeps the ways tagged ``foot=use_sidepath``.
 
