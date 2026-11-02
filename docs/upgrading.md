@@ -7,14 +7,15 @@ first; the releases not listed here changed nothing of this kind. Changes in spe
 new options that leave the defaults as they were, and fixes of calls that failed are left out. The
 [changelog](changelog.rst) lists every change.
 
-## Unreleased
+## pyrosm 0.29.0
 
 - **Shared foot and cycle paths in the walking and cycling networks.** A `highway=cycleway` with a
   `foot` tag can now stay in the `walking` network, and a `highway=footway` with a `bicycle` tag
   in the `cycling` network. The tag counts as on any other way: `no` or `private` leaves the way
   out, and so does `foot=use_sidepath` in the walking network. Other values, such as
-  `designated`, `yes` or `dismount`, let it stay unless another rule of the filter leaves it out. A cycle way without a `foot` tag, or a foot way
-  without a `bicycle` tag, follows the default of the country it lies in. Pedestrians may use
+  `designated`, `yes` or `dismount`, let it stay unless another rule of the filter leaves it out.
+  A cycle way without a `foot` tag, or a foot way without a `bicycle` tag, follows the default of
+  the country it lies in. Pedestrians may use
   cycle ways by default in 23 countries, including Estonia, Finland, Sweden, the United Kingdom
   and the United States, and cyclists may use foot ways in Australia, Belarus, Iceland and
   Norway. Estonia, Lithuania, New Zealand, Portugal and Ukraine are among them because their
