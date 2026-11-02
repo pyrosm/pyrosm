@@ -365,22 +365,27 @@ def as_compiled_filter(custom_filter):
     return CompiledFilter(_dict_to_groups(custom_filter))
 
 
-def dict_as_bracket_filter(custom_filter):
+def dict_as_bracket_filter(custom_filter, required_key=None):
     """The bracket filter that keeps what ``custom_filter``, a plain dict as
     :func:`pyrosm.utils.validate_custom_filter` returns it, keeps: a string for one
-    condition, otherwise a list of strings (their OR). None when the dict has no
-    condition, or a key or value holds both quote characters, which a bracket cannot
-    quote."""
+    condition, otherwise a list of strings (their OR). With ``required_key``, a condition
+    on another key also requires that key, as in ``["highway"]["bicycle"="yes"]``. None
+    when the dict has no condition, or a key or value holds both quote characters, which
+    a bracket cannot quote."""
     brackets = []
     for key, values in custom_filter.items():
+        required = [] if required_key in (None, key) else [[required_key]]
         for value in values:
-            quoted = []
-            for part in [key] if value is True else [key, value]:
-                quote = "'" if '"' in part else '"'
-                if quote in part:
-                    return None
-                quoted.append(quote + part + quote)
-            brackets.append("[%s]" % "=".join(quoted))
+            bracket = ""
+            for parts in required + [[key] if value is True else [key, value]]:
+                quoted = []
+                for part in parts:
+                    quote = "'" if '"' in part else '"'
+                    if quote in part:
+                        return None
+                    quoted.append(quote + part + quote)
+                bracket += "[%s]" % "=".join(quoted)
+            brackets.append(bracket)
     if not brackets:
         return None
     return brackets[0] if len(brackets) == 1 else brackets

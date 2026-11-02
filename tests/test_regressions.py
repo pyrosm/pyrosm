@@ -6082,11 +6082,13 @@ def test_get_data_and_get_data_by_area_share_a_download(tmp_path, monkeypatch, f
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
-def test_network_dict_filter_without_highway_key_warns(engine):
+def test_network_dict_filter_with_other_keys_warns_of_the_change(engine):
     """A dict ``custom_filter`` of ``get_network`` keeps only ways that have a ``highway``
-    tag, so ``{"waterway": ["stream"]}`` found nothing and the only warning blamed the area.
-    It now warns that the dict keeps highway ways only and shows the bracket filter, which
-    finds the stream as a regex dict does, and the empty-result warning names the filter."""
+    tag, so ``{"waterway": ["stream"]}`` finds nothing; a future release selects ways by
+    the dict's own keys. A dict with a key other than ``highway`` that keeps ways gives a
+    FutureWarning with the bracket filter that keeps the current result and the one that
+    gives the future result (when the dict has a bracket form), and the empty-result
+    warning names the filter."""
     import re
     import warnings
 
@@ -6094,15 +6096,30 @@ def test_network_dict_filter_without_highway_key_warns(engine):
 
     osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
     stream = {"waterway": ["stream"]}
-    hint = """custom_filter='["waterway"="stream"]'"""
+    hint = (
+        """To keep the current result, write custom_filter='["highway"]["waterway"="""
+        """"stream"]'. To get the future result now, write """
+        """custom_filter='["waterway"="stream"]'."""
+    )
     for read in (osm.get_network, osm.get_network, osm.get_graph):
-        with pytest.warns(UserWarning) as caught:
+        with pytest.warns(Warning) as caught:
             assert read(custom_filter=stream) is None
         hints = [w for w in caught if hint in str(w.message)]
-        assert len(hints) == 1 and hints[0].filename == __file__
+        assert len(hints) == 1 and hints[0].category is FutureWarning
+        assert hints[0].filename == __file__
         assert sum("edges that match custom_filter" in str(w.message) for w in caught) == 1
+    # The current filter keeps the dict's ways; the future one adds the stream.
+    mixed = {"highway": ["residential"], "waterway": ["stream"]}
+    current = ['["highway"="residential"]', '["highway"]["waterway"="stream"]']
+    future = ['["highway"="residential"]', '["waterway"="stream"]']
+    with pytest.warns(FutureWarning, match=re.escape("%r. To get" % (current,))):
+        ids = set(osm.get_network(custom_filter=mixed)["id"])
+    assert set(osm.get_network(custom_filter=current)["id"]) == ids
+    edges = osm.get_network(custom_filter=future)
+    assert set(edges["id"]) >= ids
+    assert list(edges[~edges["id"].isin(ids)]["waterway"]) == ["stream"]
     # A dict that has no bracket form gets the warning without one.
-    with pytest.warns(UserWarning, match=r"use the bracket form instead\.$"):
+    with pytest.warns(FutureWarning, match=r"cannot be written in the bracket form\.$"):
         osm.get_network(custom_filter={"waterway": []})
     for selects_by_its_keys in ('["waterway"="stream"]', {"waterway": [re.compile("st")]}):
         edges = osm.get_network(custom_filter=selects_by_its_keys)
@@ -6110,7 +6127,7 @@ def test_network_dict_filter_without_highway_key_warns(engine):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         for highway_ways in (
-            {"custom_filter": {"highway": ["residential"], "bicycle": ["yes"]}},
+            {"custom_filter": {"highway": ["residential"]}},
             {"custom_filter": {"service": ["private"]}, "filter_type": "exclude"},
         ):
             assert len(osm.get_network(**highway_ways)) > 0

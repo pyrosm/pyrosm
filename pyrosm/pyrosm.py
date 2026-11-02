@@ -1,7 +1,6 @@
 import contextlib
 import logging
 import math
-import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -36,7 +35,7 @@ from pyrosm.utils import (
     get_unix_time,
     warn_about_timestamp_not_set,
     warn_empty_result,
-    _stacklevel_outside_pyrosm,
+    warn_future,
 )
 from pyrosm.utils.download import get_file_size
 from pyrosm.utils.progress import (
@@ -118,27 +117,33 @@ def _network_read_filter(args):
     return custom_filter if filter_type == "keep" else {"highway": [True]}
 
 
-def _warn_highway_ways_only(custom_filter, filter_type):
-    """Warn that ``custom_filter``, a plain dict without a ``highway`` key that keeps
-    ways, keeps only ways that also have a ``highway`` tag in a network read, and show
-    the bracket filter that selects ways by the filter's own keys."""
+def _warn_dict_filter_change(custom_filter, filter_type):
+    """Warn with a ``FutureWarning`` that ``custom_filter``, a plain dict with a key other
+    than ``highway`` that keeps ways, selects only ways that have a ``highway`` tag in a
+    network read and will select ways by its own keys in a future release, and show the
+    bracket filters that keep the current result and that give the future one, when the
+    dict can be written in the bracket form."""
     if (
         not isinstance(custom_filter, dict)
         or filter_type != "keep"
-        or "highway" in custom_filter
+        or set(custom_filter) <= {"highway"}
     ):
         return
-    bracket = dict_as_bracket_filter(custom_filter)
-    hint = ""
-    if bracket is not None:
-        hint = " For this filter, write custom_filter=%r." % (bracket,)
-    warnings.warn(
-        "The custom_filter dictionary %r has no 'highway' key. When custom_filter is "
-        "a plain dictionary, get_network() and get_graph() only consider ways that "
-        "also have a 'highway' tag. To select ways by tags other than 'highway', "
-        "use the bracket form instead.%s" % (custom_filter, hint),
-        UserWarning,
-        stacklevel=_stacklevel_outside_pyrosm(),
+    current = dict_as_bracket_filter(custom_filter, required_key="highway")
+    if current is None:
+        hint = " This dictionary cannot be written in the bracket form."
+    else:
+        hint = (
+            " To keep the current result, write custom_filter=%r. To get the future "
+            "result now, write custom_filter=%r."
+            % (current, dict_as_bracket_filter(custom_filter))
+        )
+    warn_future(
+        "The custom_filter dictionary %r has keys other than 'highway'. When "
+        "custom_filter is a plain dictionary, get_network() and get_graph() only "
+        "consider ways that have a 'highway' tag. In a future release, they will select "
+        "ways by the keys of the dictionary, as the bracket form does, so the result "
+        "can also include ways without a 'highway' tag.%s" % (custom_filter, hint)
     )
 
 
@@ -620,9 +625,12 @@ class OSM:
 
               - a dict like `{'highway': ['footway', 'residential'], 'bicycle': ['yes']}`
                 (exact values, combined with OR). Only ways having a `highway` tag are
-                considered, so `{'waterway': ['river']}` finds no rivers; a dict without
-                a `highway` key that keeps ways gives a warning that shows the same
-                filter in the bracket form, when it can be written in that form;
+                considered, so `{'waterway': ['river']}` finds no rivers. In a future
+                release, a dict with `filter_type='keep'` (the default) will select ways
+                by its own keys, as the other forms do, so such a dict with a key other
+                than `highway` gives a `FutureWarning`. When the dict can be written in the bracket form, the
+                warning shows the bracket filter that keeps the current result and the
+                one that gives the future result;
               - a dict with compiled regex values, e.g. `{'ref': [re.compile(r'I[ -]?20')]}`;
               - an Overpass-style bracket string, or a list of them, e.g.
                 `['["highway"~"cycleway"]', '["highway"~"path"]["bicycle"~"designated"]']`
@@ -690,7 +698,7 @@ class OSM:
         # Resolve the custom filter and filter_type once, so the engine and in-memory paths
         # agree.
         custom_filter, filter_type = _network_filter_type(custom_filter, filter_type)
-        _warn_highway_ways_only(custom_filter, filter_type)
+        _warn_dict_filter_change(custom_filter, filter_type)
         advanced_filter = isinstance(custom_filter, CompiledFilter)
 
         if self._use_engine():
@@ -1743,7 +1751,7 @@ class OSM:
             timed=True,
         ) as steps, self._progress_as(steps):
             if simplify and self._use_engine():
-                _warn_highway_ways_only(
+                _warn_dict_filter_change(
                     *_network_filter_type(custom_filter, filter_type)
                 )
                 nodes, edges = self._read_engine(

@@ -5,6 +5,7 @@ Unreleased
 ----------
 
 - FIXED: In the guide to releasing, the release's pull request re-runs the docs notebooks and adds the release date to the heading in ``docs/changelog.rst``, before the tag. Read the Docs builds the stable docs from the latest tag. For 0.28.0, the notebooks were re-run after the tag, so the docs of 0.28.0 show outputs made with 0.27.0 (`#860 <https://github.com/pyrosm/pyrosm/issues/860>`__, `#861 <https://github.com/pyrosm/pyrosm/pull/861>`__)
+- CHANGED: A plain-dict ``custom_filter`` of ``get_network`` and ``get_graph`` with ``filter_type="keep"``, the default, and a key other than ``highway`` gives a ``FutureWarning``. Such a dictionary only considers ways that have a ``highway`` tag. In a future release it will select ways by its own keys, as a bracket filter or a dictionary with a compiled regular expression does: ``{"waterway": ["river"]}`` will find rivers, and ``{"highway": ["residential"], "bicycle": ["yes"]}`` will also keep ways tagged ``bicycle=yes`` that have no ``highway`` tag. When the dictionary can be written in the bracket form, the warning shows the bracket filter that keeps the current result, such as ``'["highway"]["bicycle"="yes"]'`` for ``{"bicycle": ["yes"]}``, and the one that gives the future result. It replaces the warning that a dictionary without a ``highway`` key gave (`#862 <https://github.com/pyrosm/pyrosm/issues/862>`__)
 
 v0.29.0 (Nov 2, 2026)
 ---------------------
