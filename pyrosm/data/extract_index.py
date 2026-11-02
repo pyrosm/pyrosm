@@ -167,7 +167,8 @@ def _geofabrik_extracts(directory, update=False, net=None):
         except (*_FETCH_ERRORS, ValueError) as e:
             warnings.warn(
                 "Geofabrik's index is unavailable (%s); using pyrosm's copy of it from "
-                "%s." % (e, gdf.attrs["snapshot_date"])
+                "%s." % (e, gdf.attrs["snapshot_date"]),
+                stacklevel=_stacklevel_outside_pyrosm(),
             )
     names = gdf["name"].fillna(gdf["id"])
     return _candidate_frame(
@@ -260,7 +261,8 @@ def _bbbike_extracts(directory, update=False, net=None):
     except (*_FETCH_ERRORS, ValueError) as e:
         warnings.warn(
             "BBBike's list of cities is unavailable (%s); using pyrosm's copy of it from "
-            "%s." % (e, _bbbike_cache.attrs["snapshot_date"])
+            "%s." % (e, _bbbike_cache.attrs["snapshot_date"]),
+            stacklevel=_stacklevel_outside_pyrosm(),
         )
         return _bbbike_cache
     known = _bbbike_cache[_bbbike_cache["id"].isin(cities)]
@@ -274,7 +276,10 @@ def _bbbike_extracts(directory, update=False, net=None):
             boundaries.append(_bbbike_boundary(poly.read_bytes()))
             new.append(city)
         except (*_FETCH_ERRORS, ValueError) as e:
-            warnings.warn("Could not read %s (%s); leaving %s out." % (url, e, city))
+            warnings.warn(
+                "Could not read %s (%s); leaving %s out." % (url, e, city),
+                stacklevel=_stacklevel_outside_pyrosm(),
+            )
     if not new:
         return known
     urls = ["%s/%s/%s.osm.pbf" % (_BBBIKE_URL, c, c) for c in new]
@@ -398,14 +403,18 @@ def _cached_index(url, path, update=False, check=None, net=None, progress=None):
                 write_atomic(meta_path, lambda out_file: out_file.write(record))
         elif have_copy:
             warnings.warn(
-                "Could not refresh %s (%s); using the cached copy." % (url, e)
+                "Could not refresh %s (%s); using the cached copy." % (url, e),
+                stacklevel=_stacklevel_outside_pyrosm(),
             )
         else:
             raise
     except (*_FETCH_ERRORS, ValueError) as e:
         if not have_copy:
             raise
-        warnings.warn("Could not refresh %s (%s); using the cached copy." % (url, e))
+        warnings.warn(
+            "Could not refresh %s (%s); using the cached copy." % (url, e),
+            stacklevel=_stacklevel_outside_pyrosm(),
+        )
     return path
 
 
@@ -479,13 +488,15 @@ def _movisda_extracts(directory, update=False, net=None, progress=None):
             if kind == "admin":
                 warnings.warn(
                     "Movisda's administrative index is unavailable (%s); skipping its "
-                    "administrative areas." % e
+                    "administrative areas." % e,
+                    stacklevel=_stacklevel_outside_pyrosm(),
                 )
                 continue
             frame = _movisda_index_frame(kind, _MOVISDA_GRID_PATH)
             warnings.warn(
                 "Movisda's grid index is unavailable (%s); using pyrosm's copy of it "
-                "from %s." % (e, frame.attrs["snapshot_date"])
+                "from %s." % (e, frame.attrs["snapshot_date"]),
+                stacklevel=_stacklevel_outside_pyrosm(),
             )
             frames.append(frame)
     return pd.concat(frames, ignore_index=True)
@@ -542,13 +553,15 @@ def _download_sizes(
         recorded = fallback.get(url)
         if recorded is None:
             warnings.warn(
-                "Could not get the size of %s (%s); it is ranked last." % (url, reason)
+                "Could not get the size of %s (%s); it is ranked last." % (url, reason),
+                stacklevel=_stacklevel_outside_pyrosm(),
             )
             return
         sizes[url] = recorded[0]
         warnings.warn(
             "Could not get the size of %s (%s); using the size recorded in pyrosm's "
-            "Geofabrik index on %s." % (url, reason, recorded[1])
+            "Geofabrik index on %s." % (url, reason, recorded[1]),
+            stacklevel=_stacklevel_outside_pyrosm(),
         )
 
     urls = list(urls)
@@ -708,7 +721,8 @@ def find_extracts(
             raise e.__cause__
         except (*_FETCH_ERRORS, ValueError) as e:
             warnings.warn(
-                "Movisda's extract index is unavailable (%s); skipping it." % e
+                "Movisda's extract index is unavailable (%s); skipping it." % e,
+                stacklevel=_stacklevel_outside_pyrosm(),
             )
         candidates = gpd.GeoDataFrame(
             pd.concat(frames, ignore_index=True), crs="EPSG:4326"
@@ -1716,7 +1730,8 @@ def _get_area(
                 )
                 warnings.warn(
                     "Could not download %s (%s); choosing again without it%s."
-                    % (extract.url, e, others)
+                    % (extract.url, e, others),
+                    stacklevel=_stacklevel_outside_pyrosm(),
                 )
                 break
             finally:

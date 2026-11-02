@@ -72,6 +72,7 @@ from pyrosm.int64_hash cimport Int64Set, SortedInt64Set, _set_has, kh_i64set_t
 from pyrosm._log import timed
 from pyrosm.utils import (
     _file_identity,
+    _stacklevel_outside_pyrosm,
     default_workers,
     validate_bounding_box,
     validate_workers,
@@ -139,7 +140,7 @@ cdef _warn_empty(sources, bounds):
         message = "No node of %s lies in the area %s; the written file holds no elements." % (
             names, list(bounds)
         )
-    warnings.warn(message)
+    warnings.warn(message, stacklevel=_stacklevel_outside_pyrosm())
 
 
 def _prepared(wkb):
@@ -3007,7 +3008,9 @@ def _with_pool(func, args, workers, sources, region, compact, threads_only=False
         pool = _open_pool(workers, sources, region, compact, threads_only)
     except _PoolStartError:
         pool = None
-        warnings.warn(_POOL_FALLBACK_WARNING, RuntimeWarning)
+        warnings.warn(
+            _POOL_FALLBACK_WARNING, RuntimeWarning, stacklevel=_stacklevel_outside_pyrosm()
+        )
     if pool is None:
         return func(*args, None)
     try:
@@ -3017,9 +3020,10 @@ def _with_pool(func, args, workers, sources, region, compact, threads_only=False
     finally:
         pool.close()
     if isinstance(pool, _ThreadPool):
-        warnings.warn(_THREAD_FALLBACK_WARNING, RuntimeWarning)
+        message = _THREAD_FALLBACK_WARNING
     else:
-        warnings.warn(_POOL_FALLBACK_WARNING, RuntimeWarning)
+        message = _POOL_FALLBACK_WARNING
+    warnings.warn(message, RuntimeWarning, stacklevel=_stacklevel_outside_pyrosm())
     return func(*args, None)
 
 
