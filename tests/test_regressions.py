@@ -6300,3 +6300,45 @@ def test_widget_bar_ends_at_100_percent(monkeypatch):
     assert label.value.endswith("100%")
     assert (bar.value, bar.bar_style) == (100, "success")
     assert steps.report.bar.container.layout.visibility != "hidden"
+
+
+@pytest.mark.parametrize("call", ["find_extracts", "to_pbf"])
+def test_warnings_point_at_the_callers_line(tmp_path, monkeypatch, call):
+    """The extract search's warnings for an index or a size it cannot fetch, and the
+    warning for a crop that holds no node, named a line in pyrosm's own code. They point at
+    the caller's line, as pyrosm's other warnings do (#851)."""
+    import warnings
+    from urllib.error import URLError
+
+    from shapely.geometry import box
+
+    import pyrosm
+    from pyrosm.utils import download
+
+    def offline(*args, **kwargs):
+        raise URLError("down")
+
+    monkeypatch.setattr(download, "open_url", offline)
+    area = box(24.9, 60.15, 24.95, 60.2)
+    osm = pyrosm.OSM(pyrosm.get_data("test_pbf"), bounding_box=[0, 0, 0.1, 0.1])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        if call == "find_extracts":
+            line = sys._getframe().f_lineno + 1
+            pyrosm.find_extracts(area, update=True, directory=tmp_path, progress=False)
+        else:
+            line = sys._getframe().f_lineno + 1
+            osm.to_pbf(tmp_path / "empty.osm.pbf")
+    messages = [str(w.message) for w in caught]
+    expected = {
+        "find_extracts": [
+            "Geofabrik's index is unavailable",
+            "BBBike's list of cities is unavailable",
+            "Movisda's administrative index is unavailable",
+            "Movisda's grid index is unavailable",
+            "Could not get the size of",
+        ],
+        "to_pbf": ["No node of test.osm.pbf lies in the area"],
+    }[call]
+    assert all(any(m.startswith(e) for m in messages) for e in expected)
+    assert all((w.filename, w.lineno) == (__file__, line) for w in caught)

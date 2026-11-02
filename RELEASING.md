@@ -31,6 +31,18 @@ The workflow then runs: `tests` → `check-version` (the tag must equal the
 GitHub release. Pre-release tags (e.g. `v0.9.0rc1`) publish and are marked as a
 GitHub pre-release automatically.
 
+## conda-forge
+
+After the release is on PyPI, conda-forge's bot opens a pull request on
+[conda-forge/pyrosm-feedstock](https://github.com/conda-forge/pyrosm-feedstock) that sets the
+new version and checksum in `recipe/meta.yaml`. It does not carry over changes to pyrosm's
+dependencies or licences. Before merging it, compare the recipe with [setup.py](setup.py) and
+update the bot's branch where they differ:
+
+- the `run` requirements with `install_requires`: a requirement missing there makes every build
+  fail at the recipe's `pip check`;
+- `license` with `license_expression`, and `license_file` with `license_files`.
+
 ## Dry run (no publishing)
 
 To verify the wheels build on every platform without releasing: **Actions →
