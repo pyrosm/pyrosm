@@ -197,10 +197,10 @@ direction. To weigh the roads as Valhalla does, choose the factor by the `highwa
 much higher factor treats the road almost as closed, so that routes use it only to reach the
 places on it.
 
-Use `cost` only to choose the route. Sum `length` along that route for its distance, and
-compute travel times from that distance at a cycling speed you choose: summing `cost`
-overstates both. The chosen route can be longer than the shortest one; for the shortest
-route, route by `length`.
+Choose the weight by what you want to find: route with `cost` to find routes that favour
+cycle tracks over the roads beside them, and with `length` to find the shortest routes.
+Either way, sum `length` along the route for its distance, not `cost`, which overstates it,
+and compute the travel time from that distance at a cycling speed you choose.
 
 Listing `cost` in `length_cols` sums it along each simplified edge, as `length` is summed.
 `str.contains` also finds `use_sidepath` among several values, such as
