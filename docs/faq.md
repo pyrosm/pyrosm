@@ -186,12 +186,27 @@ G = osm.to_graph(
 )
 ```
 
-The factor 3 is only an example. Listing `cost` in `length_cols` sums it along each
-simplified edge, as `length` is summed. `str.contains` also finds `use_sidepath` among
-several values, such as `use_sidepath;destination`. To leave these ways out instead, keep
-`edges[~sidepath]`. Neither looks at `bicycle:forward=use_sidepath` or
-`bicycle:backward=use_sidepath`, which apply in one direction only and are in the `tags`
-column.
+The cost does not mean that riding on the road is slower. It expresses how much cyclists
+prefer the cycle track to riding in the traffic beside it. The factor 3 is at the low end of
+the costs that the router Valhalla gives these roads with its default settings. Valhalla
+prices how stressful a road is to ride on: compared with a cycle track, it makes riding along
+a road tagged `bicycle=use_sidepath` about 2.5 times as costly on a residential street at
+30 km/h, and about 6 to 7 times on a primary road at 60 km/h with two lanes in each
+direction. To weigh the roads as Valhalla does, choose the factor by the `highway` or
+`maxspeed` column, higher for primary and secondary roads than for residential streets. A
+much higher factor treats the road almost as closed, so that routes use it only to reach the
+places on it.
+
+Use `cost` only to choose the route. Sum `length` along that route for its distance, and
+compute travel times from that distance at a cycling speed you choose: summing `cost`
+overstates both. The chosen route can be longer than the shortest one; for the shortest
+route, route by `length`.
+
+Listing `cost` in `length_cols` sums it along each simplified edge, as `length` is summed.
+`str.contains` also finds `use_sidepath` among several values, such as
+`use_sidepath;destination`. To leave these ways out instead, keep `edges[~sidepath]`.
+Neither looks at `bicycle:forward=use_sidepath` or `bicycle:backward=use_sidepath`, which
+apply in one direction only and are in the `tags` column.
 
 A network exported with `to_graph(..., graph_type="networkx")` is OSMnx-compatible as
 well: the node and edge attributes are named as OSMnx expects, so its functions work on
