@@ -156,7 +156,8 @@ of the walking network unless a more specific tag such as `foot=yes` allows walk
 
 OSMnx leaves every cycle way out of `walk` and every foot way out of `bike`. In pyrosm, a
 cycle way with a `foot` tag, such as `foot=designated`, can stay in the walking network
-unless the tag is `no` or `private`. A cycle way without a `foot` tag follows the default
+unless the tag is `no`, `private` or `use_sidepath` (see below for `use_sidepath`). A
+cycle way without a `foot` tag follows the default
 of the country it lies in. It stays in countries such as Finland, where pedestrians
 may use cycle ways by default, and is left out in other countries and where pyrosm finds
 no country. The cycling network treats a foot way and its `bicycle` tag in the same way.
@@ -165,6 +166,47 @@ without a `foot` tag and every foot way without a `bicycle` tag, as OSM's worldw
 defaults do. With `shared_paths="all"`, they keep all of them, also where the country's
 rules do not allow it, for a network of the ways people walk and cycle on in practice.
 A tag such as `foot=no` or `bicycle=no` leaves the way out with every setting.
+`foot=use_sidepath` says that pedestrians must use a sidewalk mapped beside the way. It
+leaves the way out of the walking network with `"tagged"` and `"local"`, and
+`shared_paths="all"` keeps it.
+
+The cycling network keeps the ways tagged `bicycle=use_sidepath`. The tag sends cyclists to
+a cycle track mapped beside the road. Driveways, yards and side streets on the side of the
+road without the track often join only the road: cyclists cross the road to reach the
+track, and OSM maps no way for that crossing. Without the road, these places would be cut
+off from the network. To make routes follow the cycle track where there is one, give these
+roads a higher cost and route with it, for example with `weight="cost"` in NetworkX:
+
+```python
+nodes, edges = osm.get_network("cycling", nodes=True)
+sidepath = edges["bicycle"].fillna("").str.contains("use_sidepath")
+edges["cost"] = edges["length"].where(~sidepath, edges["length"] * 3)
+G = osm.to_graph(
+    nodes, edges, graph_type="networkx", simplify_kwargs={"length_cols": ["length", "cost"]}
+)
+```
+
+The cost does not mean that riding on the road is slower. It expresses how much cyclists
+prefer the cycle track to riding in the traffic beside it. The factor 3 is at the low end of
+the costs that the router Valhalla gives these roads with its default settings. Valhalla
+prices how stressful a road is to ride on: compared with a cycle track, it makes riding along
+a road tagged `bicycle=use_sidepath` about 2.5 times as costly on a residential street at
+30 km/h, and about 6 to 7 times on a primary road at 60 km/h with two lanes in each
+direction. To weigh the roads as Valhalla does, choose the factor by the `highway` or
+`maxspeed` column, higher for primary and secondary roads than for residential streets. A
+much higher factor treats the road almost as closed, so that routes use it only to reach the
+places on it.
+
+Choose the weight by what you want to find: route with `cost` to find routes that favour
+cycle tracks over the roads beside them, and with `length` to find the shortest routes.
+Either way, sum `length` along the route for its distance, not `cost`, which overstates it,
+and compute the travel time from that distance at a cycling speed you choose.
+
+Listing `cost` in `length_cols` sums it along each simplified edge, as `length` is summed.
+`str.contains` also finds `use_sidepath` among several values, such as
+`use_sidepath;destination`. To leave these ways out instead, keep `edges[~sidepath]`.
+Neither looks at `bicycle:forward=use_sidepath` or `bicycle:backward=use_sidepath`, which
+apply in one direction only and are in the `tags` column.
 
 A network exported with `to_graph(..., graph_type="networkx")` is OSMnx-compatible as
 well: the node and edge attributes are named as OSMnx expects, so its functions work on
