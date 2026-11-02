@@ -15,9 +15,17 @@ PyPI, and creates the GitHub release.
    year in [README.md](README.md), [docs/index.rst](docs/index.rst) and
    [docs/citation.rst](docs/citation.rst).
 3. Move the `Unreleased` notes under a new `vX.Y.Z` heading in
-   [CHANGELOG.md](CHANGELOG.md) and [docs/changelog.rst](docs/changelog.rst).
-4. Merge the above to `main`.
-5. Tag and push — the tag must be `v` + the exact `setup.py` version:
+   [CHANGELOG.md](CHANGELOG.md) and [docs/changelog.rst](docs/changelog.rst). In
+   docs/changelog.rst the heading also gives the release date, for example
+   `v0.29.0 (Nov 2, 2026)`.
+4. Re-run the docs notebooks that contain code and commit their outputs. Run them in the
+   development environment ([docs/contributions.rst](docs/contributions.rst)) with this version
+   installed (`pip install -e . --no-build-isolation`) and Jupyter added (`pip install jupyter`),
+   for example `jupyter nbconvert --to notebook --execute --inplace docs/quickstart.ipynb`.
+   Read the Docs builds the `stable` docs from the latest tag, so outputs merged after the tag
+   reach `stable` only with the next release.
+5. Merge the above to `main` in one pull request.
+6. Tag and push — the tag must be `v` + the exact `setup.py` version:
 
    ```bash
    git checkout main && git pull
