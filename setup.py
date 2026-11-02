@@ -78,7 +78,7 @@ if _linetrace:
 
 setup(
     name="pyrosm",
-    version="0.28.0",
+    version="0.29.0",
     license_expression="BSD-3-Clause AND MIT AND ISC",
     license_files=[
         "LICENSE",
