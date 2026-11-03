@@ -5,7 +5,7 @@ Unreleased
 ----------
 
 - FIXED: In the guide to releasing, the release's pull request re-runs the docs notebooks and adds the release date to the heading in ``docs/changelog.rst``, before the tag. Read the Docs builds the stable docs from the latest tag. For 0.28.0, the notebooks were re-run after the tag, so the docs of 0.28.0 show outputs made with 0.27.0 (`#860 <https://github.com/pyrosm/pyrosm/issues/860>`__, `#861 <https://github.com/pyrosm/pyrosm/pull/861>`__)
-- FIXED: The warnings of reads that find nothing, such as "Could not find any edges that match custom_filter in given area.", point at the line of your code that made the read. Earlier, they named a line in pyrosm's own files, such as ``pyrosm/utils/__init__.py:131``. The same holds for the warnings about relations that a bounding box cuts, a ``workers`` count above the number of CPU cores, a parallel decode that could not start, edges without a ``oneway`` column in ``OSM.to_graph``, and ways that ``write_pbf`` leaves out (`#864 <https://github.com/pyrosm/pyrosm/issues/864>`__)
+- FIXED: The warnings of reads that find nothing, such as "Could not find any edges that match custom_filter in given area.", point at the line of your code that made the read. Earlier, they named a line in pyrosm's own files, such as ``pyrosm/utils/__init__.py:131``. The same holds for the warnings about relations that a bounding box cuts, a ``workers`` count above the number of CPU cores, a parallel decode that could not start, edges without a ``oneway`` column in ``OSM.to_graph``, and ways that ``write_pbf`` leaves out (`#865 <https://github.com/pyrosm/pyrosm/pull/865>`__, `#864 <https://github.com/pyrosm/pyrosm/issues/864>`__)
 
 v0.29.0 (Nov 2, 2026)
 ---------------------
