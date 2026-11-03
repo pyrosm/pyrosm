@@ -164,13 +164,12 @@ def _direction_rules(
     """Validate the nodes and edges of :func:`get_directed_edges` and return how its edges
     are directed: ``(direction, direction_suffix, both_ways)``, the direction column, its
     mode-specific suffix (``"bicycle"`` for cycling) and whether every edge is two-way. A
-    missing direction column is added to ``edges`` as empty, with a warning."""
+    missing direction column is added to ``edges`` as empty, with a warning when the
+    network's edges are not all two-way."""
     allowed_network_types = Conf._possible_network_filters
     _validate_frames(nodes, edges, from_id_col, to_id_col, node_id_col)
 
-    direction, direction_suffix = _direction_column(direction, edges.columns)
-    if direction not in edges.columns:
-        edges[direction] = None
+    direction, direction_suffix = _split_direction(direction)
 
     # The network type given, else the one recorded on the edges or nodes
     if network_type is not None:
@@ -190,7 +189,41 @@ def _direction_rules(
                 "Possible network types are: " + txt
             )
 
-    return (direction, *_travel_rules(direction_suffix, net_type, force_bidirectional))
+    direction_suffix, both_ways = _travel_rules(
+        direction_suffix, net_type, force_bidirectional
+    )
+    _warn_missing_direction(direction, edges.columns, both_ways)
+    if direction not in edges.columns:
+        edges[direction] = None
+    return direction, direction_suffix, both_ways
+
+
+def _warn_missing_direction(direction, columns, both_ways):
+    """Warn when ``columns`` lack the column ``direction`` and the edges are not all
+    two-way (``both_ways``), as every edge is then taken as two-way."""
+    if direction not in columns and not both_ways:
+        warnings.warn(
+            f"Column '{direction}' missing in the edges GeoDataFrame. "
+            f"Assuming all edges to be bidirectional "
+            f"(travel allowed to both directions).",
+            UserWarning,
+            stacklevel=_stacklevel_outside_pyrosm(),
+        )
+
+
+def add_empty_direction_column(edges, direction, read_columns):
+    """Add the column of ``direction`` with no values to ``edges`` (a GeoDataFrame or a
+    :class:`~pyrosm.graph_simplify._WayEdges`) when ``read_columns``, the tag columns of
+    the read the edges come from, include it and ``direction`` itself (``oneway:bus``) and
+    ``edges`` lack it: no way has the tag, so every edge is two-way, without a warning
+    that the column is missing."""
+    column, _ = _split_direction(direction)
+    read = column in read_columns and direction in read_columns
+    if read and column not in edges.columns:
+        if isinstance(edges, _WayEdges):
+            edges.add_empty_column(column)
+        else:
+            edges[column] = None
 
 
 def _split_direction(direction):
@@ -247,22 +280,6 @@ def graph_tags(direction, network_type, force_bidirectional, simplify, simplify_
     return tags
 
 
-def _direction_column(direction, columns):
-    """The column of ``direction`` and its mode-specific suffix (see
-    :func:`_split_direction`). Warns when ``columns`` lack the column, as every edge is
-    then two-way."""
-    direction, direction_suffix = _split_direction(direction)
-    if direction not in columns:
-        warnings.warn(
-            f"Column '{direction}' missing in the edges GeoDataFrame. "
-            f"Assuming all edges to be bidirectional "
-            f"(travel allowed to both directions).",
-            UserWarning,
-            stacklevel=_stacklevel_outside_pyrosm(),
-        )
-    return direction, direction_suffix
-
-
 def _travel_rules(direction_suffix, network_type, force_bidirectional):
     """The direction suffix that a network of ``network_type`` (a pyrosm name or an OSMnx
     alias) honours, and whether all its edges are two-way: ``(direction_suffix,
@@ -284,13 +301,15 @@ def _travel_rules(direction_suffix, network_type, force_bidirectional):
 def _segment_rows(edges, direction, force_bidirectional, network_type):
     """:func:`directed_rows` of the segments that ``edges`` (a
     :class:`~pyrosm.graph_simplify._WayEdges`) reads, each travelled as its way is. A
-    missing direction column is added to them as empty, with a warning."""
-    direction, direction_suffix = _direction_column(direction, edges.columns)
-    if direction not in edges.columns:
-        edges.add_empty_column(direction)
+    missing direction column is added to them as empty, with a warning when the edges are
+    not all two-way."""
+    direction, direction_suffix = _split_direction(direction)
     direction_suffix, both_ways = _travel_rules(
         direction_suffix, network_type, force_bidirectional
     )
+    _warn_missing_direction(direction, edges.columns, both_ways)
+    if direction not in edges.columns:
+        edges.add_empty_column(direction)
     return directed_rows(
         edges.ways, direction, direction_suffix, both_ways, edges.way_of
     )

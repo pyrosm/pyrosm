@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # The version of the cached results' content, part of every key: bumped whenever a read
 # returns different output, so a file cached by an older pyrosm is not served.
-_RESULT_FORMAT = 17
+_RESULT_FORMAT = 19
 
 
 def cache_dir():
@@ -202,6 +202,7 @@ def materialize(cache_path, build, steps):
     empty_marker = cache_path.with_name(cache_path.name + ".empty")
     if empty_marker.exists():
         log_event(logger, logging.DEBUG, "cache", status="empty", path=empty_marker)
+        _warn_again(cache_path)
         return None
     if cache_path.exists():
         log_event(logger, logging.DEBUG, "cache", status="hit", path=cache_path)
@@ -213,10 +214,10 @@ def materialize(cache_path, build, steps):
         try:
             with recording_warnings() as recorded:
                 built = build(tmp_path)
+            _keep_warnings(cache_path, recorded)
             if not built:
                 empty_marker.touch()
                 return None
-            _keep_warnings(cache_path, recorded)
             tmp_path.replace(cache_path)
         finally:
             if tmp_path.exists():
@@ -236,6 +237,7 @@ def materialize_pair(edges_path, nodes_path, build, steps, read_nodes=read_resul
     empty_marker = edges_path.with_name(edges_path.name + ".empty")
     if empty_marker.exists():
         log_event(logger, logging.DEBUG, "cache", status="empty", path=empty_marker)
+        _warn_again(edges_path)
         return None, None
     if edges_path.exists() and nodes_path.exists():
         log_event(logger, logging.DEBUG, "cache", status="hit", path=edges_path)
@@ -248,10 +250,10 @@ def materialize_pair(edges_path, nodes_path, build, steps, read_nodes=read_resul
         try:
             with recording_warnings() as recorded:
                 built = build(edges_tmp, nodes_tmp)
+            _keep_warnings(edges_path, recorded)
             if not built:
                 empty_marker.touch()
                 return None, None
-            _keep_warnings(edges_path, recorded)
             edges_tmp.replace(edges_path)
             nodes_tmp.replace(nodes_path)
         finally:

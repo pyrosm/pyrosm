@@ -6082,77 +6082,127 @@ def test_get_data_and_get_data_by_area_share_a_download(tmp_path, monkeypatch, f
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
-def test_network_dict_filter_without_highway_key_warns(engine):
-    """A dict ``custom_filter`` of ``get_network`` keeps only ways that have a ``highway``
-    tag, so ``{"waterway": ["stream"]}`` found nothing and the only warning blamed the area.
-    It now warns that the dict keeps highway ways only and shows the bracket filter, which
-    finds the stream as a regex dict does, and the empty-result warning names the filter."""
+def test_network_filter_keeps_by_its_keys_and_excludes_from_highway_ways(engine):
+    """A plain dict ``custom_filter`` of ``get_network`` and ``get_graph`` only considered
+    ways that have a ``highway`` tag, so ``{"waterway": ["stream"]}`` found nothing while
+    ``'["waterway"="stream"]'`` found the stream (#862). A dict that keeps ways selects
+    them by its own keys, as the bracket form does, and gives no warning. An exclude
+    bracket or regex filter removed the matching ways from the ways with the filter's
+    keys, so excluding parking aisles left only the driveways (#867); every form now
+    removes them from the ways that have a ``highway`` tag."""
     import re
     import warnings
 
     from pyrosm import OSM, get_data
 
     osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
-    stream = {"waterway": ["stream"]}
-    hint = """custom_filter='["waterway"="stream"]'"""
-    for read in (osm.get_network, osm.get_network, osm.get_graph):
-        with pytest.warns(UserWarning) as caught:
-            assert read(custom_filter=stream) is None
-        hints = [w for w in caught if hint in str(w.message)]
-        assert len(hints) == 1 and hints[0].filename == __file__
-        assert sum("edges that match custom_filter" in str(w.message) for w in caught) == 1
-    # A dict that has no bracket form gets the warning without one.
-    with pytest.warns(UserWarning, match=r"use the bracket form instead\.$"):
-        osm.get_network(custom_filter={"waterway": []})
-    for selects_by_its_keys in ('["waterway"="stream"]', {"waterway": [re.compile("st")]}):
-        edges = osm.get_network(custom_filter=selects_by_its_keys)
-        assert list(edges["waterway"]) == ["stream"]
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        for highway_ways in (
-            {"custom_filter": {"highway": ["residential"], "bicycle": ["yes"]}},
-            {"custom_filter": {"service": ["private"]}, "filter_type": "exclude"},
+        for custom_filter, bracket in (
+            ({"waterway": ["stream"]}, '["waterway"="stream"]'),
+            (
+                {"highway": ["residential"], "waterway": ["stream"]},
+                ['["highway"="residential"]', '["waterway"="stream"]'],
+            ),
         ):
-            assert len(osm.get_network(**highway_ways)) > 0
-
-
-@pytest.mark.parametrize(
-    "custom_filter, bracket",
-    [
-        ({"waterway": ["river"]}, '["waterway"="river"]'),
-        (
-            {"waterway": ["river", "canal"], "railway": [True]},
-            ['["waterway"="river"]', '["waterway"="canal"]', '["railway"]'],
-        ),
-        ({"name": ['Joe"s']}, """["name"='Joe"s']"""),
-        ({'"quoted"': [True]}, """['"quoted"']"""),
-        ({"name": ["""a"b'c"""]}, None),
-        ({"waterway": []}, None),
-        ({}, None),
-    ],
-)
-def test_dict_as_bracket_filter(custom_filter, bracket):
-    """The bracket string a dict filter's warning shows keeps the same ways as the dict; a
-    value that holds both quote characters cannot be written as one."""
-    from pyrosm.filter_compiler import (
-        as_compiled_filter,
-        compile_custom_filter,
-        dict_as_bracket_filter,
-    )
-
-    assert dict_as_bracket_filter(custom_filter) == bracket
-    if bracket is not None:
-        compiled = compile_custom_filter(bracket)
-        for tags in (
-            {"waterway": "river"},
-            {"railway": "x"},
-            {"name": 'Joe"s'},
-            {'"quoted"': "x"},
-            {},
+            edges = osm.get_network(custom_filter=custom_filter)
+            assert "stream" in set(edges["waterway"])
+            expected = osm.get_network(custom_filter=bracket)
+            assert sorted(edges["id"]) == sorted(expected["id"])
+        highway_ways = osm.get_network(custom_filter={"highway": [True]})
+        aisles = set(highway_ways.loc[highway_ways["service"] == "parking_aisle", "id"])
+        assert aisles
+        for exclude in (
+            {"service": ["parking_aisle"]},
+            '["service"="parking_aisle"]',
+            {"service": [re.compile("^parking_aisle$")]},
         ):
-            assert compiled.matches(tags) == as_compiled_filter(custom_filter).matches(
-                tags
+            edges = osm.get_network(custom_filter=exclude, filter_type="exclude")
+            assert set(edges["id"]) == set(highway_ways["id"]) - aisles
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize("simplify", [True, False])
+def test_graph_without_oneway_tags_does_not_warn(engine, simplify):
+    """``get_graph`` and ``to_graph`` warned "Column 'oneway' missing" for a network whose
+    ways have no ``oneway`` tag, such as streams, also for a walking network, whose edges
+    are two-way anyway (#869). ``get_graph`` reads the ``oneway`` tag, so a missing column
+    means that no way has it, and a two-way network needs no column."""
+    import warnings
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for network_type in ("walking", "driving"):
+            graph = osm.get_graph(
+                network_type,
+                "networkx",
+                custom_filter={"waterway": ["stream"]},
+                simplify=simplify,
             )
+            assert graph.number_of_edges() > 0
+        nodes, edges = osm.get_network(nodes=True)
+        osm.to_graph(nodes, edges.drop(columns="oneway"), "networkx", simplify=simplify)
+    # A direction tag that the read leaves out still warns.
+    with pytest.warns(UserWarning, match="Column 'oneway' missing"):
+        osm.get_graph(
+            "driving",
+            "networkx",
+            direction="oneway:bus",
+            custom_filter={"waterway": ["stream"]},
+            simplify=simplify,
+        )
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_empty_read_warns_alike_in_both_readers_and_from_the_cache(engine):
+    """A read whose matching elements give no rows, such as the boundaries of a small box
+    that cuts their relations, warned in memory only that the box cuts relations, and the
+    out-of-core reader gave that warning only until the result came from its cache (#870).
+    Both readers give both warnings on every read."""
+    import warnings
+
+    from pyrosm import OSM, get_data
+
+    box = [24.94, 60.165, 24.95, 60.17]
+    osm = OSM(get_data("helsinki_pbf"), bounding_box=box, engine=engine)
+    for read, found_nothing, cut in (
+        (osm.get_boundaries, "boundaries for given area.", 1),
+        (lambda: osm.get_pois({"boundary": ["administrative"]}), "POIs for given area.", 1),
+        (
+            lambda: osm.get_data_by_custom_criteria(
+                {"highway": ["residential"]}, keep_ways=False
+            ),
+            "OSM data for given area.",
+            0,
+        ),
+        (
+            lambda: osm.get_network(custom_filter={"waterway": ["river"]}, nodes=True)[1],
+            "edges that match custom_filter in given area.",
+            0,
+        ),
+    ):
+        for _ in range(2):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                assert read() is None
+            messages = [str(w.message) for w in caught]
+            assert sum("extend beyond the bounding box" in m for m in messages) == cut
+            assert messages.count("Could not find any " + found_nothing) == 1
+
+
+def test_in_memory_layer_without_rows_warns(monkeypatch):
+    """The in-memory reader of buildings, landuse and natural warns that it found
+    nothing also when its matching elements give no rows (#870)."""
+    import pyrosm.layers
+    from pyrosm import OSM, get_data
+
+    monkeypatch.setattr(pyrosm.layers, "prepare_geodataframe", lambda *a, **k: None)
+    osm = OSM(get_data("test_pbf"), engine="in_memory")
+    with pytest.warns(UserWarning, match="Could not find any landuse elements"):
+        assert osm.get_landuse() is None
 
 
 def test_reading_does_not_import_the_graph_libraries(tmp_path):
@@ -6381,7 +6431,9 @@ def test_warnings_point_at_the_callers_line(tmp_path, monkeypatch, call):
             pyrosm.OSM(fp, workers=2).get_buildings()
         elif call == "to_graph":
             line = sys._getframe().f_lineno + 1
-            pyrosm.OSM.to_graph(nodes, edges.drop(columns="oneway"), graph_type="networkx")
+            pyrosm.OSM.to_graph(
+                nodes, edges.drop(columns="oneway"), "networkx", network_type="driving"
+            )
         else:
             delete = [("node", n) for n in refs[1:]]
             line = sys._getframe().f_lineno + 1

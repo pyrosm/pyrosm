@@ -7,6 +7,25 @@ first; the releases not listed here changed nothing of this kind. Changes in spe
 new options that leave the defaults as they were, and fixes of calls that failed are left out. The
 [changelog](changelog.rst) lists every change.
 
+## Unreleased
+
+- **Plain dictionary filters of networks.** A plain dictionary `custom_filter` of `get_network`
+  and `get_graph` that keeps ways selects them by its own keys. Earlier versions considered only
+  ways that have a `highway` tag. A plain dictionary with only a `highway` key, and a plain
+  dictionary with `filter_type="exclude"`, return the same ways as before. A dictionary with
+  another key can return more ways: on the bundled Helsinki file,
+  `{"highway": ["residential"], "bicycle": ["yes"]}` returns 396 ways instead of 377. To keep the
+  earlier result, write the filter in the bracket form and require the `highway` tag in each
+  condition on another key, for example
+  `['["highway"="residential"]', '["highway"]["bicycle"="yes"]']`.
+- **Exclude filters of networks as bracket strings or regex dictionaries.** With
+  `filter_type="exclude"`, these filters of `get_network` and `get_graph` now remove the matching
+  ways from the ways that have a `highway` tag. Earlier versions removed them from the ways that
+  have the filter's own keys and so returned far fewer ways: on the bundled Helsinki file,
+  excluding `'["service"="parking_aisle"]'` gives 2,564 ways instead of 37. To get the earlier
+  result, keep the ways that have the key with another value, for example
+  `custom_filter='["service"]["service"!="parking_aisle"]'`.
+
 ## pyrosm 0.29.0
 
 - **Shared foot and cycle paths in the walking and cycling networks.** A `highway=cycleway` with a

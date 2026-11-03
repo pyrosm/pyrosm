@@ -79,5 +79,6 @@ def get_user_defined_data(
         complete_relations=complete_relations,
         steps=steps,
     )
-
+    if gdf is None:
+        warn_empty_result("custom")
     return gdf
