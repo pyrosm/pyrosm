@@ -603,8 +603,8 @@ class OSM:
 
             A filter that keeps ways selects them by the filter's own keys, so it also
             builds networks of other ways than streets, e.g. `{'waterway': ['river']}`
-            or `'["railway"="tram"]'`. A plain dict with `filter_type='exclude'` removes
-            the matching ways from the ways that have a `highway` tag.
+            or `'["railway"="tram"]'`. A filter with `filter_type='exclude'` removes the
+            matching ways from the ways that have a `highway` tag.
 
         filter_type : str (optional)
             Whether `custom_filter` should `'keep'` or `'exclude'` the matching ways. Only
@@ -686,8 +686,8 @@ class OSM:
         # Get filter (also validates network_type, which still drives the graph
         # semantics even when a custom_filter is provided)
         network_filter = self._get_network_filter(network_type, shared_paths)
-        # Predefined networks and dicts that exclude ways select from the 'highway' ways; a
-        # dict that keeps ways selects by its own keys and an advanced filter by its
+        # Predefined networks and filters that exclude ways select from the 'highway' ways;
+        # a dict that keeps ways selects by its own keys and an advanced filter by its
         # positive keys (so railway/waterway networks work).
         network_osm_keys = "highway"
         column_keys = ["highway"]
@@ -696,7 +696,7 @@ class OSM:
             network_filter = with_shared_paths(custom_filter, shared_paths)
             # The filter keys are columns too (e.g. 'bicycle', 'service').
             column_keys = custom_filter.keys()
-            if advanced_filter:
+            if filter_type == "keep" and advanced_filter:
                 network_osm_keys = list(custom_filter.positive_keys)
             elif filter_type == "keep" and custom_filter:
                 network_osm_keys = list(custom_filter)

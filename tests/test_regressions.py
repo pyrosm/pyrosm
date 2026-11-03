@@ -6082,12 +6082,15 @@ def test_get_data_and_get_data_by_area_share_a_download(tmp_path, monkeypatch, f
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
-def test_network_dict_filter_selects_ways_by_its_own_keys(engine):
+def test_network_filter_keeps_by_its_keys_and_excludes_from_highway_ways(engine):
     """A plain dict ``custom_filter`` of ``get_network`` and ``get_graph`` only considered
     ways that have a ``highway`` tag, so ``{"waterway": ["stream"]}`` found nothing while
     ``'["waterway"="stream"]'`` found the stream (#862). A dict that keeps ways selects
-    them by its own keys, as the bracket form does, and gives no warning; a dict that
-    excludes ways still removes them from the ways that have a ``highway`` tag."""
+    them by its own keys, as the bracket form does, and gives no warning. An exclude
+    bracket or regex filter removed the matching ways from the ways with the filter's
+    keys, so excluding parking aisles left only the driveways (#867); every form now
+    removes them from the ways that have a ``highway`` tag."""
+    import re
     import warnings
 
     from pyrosm import OSM, get_data
@@ -6106,10 +6109,16 @@ def test_network_dict_filter_selects_ways_by_its_own_keys(engine):
             assert "stream" in set(edges["waterway"])
             expected = osm.get_network(custom_filter=bracket)
             assert sorted(edges["id"]) == sorted(expected["id"])
-        excluded = osm.get_network(
-            custom_filter={"service": ["private"]}, filter_type="exclude"
-        )
-        assert len(excluded) > 0 and excluded["highway"].notna().all()
+        highway_ways = osm.get_network(custom_filter={"highway": [True]})
+        aisles = set(highway_ways.loc[highway_ways["service"] == "parking_aisle", "id"])
+        assert aisles
+        for exclude in (
+            {"service": ["parking_aisle"]},
+            '["service"="parking_aisle"]',
+            {"service": [re.compile("^parking_aisle$")]},
+        ):
+            edges = osm.get_network(custom_filter=exclude, filter_type="exclude")
+            assert set(edges["id"]) == set(highway_ways["id"]) - aisles
     assert osm.get_graph(custom_filter={"waterway": ["stream"]}) is not None
 
 

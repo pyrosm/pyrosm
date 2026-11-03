@@ -804,9 +804,9 @@ def _network_spec(
     # validated for every read, as the in-memory reader does.
     network_filter = _network_filter(network_type, shared_paths)
 
-    # Predefined networks and dicts that exclude ways select from the 'highway' ways; a dict
-    # that keeps ways selects by its own keys and an advanced filter by its positive keys
-    # (so railway/waterway networks work).
+    # Predefined networks and filters that exclude ways select from the 'highway' ways; a
+    # dict that keeps ways selects by its own keys and an advanced filter by its positive
+    # keys (so railway/waterway networks work).
     network_keys = ["highway"]
     column_keys = ["highway"]
     if custom_filter is not None:
@@ -815,7 +815,7 @@ def _network_spec(
         network_filter = with_shared_paths(custom_filter, shared_paths)
         # The filter keys are columns too (e.g. 'bicycle', 'service').
         column_keys = custom_filter.keys()
-        if advanced_filter:
+        if filter_type == "keep" and advanced_filter:
             network_keys = list(custom_filter.positive_keys)
         elif filter_type == "keep" and custom_filter:
             network_keys = list(custom_filter)
