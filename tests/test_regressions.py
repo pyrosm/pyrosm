@@ -6168,13 +6168,41 @@ def test_empty_read_warns_alike_in_both_readers_and_from_the_cache(engine):
 
     box = [24.94, 60.165, 24.95, 60.17]
     osm = OSM(get_data("helsinki_pbf"), bounding_box=box, engine=engine)
-    for _ in range(2):
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            assert osm.get_boundaries() is None
-        messages = [str(w.message) for w in caught]
-        assert sum("extend beyond the bounding box" in m for m in messages) == 1
-        assert messages.count("Could not find any boundaries for given area.") == 1
+    for read, found_nothing, cut in (
+        (osm.get_boundaries, "boundaries for given area.", 1),
+        (lambda: osm.get_pois({"boundary": ["administrative"]}), "POIs for given area.", 1),
+        (
+            lambda: osm.get_data_by_custom_criteria(
+                {"highway": ["residential"]}, keep_ways=False
+            ),
+            "OSM data for given area.",
+            0,
+        ),
+        (
+            lambda: osm.get_network(custom_filter={"waterway": ["river"]}, nodes=True)[1],
+            "edges that match custom_filter in given area.",
+            0,
+        ),
+    ):
+        for _ in range(2):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                assert read() is None
+            messages = [str(w.message) for w in caught]
+            assert sum("extend beyond the bounding box" in m for m in messages) == cut
+            assert messages.count("Could not find any " + found_nothing) == 1
+
+
+def test_in_memory_layer_without_rows_warns(monkeypatch):
+    """The in-memory reader of buildings, landuse and natural warns that it found
+    nothing also when its matching elements give no rows (#870)."""
+    import pyrosm.layers
+    from pyrosm import OSM, get_data
+
+    monkeypatch.setattr(pyrosm.layers, "prepare_geodataframe", lambda *a, **k: None)
+    osm = OSM(get_data("test_pbf"), engine="in_memory")
+    with pytest.warns(UserWarning, match="Could not find any landuse elements"):
+        assert osm.get_landuse() is None
 
 
 def test_reading_does_not_import_the_graph_libraries(tmp_path):
