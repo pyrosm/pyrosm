@@ -21,7 +21,7 @@ from pyrosm.engine.decode import (
     _decode_batch,
     _decode_batch_threads,
 )
-from pyrosm.utils import default_workers, warn_future_once
+from pyrosm.utils import _stacklevel_outside_pyrosm, default_workers, warn_future_once
 from pyrosm.utils.progress import (
     BUILDING,
     BUILDING_EDGES,
@@ -184,7 +184,7 @@ def _cap_workers(workers):
             f"workers={workers} exceeds the {n_cores} CPU cores available to this "
             f"process; reading with {n_cores} workers instead.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=_stacklevel_outside_pyrosm(),
         )
         return n_cores
     return workers
@@ -302,7 +302,11 @@ def _run_pool(func, tasks, workers, fallback_warning=None, progress=None):
                 return _map_tracked(pool, in_pool, tasks, counter, progress), True
         except (BrokenProcessPool, OSError):
             if fallback_warning is not None:
-                warnings.warn(fallback_warning, RuntimeWarning, stacklevel=2)
+                warnings.warn(
+                    fallback_warning,
+                    RuntimeWarning,
+                    stacklevel=_stacklevel_outside_pyrosm(),
+                )
             return _run_serial(func, tasks, progress), False
     except _ReportError as e:
         raise e.__cause__

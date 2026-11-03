@@ -631,19 +631,20 @@ def recording_warnings():
         _RECORDED_WARNINGS.reset(token)
 
 
-def warn_recorded(message, stacklevel=2):
-    """Give the ``UserWarning`` ``message``, and add it to the list of
-    :func:`recording_warnings` when one records in this context. ``stacklevel`` counts
-    from the caller, as for ``warnings.warn``."""
-    warnings.warn(message, UserWarning, stacklevel=stacklevel + 1)
+def warn_recorded(message):
+    """Give the ``UserWarning`` ``message``, pointing at the user's call, and add it to
+    the list of :func:`recording_warnings` when one records in this context."""
+    warnings.warn(message, UserWarning, stacklevel=_stacklevel_outside_pyrosm())
     recorded = _RECORDED_WARNINGS.get()
     if recorded is not None:
         recorded.append(message)
 
 
-def warn_empty_result(feature, stacklevel=2):
-    """Warn that a read of ``feature`` (a key of ``_EMPTY_RESULT_MESSAGES``) found
-    nothing. ``stacklevel`` counts from the caller, as for ``warnings.warn``."""
+def warn_empty_result(feature):
+    """Warn, pointing at the user's call, that a read of ``feature`` (a key of
+    ``_EMPTY_RESULT_MESSAGES``) found nothing."""
     warnings.warn(
-        _EMPTY_RESULT_MESSAGES[feature], UserWarning, stacklevel=stacklevel + 1
+        _EMPTY_RESULT_MESSAGES[feature],
+        UserWarning,
+        stacklevel=_stacklevel_outside_pyrosm(),
     )

@@ -881,7 +881,7 @@ def _plan_ways(plan, way_records, edits, del_nodes, del_ways, policy, known_node
             "write_pbf: %d way(s) were left with fewer than two member nodes and "
             "were not written: %s" % (len(degenerate), sorted(degenerate)[:5]),
             UserWarning,
-            stacklevel=2,
+            stacklevel=_stacklevel_outside_pyrosm(),
         )
 
 
