@@ -6119,7 +6119,41 @@ def test_network_filter_keeps_by_its_keys_and_excludes_from_highway_ways(engine)
         ):
             edges = osm.get_network(custom_filter=exclude, filter_type="exclude")
             assert set(edges["id"]) == set(highway_ways["id"]) - aisles
-    assert osm.get_graph(custom_filter={"waterway": ["stream"]}) is not None
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize("simplify", [True, False])
+def test_graph_without_oneway_tags_does_not_warn(engine, simplify):
+    """``get_graph`` and ``to_graph`` warned "Column 'oneway' missing" for a network whose
+    ways have no ``oneway`` tag, such as streams, also for a walking network, whose edges
+    are two-way anyway (#869). ``get_graph`` reads the ``oneway`` tag, so a missing column
+    means that no way has it, and a two-way network needs no column."""
+    import warnings
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"), engine=engine, workers=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for network_type in ("walking", "driving"):
+            graph = osm.get_graph(
+                network_type,
+                "networkx",
+                custom_filter={"waterway": ["stream"]},
+                simplify=simplify,
+            )
+            assert graph.number_of_edges() > 0
+        nodes, edges = osm.get_network(nodes=True)
+        osm.to_graph(nodes, edges.drop(columns="oneway"), "networkx", simplify=simplify)
+    # A direction tag that the read leaves out still warns.
+    with pytest.warns(UserWarning, match="Column 'oneway' missing"):
+        osm.get_graph(
+            "driving",
+            "networkx",
+            direction="oneway:bus",
+            custom_filter={"waterway": ["stream"]},
+            simplify=simplify,
+        )
 
 
 def test_reading_does_not_import_the_graph_libraries(tmp_path):
@@ -6348,7 +6382,9 @@ def test_warnings_point_at_the_callers_line(tmp_path, monkeypatch, call):
             pyrosm.OSM(fp, workers=2).get_buildings()
         elif call == "to_graph":
             line = sys._getframe().f_lineno + 1
-            pyrosm.OSM.to_graph(nodes, edges.drop(columns="oneway"), graph_type="networkx")
+            pyrosm.OSM.to_graph(
+                nodes, edges.drop(columns="oneway"), "networkx", network_type="driving"
+            )
         else:
             delete = [("node", n) for n in refs[1:]]
             line = sys._getframe().f_lineno + 1

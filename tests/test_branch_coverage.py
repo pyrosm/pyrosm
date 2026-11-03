@@ -101,13 +101,13 @@ def test_to_graph_requires_node_id_column(test_pbf):
 
 
 def test_to_graph_warns_when_direction_column_missing(test_pbf):
-    """Edges without the oneway/direction column warn and are treated as
-    bidirectional (graphs.py)."""
+    """Edges of a directed network without the oneway/direction column warn and are
+    treated as bidirectional (graphs.py)."""
     from pyrosm.graphs import to_igraph
 
     pytest.importorskip("igraph")
     osm = OSM(test_pbf)
-    nodes, edges = osm.get_network(nodes=True)
+    nodes, edges = osm.get_network("driving", nodes=True)
     if "oneway" in edges.columns:
         edges = edges.drop(columns=["oneway"])
     with pytest.warns(UserWarning, match="oneway"):

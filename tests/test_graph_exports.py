@@ -461,7 +461,7 @@ def test_graph_export_works_without_oneway_column(test_pbf):
 
     osm = OSM(test_pbf)
     # NetworkX
-    nodes, edges = osm.get_network(nodes=True)
+    nodes, edges = osm.get_network("driving", nodes=True)
     # Drop "oneway" column to test
     edges = edges.drop("oneway", axis=1)
 

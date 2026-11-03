@@ -65,6 +65,7 @@ from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
 from pyrosm.graphs import (
+    add_empty_direction_column,
     graph_tags,
     record_network_type,
     step_shares,
@@ -81,6 +82,7 @@ from pyrosm.engine.pool import GRAPH_SHARES, NETWORK_NODES_SHARES
 from pyrosm.engine.readers import (
     _boundary_filter,
     _network_filter_type,
+    _network_spec,
     _poi_filter,
     _require_layer_key,
     graph_network,
@@ -1706,6 +1708,14 @@ class OSM:
                 )
                 if tag not in tags_to_keep
             ]
+        read_columns = _network_spec(
+            network_type,
+            extra_attributes,
+            custom_filter,
+            filter_type,
+            tags_to_keep,
+            shared_paths,
+        )[0]
         shares = self._graph_read_shares(simplify, timestamp)
         shares.update(
             step_shares(simplify, retain_all, validate_graph_type(graph_type))
@@ -1745,6 +1755,7 @@ class OSM:
                 )
             if edges is None:
                 return None
+            add_empty_direction_column(edges, direction, read_columns)
             return self.to_graph(
                 nodes,
                 edges,
