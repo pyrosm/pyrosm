@@ -145,7 +145,7 @@ def _warn_highway_ways_only(custom_filter, filter_type):
 def _warn_no_edges(custom_filter):
     """Warn that a network read found no edges, naming the filter when ``custom_filter``
     was given."""
-    warn_empty_result("network" if custom_filter is None else "custom_network", 3)
+    warn_empty_result("network" if custom_filter is None else "custom_network")
 
 
 def _custom_read_filter(args):

@@ -6302,33 +6302,90 @@ def test_widget_bar_ends_at_100_percent(monkeypatch):
     assert steps.report.bar.container.layout.visibility != "hidden"
 
 
-@pytest.mark.parametrize("call", ["find_extracts", "to_pbf"])
+@pytest.mark.parametrize(
+    "call",
+    [
+        "find_extracts",
+        "to_pbf",
+        "empty_read",
+        "box_cuts_relations",
+        "too_many_workers",
+        "pool_fallback",
+        "to_graph",
+        "write_pbf",
+    ],
+)
 def test_warnings_point_at_the_callers_line(tmp_path, monkeypatch, call):
     """The extract search's warnings for an index or a size it cannot fetch, and the
-    warning for a crop that holds no node, named a line in pyrosm's own code. They point at
-    the caller's line, as pyrosm's other warnings do (#851)."""
+    warning for a crop that holds no node, named a line in pyrosm's own code (#851). So
+    did the warnings for a read that finds nothing, relations a bounding box cuts, more
+    workers than cores, a process pool that cannot start, edges without a ``oneway``
+    column and ways ``write_pbf`` leaves out (#864). They point at the caller's line, as
+    pyrosm's other warnings do; the empty-read and cut-relations cases check both readers."""
     import warnings
     from urllib.error import URLError
 
     from shapely.geometry import box
 
     import pyrosm
+    from pyrosm.engine import pool
     from pyrosm.utils import download
 
     def offline(*args, **kwargs):
         raise URLError("down")
 
+    class RefusedPool:
+        def __init__(self, *args, **kwargs):
+            raise OSError("refused")
+
     monkeypatch.setattr(download, "open_url", offline)
+    monkeypatch.setattr(pool, "_available_cores", lambda: 2)
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", "processes")
+    monkeypatch.setattr(pool, "ProcessPoolExecutor", RefusedPool)
+    fp = pyrosm.get_data("test_pbf")
     area = box(24.9, 60.15, 24.95, 60.2)
-    osm = pyrosm.OSM(pyrosm.get_data("test_pbf"), bounding_box=[0, 0, 0.1, 0.1])
+    osm = pyrosm.OSM(fp, bounding_box=[0, 0, 0.1, 0.1])
+    whole = pyrosm.OSM(fp, keep_node_info=True)
+    if call in ("to_graph", "write_pbf"):
+        nodes, edges = whole.get_network(nodes=True)
+        ways = whole.get_network()
+        refs = next(r for r in ways["nodes"] if len(r) > 2 and set(r) <= set(nodes["id"]))
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         if call == "find_extracts":
             line = sys._getframe().f_lineno + 1
             pyrosm.find_extracts(area, update=True, directory=tmp_path, progress=False)
-        else:
+        elif call == "to_pbf":
             line = sys._getframe().f_lineno + 1
             osm.to_pbf(tmp_path / "empty.osm.pbf")
+        elif call in ("empty_read", "box_cuts_relations"):
+            for engine in ("in_memory", "out_of_core"):
+                if call == "empty_read":
+                    reader = pyrosm.OSM(fp, engine=engine)
+                    line = sys._getframe().f_lineno + 1
+                    reader.get_network(custom_filter='["waterway"="none"]')
+                else:
+                    reader = pyrosm.OSM(
+                        pyrosm.get_data("helsinki_pbf"),
+                        bounding_box=[24.93, 60.16, 24.95, 60.18],
+                        engine=engine,
+                    )
+                    line = sys._getframe().f_lineno + 1
+                    reader.get_buildings()
+        elif call == "too_many_workers":
+            monkeypatch.delenv("PYROSM_DECODE_BACKEND")
+            line = sys._getframe().f_lineno + 1
+            pyrosm.OSM(fp, workers=3).get_buildings()
+        elif call == "pool_fallback":
+            line = sys._getframe().f_lineno + 1
+            pyrosm.OSM(fp, workers=2).get_buildings()
+        elif call == "to_graph":
+            line = sys._getframe().f_lineno + 1
+            pyrosm.OSM.to_graph(nodes, edges.drop(columns="oneway"), graph_type="networkx")
+        else:
+            delete = [("node", n) for n in refs[1:]]
+            line = sys._getframe().f_lineno + 1
+            whole.write_pbf(ways, tmp_path / "out.osm.pbf", delete=delete)
     messages = [str(w.message) for w in caught]
     expected = {
         "find_extracts": [
@@ -6339,6 +6396,14 @@ def test_warnings_point_at_the_callers_line(tmp_path, monkeypatch, call):
             "Could not get the size of",
         ],
         "to_pbf": ["No node of test.osm.pbf lies in the area"],
+        "empty_read": ["Could not find any edges that match custom_filter"],
+        "box_cuts_relations": ["relation(s) extend beyond the bounding box"],
+        "too_many_workers": ["workers=3 exceeds the 2 CPU cores"],
+        "pool_fallback": ["Parallel decoding could not start"],
+        "to_graph": ["Column 'oneway' missing in the edges GeoDataFrame"],
+        "write_pbf": ["were left with fewer than two member nodes"],
     }[call]
-    assert all(any(m.startswith(e) for m in messages) for e in expected)
+    assert all(any(e in m for m in messages) for e in expected), messages
+    if call in ("empty_read", "box_cuts_relations"):
+        assert len(caught) == 2  # one from each reader
     assert all((w.filename, w.lineno) == (__file__, line) for w in caught)

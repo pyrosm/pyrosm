@@ -15,6 +15,7 @@ from pyrosm.graph_simplify import (
     _simplify_rows,
 )
 from pyrosm.utils import (
+    _stacklevel_outside_pyrosm,
     set_frame_attr,
     validate_edge_gdf,
     validate_node_gdf,
@@ -257,7 +258,7 @@ def _direction_column(direction, columns):
             f"Assuming all edges to be bidirectional "
             f"(travel allowed to both directions).",
             UserWarning,
-            stacklevel=4,
+            stacklevel=_stacklevel_outside_pyrosm(),
         )
     return direction, direction_suffix
 

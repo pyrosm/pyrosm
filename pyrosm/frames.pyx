@@ -183,8 +183,7 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
                 f"{n_straddling} relation(s) extend beyond the bounding box and were "
                 f"returned with incomplete geometry (some member ways fall outside "
                 f"the box). Pass complete_relations=True to OSM(...) to fetch their "
-                f"full member set.",
-                stacklevel=2,
+                f"full member set."
             )
 
     # Prepare ways
