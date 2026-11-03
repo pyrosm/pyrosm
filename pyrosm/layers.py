@@ -67,6 +67,8 @@ def get_layer_data(
         complete_relations=complete_relations,
         steps=steps,
     )
+    if gdf is None:
+        warn_empty_result(result_name)
     return gdf
 
 

@@ -6156,6 +6156,27 @@ def test_graph_without_oneway_tags_does_not_warn(engine, simplify):
         )
 
 
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_empty_read_warns_alike_in_both_readers_and_from_the_cache(engine):
+    """A read whose matching elements give no rows, such as the boundaries of a small box
+    that cuts their relations, warned in memory only that the box cuts relations, and the
+    out-of-core reader gave that warning only until the result came from its cache (#870).
+    Both readers give both warnings on every read."""
+    import warnings
+
+    from pyrosm import OSM, get_data
+
+    box = [24.94, 60.165, 24.95, 60.17]
+    osm = OSM(get_data("helsinki_pbf"), bounding_box=box, engine=engine)
+    for _ in range(2):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert osm.get_boundaries() is None
+        messages = [str(w.message) for w in caught]
+        assert sum("extend beyond the bounding box" in m for m in messages) == 1
+        assert messages.count("Could not find any boundaries for given area.") == 1
+
+
 def test_reading_does_not_import_the_graph_libraries(tmp_path):
     """Importing pyrosm's reader imported igraph, networkx, pandana and pandarm, only to
     learn whether they are installed, which took more than a second in every new process

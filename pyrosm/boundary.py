@@ -71,6 +71,7 @@ def get_boundary_data(
     )
 
     if gdf is None:
+        warn_empty_result("boundaries")
         return None
 
     if name is not None:
