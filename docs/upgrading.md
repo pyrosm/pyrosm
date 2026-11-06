@@ -25,6 +25,15 @@ new options that leave the defaults as they were, and fixes of calls that failed
   excluding `'["service"="parking_aisle"]'` gives 2,564 ways instead of 37. To get the earlier
   result, keep the ways that have the key with another value, for example
   `custom_filter='["service"]["service"!="parking_aisle"]'`.
+- **Graphs of networks read with a custom filter.** A network read with a `custom_filter` and
+  without a `network_type` is a `custom` network, and `to_graph()` and `get_graph()` keep its
+  one-way streets one-way, as in the driving network. Earlier versions made every edge two-way,
+  as in the walking network. To get the earlier graph, pass `force_bidirectional=True` to
+  `to_graph()` or `get_graph()`, or pass `network_type="walking"` together with the
+  `custom_filter`.
+- **`oneway=reverse` in graphs.** A way tagged `oneway=reverse` is one-way against the order of
+  its nodes. Graphs that follow the `oneway` tag now treat it like `oneway=-1`; earlier versions
+  made it two-way. Very few ways have this tag, and nothing needs to change in your code.
 
 ## pyrosm 0.29.0
 
