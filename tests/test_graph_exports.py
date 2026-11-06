@@ -522,24 +522,24 @@ def test_generate_directed_edges_honours_oneway_bicycle():
 
     Covers a two-way street, a one-way street, a contraflow street
     (oneway=yes + oneway:bicycle=no -> two-way for bikes), a bike-only one-way
-    (oneway:bicycle=yes), and a reverse one-way (oneway=-1).
+    (oneway:bicycle=yes), and reverse one-ways (oneway=-1 and oneway=reverse).
     """
     import pandas as pd
     from pyrosm.graph_export import generate_directed_edges
 
     edges = pd.DataFrame(
         {
-            "u": [1, 3, 5, 7, 9],
-            "v": [2, 4, 6, 8, 10],
-            "oneway": [None, "yes", "yes", None, "-1"],
-            "oneway:bicycle": [None, None, "no", "yes", None],
+            "u": [1, 3, 5, 7, 9, 11],
+            "v": [2, 4, 6, 8, 10, 12],
+            "oneway": [None, "yes", "yes", None, "-1", "reverse"],
+            "oneway:bicycle": [None, None, "no", "yes", None, None],
         }
     )
     out = generate_directed_edges(edges, "oneway", "bicycle", "u", "v", False)
     pairs = _edge_pairs(out)
 
-    # 2 (two-way) + 1 + 2 (contraflow) + 1 + 1 = 7 directed edges
-    assert len(out) == 7
+    # 2 (two-way) + 1 + 2 (contraflow) + 1 + 1 + 1 = 8 directed edges
+    assert len(out) == 8
     # two-way street -> both directions
     assert (1, 2) in pairs and (2, 1) in pairs
     # one-way street -> single direction
@@ -548,8 +548,9 @@ def test_generate_directed_edges_honours_oneway_bicycle():
     assert (5, 6) in pairs and (6, 5) in pairs
     # bike-only one-way (oneway:bicycle=yes) -> single direction
     assert (7, 8) in pairs and (8, 7) not in pairs
-    # reverse one-way (oneway=-1) -> flipped
+    # reverse one-ways (oneway=-1, oneway=reverse) -> flipped
     assert (10, 9) in pairs and (9, 10) not in pairs
+    assert (12, 11) in pairs and (11, 12) not in pairs
 
 
 def test_generate_directed_edges_without_suffix_is_oneway_only():

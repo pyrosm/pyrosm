@@ -8,8 +8,9 @@ import shapely
 import pandas as pd
 import numpy as np
 
-# The values used to determine oneway road in OSM
+# The values used to determine oneway road in OSM, and those against the node order
 oneway_values = Conf.oneway_values
+reversed_oneway_values = Conf.reversed_oneway_values
 
 cpdef _count_streets_per_node(graph):
     """
@@ -179,7 +180,7 @@ cpdef _create_pandarm_graph(nodes,
 
 cdef _oneway_masks(edges, direction, direction_suffix):
     """Per edge, by position: whether it can be travelled in one direction only, and
-    whether that direction runs against its from -> to order ("-1" or "T").
+    whether that direction runs against its from -> to order ("-1", "reverse" or "T").
 
     A "<direction>:<direction_suffix>" column (e.g. "oneway:bicycle") overrides the base
     direction where it is set, and a roundabout is one-way.
@@ -195,7 +196,7 @@ cdef _oneway_masks(edges, direction, direction_suffix):
         oneway_mask = (effective_direction.isin(oneway_values)) | (edges["junction"] == "roundabout")
     else:
         oneway_mask = effective_direction.isin(oneway_values)
-    return oneway_mask.to_numpy(), effective_direction.isin(["-1", "T"]).to_numpy()
+    return oneway_mask.to_numpy(), effective_direction.isin(reversed_oneway_values).to_numpy()
 
 
 cpdef directed_rows(edges, direction, direction_suffix, force_bidirectional,

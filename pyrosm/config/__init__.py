@@ -107,5 +107,6 @@ class Conf:
     tags = Tags()
     _possible_network_filters = NETWORK_TYPES
 
-    # One way tags
-    oneway_values = ["yes", "true", "1", "-1", "T", "F"]
+    # One way tags, and those of them that run against the node order
+    oneway_values = ["yes", "true", "1", "-1", "reverse", "T", "F"]
+    reversed_oneway_values = ["-1", "reverse", "T"]
