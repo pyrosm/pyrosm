@@ -379,6 +379,20 @@ def test_force_oneway_keeps_the_drawn_direction(simplify):
     if not simplify:
         assert graph.number_of_edges() == len(edges)
         assert set(graph.edges()) == set(drawn.edges())
+        # Frames without a recorded type need none, and a given type is not used
+        unrecorded = nodes.copy(), edges.copy()
+        for frame in unrecorded:
+            frame.attrs = {}
+        for network_type in (None, "driving"):
+            graph = OSM.to_graph(
+                *unrecorded,
+                "networkx",
+                network_type=network_type,
+                force_oneway=True,
+                retain_all=True,
+                simplify=False,
+            )
+            assert set(graph.edges()) == set(drawn.edges())
         return
     assert 0 < graph.number_of_edges() < len(edges)
     for u, v, data in graph.edges(data=True):

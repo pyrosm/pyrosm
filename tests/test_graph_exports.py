@@ -886,6 +886,11 @@ def test_graph_network_reads_the_network_tables(test_pbf, osm_kwargs, network_ty
         ),
         ("networkx", {}, {"custom_filter": '["highway"~"secondary|residential"]'}),
         ("igraph", {}, {"custom_filter": '["highway"~"tertiary"]', "force_oneway": True}),
+        (
+            "networkx",
+            {},
+            {"network_type": "driving", "force_oneway": True, "tags_to_keep": ["name"]},
+        ),
         ("igraph", {}, {"network_type": "cycling", "retain_all": True}),
         ("pandarm", {}, {"network_type": "driving"}),
         pytest.param("pandana", {}, {"network_type": "walking"}, marks=_pandana_unsupported_on_win),
@@ -921,6 +926,7 @@ def test_get_graph_is_the_exported_network(request, graph_type, osm_kwargs, kwar
             export.get("force_bidirectional", False),
             export.get("simplify", True),
             export.get("simplify_kwargs"),
+            export.get("force_oneway", False),
         )
         read["tags_to_keep"] = read["tags_to_keep"] + [
             tag for tag in added if tag not in read["tags_to_keep"]
@@ -931,6 +937,10 @@ def test_get_graph_is_the_exported_network(request, graph_type, osm_kwargs, kwar
         expected = OSM.to_graph(nodes, edges, graph_type, **export)
         graph = OSM(pbf, **osm_kwargs).get_graph(graph_type=graph_type, **kwargs)
     assert _comparable(_graph_contents(graph)) == _comparable(_graph_contents(expected))
+    if "tags_to_keep" in kwargs and kwargs.get("force_oneway"):
+        # A graph that keeps the drawn direction reads no tag of the edges' directions
+        tags = {key for *_, data in graph.edges(data=True) for key in data}
+        assert not tags & {"oneway_tag", "junction"}
 
 
 @pytest.mark.parametrize(
