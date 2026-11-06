@@ -8,8 +8,9 @@ import shapely
 import pandas as pd
 import numpy as np
 
-# The values used to determine oneway road in OSM
+# The values used to determine oneway road in OSM, and those against the node order
 oneway_values = Conf.oneway_values
+reversed_oneway_values = Conf.reversed_oneway_values
 
 cpdef _count_streets_per_node(graph):
     """
@@ -179,7 +180,7 @@ cpdef _create_pandarm_graph(nodes,
 
 cdef _oneway_masks(edges, direction, direction_suffix):
     """Per edge, by position: whether it can be travelled in one direction only, and
-    whether that direction runs against its from -> to order ("-1" or "T").
+    whether that direction runs against its from -> to order ("-1", "reverse" or "T").
 
     A "<direction>:<direction_suffix>" column (e.g. "oneway:bicycle") overrides the base
     direction where it is set, and a roundabout is one-way.
@@ -195,17 +196,20 @@ cdef _oneway_masks(edges, direction, direction_suffix):
         oneway_mask = (effective_direction.isin(oneway_values)) | (edges["junction"] == "roundabout")
     else:
         oneway_mask = effective_direction.isin(oneway_values)
-    return oneway_mask.to_numpy(), effective_direction.isin(["-1", "T"]).to_numpy()
+    return oneway_mask.to_numpy(), effective_direction.isin(reversed_oneway_values).to_numpy()
 
 
 cpdef directed_rows(edges, direction, direction_suffix, force_bidirectional,
-                    way_of=None):
+                    way_of=None, force_oneway=False):
     """The directed edges of `edges` as ``(rows, swapped)``, in the order
     :func:`generate_directed_edges` gives them: directed edge ``i`` is row ``rows[i]`` of
     `edges` (by position), travelled from its to-node to its from-node where
     ``swapped[i]``. No column of `edges` is copied. With ``way_of``, `edges` are ways and
-    edge ``i`` is a segment of way row ``way_of[i]``, travelled as its way is."""
+    edge ``i`` is a segment of way row ``way_of[i]``, travelled as its way is. With
+    ``force_oneway`` every edge is travelled once, from its from-node to its to-node."""
     n = len(edges) if way_of is None else len(way_of)
+    if force_oneway:
+        return np.arange(n), np.zeros(n, dtype=bool)
     if force_bidirectional:
         rows = np.concatenate([np.arange(n), np.arange(n)])
         return rows, np.repeat(np.array([False, True]), n)
@@ -238,7 +242,8 @@ cpdef generate_directed_edges(edges,
                               direction_suffix,
                               from_id_col,
                               to_id_col,
-                              force_bidirectional):
+                              force_bidirectional,
+                              force_oneway=False):
     """
     Generates directed set of edges from network
     following rules specified in 'direction' column.
@@ -248,11 +253,15 @@ cpdef generate_directed_edges(edges,
     set. This allows mode-specific exceptions such as contraflow cycling
     (oneway=yes + oneway:bicycle=no -> two-way for bikes).
 
-    If 'force_bidirectional=True' travel to both direction is allowed for all edges.
+    If 'force_bidirectional=True' travel to both direction is allowed for all edges, and
+    with 'force_oneway=True' every edge is kept as it is, from its from-node to its
+    to-node, whatever the 'direction' column says.
 
     An edge travelled against its way gets the way's line reversed, so every line runs
     from the edge's from-node to its to-node.
     """
+    if force_oneway:
+        return edges
     if force_bidirectional:
         # Flip from/to values
         edges_dir2 = _with_lines_reversed(edges.copy(deep=True).rename(

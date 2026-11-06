@@ -447,12 +447,13 @@ def test_run_layers(tmp_path, monkeypatch):
         ("{network: {network_type: walking}, simplify: true}", True),
         ("{network: {network_type: driving}}", False),
         ("{network: {network_type: driving}, force_bidirectional: true}", True),
+        ("{network: {custom_filter: {highway: [secondary, residential]}}}", False),
     ],
 )
 def test_run_graph(tmp_path, graph, two_way):
     """The graph stage writes the node and edge tables ``graph_tables`` builds: a walking
-    graph runs both ways, a driving graph keeps one-way streets one-way unless
-    ``force_bidirectional``."""
+    graph runs both ways, a driving graph and the graph of a custom filter keep one-way
+    streets one-way unless ``force_bidirectional``."""
     text = f"recipe: pyrosm\npbf: {{file: '{PBF}'}}\ngraph: {graph}\n"
     text += "outputs: {graph: {nodes: n.parquet, edges: e.parquet}}\n"
     recipe = _recipe(tmp_path, text)
@@ -460,7 +461,7 @@ def test_run_graph(tmp_path, graph, two_way):
     resolved = recipes.validate(recipe)["graph"]
     network = resolved["network"]
     read = OSM(PBF).get_network(nodes=True, **network)
-    expected = graph_tables(*read, network_type=network["network_type"], **resolved["keywords"])
+    expected = graph_tables(*read, network_type=network.get("network_type"), **resolved["keywords"])
     nodes, edges = gpd.read_parquet(nodes_path), gpd.read_parquet(edges_path)
     for written, frame in zip((nodes, edges), expected):
         nested = frame.map(lambda value: isinstance(value, (list, dict)))

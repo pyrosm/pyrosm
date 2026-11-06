@@ -522,24 +522,24 @@ def test_generate_directed_edges_honours_oneway_bicycle():
 
     Covers a two-way street, a one-way street, a contraflow street
     (oneway=yes + oneway:bicycle=no -> two-way for bikes), a bike-only one-way
-    (oneway:bicycle=yes), and a reverse one-way (oneway=-1).
+    (oneway:bicycle=yes), and reverse one-ways (oneway=-1 and oneway=reverse).
     """
     import pandas as pd
     from pyrosm.graph_export import generate_directed_edges
 
     edges = pd.DataFrame(
         {
-            "u": [1, 3, 5, 7, 9],
-            "v": [2, 4, 6, 8, 10],
-            "oneway": [None, "yes", "yes", None, "-1"],
-            "oneway:bicycle": [None, None, "no", "yes", None],
+            "u": [1, 3, 5, 7, 9, 11],
+            "v": [2, 4, 6, 8, 10, 12],
+            "oneway": [None, "yes", "yes", None, "-1", "reverse"],
+            "oneway:bicycle": [None, None, "no", "yes", None, None],
         }
     )
     out = generate_directed_edges(edges, "oneway", "bicycle", "u", "v", False)
     pairs = _edge_pairs(out)
 
-    # 2 (two-way) + 1 + 2 (contraflow) + 1 + 1 = 7 directed edges
-    assert len(out) == 7
+    # 2 (two-way) + 1 + 2 (contraflow) + 1 + 1 + 1 = 8 directed edges
+    assert len(out) == 8
     # two-way street -> both directions
     assert (1, 2) in pairs and (2, 1) in pairs
     # one-way street -> single direction
@@ -548,8 +548,9 @@ def test_generate_directed_edges_honours_oneway_bicycle():
     assert (5, 6) in pairs and (6, 5) in pairs
     # bike-only one-way (oneway:bicycle=yes) -> single direction
     assert (7, 8) in pairs and (8, 7) not in pairs
-    # reverse one-way (oneway=-1) -> flipped
+    # reverse one-ways (oneway=-1, oneway=reverse) -> flipped
     assert (10, 9) in pairs and (9, 10) not in pairs
+    assert (12, 11) in pairs and (11, 12) not in pairs
 
 
 def test_generate_directed_edges_without_suffix_is_oneway_only():
@@ -883,6 +884,13 @@ def test_graph_network_reads_the_network_tables(test_pbf, osm_kwargs, network_ty
                 },
             },
         ),
+        ("networkx", {}, {"custom_filter": '["highway"~"secondary|residential"]'}),
+        ("igraph", {}, {"custom_filter": '["highway"~"tertiary"]', "force_oneway": True}),
+        (
+            "networkx",
+            {},
+            {"network_type": "driving", "force_oneway": True, "tags_to_keep": ["name"]},
+        ),
         ("igraph", {}, {"network_type": "cycling", "retain_all": True}),
         ("pandarm", {}, {"network_type": "driving"}),
         pytest.param("pandana", {}, {"network_type": "walking"}, marks=_pandana_unsupported_on_win),
@@ -918,6 +926,7 @@ def test_get_graph_is_the_exported_network(request, graph_type, osm_kwargs, kwar
             export.get("force_bidirectional", False),
             export.get("simplify", True),
             export.get("simplify_kwargs"),
+            export.get("force_oneway", False),
         )
         read["tags_to_keep"] = read["tags_to_keep"] + [
             tag for tag in added if tag not in read["tags_to_keep"]
@@ -928,6 +937,10 @@ def test_get_graph_is_the_exported_network(request, graph_type, osm_kwargs, kwar
         expected = OSM.to_graph(nodes, edges, graph_type, **export)
         graph = OSM(pbf, **osm_kwargs).get_graph(graph_type=graph_type, **kwargs)
     assert _comparable(_graph_contents(graph)) == _comparable(_graph_contents(expected))
+    if "tags_to_keep" in kwargs and kwargs.get("force_oneway"):
+        # A graph that keeps the drawn direction reads no tag of the edges' directions
+        tags = {key for *_, data in graph.edges(data=True) for key in data}
+        assert not tags & {"oneway_tag", "junction"}
 
 
 @pytest.mark.parametrize(

@@ -312,6 +312,122 @@ def test_get_network_custom_filter_graph_export():
     assert set(pruned.nodes()).issubset(set(nodes["id"]))
 
 
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_custom_filter_network_is_custom_and_follows_oneway(engine):
+    """A network read with a custom_filter is recorded as 'custom', and its graph keeps
+    the one-way segments one-way; force_bidirectional makes every edge two-way, and a
+    network_type given with the filter directs the edges as for that type."""
+    from pyrosm import OSM, get_data
+    from pyrosm.config import Conf
+
+    def one_way_pairs(nodes, edges, **kwargs):
+        graph = OSM.to_graph(
+            nodes, edges, "networkx", retain_all=True, simplify=False, **kwargs
+        )
+        pairs = {(u, v) for u, v, _ in graph.edges(keys=True)}
+        return sum((v, u) not in pairs for u, v in pairs)
+
+    osm = OSM(get_data("test_pbf"), engine=engine)
+    custom_filter = '["highway"~"primary|secondary|tertiary|residential"]'
+    nodes, edges = osm.get_network(custom_filter=custom_filter, nodes=True)
+    assert edges.attrs["network_type"] == nodes.attrs["network_type"] == "custom"
+    one_way = edges["oneway"].isin(Conf.oneway_values).sum()
+    assert one_way == 65
+    assert one_way_pairs(nodes, edges) == one_way
+    assert one_way_pairs(nodes, edges, force_bidirectional=True) == 0
+
+    # Frames without a recorded type, e.g. read from a file, take network_type='custom'
+    unrecorded = nodes.copy(), edges.copy()
+    for frame in unrecorded:
+        frame.attrs = {}
+    with pytest.raises(ValueError, match="Could not detect the network type"):
+        one_way_pairs(*unrecorded)
+    assert one_way_pairs(*unrecorded, network_type="custom") == one_way
+
+    walking = osm.get_network("walking", custom_filter=custom_filter, nodes=True)
+    assert walking[1].attrs["network_type"] == "walking"
+    assert one_way_pairs(*walking) == 0
+
+
+def _drawn_network():
+    """The streets of the bundled test file with ``get_network(nodes=True)``, and their
+    segments as a networkx DiGraph, each from ``u`` to ``v`` as its way is drawn."""
+    import networkx as nx
+    from pyrosm import OSM, get_data
+
+    nodes, edges = OSM(get_data("test_pbf")).get_network(
+        custom_filter='["highway"~"primary|secondary|tertiary|residential"]', nodes=True
+    )
+    return nodes, edges, nx.DiGraph(list(zip(edges["u"], edges["v"])))
+
+
+@pytest.mark.parametrize("simplify", [False, True])
+def test_force_oneway_keeps_the_drawn_direction(simplify):
+    """force_oneway adds every edge only from u to v in the order of its way's nodes,
+    also where the oneway column says otherwise; merged edges of a simplified graph run
+    along the drawn direction, with their line from u to v."""
+    import networkx as nx
+    from pyrosm import OSM
+
+    nodes, edges, drawn = _drawn_network()
+    assert edges["oneway"].notna().any()
+    graph = OSM.to_graph(
+        nodes, edges, "networkx", force_oneway=True, retain_all=True, simplify=simplify
+    )
+    assert graph.graph["crs"] == "EPSG:4326"
+    assert all(d["oneway"] and not d["reversed"] for *_, d in graph.edges(data=True))
+    if not simplify:
+        assert graph.number_of_edges() == len(edges)
+        assert set(graph.edges()) == set(drawn.edges())
+        # Frames without a recorded type need none, and a given type is not used
+        unrecorded = nodes.copy(), edges.copy()
+        for frame in unrecorded:
+            frame.attrs = {}
+        for network_type in (None, "driving"):
+            graph = OSM.to_graph(
+                *unrecorded,
+                "networkx",
+                network_type=network_type,
+                force_oneway=True,
+                retain_all=True,
+                simplify=False,
+            )
+            assert set(graph.edges()) == set(drawn.edges())
+        return
+    assert 0 < graph.number_of_edges() < len(edges)
+    for u, v, data in graph.edges(data=True):
+        assert nx.has_path(drawn, u, v)
+        line = data["geometry"].coords
+        assert line[0] == (graph.nodes[u]["x"], graph.nodes[u]["y"])
+        assert line[-1] == (graph.nodes[v]["x"], graph.nodes[v]["y"])
+
+
+def test_force_oneway_keeps_the_largest_weakly_connected_part():
+    """With retain_all=False a force_oneway graph keeps its largest weakly connected
+    part: its strongly connected parts are single nodes where the ways form no loop."""
+    import networkx as nx
+    from pyrosm import OSM
+
+    nodes, edges, drawn = _drawn_network()
+    graph = OSM.to_graph(nodes, edges, "networkx", force_oneway=True, simplify=False)
+    largest = max(nx.weakly_connected_components(drawn), key=len)
+    assert len(largest) > len(max(nx.strongly_connected_components(drawn), key=len))
+    assert set(graph.nodes()) == largest
+
+
+def test_force_oneway_and_force_bidirectional_cannot_be_combined():
+    """A graph cannot keep every edge in its drawn direction and make it two-way."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    nodes, edges = osm.get_network(nodes=True)
+    both = {"force_oneway": True, "force_bidirectional": True}
+    with pytest.raises(ValueError, match="cannot be used together"):
+        OSM.to_graph(nodes, edges, "networkx", **both)
+    with pytest.raises(ValueError, match="cannot be used together"):
+        osm.get_graph(graph_type="networkx", **both)
+
+
 def test_get_network_custom_filter_exclude():
     """#118/#181 — a 'exclude' custom_filter drops the matching ways, and is the
     complement of the matching 'keep' filter."""
@@ -1684,7 +1800,8 @@ def test_unknown_network_type_raises():
     from pyrosm import OSM, get_data
 
     osm = OSM(get_data("test_pbf"))
-    for network_type in ("driving_psv", "driving+psv", "not_a_network"):
+    # 'custom' names the network of a custom_filter, so it needs one
+    for network_type in ("driving_psv", "driving+psv", "not_a_network", "custom"):
         with pytest.raises(ValueError, match="network_type"):
             osm.get_network(network_type=network_type)
 

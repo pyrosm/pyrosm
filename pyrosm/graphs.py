@@ -22,8 +22,11 @@ from pyrosm.utils import (
     warn_future,
 )
 from pyrosm.utils.progress import stepping, validate_progress
-from pyrosm.config import Conf
-from pyrosm.config.osm_filters import _UNKNOWN_NETWORK_TYPE, normalize_network_type
+from pyrosm.config.osm_filters import (
+    GRAPH_NETWORK_TYPES,
+    _UNKNOWN_GRAPH_NETWORK_TYPE,
+    normalize_network_type,
+)
 from rapidjson import dumps
 import contextlib
 import numpy as np
@@ -99,9 +102,12 @@ def get_directed_edges(
     force_bidirectional=False,
     network_type=None,
     osmnx_flags=False,
+    force_oneway=False,
 ):
     """Prepares the edges and nodes for exporting to different graphs; with
-    ``osmnx_flags`` the directed edges get the columns of :func:`_osmnx_flags`."""
+    ``osmnx_flags`` the directed edges get the columns of :func:`_osmnx_flags`, and with
+    ``force_oneway`` every edge runs only from its ``from_id_col`` to its ``to_id_col``
+    node."""
     direction, direction_suffix, both_ways = _direction_rules(
         nodes,
         edges,
@@ -111,13 +117,20 @@ def get_directed_edges(
         node_id_col,
         force_bidirectional,
         network_type,
+        force_oneway,
     )
     edges = edges.copy()
     nodes = nodes.copy()
     flags = None
     if osmnx_flags:
         flags = _osmnx_flags(
-            *directed_rows(edges, direction, direction_suffix, both_ways)
+            *directed_rows(
+                edges,
+                direction,
+                direction_suffix,
+                both_ways,
+                force_oneway=force_oneway,
+            )
         )
     edges = generate_directed_edges(
         edges,
@@ -126,6 +139,7 @@ def get_directed_edges(
         from_id_col,
         to_id_col,
         force_bidirectional=both_ways,
+        force_oneway=force_oneway,
     )
     for name, values in (flags or {}).items():
         edges[name] = pd.Series(values.tolist(), index=edges.index, dtype=object)
@@ -160,34 +174,38 @@ def _direction_rules(
     node_id_col,
     force_bidirectional,
     network_type,
+    force_oneway=False,
 ):
     """Validate the nodes and edges of :func:`get_directed_edges` and return how its edges
     are directed: ``(direction, direction_suffix, both_ways)``, the direction column, its
     mode-specific suffix (``"bicycle"`` for cycling) and whether every edge is two-way. A
     missing direction column is added to ``edges`` as empty, with a warning when the
-    network's edges are not all two-way."""
-    allowed_network_types = Conf._possible_network_filters
+    network's edges are not all two-way. With ``force_oneway`` the direction column is
+    not read, and the frames need no network type."""
     _validate_frames(nodes, edges, from_id_col, to_id_col, node_id_col)
 
     direction, direction_suffix = _split_direction(direction)
+    drawn = follows_drawn_direction(force_bidirectional, force_oneway)
 
     # The network type given, else the one recorded on the edges or nodes
     if network_type is not None:
         net_type = network_type
-        if normalize_network_type(net_type) not in allowed_network_types:
-            raise ValueError(_UNKNOWN_NETWORK_TYPE)
+        if normalize_network_type(net_type) not in GRAPH_NETWORK_TYPES:
+            raise ValueError(_UNKNOWN_GRAPH_NETWORK_TYPE)
+    elif drawn:
+        return direction, None, False
     else:
         net_type = edges.attrs.get("network_type")
-        if net_type not in allowed_network_types:
+        if net_type not in GRAPH_NETWORK_TYPES:
             net_type = nodes.attrs.get("network_type")
-        if net_type not in allowed_network_types:
-            txt = ", ".join(allowed_network_types)
+        if net_type not in GRAPH_NETWORK_TYPES:
             raise ValueError(
-                "Could not detect the network type from the edges. "
-                "In order to save the graph, specify the type of your network"
-                "with 'network_type' -parameter."
-                "Possible network types are: " + txt
+                "Could not detect the network type from the edges. Specify the type of "
+                "your network with the 'network_type' parameter. Possible network "
+                "types are: " + ", ".join(GRAPH_NETWORK_TYPES)
             )
+    if drawn:
+        return direction, None, False
 
     direction_suffix, both_ways = _travel_rules(
         direction_suffix, net_type, force_bidirectional
@@ -236,11 +254,28 @@ def _split_direction(direction):
     return direction, None
 
 
-def direction_tags(direction, network_type, force_bidirectional=False):
+def follows_drawn_direction(force_bidirectional, force_oneway):
+    """Whether every edge of a graph runs only in the direction its way is drawn in
+    (``force_oneway``), raising ``ValueError`` when ``force_bidirectional`` asks for
+    every edge to be two-way as well."""
+    if force_oneway and force_bidirectional:
+        raise ValueError(
+            "force_oneway=True and force_bidirectional=True cannot be used together: "
+            "force_oneway keeps every edge in the direction of its way, "
+            "force_bidirectional makes every edge two-way"
+        )
+    return bool(force_oneway)
+
+
+def direction_tags(
+    direction, network_type, force_bidirectional=False, force_oneway=False
+):
     """The tags a graph of ``network_type`` reads its edges' directions from: the
     ``direction`` tag (``oneway``), the form of it that the network honours (such as
     ``oneway:bicycle`` for cycling) and ``junction`` (a roundabout is one-way); none when
-    every edge is two-way."""
+    every edge is two-way or follows the direction of its way (``force_oneway``)."""
+    if follows_drawn_direction(force_bidirectional, force_oneway):
+        return []
     column, suffix = _split_direction(direction)
     suffix, both_ways = _travel_rules(suffix, network_type, force_bidirectional)
     if both_ways:
@@ -268,12 +303,19 @@ _NETWORK_FIELDS = {
 }
 
 
-def graph_tags(direction, network_type, force_bidirectional, simplify, simplify_kwargs):
+def graph_tags(
+    direction,
+    network_type,
+    force_bidirectional,
+    simplify,
+    simplify_kwargs,
+    force_oneway=False,
+):
     """The tags a graph of ``network_type`` is built from: those its edges' directions are
     read from (see :func:`direction_tags`) and, when ``simplify``, the tags a simplified
     edge has one value of (``edge_attrs_differ`` of ``simplify_kwargs``, by default
     ``maxspeed`` and ``highway``; a column every network has is not a tag)."""
-    tags = direction_tags(direction, network_type, force_bidirectional)
+    tags = direction_tags(direction, network_type, force_bidirectional, force_oneway)
     if simplify:
         differ = (simplify_kwargs or {}).get("edge_attrs_differ", EDGE_ATTRS_DIFFER)
         tags += [t for t in differ or () if t not in tags and t not in _NETWORK_FIELDS]
@@ -291,18 +333,21 @@ def _travel_rules(direction_suffix, network_type, force_bidirectional):
     if direction_suffix is None and net_type == "cycling":
         direction_suffix = "bicycle"
 
-    # Walking and the unrestricted networks are bidirectional by default; driving and
-    # cycling are directed (they honour oneway, and cycling additionally honours
-    # oneway:bicycle). force_bidirectional overrides this for any type.
+    # Walking and the unrestricted networks are bidirectional by default; driving,
+    # cycling and custom networks are directed (they honour oneway, and cycling
+    # additionally honours oneway:bicycle). force_bidirectional overrides this for any
+    # type.
     both_ways = force_bidirectional or net_type in ["walking", "all", "all_public"]
     return direction_suffix, both_ways
 
 
-def _segment_rows(edges, direction, force_bidirectional, network_type):
+def _segment_rows(edges, direction, force_bidirectional, network_type, force_oneway):
     """:func:`directed_rows` of the segments that ``edges`` (a
     :class:`~pyrosm.graph_simplify._WayEdges`) reads, each travelled as its way is. A
     missing direction column is added to them as empty, with a warning when the edges are
-    not all two-way."""
+    not all two-way; with ``force_oneway`` the column is not read."""
+    if follows_drawn_direction(force_bidirectional, force_oneway):
+        return directed_rows(edges.ways, None, None, False, edges.way_of, True)
     direction, direction_suffix = _split_direction(direction)
     direction_suffix, both_ways = _travel_rules(
         direction_suffix, network_type, force_bidirectional
@@ -368,6 +413,7 @@ def graph_tables(
     simplify=True,
     simplify_kwargs=None,
     progress=None,
+    force_oneway=False,
 ):
     """The nodes and edges of a graph as GeoDataFrames, as the graph exporters build it: the
     edges directed (see :func:`get_directed_edges`), unless ``retain_all`` only their
@@ -391,6 +437,7 @@ def graph_tables(
             simplify,
             simplify_kwargs,
             step,
+            force_oneway=force_oneway,
         )
 
 
@@ -408,11 +455,14 @@ def _tables(
     simplify_kwargs,
     step,
     osmnx_flags=False,
+    force_oneway=False,
 ):
     """:func:`graph_tables`, reporting the start of each step to ``step(name)``. Edges whose
     end nodes are not among ``nodes`` are left out (see :func:`_edges_between`), and the
     edges returned are numbered from 0. With ``osmnx_flags`` the edges get the OSMnx
-    ``oneway`` and ``reversed`` (see :func:`_osmnx_flags`) in their own columns.
+    ``oneway`` and ``reversed`` (see :func:`_osmnx_flags`) in their own columns. With
+    ``force_oneway`` every edge runs only in the direction of its way, and the largest
+    weakly connected part is kept (see :func:`largest_component`).
 
     With ``simplify``, the directed edges are row numbers of ``edges`` and a direction each
     (:func:`directed_rows`), and only the simplified edges become rows of a new table; the
@@ -423,12 +473,16 @@ def _tables(
     for graph export (see :func:`pyrosm.engine.readers.graph_network`), always
     simplified, with the given ``network_type`` and the default id columns."""
     step("directing the edges")
+    # A graph whose edges all run one way only keeps its largest weakly connected part:
+    # a graph of downstream river edges has no strongly connected part larger than a
+    # node.
+    strongly = not follows_drawn_direction(force_bidirectional, force_oneway)
     if not isinstance(edges, _WayEdges):
         _validate_frames(nodes, edges, from_id_col, to_id_col, node_id_col)
         edges = _edges_between(nodes, edges, from_id_col, to_id_col, node_id_col)
     if isinstance(edges, _WayEdges):
         rows, swapped = _segment_rows(
-            edges, direction, force_bidirectional, network_type
+            edges, direction, force_bidirectional, network_type, force_oneway
         )
     elif simplify:
         direction, direction_suffix, both_ways = _direction_rules(
@@ -440,8 +494,11 @@ def _tables(
             node_id_col,
             force_bidirectional,
             network_type,
+            force_oneway,
         )
-        rows, swapped = directed_rows(edges, direction, direction_suffix, both_ways)
+        rows, swapped = directed_rows(
+            edges, direction, direction_suffix, both_ways, force_oneway=force_oneway
+        )
         nodes, edges = _TableNodes(nodes, node_id_col), _TableEdges(edges)
     else:
         nodes, edges = get_directed_edges(
@@ -454,6 +511,7 @@ def _tables(
             force_bidirectional,
             network_type,
             osmnx_flags,
+            force_oneway,
         )
     if simplify:
         flags = _osmnx_flags(rows, swapped) if osmnx_flags else {}
@@ -465,7 +523,7 @@ def _tables(
             from_ids, to_ids = edges.values(from_id_col), edges.values(to_id_col)
             u = np.where(swapped, to_ids[rows], from_ids[rows])
             v = np.where(swapped, from_ids[rows], to_ids[rows])
-            component = largest_component(nodes.ids(), u, v)
+            component = largest_component(nodes.ids(), u, v, strongly)
             kept = np.isin(u, component) & np.isin(v, component)
             rows, swapped = rows[kept], swapped[kept]
             flags = {name: values[kept] for name, values in flags.items()}
@@ -488,7 +546,7 @@ def _tables(
     elif not retain_all:
         step("keeping the largest connected part")
         graph_nodes, graph_edges = get_connected_edges(
-            nodes, edges, from_id_col, to_id_col, node_id_col
+            nodes, edges, from_id_col, to_id_col, node_id_col, strongly
         )
     else:
         graph_nodes, graph_edges = nodes, edges
@@ -510,6 +568,7 @@ def to_networkx(
     simplify=True,
     simplify_kwargs=None,
     progress=None,
+    force_oneway=False,
 ):
     """
     Creates a NetworkX.MultiDiGraph from given OSM GeoDataFrame.
@@ -518,17 +577,6 @@ def to_networkx(
     ----------
     edges : GeoDataFrame
         GeoDataFrame containing road network data.
-
-    network_type : str
-        The type of the network. Possible values:
-              - `'walking'` (OSMnx `'walk'`)
-              - `'cycling'` (OSMnx `'bike'`)
-              - `'driving'` (OSMnx `'drive'`)
-              - `'driving+service'` (OSMnx `'drive_service'`)
-              - `'all'`
-              - `'all_public'`.
-
-            The OSMnx name of a network type is accepted as well.
 
     direction : str
         Name for the column containing information about the allowed driving directions
@@ -548,18 +596,31 @@ def to_networkx(
     force_bidirectional : bool
         If True, all edges will be created as bidirectional (allow travel to both directions).
 
-    network_type : str
+    network_type : str (optional)
         Network type for the given data. Determines how the graph will be constructed.
-        By default, a bidirectional graph is created for walking and all, and a
-        directed graph for driving and cycling (oneway streets are taken into
-        account; cycling additionally honours oneway:bicycle for contraflow).
-        Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'
-        and 'all_public', plus the OSMnx names 'walk', 'bike', 'drive' and
-        'drive_service'.
+        If not given, the type that ``get_network`` recorded on the frames
+        (``edges.attrs["network_type"]``) is used. By default, a bidirectional graph is
+        created for walking, all and all_public, and a directed graph for driving,
+        cycling and custom networks (oneway streets are taken into account; cycling
+        additionally honours oneway:bicycle for contraflow). A custom network, read with
+        a ``custom_filter``, follows only the ``direction`` column and
+        ``force_bidirectional``. Possible values are: 'walking', 'cycling', 'driving',
+        'driving+service', 'all', 'all_public' and 'custom', plus the OSMnx names
+        'walk', 'bike', 'drive' and 'drive_service'.
+
+    force_oneway : bool (default False)
+        If True, every edge runs only from ``u`` to ``v``, in the direction its way is
+        drawn in (the order of the way's nodes). The ``direction`` column is not read,
+        so a way tagged ``oneway=-1`` runs in its drawn direction too. Use it for
+        networks drawn in the direction of flow, such as rivers, which OSM draws
+        downstream. Cannot be combined with ``force_bidirectional``.
 
     retain_all : bool
-        if True, return the entire graph even if it is not connected.
-        otherwise, retain only the connected edges.
+        If True, return the entire graph even if it is not connected. Otherwise only its
+        largest connected part is kept: the largest strongly connected part, in which
+        every node can be reached from every other node, or with ``force_oneway`` the
+        largest weakly connected part, whose nodes are joined by edges in either
+        direction (for rivers, the largest river system).
 
     osmnx_compatible : bool (default True)
         if True, modifies the edge and node-attribute naming to be compatible with OSMnx
@@ -569,9 +630,10 @@ def to_networkx(
         repeated as a node attribute. No ``key`` edge attribute is added; an edge column
         named ``key`` is renamed to ``key_tag``. The edges get OSMnx's ``oneway`` and
         ``reversed`` booleans: ``oneway`` when the edge can be travelled only in its own
-        direction (by the rule the graph is directed by), ``reversed`` when it runs against
-        the node order of its way (a simplified edge whose ways differ gets the list of
-        their values, as in OSMnx); the OSM text of the ``oneway`` tag is ``oneway_tag``.
+        direction (by the rule the graph is directed by; every edge with
+        ``force_oneway``), ``reversed`` when it runs against the node order of its way
+        (a simplified edge whose ways differ gets the list of their values, as in
+        OSMnx); the OSM text of the ``oneway`` tag is ``oneway_tag``.
 
     progress : bool | callable | None (default: None)
         How the export shows its progress: ``None`` follows
@@ -605,6 +667,7 @@ def to_networkx(
             simplify_kwargs,
             step,
             osmnx_compatible,
+            force_oneway,
         )
 
         if osmnx_compatible:
@@ -662,6 +725,7 @@ def to_igraph(
     simplify=True,
     simplify_kwargs=None,
     progress=None,
+    force_oneway=False,
 ):
     """
     Creates an iGraph from given OSM GeoDataFrame.
@@ -670,17 +734,6 @@ def to_igraph(
     ----------
     edges : GeoDataFrame
         GeoDataFrame containing road network data.
-
-    network_type : str
-        The type of the network. Possible values:
-              - `'walking'` (OSMnx `'walk'`)
-              - `'cycling'` (OSMnx `'bike'`)
-              - `'driving'` (OSMnx `'drive'`)
-              - `'driving+service'` (OSMnx `'drive_service'`)
-              - `'all'`
-              - `'all_public'`.
-
-            The OSMnx name of a network type is accepted as well.
 
     direction : str
         Name for the column containing information about the allowed driving directions
@@ -700,18 +753,31 @@ def to_igraph(
     force_bidirectional : bool
         If True, all edges will be created as bidirectional (allow travel to both directions).
 
-    network_type : str
+    network_type : str (optional)
         Network type for the given data. Determines how the graph will be constructed.
-        By default, a bidirectional graph is created for walking and all, and a
-        directed graph for driving and cycling (oneway streets are taken into
-        account; cycling additionally honours oneway:bicycle for contraflow).
-        Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'
-        and 'all_public', plus the OSMnx names 'walk', 'bike', 'drive' and
-        'drive_service'.
+        If not given, the type that ``get_network`` recorded on the frames
+        (``edges.attrs["network_type"]``) is used. By default, a bidirectional graph is
+        created for walking, all and all_public, and a directed graph for driving,
+        cycling and custom networks (oneway streets are taken into account; cycling
+        additionally honours oneway:bicycle for contraflow). A custom network, read with
+        a ``custom_filter``, follows only the ``direction`` column and
+        ``force_bidirectional``. Possible values are: 'walking', 'cycling', 'driving',
+        'driving+service', 'all', 'all_public' and 'custom', plus the OSMnx names
+        'walk', 'bike', 'drive' and 'drive_service'.
+
+    force_oneway : bool (default False)
+        If True, every edge runs only from ``u`` to ``v``, in the direction its way is
+        drawn in (the order of the way's nodes). The ``direction`` column is not read,
+        so a way tagged ``oneway=-1`` runs in its drawn direction too. Use it for
+        networks drawn in the direction of flow, such as rivers, which OSM draws
+        downstream. Cannot be combined with ``force_bidirectional``.
 
     retain_all : bool
-        if True, return the entire graph even if it is not connected.
-        otherwise, retain only the connected edges.
+        If True, return the entire graph even if it is not connected. Otherwise only its
+        largest connected part is kept: the largest strongly connected part, in which
+        every node can be reached from every other node, or with ``force_oneway`` the
+        largest weakly connected part, whose nodes are joined by edges in either
+        direction (for rivers, the largest river system).
 
     progress : bool | callable | None (default: None)
         How the export shows its progress: ``None`` follows
@@ -743,6 +809,7 @@ def to_igraph(
             simplify,
             simplify_kwargs,
             step,
+            force_oneway=force_oneway,
         )
         step("building the graph")
         return _create_igraph(nodes, edges, from_id_col, to_id_col, node_id_col)
@@ -762,6 +829,7 @@ def to_pandana(
     simplify=True,
     simplify_kwargs=None,
     progress=None,
+    force_oneway=False,
 ):
     """
     Creates a pandana Network from given OSM GeoDataFrames (deprecated: use
@@ -800,6 +868,7 @@ def to_pandana(
             simplify,
             _summing_weights(simplify_kwargs, weight_cols),
             step,
+            force_oneway=force_oneway,
         )
 
         nodes = _routing_nodes(nodes, node_id_col)
@@ -821,6 +890,7 @@ def to_pandarm(
     simplify=True,
     simplify_kwargs=None,
     progress=None,
+    force_oneway=False,
 ):
     """
     Creates a pandarm Network from given OSM GeoDataFrames. The edges are directed,
@@ -853,6 +923,7 @@ def to_pandarm(
             simplify,
             _summing_weights(simplify_kwargs, weight_cols),
             step,
+            force_oneway=force_oneway,
         )
 
         nodes = _routing_nodes(nodes, node_id_col)

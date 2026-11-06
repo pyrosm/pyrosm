@@ -8,8 +8,10 @@ import pandas as pd
 from pyrosm._log import log_event, logged, timed
 from pyrosm.config import Conf
 from pyrosm.config.osm_filters import (
+    CUSTOM_NETWORK_TYPE,
     filter_for_read,
     get_osm_filter,
+    network_type_of_read,
     with_shared_paths,
 )
 from pyrosm.filter_compiler import CompiledFilter
@@ -66,6 +68,7 @@ from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
 from pyrosm.graphs import (
     add_empty_direction_column,
+    follows_drawn_direction,
     graph_tags,
     record_network_type,
     step_shares,
@@ -537,7 +540,7 @@ class OSM:
     @records_read(_network_read_filter)
     def get_network(
         self,
-        network_type="walking",
+        network_type=None,
         extra_attributes=None,
         nodes=False,
         timestamp=None,
@@ -553,9 +556,9 @@ class OSM:
         Parameters
         ----------
 
-        network_type : str
-            What kind of network to parse.
-            Possible values are:
+        network_type : str (optional)
+            What kind of network to parse. By default `'walking'`, or `'custom'` with a
+            `custom_filter`. Possible values are:
 
               - `'walking'` (OSMnx `'walk'`)
               - `'cycling'` (OSMnx `'bike'`)
@@ -570,11 +573,13 @@ class OSM:
             network's mode of transport, such as `foot=yes`, allows the use. The
             OSMnx name of a network type is accepted as well.
 
-            When `custom_filter` is given, `network_type` no longer selects the
-            ways to keep; it only determines the graph semantics used by
-            `OSM.to_graph` (directionality / connectivity), e.g. pass
-            `network_type='driving'` for a directed custom network or keep the
-            default `'walking'` for a bidirectional one.
+            The network type is recorded on the frames (`edges.attrs["network_type"]`),
+            and `OSM.to_graph` directs the edges by it. A network read with a
+            `custom_filter` is a `'custom'` network: its graph follows the `oneway` column
+            (see `OSM.to_graph`), unless the parameters of the graph export say otherwise.
+            A `network_type` given together with a `custom_filter` does not select the
+            ways; the graph's edges are then directed as for that network type, e.g.
+            two-way for `'walking'`.
 
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
@@ -663,10 +668,11 @@ class OSM:
         Take a look at the OSM documentation for further details about the data:
         `https://wiki.openstreetmap.org/wiki/Key:highway <https://wiki.openstreetmap.org/wiki/Key:highway>`__
         """
-        # Resolve the custom filter and filter_type once, so the engine and in-memory paths
-        # agree.
+        # Resolve the custom filter, filter_type and network type once, so the engine and
+        # in-memory paths agree.
         custom_filter, filter_type = _network_filter_type(custom_filter, filter_type)
         advanced_filter = isinstance(custom_filter, CompiledFilter)
+        network_type = network_type_of_read(network_type, custom_filter)
 
         if self._use_engine():
             result = self._read_engine(
@@ -685,9 +691,11 @@ class OSM:
                 _warn_no_edges(custom_filter)
             return result
 
-        # Get filter (also validates network_type, which still drives the graph
-        # semantics even when a custom_filter is provided)
-        network_filter = self._get_network_filter(network_type, shared_paths)
+        # Get filter (also validates a network_type given with a custom_filter, which sets
+        # how its graph is directed)
+        network_filter = None
+        if network_type != CUSTOM_NETWORK_TYPE:
+            network_filter = self._get_network_filter(network_type, shared_paths)
         # Predefined networks and filters that exclude ways select from the 'highway' ways;
         # a dict that keeps ways selects by its own keys and an advanced filter by its
         # positive keys (so railway/waterway networks work).
@@ -1645,7 +1653,7 @@ class OSM:
     @logged("network_type", "graph_type", "simplify", count=False)
     def get_graph(
         self,
-        network_type="walking",
+        network_type=None,
         graph_type="igraph",
         direction="oneway",
         force_bidirectional=False,
@@ -1660,9 +1668,11 @@ class OSM:
         tags_to_keep=None,
         timestamp=None,
         shared_paths="local",
+        force_oneway=False,
     ):
         """
-        Read the street network of ``network_type`` as a routable graph: the graph of
+        Read the street network of ``network_type``, or the network of a
+        ``custom_filter``, as a routable graph: the graph of
         ``OSM.to_graph(*osm.get_network(network_type, nodes=True), graph_type)``.
 
         With the out-of-core engine the simplified graph is built straight from the
@@ -1681,11 +1691,12 @@ class OSM:
         network_type, extra_attributes, custom_filter, filter_type, tags_to_keep, timestamp, shared_paths
             As in :meth:`get_network`. With ``tags_to_keep``, the tags the graph is built
             from are read too: those of its edges' directions (``oneway`` and
-            ``junction``, and ``oneway:bicycle`` for cycling) and, with ``simplify``, the
-            ``edge_attrs_differ`` tags (by default ``maxspeed`` and ``highway``), so the
-            graph is the same and only carries fewer attributes.
+            ``junction``, and ``oneway:bicycle`` for cycling; none with
+            ``force_oneway``) and, with ``simplify``, the ``edge_attrs_differ`` tags (by
+            default ``maxspeed`` and ``highway``), so the graph is the same and only
+            carries fewer attributes.
 
-        graph_type, direction, force_bidirectional, retain_all, osmnx_compatible, pandana_weights, simplify, simplify_kwargs
+        graph_type, direction, force_bidirectional, force_oneway, retain_all, osmnx_compatible, pandana_weights, simplify, simplify_kwargs
             As in :meth:`to_graph`.
 
         Returns
@@ -1695,6 +1706,8 @@ class OSM:
         None when the network is empty.
         """
         validate_graph_type(graph_type)
+        follows_drawn_direction(force_bidirectional, force_oneway)
+        network_type = network_type_of_read(network_type, custom_filter)
         if tags_to_keep is not None:
             validate_tags_as_columns(tags_to_keep, "tags_to_keep")
             tags_to_keep = list(tags_to_keep) + [
@@ -1705,6 +1718,7 @@ class OSM:
                     force_bidirectional,
                     simplify,
                     simplify_kwargs,
+                    force_oneway,
                 )
                 if tag not in tags_to_keep
             ]
@@ -1769,6 +1783,7 @@ class OSM:
                 simplify=simplify,
                 simplify_kwargs=simplify_kwargs,
                 progress=steps,
+                force_oneway=force_oneway,
             )
 
     def _graph_read_shares(self, simplify, timestamp):
@@ -1816,6 +1831,7 @@ class OSM:
         simplify=True,
         simplify_kwargs=None,
         progress=None,
+        force_oneway=False,
     ):
         """
         Export OSM network to routable graph. Supported output graph types are:
@@ -1830,7 +1846,12 @@ class OSM:
         and cycling, one-way streets are taken into account by default and the
         travel is restricted based on the rules in OSM data (the "oneway"
         attribute; cycling additionally honours "oneway:bicycle" so that
-        contraflow cycling on one-way streets is modelled correctly).
+        contraflow cycling on one-way streets is modelled correctly). A network read
+        with a ``custom_filter`` (network type ``"custom"``) follows the ``direction``
+        column, as driving does: a way tagged ``oneway=yes`` (or ``-1``, or a roundabout)
+        is one-way and every other way two-way; ``force_bidirectional=True`` makes every
+        edge two-way, and ``force_oneway=True`` keeps every edge in the direction its
+        way is drawn in, e.g. downstream for rivers.
 
         The graph is topologically simplified before export: interstitial degree-2
         nodes are removed and each intersection-to-intersection chain is collapsed into
@@ -1884,21 +1905,40 @@ class OSM:
         force_bidirectional : bool
             If True, all edges will be created as bidirectional (allow travel to both directions).
 
+        force_oneway : bool (default False)
+            If True, every edge runs only from ``u`` to ``v``, in the direction its way
+            is drawn in (the order of the way's nodes). The ``direction`` column is not
+            read, so a way tagged ``oneway=-1`` runs in its drawn direction too, and the
+            frames need no network type. Use it for networks drawn in the direction of
+            flow, such as rivers, which OSM draws downstream::
+
+                nodes, rivers = osm.get_network(
+                    custom_filter='["waterway"="river"]', nodes=True
+                )
+                G = osm.to_graph(nodes, rivers, "networkx", force_oneway=True)
+                upstream = networkx.ancestors(G, node_id)
+
+            Cannot be combined with ``force_bidirectional``.
+
         network_type : str (optional)
             Network type for the given data. Determines how the graph will be constructed.
             If not given, the type that ``get_network`` recorded on the frames
             (``edges.attrs["network_type"]``) is used; pass it for frames that do not
             carry one, such as frames read from a file. By default, a bidirectional graph
-            is created for walking and all, and a directed graph for driving and cycling
-            (oneway streets are taken into account; cycling additionally honours
-            oneway:bicycle for contraflow).
-            Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'
-            and 'all_public', plus the OSMnx names 'walk', 'bike', 'drive' and
+            is created for walking, all and all_public, and a directed graph for driving,
+            cycling and custom networks (oneway streets are taken into account; cycling
+            additionally honours oneway:bicycle for contraflow). A ``'custom'`` network
+            follows only the ``direction`` column and ``force_bidirectional``.
+            Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all',
+            'all_public' and 'custom', plus the OSMnx names 'walk', 'bike', 'drive' and
             'drive_service'.
 
         retain_all : bool
-            if True, return the entire graph even if it is not connected.
-            otherwise, retain only the connected edges.
+            If True, return the entire graph even if it is not connected. Otherwise only
+            its largest connected part is kept: the largest strongly connected part, in
+            which every node can be reached from every other node, or with
+            ``force_oneway`` the largest weakly connected part, whose nodes are joined
+            by edges in either direction (for rivers, the largest river system).
 
         osmnx_compatible : bool (default True)
             if True, modifies the edge and node-attribute naming to be compatible with OSMnx
@@ -1961,6 +2001,7 @@ class OSM:
                 simplify=simplify,
                 simplify_kwargs=simplify_kwargs,
                 progress=progress,
+                force_oneway=force_oneway,
             )
         elif graph_type == "networkx":
             return to_networkx(
@@ -1978,6 +2019,7 @@ class OSM:
                 simplify=simplify,
                 simplify_kwargs=simplify_kwargs,
                 progress=progress,
+                force_oneway=force_oneway,
             )
         elif graph_type == "pandarm":
             return to_pandarm(
@@ -1994,6 +2036,7 @@ class OSM:
                 simplify=simplify,
                 simplify_kwargs=simplify_kwargs,
                 progress=progress,
+                force_oneway=force_oneway,
             )
         elif graph_type == "pandana":
             return to_pandana(
@@ -2010,6 +2053,7 @@ class OSM:
                 simplify=simplify,
                 simplify_kwargs=simplify_kwargs,
                 progress=progress,
+                force_oneway=force_oneway,
             )
 
     @staticmethod
