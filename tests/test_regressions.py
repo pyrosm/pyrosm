@@ -312,6 +312,43 @@ def test_get_network_custom_filter_graph_export():
     assert set(pruned.nodes()).issubset(set(nodes["id"]))
 
 
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_custom_filter_network_is_custom_and_follows_oneway(engine):
+    """A network read with a custom_filter is recorded as 'custom', and its graph keeps
+    the one-way segments one-way; force_bidirectional makes every edge two-way, and a
+    network_type given with the filter directs the edges as for that type."""
+    from pyrosm import OSM, get_data
+    from pyrosm.config import Conf
+
+    def one_way_pairs(nodes, edges, **kwargs):
+        graph = OSM.to_graph(
+            nodes, edges, "networkx", retain_all=True, simplify=False, **kwargs
+        )
+        pairs = {(u, v) for u, v, _ in graph.edges(keys=True)}
+        return sum((v, u) not in pairs for u, v in pairs)
+
+    osm = OSM(get_data("test_pbf"), engine=engine)
+    custom_filter = '["highway"~"primary|secondary|tertiary|residential"]'
+    nodes, edges = osm.get_network(custom_filter=custom_filter, nodes=True)
+    assert edges.attrs["network_type"] == nodes.attrs["network_type"] == "custom"
+    one_way = edges["oneway"].isin(Conf.oneway_values).sum()
+    assert one_way == 65
+    assert one_way_pairs(nodes, edges) == one_way
+    assert one_way_pairs(nodes, edges, force_bidirectional=True) == 0
+
+    # Frames without a recorded type, e.g. read from a file, take network_type='custom'
+    unrecorded = nodes.copy(), edges.copy()
+    for frame in unrecorded:
+        frame.attrs = {}
+    with pytest.raises(ValueError, match="Could not detect the network type"):
+        one_way_pairs(*unrecorded)
+    assert one_way_pairs(*unrecorded, network_type="custom") == one_way
+
+    walking = osm.get_network("walking", custom_filter=custom_filter, nodes=True)
+    assert walking[1].attrs["network_type"] == "walking"
+    assert one_way_pairs(*walking) == 0
+
+
 def test_get_network_custom_filter_exclude():
     """#118/#181 — a 'exclude' custom_filter drops the matching ways, and is the
     complement of the matching 'keep' filter."""
@@ -1684,7 +1721,8 @@ def test_unknown_network_type_raises():
     from pyrosm import OSM, get_data
 
     osm = OSM(get_data("test_pbf"))
-    for network_type in ("driving_psv", "driving+psv", "not_a_network"):
+    # 'custom' names the network of a custom_filter, so it needs one
+    for network_type in ("driving_psv", "driving+psv", "not_a_network", "custom"):
         with pytest.raises(ValueError, match="network_type"):
             osm.get_network(network_type=network_type)
 

@@ -23,7 +23,7 @@ from pyrosm.config.default_tags import (
     aeroway_columns,
     boundary_columns,
 )
-from pyrosm.config.osm_filters import NETWORK_TYPES, get_osm_filter
+from pyrosm.config.osm_filters import get_osm_filter
 
 
 class NetworkFilter:
@@ -105,7 +105,6 @@ class Tags:
 class Conf:
     network_filters = NetworkFilter()
     tags = Tags()
-    _possible_network_filters = NETWORK_TYPES
 
     # One way tags, and those of them that run against the node order
     oneway_values = ["yes", "true", "1", "-1", "reverse", "T", "F"]

@@ -884,6 +884,7 @@ def test_graph_network_reads_the_network_tables(test_pbf, osm_kwargs, network_ty
                 },
             },
         ),
+        ("networkx", {}, {"custom_filter": '["highway"~"secondary|residential"]'}),
         ("igraph", {}, {"network_type": "cycling", "retain_all": True}),
         ("pandarm", {}, {"network_type": "driving"}),
         pytest.param("pandana", {}, {"network_type": "walking"}, marks=_pandana_unsupported_on_win),

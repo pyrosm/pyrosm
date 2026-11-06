@@ -655,7 +655,7 @@ def _write_network_dir(result, dirpath, steps=None):
 
 def get_network(
     filepath,
-    network_type="walking",
+    network_type=None,
     extra_attributes=None,
     nodes=False,
     custom_filter=None,
@@ -674,9 +674,11 @@ def get_network(
     from ``filepath`` with the out-of-core engine, with the same columns as
     ``OSM(...).get_network()``. ``network_type`` selects a predefined filter (``walking`` /
     ``driving`` / ``cycling`` / ``all`` / ...); a ``custom_filter`` replaces it
-    (``filter_type`` keep/exclude). ``extra_attributes`` / ``tags_to_keep`` adjust the tag
-    columns. ``bounding_box`` (a ``[minx, miny, maxx, maxy]`` list or a shapely polygon)
-    restricts the read to that area.
+    (``filter_type`` keep/exclude), and the network type recorded on the frames is then
+    ``custom`` unless ``network_type`` is given (see
+    :func:`~pyrosm.config.osm_filters.network_type_of_read`). ``extra_attributes`` /
+    ``tags_to_keep`` adjust the tag columns. ``bounding_box`` (a ``[minx, miny, maxx,
+    maxy]`` list or a shapely polygon) restricts the read to that area.
 
     ``nodes=True`` returns ``(nodes, edges)``: the ways are sliced into per-segment edges
     and the graph-export node frame is built (its node tags + metadata are gathered with a
@@ -692,9 +694,11 @@ def get_network(
     ``OSM(...).get_network(timestamp=...)`` does. ``shared_paths`` sets which ways built
     for another mode a walking or cycling network keeps (see
     :func:`~pyrosm.config.osm_filters.with_shared_paths`)."""
+    from pyrosm.config.osm_filters import network_type_of_read
     from pyrosm.graphs import record_network_type
 
     validate_progress(progress)
+    network_type = network_type_of_read(network_type, custom_filter)
     workers = default_workers(workers)
     tags_as_columns, filter_spec = _network_spec(
         network_type,
@@ -796,13 +800,20 @@ def _network_spec(
     whose ways are read, and the ways built for another mode kept as ``shared_paths``
     says (see :func:`~pyrosm.config.osm_filters.with_shared_paths`)."""
     from pyrosm.config import Conf
-    from pyrosm.config.osm_filters import with_shared_paths
+    from pyrosm.config.osm_filters import (
+        CUSTOM_NETWORK_TYPE,
+        network_type_of_read,
+        with_shared_paths,
+    )
     from pyrosm.utils import read_tag_columns
     from pyrosm.filter_compiler import CompiledFilter
 
-    # The network type drives the graph semantics even with a custom_filter, so it is
+    # A network type given with a custom_filter sets only how its graph is directed; it is
     # validated for every read, as the in-memory reader does.
-    network_filter = _network_filter(network_type, shared_paths)
+    network_type = network_type_of_read(network_type, custom_filter)
+    network_filter = None
+    if network_type != CUSTOM_NETWORK_TYPE:
+        network_filter = _network_filter(network_type, shared_paths)
 
     # Predefined networks and filters that exclude ways select from the 'highway' ways; a
     # dict that keeps ways selects by its own keys and an advanced filter by its positive
@@ -859,7 +870,7 @@ def _decode_network(
 
 def graph_network(
     filepath,
-    network_type="walking",
+    network_type=None,
     extra_attributes=None,
     custom_filter=None,
     filter_type=None,

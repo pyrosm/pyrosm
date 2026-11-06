@@ -22,8 +22,11 @@ from pyrosm.utils import (
     warn_future,
 )
 from pyrosm.utils.progress import stepping, validate_progress
-from pyrosm.config import Conf
-from pyrosm.config.osm_filters import _UNKNOWN_NETWORK_TYPE, normalize_network_type
+from pyrosm.config.osm_filters import (
+    GRAPH_NETWORK_TYPES,
+    _UNKNOWN_GRAPH_NETWORK_TYPE,
+    normalize_network_type,
+)
 from rapidjson import dumps
 import contextlib
 import numpy as np
@@ -166,7 +169,6 @@ def _direction_rules(
     mode-specific suffix (``"bicycle"`` for cycling) and whether every edge is two-way. A
     missing direction column is added to ``edges`` as empty, with a warning when the
     network's edges are not all two-way."""
-    allowed_network_types = Conf._possible_network_filters
     _validate_frames(nodes, edges, from_id_col, to_id_col, node_id_col)
 
     direction, direction_suffix = _split_direction(direction)
@@ -174,19 +176,17 @@ def _direction_rules(
     # The network type given, else the one recorded on the edges or nodes
     if network_type is not None:
         net_type = network_type
-        if normalize_network_type(net_type) not in allowed_network_types:
-            raise ValueError(_UNKNOWN_NETWORK_TYPE)
+        if normalize_network_type(net_type) not in GRAPH_NETWORK_TYPES:
+            raise ValueError(_UNKNOWN_GRAPH_NETWORK_TYPE)
     else:
         net_type = edges.attrs.get("network_type")
-        if net_type not in allowed_network_types:
+        if net_type not in GRAPH_NETWORK_TYPES:
             net_type = nodes.attrs.get("network_type")
-        if net_type not in allowed_network_types:
-            txt = ", ".join(allowed_network_types)
+        if net_type not in GRAPH_NETWORK_TYPES:
             raise ValueError(
-                "Could not detect the network type from the edges. "
-                "In order to save the graph, specify the type of your network"
-                "with 'network_type' -parameter."
-                "Possible network types are: " + txt
+                "Could not detect the network type from the edges. Specify the type of "
+                "your network with the 'network_type' parameter. Possible network "
+                "types are: " + ", ".join(GRAPH_NETWORK_TYPES)
             )
 
     direction_suffix, both_ways = _travel_rules(
@@ -291,9 +291,10 @@ def _travel_rules(direction_suffix, network_type, force_bidirectional):
     if direction_suffix is None and net_type == "cycling":
         direction_suffix = "bicycle"
 
-    # Walking and the unrestricted networks are bidirectional by default; driving and
-    # cycling are directed (they honour oneway, and cycling additionally honours
-    # oneway:bicycle). force_bidirectional overrides this for any type.
+    # Walking and the unrestricted networks are bidirectional by default; driving,
+    # cycling and custom networks are directed (they honour oneway, and cycling
+    # additionally honours oneway:bicycle). force_bidirectional overrides this for any
+    # type.
     both_ways = force_bidirectional or net_type in ["walking", "all", "all_public"]
     return direction_suffix, both_ways
 
@@ -519,17 +520,6 @@ def to_networkx(
     edges : GeoDataFrame
         GeoDataFrame containing road network data.
 
-    network_type : str
-        The type of the network. Possible values:
-              - `'walking'` (OSMnx `'walk'`)
-              - `'cycling'` (OSMnx `'bike'`)
-              - `'driving'` (OSMnx `'drive'`)
-              - `'driving+service'` (OSMnx `'drive_service'`)
-              - `'all'`
-              - `'all_public'`.
-
-            The OSMnx name of a network type is accepted as well.
-
     direction : str
         Name for the column containing information about the allowed driving directions
 
@@ -548,14 +538,17 @@ def to_networkx(
     force_bidirectional : bool
         If True, all edges will be created as bidirectional (allow travel to both directions).
 
-    network_type : str
+    network_type : str (optional)
         Network type for the given data. Determines how the graph will be constructed.
-        By default, a bidirectional graph is created for walking and all, and a
-        directed graph for driving and cycling (oneway streets are taken into
-        account; cycling additionally honours oneway:bicycle for contraflow).
-        Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'
-        and 'all_public', plus the OSMnx names 'walk', 'bike', 'drive' and
-        'drive_service'.
+        If not given, the type that ``get_network`` recorded on the frames
+        (``edges.attrs["network_type"]``) is used. By default, a bidirectional graph is
+        created for walking, all and all_public, and a directed graph for driving,
+        cycling and custom networks (oneway streets are taken into account; cycling
+        additionally honours oneway:bicycle for contraflow). A custom network, read with
+        a ``custom_filter``, follows only the ``direction`` column and
+        ``force_bidirectional``. Possible values are: 'walking', 'cycling', 'driving',
+        'driving+service', 'all', 'all_public' and 'custom', plus the OSMnx names
+        'walk', 'bike', 'drive' and 'drive_service'.
 
     retain_all : bool
         if True, return the entire graph even if it is not connected.
@@ -671,17 +664,6 @@ def to_igraph(
     edges : GeoDataFrame
         GeoDataFrame containing road network data.
 
-    network_type : str
-        The type of the network. Possible values:
-              - `'walking'` (OSMnx `'walk'`)
-              - `'cycling'` (OSMnx `'bike'`)
-              - `'driving'` (OSMnx `'drive'`)
-              - `'driving+service'` (OSMnx `'drive_service'`)
-              - `'all'`
-              - `'all_public'`.
-
-            The OSMnx name of a network type is accepted as well.
-
     direction : str
         Name for the column containing information about the allowed driving directions
 
@@ -700,14 +682,17 @@ def to_igraph(
     force_bidirectional : bool
         If True, all edges will be created as bidirectional (allow travel to both directions).
 
-    network_type : str
+    network_type : str (optional)
         Network type for the given data. Determines how the graph will be constructed.
-        By default, a bidirectional graph is created for walking and all, and a
-        directed graph for driving and cycling (oneway streets are taken into
-        account; cycling additionally honours oneway:bicycle for contraflow).
-        Possible values are: 'walking', 'cycling', 'driving', 'driving+service', 'all'
-        and 'all_public', plus the OSMnx names 'walk', 'bike', 'drive' and
-        'drive_service'.
+        If not given, the type that ``get_network`` recorded on the frames
+        (``edges.attrs["network_type"]``) is used. By default, a bidirectional graph is
+        created for walking, all and all_public, and a directed graph for driving,
+        cycling and custom networks (oneway streets are taken into account; cycling
+        additionally honours oneway:bicycle for contraflow). A custom network, read with
+        a ``custom_filter``, follows only the ``direction`` column and
+        ``force_bidirectional``. Possible values are: 'walking', 'cycling', 'driving',
+        'driving+service', 'all', 'all_public' and 'custom', plus the OSMnx names
+        'walk', 'bike', 'drive' and 'drive_service'.
 
     retain_all : bool
         if True, return the entire graph even if it is not connected.

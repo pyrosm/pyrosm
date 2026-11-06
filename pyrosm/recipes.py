@@ -877,12 +877,15 @@ def _run_graph(graph, files, osm, staging):
     """Build the graph's node and edge tables with :func:`pyrosm.graphs.graph_tables` from
     the reader ``osm()`` and write them as GeoParquet to ``files`` in ``staging``; returns
     the record's graph entry and ``{output: sha256}``."""
+    from pyrosm.config.osm_filters import network_type_of_read
     from pyrosm.graphs import graph_tables
 
     nodes, edges = osm().get_network(nodes=True, **graph["network"])
     if edges is None:
         raise ValueError("graph.network: the PBF holds no such network")
-    network_type = graph["network"].get("network_type", "walking")
+    network_type = network_type_of_read(
+        graph["network"].get("network_type"), graph["network"].get("custom_filter")
+    )
     tables = graph_tables(nodes, edges, network_type=network_type, **graph["keywords"])
     entry, written = {}, {}
     for key, frame in zip(("nodes", "edges"), tables):

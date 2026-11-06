@@ -429,9 +429,34 @@ _NETWORK_FILTERS = {
 # Every network type accepted by the reading methods, aliases included.
 NETWORK_TYPES = list(_NETWORK_FILTERS) + list(NETWORK_TYPE_ALIASES)
 
+# The network type of a read with a custom_filter and no network_type, whose graph is
+# directed only by the parameters of the graph export; graphs accept it too.
+CUSTOM_NETWORK_TYPE = "custom"
+GRAPH_NETWORK_TYPES = NETWORK_TYPES + [CUSTOM_NETWORK_TYPE]
+
 _UNKNOWN_NETWORK_TYPE = "'network_type' should be one of the following: " + ", ".join(
     NETWORK_TYPES
 )
+_UNKNOWN_GRAPH_NETWORK_TYPE = (
+    "'network_type' should be one of the following: " + ", ".join(GRAPH_NETWORK_TYPES)
+)
+
+
+def network_type_of_read(network_type, custom_filter):
+    """The network type that a network read with ``network_type`` and ``custom_filter``
+    records: ``network_type`` when given, else ``"custom"`` with a ``custom_filter`` and
+    ``"walking"`` without one. ``"custom"`` without a ``custom_filter`` raises
+    ``ValueError``."""
+    if network_type is None:
+        return "walking" if custom_filter is None else CUSTOM_NETWORK_TYPE
+    if normalize_network_type(network_type) == CUSTOM_NETWORK_TYPE:
+        if custom_filter is None:
+            raise ValueError(
+                "network_type='custom' needs a custom_filter, which selects the ways"
+            )
+        return CUSTOM_NETWORK_TYPE
+    return network_type
+
 
 # The levels of ``shared_paths``, from the fewest ways built for another mode to all.
 SHARED_PATHS = ("tagged", "local", "all")
