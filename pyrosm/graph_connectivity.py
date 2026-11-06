@@ -64,11 +64,12 @@ def _strongly_connected_components(list_of_nodes, node_successors):
                         scc_queue.append(v)
 
 
-def largest_component(node_ids, from_ids, to_ids):
+def largest_component(node_ids, from_ids, to_ids, strongly=True):
     """The ids of the nodes of the largest strongly connected component of the nodes
-    ``node_ids`` and the directed edges ``from_ids[i]`` -> ``to_ids[i]``, as an array.
-    Edges with an end that is not among ``node_ids`` are left out; without nodes the
-    array is empty.
+    ``node_ids`` and the directed edges ``from_ids[i]`` -> ``to_ids[i]``, as an array;
+    with ``strongly=False`` the largest weakly connected component, whose nodes are
+    joined by edges in either direction. Edges with an end that is not among
+    ``node_ids`` are left out; without nodes the array is empty.
     """
     node_ids = np.asarray(node_ids)
     from_ids, to_ids = np.asarray(from_ids), np.asarray(to_ids)
@@ -76,6 +77,8 @@ def largest_component(node_ids, from_ids, to_ids):
     node_successors = defaultdict(list)
     for from_id, to_id in zip(from_ids[known].tolist(), to_ids[known].tolist()):
         node_successors[from_id].append(to_id)
+        if not strongly:
+            node_successors[to_id].append(from_id)
     scc = max(
         _strongly_connected_components(node_ids.tolist(), node_successors),
         key=len,
@@ -84,10 +87,17 @@ def largest_component(node_ids, from_ids, to_ids):
     return np.fromiter(scc, dtype=node_ids.dtype, count=len(scc))
 
 
-def get_connected_edges(nodes, edges, from_id_col="u", to_id_col="v", node_id_col="id"):
-    """Filters the network data (directed) to include only connected edges and nodes."""
+def get_connected_edges(
+    nodes, edges, from_id_col="u", to_id_col="v", node_id_col="id", strongly=True
+):
+    """Filters the network data (directed) to include only the nodes and edges of its
+    largest strongly connected component, or with ``strongly=False`` of its largest
+    weakly connected component (see :func:`largest_component`)."""
     scc = largest_component(
-        nodes[node_id_col].to_numpy(), edges[from_id_col], edges[to_id_col]
+        nodes[node_id_col].to_numpy(),
+        edges[from_id_col],
+        edges[to_id_col],
+        strongly=strongly,
     )
     # Filter nodes and edges accordingly
     n = nodes[nodes[node_id_col].isin(scc)]

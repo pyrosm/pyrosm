@@ -200,13 +200,16 @@ cdef _oneway_masks(edges, direction, direction_suffix):
 
 
 cpdef directed_rows(edges, direction, direction_suffix, force_bidirectional,
-                    way_of=None):
+                    way_of=None, force_oneway=False):
     """The directed edges of `edges` as ``(rows, swapped)``, in the order
     :func:`generate_directed_edges` gives them: directed edge ``i`` is row ``rows[i]`` of
     `edges` (by position), travelled from its to-node to its from-node where
     ``swapped[i]``. No column of `edges` is copied. With ``way_of``, `edges` are ways and
-    edge ``i`` is a segment of way row ``way_of[i]``, travelled as its way is."""
+    edge ``i`` is a segment of way row ``way_of[i]``, travelled as its way is. With
+    ``force_oneway`` every edge is travelled once, from its from-node to its to-node."""
     n = len(edges) if way_of is None else len(way_of)
+    if force_oneway:
+        return np.arange(n), np.zeros(n, dtype=bool)
     if force_bidirectional:
         rows = np.concatenate([np.arange(n), np.arange(n)])
         return rows, np.repeat(np.array([False, True]), n)
@@ -239,7 +242,8 @@ cpdef generate_directed_edges(edges,
                               direction_suffix,
                               from_id_col,
                               to_id_col,
-                              force_bidirectional):
+                              force_bidirectional,
+                              force_oneway=False):
     """
     Generates directed set of edges from network
     following rules specified in 'direction' column.
@@ -249,11 +253,15 @@ cpdef generate_directed_edges(edges,
     set. This allows mode-specific exceptions such as contraflow cycling
     (oneway=yes + oneway:bicycle=no -> two-way for bikes).
 
-    If 'force_bidirectional=True' travel to both direction is allowed for all edges.
+    If 'force_bidirectional=True' travel to both direction is allowed for all edges, and
+    with 'force_oneway=True' every edge is kept as it is, from its from-node to its
+    to-node, whatever the 'direction' column says.
 
     An edge travelled against its way gets the way's line reversed, so every line runs
     from the edge's from-node to its to-node.
     """
+    if force_oneway:
+        return edges
     if force_bidirectional:
         # Flip from/to values
         edges_dir2 = _with_lines_reversed(edges.copy(deep=True).rename(

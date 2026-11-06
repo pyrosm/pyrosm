@@ -349,6 +349,71 @@ def test_custom_filter_network_is_custom_and_follows_oneway(engine):
     assert one_way_pairs(*walking) == 0
 
 
+def _drawn_network():
+    """The streets of the bundled test file with ``get_network(nodes=True)``, and their
+    segments as a networkx DiGraph, each from ``u`` to ``v`` as its way is drawn."""
+    import networkx as nx
+    from pyrosm import OSM, get_data
+
+    nodes, edges = OSM(get_data("test_pbf")).get_network(
+        custom_filter='["highway"~"primary|secondary|tertiary|residential"]', nodes=True
+    )
+    return nodes, edges, nx.DiGraph(list(zip(edges["u"], edges["v"])))
+
+
+@pytest.mark.parametrize("simplify", [False, True])
+def test_force_oneway_keeps_the_drawn_direction(simplify):
+    """force_oneway adds every edge only from u to v in the order of its way's nodes,
+    also where the oneway column says otherwise; merged edges of a simplified graph run
+    along the drawn direction, with their line from u to v."""
+    import networkx as nx
+    from pyrosm import OSM
+
+    nodes, edges, drawn = _drawn_network()
+    assert edges["oneway"].notna().any()
+    graph = OSM.to_graph(
+        nodes, edges, "networkx", force_oneway=True, retain_all=True, simplify=simplify
+    )
+    assert graph.graph["crs"] == "EPSG:4326"
+    assert all(d["oneway"] and not d["reversed"] for *_, d in graph.edges(data=True))
+    if not simplify:
+        assert graph.number_of_edges() == len(edges)
+        assert set(graph.edges()) == set(drawn.edges())
+        return
+    assert 0 < graph.number_of_edges() < len(edges)
+    for u, v, data in graph.edges(data=True):
+        assert nx.has_path(drawn, u, v)
+        line = data["geometry"].coords
+        assert line[0] == (graph.nodes[u]["x"], graph.nodes[u]["y"])
+        assert line[-1] == (graph.nodes[v]["x"], graph.nodes[v]["y"])
+
+
+def test_force_oneway_keeps_the_largest_weakly_connected_part():
+    """With retain_all=False a force_oneway graph keeps its largest weakly connected
+    part: its strongly connected parts are single nodes where the ways form no loop."""
+    import networkx as nx
+    from pyrosm import OSM
+
+    nodes, edges, drawn = _drawn_network()
+    graph = OSM.to_graph(nodes, edges, "networkx", force_oneway=True, simplify=False)
+    largest = max(nx.weakly_connected_components(drawn), key=len)
+    assert len(largest) > len(max(nx.strongly_connected_components(drawn), key=len))
+    assert set(graph.nodes()) == largest
+
+
+def test_force_oneway_and_force_bidirectional_cannot_be_combined():
+    """A graph cannot keep every edge in its drawn direction and make it two-way."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    nodes, edges = osm.get_network(nodes=True)
+    both = {"force_oneway": True, "force_bidirectional": True}
+    with pytest.raises(ValueError, match="cannot be used together"):
+        OSM.to_graph(nodes, edges, "networkx", **both)
+    with pytest.raises(ValueError, match="cannot be used together"):
+        osm.get_graph(graph_type="networkx", **both)
+
+
 def test_get_network_custom_filter_exclude():
     """#118/#181 — a 'exclude' custom_filter drops the matching ways, and is the
     complement of the matching 'keep' filter."""
