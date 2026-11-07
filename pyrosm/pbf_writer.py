@@ -1360,6 +1360,8 @@ def write_geodataframe_to_pbf(
             plan.way_refs,
             relations,
         )
+        for _, refs, _ in new_ways:
+            keep_nodes.update(refs)
     elif bounded:
         way_ids = np.fromiter(way_by_id, dtype=np.int64, count=len(way_by_id))
         node_ids = np.asarray(node_coordinates.ids, dtype=np.int64)
