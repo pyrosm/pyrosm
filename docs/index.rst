@@ -123,6 +123,7 @@ See :doc:`How to cite pyrosm <citation>` for the full reference and a BibTeX ent
     :caption: About
 
     How to cite <citation>
+    References <references>
     contributions
     Changelog <changelog>
 

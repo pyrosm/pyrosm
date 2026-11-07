@@ -17,6 +17,9 @@ sphinx-book-theme==1.2.0
 sphinx-design>=0.5,<1.0
 # llms.txt, the index of the pages for language models
 sphinx-llms-txt>=0.7,<1.0
+# Citations and the References page (pybtex for the APA style in docs/_ext)
+sphinxcontrib-bibtex>=2.6,<3.0
+pybtex>=0.24,<1.0
 
 # Provides the ipython_console_highlighting and ipython_directive Sphinx
 # extensions referenced in conf.py.
