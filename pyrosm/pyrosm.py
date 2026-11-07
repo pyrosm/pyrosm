@@ -306,6 +306,8 @@ class OSM:
         self._relations = None
         self._relation_member_ways = None
         self._way_changesets = None
+        # The lowest (node, way) ids add_elements has given out
+        self._new_element_ids = (0, 0)
 
         # Timestamp
         self._current_timestamp = None
@@ -1564,7 +1566,9 @@ class OSM:
 
             Removing a vertex from a way's ``nodes`` does not delete the node itself;
             use ``delete`` for that. When False (default), rows only edit tags and add
-            new elements, exactly as before.
+            new elements from their geometry; a new row with a negative id and a
+            ``nodes`` column, such as a way of :meth:`add_elements`, raises
+            ``ValueError``.
 
         delete : iterable of (osm_type, id), optional
             Elements to omit from the output, e.g.
@@ -1649,6 +1653,91 @@ class OSM:
                 bounded=self.bounding_box is not None,
                 way_changesets=self._way_changesets,
             )
+
+    @logged("snap_distance")
+    def add_elements(self, data, snap_to=None, snap_distance=None):
+        """
+        New OSM elements from the features of ``data``, for :meth:`write_pbf` to write
+        with ``apply_geometry=True``; with ``snap_to``, the ends of new lines join the
+        existing nodes or ways near them.
+
+        Each feature becomes a new element: a ``Point`` a node, a ``LineString`` a way and
+        a ``Polygon`` without holes a closed way. Its columns are its tags, which
+        :meth:`write_pbf` writes as text (leaving out numeric ``u``, ``v`` and
+        ``length`` columns, which it takes for the columns :meth:`get_network`
+        computes); the columns that hold element fields (``id``, ``osm_type``,
+        ``nodes``, ``version`` and the like) are replaced. The new elements get negative
+        ids below every id of the file and every id that earlier calls on this object
+        gave out, so the results of several calls can be written together. The points
+        of lines and polygons become new nodes, shared with the new Points and the
+        points of other new lines and polygons at the same coordinates.
+
+        With ``snap_to`` and ``snap_distance``, the first and last point of each new line
+        moves to the closest node of ``snap_to`` within ``snap_distance`` metres, and the
+        new way uses that node, so a network read from the written file routes over the
+        line. When no node is that close but a way of ``snap_to`` is, the end moves to the
+        closest point of that way and a new node there joins the line to the way: it is
+        inserted into the way's nodes, and into those of every other way of ``snap_to``
+        along the same segment. A node within the distance is chosen over a closer point
+        between nodes. An end with neither stays where it is, and so does an end on a new
+        Point, an inner point of another new line or a corner of a new polygon, joined to
+        that feature. Only the ends snap, so a line that crosses a street is not joined
+        to it there, and Points and Polygons never snap: new buildings, for example, are
+        added as elements of their own.
+
+        Typical use is to add cycle lanes drawn in a GIS to the network::
+
+            import geopandas as gpd
+
+            osm = OSM("data.osm.pbf")
+            edges = osm.get_network("cycling")
+            lanes = gpd.read_file("new_lanes.gpkg")  # columns such as highway, name
+            added = osm.add_elements(lanes, snap_to=edges, snap_distance=10)
+            osm.write_pbf(added, "with_lanes.osm.pbf", apply_geometry=True)
+
+        Parameters
+        ----------
+
+        data : GeoDataFrame or list of GeoDataFrame
+            The new features. A frame with a CRS is reprojected to EPSG:4326; one
+            without a CRS must be in longitude and latitude.
+
+        snap_to : GeoDataFrame, optional
+            A frame read from this object, such as the edges of :meth:`get_network`: the
+            nodes of its ways, and its nodes, are the nodes the ends of new lines snap
+            to. Given together with ``snap_distance``.
+
+        snap_distance : float, optional
+            The largest distance, in metres, that an end of a new line moves to snap to
+            a node or a way.
+
+        Returns
+        -------
+        GeoDataFrame
+            A row per feature of ``data``, in order, with its ``id``, ``osm_type``,
+            ``nodes`` (the node ids of a way) and the feature's columns; a row per
+            existing way that got a new node, with its new ``nodes`` and all its tags
+            (those without a column in the JSON ``tags`` column); then a ``Point`` row
+            per new node of the lines and polygons, in EPSG:4326. A snapped end is at
+            the coordinates of its node. Write it with ``write_pbf(...,
+            apply_geometry=True)``, alone or with frames that have no ``nodes`` column
+            for those ways (whose old node lists would conflict with the new ones).
+        """
+        from pyrosm.new_elements import new_elements, validate_inputs
+
+        validate_inputs(data, snap_to, snap_distance)
+        if self._way_records is None or self._node_coordinates is None:
+            self._read_pbf()
+        way_records = list(self._way_records) + list(self._relation_member_ways or [])
+        frame, self._new_element_ids = new_elements(
+            data,
+            self._node_coordinates,
+            way_records,
+            snap_to,
+            snap_distance,
+            self._new_element_ids,
+        )
+        return frame
 
     @logged("network_type", "graph_type", "simplify", count=False)
     def get_graph(

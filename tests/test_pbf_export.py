@@ -3543,3 +3543,183 @@ def test_write_pbf_new_ids_are_per_element_type(tiny_pbf, tmp_path):
     assert -1 in node_ids and -1 in way_ids
     assert way_refs[-1] == [1, 7]
     assert coords[-1] == pytest.approx((24.95, 60.18), abs=1e-7)
+
+
+# ---------------------------------------------------------------------------
+# OSM.add_elements
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "snap_to, distance, ends",
+    [(None, None, (None, None)), ("mixed", 3, (1, None)), ("edges", 200, (1, 7))],
+)
+def test_add_elements_snaps_line_ends(tiny_pbf, tmp_path, snap_to, distance, ends):
+    """The ends of new lines join the closest node of ``snap_to`` within
+    ``snap_distance`` metres. An end on an inner point of another new line or on a new
+    Point stays joined to it; inner points, Points and polygons never snap, and a second
+    call's ids are below the first's, so both results are written together."""
+    import pandas as pd
+
+    osm = OSM(tiny_pbf)
+    snap = {}
+    if snap_to is not None:
+        nodes, edges = osm.get_network(nodes=True)
+        if snap_to == "mixed":  # way 12 and node 1, whose osm_type is missing
+            edges = pd.concat([edges[edges["id"] == 12], nodes[nodes["id"] == 1]])
+        snap = {"snap_to": edges, "snap_distance": distance}
+    crossing = (24.94309, 60.173)  # 5 m from node 4
+    parking = (24.938, 60.176)
+    features = gpd.GeoDataFrame(
+        {
+            "id": [1, 2, 3],
+            "highway": ["cycleway", "cycleway", None],
+            "amenity": [None, None, "bicycle_parking"],
+        },
+        geometry=[
+            # starts 2.8 m from node 1 and ends 3.3 m from node 7
+            LineString([(24.94005, 60.170), crossing, (24.946, 60.17603)]),
+            LineString([crossing, parking]),
+            Point(parking),
+        ],
+        crs="EPSG:4326",
+    )
+    added = osm.add_elements(features, **snap)
+    building = gpd.GeoDataFrame(
+        {"building": ["yes"]},
+        geometry=[
+            Polygon([(24.94402, 60.174), (24.9445, 60.174), (24.9445, 60.1745)])
+        ],
+        crs="EPSG:4326",
+    )
+    house = osm.add_elements(building, **snap)
+
+    assert added["id"].iloc[:2].tolist() == [-1, -2] and house["id"].iloc[0] == -3
+    new = set(added.loc[added["osm_type"] == "node", "id"])
+    point = added["id"].iloc[2]
+    first, middle, last = added["nodes"].iloc[0]
+    assert added["nodes"].iloc[1] == [middle, point] and middle in new
+    assert (first if first > 0 else None, last if last > 0 else None) == ends
+    assert {first, last} - {1, 7} <= new
+    if ends[0]:
+        assert added.geometry.iloc[0].coords[0] == pytest.approx(_TINY_NODES[1])
+    ring = house["nodes"].iloc[0]
+    assert ring[0] == ring[-1] and max(ring) < min(new)
+
+    out = str(tmp_path / "added.osm.pbf")
+    with pytest.raises(ValueError, match="apply_geometry=True"):
+        osm.write_pbf(added, out)
+    osm.write_pbf([added, house], out, apply_geometry=True)
+    node_ids, _, _, _, way_refs = _read_elements(out)
+    assert way_refs[-1] == added["nodes"].iloc[0] and way_refs[-3] == ring
+    assert node_ids == set(_TINY_NODES) | new | set(ring)
+    tags = _way_tags(out)
+    assert tags[-1] == {"highway": "cycleway"} and tags[-3] == {"building": "yes"}
+
+
+@pytest.mark.parametrize(
+    "case, message",
+    [
+        ("no distance", "together"),
+        ("zero distance", "positive number"),
+        ("bool distance", "positive number"),
+        ("snap_to not a frame", "'snap_to' should be a GeoDataFrame"),
+        ("data not a frame", "'data' should be"),
+        ("unknown snap_to", "none of the elements"),
+        ("multiline", "new elements can be"),
+        ("no geometry", "row 0 of frame 1 has no geometry"),
+        ("both ends", "row 0 would be a way over one node \\(1\\)"),
+        ("not lon/lat", "row 0 has coordinates outside"),
+    ],
+)
+def test_add_elements_refuses(tiny_pbf, case, message):
+    osm = OSM(tiny_pbf)
+    line = LineString([(24.9395, 60.1695), (24.939, 60.175)])
+    data = gpd.GeoDataFrame(geometry=[line], crs="EPSG:4326")
+    kwargs = {"snap_to": osm.get_network(), "snap_distance": 10}
+    if case == "no distance":
+        del kwargs["snap_distance"]
+    elif case == "zero distance":
+        kwargs["snap_distance"] = 0
+    elif case == "bool distance":
+        kwargs["snap_distance"] = True
+    elif case == "snap_to not a frame":
+        kwargs["snap_to"] = [kwargs["snap_to"]]
+    elif case == "data not a frame":
+        data = [data.drop(columns="geometry")]
+    elif case == "unknown snap_to":
+        kwargs["snap_to"] = kwargs["snap_to"].assign(id=999)
+    elif case == "multiline":
+        other = LineString([(25, 60), (25.1, 60)])
+        data = data.set_geometry([MultiLineString([line, other])])
+    elif case == "no geometry":
+        data = [data, data.set_geometry([None])]
+    elif case == "both ends":
+        data = data.set_geometry([LineString([(24.94001, 60.17), (24.93999, 60.17)])])
+    elif case == "not lon/lat":
+        # 360 degrees east of a point 2.8 m from node 1
+        data = gpd.GeoDataFrame(geometry=[LineString([(384.94005, 60.17), (385, 61)])])
+    with pytest.raises(ValueError, match=message):
+        osm.add_elements(data, **kwargs)
+
+
+@pytest.mark.parametrize("side", [1, -1])
+def test_add_elements_snaps_across_the_antimeridian(side):
+    """A node 10.7 m away on the other side of the antimeridian is within 20 m, not 5,
+    and new features at longitude -180 and +180 meet at one place."""
+    from pyrosm.new_elements import _coordinate_key, _nearest_nodes
+
+    assert _coordinate_key(-180.0, -16.5) == _coordinate_key(180.0, -16.5)
+
+    node = (np.array([7]), np.array([side * 179.99995]), np.array([-16.5]))
+    lon, lat = np.array([-side * 179.99995]), np.array([-16.5])
+    assert _nearest_nodes(lon, lat, node, 20).tolist() == [0]
+    assert _nearest_nodes(lon, lat, node, 5).tolist() == [-1]
+
+
+def test_add_elements_snaps_to_segments(tiny_pbf, tmp_path):
+    """An end with no node within ``snap_distance`` but a segment of a ``snap_to`` way
+    within it gets a new node there, inserted into that way in order along the segment,
+    and the way keeps its tags; a node within the distance wins over a closer segment."""
+    osm = OSM(tiny_pbf)
+    lanes = gpd.GeoDataFrame(
+        {"highway": ["cycleway"] * 3},
+        geometry=[
+            # 4 m from the middle of segment 3-4, 3 m from its first quarter, and 1 m
+            # from segment 4-5 but 6 m from node 5
+            LineString([(24.9410, 60.1745), (24.94243524, 60.17251602)]),
+            LineString([(24.9405, 60.1740), (24.94220143, 60.17226202)]),
+            LineString([(24.9450, 60.1720), (24.9439355, 60.17395569)]),
+        ],
+        crs="EPSG:4326",
+    )
+    added = osm.add_elements(lanes, snap_to=osm.get_network(), snap_distance=10)
+
+    middle, quarter = added["nodes"].iloc[0][-1], added["nodes"].iloc[1][-1]
+    assert added["nodes"].iloc[2][-1] == 5
+    way = added[(added["osm_type"] == "way") & (added["id"] == 11)].iloc[0]
+    assert way["nodes"] == [3, quarter, middle, 4, 5]
+    assert way["highway"] == "residential" and way["tags"] == {"name": "way-11"}
+
+    out = str(tmp_path / "split.osm.pbf")
+    osm.write_pbf(added, out, apply_geometry=True)
+    _, _, _, coords, way_refs = _read_elements(out)
+    assert way_refs[11] == [3, quarter, middle, 4, 5] and way_refs[-1][-1] == middle
+    assert coords[middle] == pytest.approx((24.9425, 60.1725), abs=1e-6)
+    assert _way_tags(out)[11] == {"highway": "residential", "name": "way-11"}
+
+
+def test_add_elements_inserts_into_every_way_along_a_segment():
+    """A new node on a segment goes into each way with that segment, in order along it,
+    also into a way that runs the other way along it; a way's row has a LineString
+    through the nodes the file holds (node 12 is outside it)."""
+    from pyrosm.new_elements import _Segments, _split_ways, _way_rows
+    from pyrosm.node_lookup import NodeLocations
+
+    nodes = NodeLocations({"id": [10, 11], "lon": [0.0, 0.001], "lat": [0.0, 0.0]})
+    ways = {1: {"id": 1, "nodes": [10, 11]}, 2: {"id": 2, "nodes": [11, 10, 12]}}
+    split = _split_ways({0: {-1: 0.25, -2: 0.75}}, _Segments([1, 2], ways, nodes), ways)
+    assert split == {1: [10, -1, -2, 11], 2: [11, -2, -1, 10, 12]}
+    rows = _way_rows(split, ways, nodes, {-1: (0.00025, 0.0), -2: (0.00075, 0.0)})
+    assert [list(row[3].coords) for row in rows] == [
+        [(0.0, 0.0), (0.00025, 0.0), (0.00075, 0.0), (0.001, 0.0)],
+        [(0.001, 0.0), (0.00075, 0.0), (0.00025, 0.0), (0.0, 0.0)],
+    ]

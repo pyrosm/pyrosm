@@ -51,6 +51,7 @@ Saving, cropping and merging PBF files
 
    OSM.to_pbf
    OSM.write_pbf
+   OSM.add_elements
    merge_pbf
 
 Cache and downloads

@@ -606,7 +606,7 @@ def _collect_edits(
     node, a way row's ``nodes`` column also reshapes the way, and a row with a
     negative unmatched id is added under exactly that id (so a way can reference a
     vertex added in the same call). Otherwise unmatched rows are synthesized with
-    generated ids, as they always have been.
+    generated ids, and a new row with a negative id and a ``nodes`` list raises.
     """
     edits = _Edits()
     seen_new = set()
@@ -648,6 +648,12 @@ def _collect_edits(
                     )
             elif apply_geometry and oid is not None and oid < 0:
                 _add_new_element(edits, oid, otype, geom, tags, refs, seen_new)
+            elif oid is not None and oid < 0 and _row_refs(row) is not None:
+                raise ValueError(
+                    "write_pbf: the new element %d has a 'nodes' list of node ids, "
+                    "which is used only with apply_geometry=True. Pass "
+                    "apply_geometry=True, as for the frame of OSM.add_elements." % oid
+                )
             else:
                 edits.auto_rows.append((oid, geom, tags, None))
     written = {
@@ -1360,6 +1366,8 @@ def write_geodataframe_to_pbf(
             plan.way_refs,
             relations,
         )
+        for _, refs, _ in new_ways:
+            keep_nodes.update(refs)
     elif bounded:
         way_ids = np.fromiter(way_by_id, dtype=np.int64, count=len(way_by_id))
         node_ids = np.asarray(node_coordinates.ids, dtype=np.int64)

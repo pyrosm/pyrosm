@@ -49,6 +49,11 @@ new options that leave the defaults as they were, and fixes of calls that failed
   count as China and Russia for the change above, so their cycle ways without a `foot` tag
   stay out, as in 0.29.0. Near a land border, a way can get a different country than in
   0.29.0, as the borders follow OSM's boundaries more closely.
+- **New rows with a `nodes` list in `write_pbf`.** A new row, one with a negative id that is
+  not in the file, raises a `ValueError` when it has a `nodes` list and you do not pass
+  `apply_geometry=True`. Earlier versions wrote such a row from its geometry and ignored the
+  list, so the new way got new nodes instead of the listed ones. Pass `apply_geometry=True` to
+  use the list.
 
 ## pyrosm 0.29.0
 
