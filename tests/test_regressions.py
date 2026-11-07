@@ -6576,3 +6576,27 @@ def test_warnings_point_at_the_callers_line(tmp_path, monkeypatch, call):
     if call in ("empty_read", "box_cuts_relations"):
         assert len(caught) == 2  # one from each reader
     assert all((w.filename, w.lineno) == (__file__, line) for w in caught)
+
+
+def test_write_pbf_subset_keeps_the_nodes_of_new_ways(tmp_path):
+    """``write_pbf(subset_only=True)`` wrote a new way over existing nodes without those
+    nodes, so the file referenced nodes it did not hold and no reader found the way.
+    The existing nodes of new ways are written too."""
+    import geopandas as gpd
+    from shapely.geometry import LineString
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("test_pbf"))
+    ends = [36156596, 3680684544]
+    nodes, _ = osm.get_network("cycling", nodes=True)
+    lane = gpd.GeoDataFrame(
+        {"id": [-1], "osm_type": ["way"], "highway": ["cycleway"], "nodes": [ends]},
+        geometry=[LineString(nodes.set_index("id").loc[ends, "geometry"].tolist())],
+        crs=4326,
+    )
+    out = osm.write_pbf(
+        lane, str(tmp_path / "lane.osm.pbf"), subset_only=True, apply_geometry=True
+    )
+    _, edges = OSM(out).get_network("cycling", nodes=True)
+    assert edges[["u", "v"]].values.tolist() == [ends]
