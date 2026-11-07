@@ -1,6 +1,6 @@
 """The country of a location on land, from the vendored borders of country-coder, and
-the countries' access defaults for shared paths, from the vendored table of Valhalla with
-the countries added from their traffic law."""
+the countries' access defaults for shared paths, from the OSM wiki's tables with the
+countries added from their traffic law."""
 
 import functools
 import gzip

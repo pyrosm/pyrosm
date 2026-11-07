@@ -11,20 +11,23 @@ such as ``FI`` for the Åland Islands and Mainland Finland), and writes
     python scripts/update_country_data.py borders
     python scripts/update_country_data.py borders --source borders.json --license LICENSE.md
 
-``access``: reads the country access table of the router Valhalla (MIT licence,
-``kCountryAccess`` in ``valhalla/mjolnir/adminconstants.h``, taken from the OSM wiki's
-tables) and writes ``pyrosm/data/country_access.json``: for each shared path, the
+``access``: reads the country tables of the OSM wiki page "OSM tags for routing/Access
+restrictions" and writes ``pyrosm/data/country_access.json``: for each shared path, the
 countries whose default lets the mode use it without the mode's tag (``foot`` on a
-``cycleway``, ``bicycle`` on a ``footway``), with the licence as
-``pyrosm/data/country_access.LICENSE.md``. Valhalla names the countries; the entries of
-parts of the United Kingdom are left out, as the United Kingdom's entry covers them. The
-countries of ``TRAFFIC_LAW`` are added, with their provisions in the ``law`` member::
+``cycleway``, ``bicycle`` on a ``footway``), with the page's revision in the ``source``
+member. A cell allows the mode when it is ``yes`` or ``partial`` (allowed under a
+condition, such as where no sidewalk exists), except a ``partial`` that says ``dismount``;
+``no`` does not. A country whose table has no row or value for the way follows OSM's
+worldwide defaults. The countries of ``TRAFFIC_LAW`` are added, with their provisions in
+the ``law`` member::
 
     python scripts/update_country_data.py access
-    python scripts/update_country_data.py access --source adminconstants.h --license COPYING
+    python scripts/update_country_data.py access --source access_restrictions.json
 
-With ``--source`` and ``--license``, the files are read from disk instead of downloaded.
-The gzip file is written without a timestamp, so the same data gives the same bytes.
+With ``--source`` (and ``--license`` for the borders), the files are read from disk
+instead of downloaded; for the access defaults, the source is the wiki API's answer that
+the download reads (``WIKI_API`` with ``WIKI_QUERY``), saved as JSON. The gzip file is
+written without a timestamp, so the same data gives the same bytes.
 """
 
 import argparse
@@ -32,6 +35,7 @@ import gzip
 import json
 import re
 import ssl
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -43,46 +47,42 @@ COUNTRY_CODER_URL = (
     "https://raw.githubusercontent.com/rapideditor/country-coder/"
     f"{COUNTRY_CODER_RELEASE}/"
 )
-VALHALLA_RELEASE = "3.9.1"
-VALHALLA_URL = (
-    f"https://raw.githubusercontent.com/valhalla/valhalla/{VALHALLA_RELEASE}/"
+WIKI_API = "https://wiki.openstreetmap.org/w/api.php"
+WIKI_PAGE = "OSM tags for routing/Access restrictions"
+# The query for the page's latest revision: its wikitext, id and date.
+WIKI_QUERY = urllib.parse.urlencode(
+    {
+        "action": "query",
+        "prop": "revisions",
+        "titles": WIKI_PAGE,
+        "rvprop": "ids|timestamp|content",
+        "rvslots": "main",
+        "format": "json",
+        "formatversion": "2",
+    }
 )
 USER_AGENT = "pyrosm country data update (+https://github.com/pyrosm/pyrosm)"
 
-# The columns of Valhalla's kCountryAccess, in order.
-VALHALLA_COLUMNS = [
-    "trunk",
-    "trunk_link",
-    "track",
-    "footway",
-    "pedestrian",
-    "bridleway",
-    "cycleway",
-    "path",
-    "motorroad",
-]
-
-# The ISO codes of the countries Valhalla names; None leaves the entry out.
-VALHALLA_COUNTRIES = {
-    "Alba / Scotland": None,
+# The ISO codes of the countries that the wiki page has a section for.
+WIKI_COUNTRIES = {
     "Australia": "AU",
     "Austria": "AT",
     "Belarus": "BY",
     "Belgium": "BE",
     "Brazil": "BR",
     "China": "CN",
-    "Cymru / Wales": None,
+    "Croatia": "HR",
     "Denmark": "DK",
-    "England": None,
     "Finland": "FI",
     "France": "FR",
+    "Germany": "DE",
     "Greece": "GR",
+    "Hong Kong": "HK",
     "Hungary": "HU",
     "Iceland": "IS",
     "Ireland": "IE",
     "Italy": "IT",
     "Netherlands": "NL",
-    "Northern Ireland": None,
     "Norway": "NO",
     "Oman": "OM",
     "Philippines": "PH",
@@ -93,21 +93,18 @@ VALHALLA_COUNTRIES = {
     "Spain": "ES",
     "Sweden": "SE",
     "Switzerland": "CH",
-    "Türkiye": "TR",
+    "Thailand": "TH",
+    "Turkey": "TR",
+    "Ukraine": "UA",
     "United Kingdom": "GB",
-    "United States": "US",
-    "ประเทศไทย": "TH",
+    "United States of America": "US",
 }
 
-# The shared paths: the mode's tag, the highway value (a Valhalla column) and the
-# mode's access flag in Valhalla.
-SHARED_PATHS = [
-    ("foot", "cycleway", "kPedestrianAccess"),
-    ("bicycle", "footway", "kBicycleAccess"),
-]
+# The shared paths: the mode's tag and the highway value.
+SHARED_PATHS = [("foot", "cycleway"), ("bicycle", "footway")]
 
 
-# Countries added to Valhalla's table from their traffic law: for each shared path, the
+# Countries added to the wiki's tables from their traffic law: for each shared path, the
 # countries whose law lets the mode use such a way, also those that allow it only where
 # no way of the mode runs beside it, with the provision.
 TRAFFIC_LAW = {
@@ -181,72 +178,243 @@ def update_borders(source=None, license=None):
     print("wrote %d areas to %s" % (len(borders["features"]), path))
 
 
-def _top_level_items(text):
-    """The comma-separated items of ``text``, not splitting inside parentheses."""
-    items, depth, current = [], 0, ""
-    for char in text:
-        depth += {"(": 1, ")": -1}.get(char, 0)
-        if char == "," and depth == 0:
-            items.append(current.strip())
-            current = ""
+def _without_template(text, name):
+    """``text`` without the templates ``{{name|...}}``, nested templates included; the
+    first letter of the name may be either case, as in MediaWiki."""
+    first = name[0]
+    pattern = re.compile(
+        r"\{\{[%s%s]%s" % (first.upper(), first.lower(), re.escape(name[1:]))
+    )
+    kept, start = [], 0
+    while found := pattern.search(text, start):
+        begin = found.start()
+        kept.append(text[start:begin])
+        depth, end = 0, begin
+        while end < len(text):
+            if text.startswith("{{", end):
+                depth, end = depth + 1, end + 2
+            elif text.startswith("}}", end):
+                depth, end = depth - 1, end + 2
+                if depth == 0:
+                    break
+            else:
+                end += 1
+        start = end
+    return "".join(kept) + text[start:]
+
+
+def _without_notes(wikitext):
+    """``wikitext`` without comments and footnotes, which can hold table markup."""
+    wikitext = re.sub(r"<!--.*?-->", "", wikitext, flags=re.S)
+    wikitext = re.sub(r"<ref[^>]*/>", "", wikitext)
+    wikitext = re.sub(r"<ref[^>]*>.*?</ref>", "", wikitext, flags=re.S)
+    return _without_template(wikitext, "refn")
+
+
+def _top_level_split(text, separator):
+    """``text`` split at each ``separator`` outside templates and links."""
+    parts, depth, start, i = [], 0, 0, 0
+    while i < len(text):
+        if text.startswith(("{{", "[["), i):
+            depth, i = depth + 1, i + 2
+        elif text.startswith(("}}", "]]"), i):
+            depth, i = depth - 1, i + 2
+        elif depth == 0 and text.startswith(separator, i):
+            parts.append(text[start:i])
+            i = start = i + len(separator)
         else:
-            current += char
-    items.append(current.strip())
-    return items
+            i += 1
+    parts.append(text[start:])
+    return parts
 
 
-def country_access(adminconstants):
-    """The vendored access defaults from the text of Valhalla's ``adminconstants.h`` and
-    ``TRAFFIC_LAW``: for each mode's tag and highway value, the sorted ISO codes of the
-    countries whose default lets the mode use such a way, and the provisions of the
-    countries added from their law. Raises ``ValueError`` for a country it has no ISO code
-    for."""
-    start = adminconstants.index("kCountryAccess{")
-    table = adminconstants[start : adminconstants.index("};", start)]
-    allowed = {mode: {highway: set()} for mode, highway, _ in SHARED_PATHS}
-    for name, body in re.findall(r'\{"([^"]+)",\s*\{(.*?)\}\}', table, re.S):
-        if name not in VALHALLA_COUNTRIES:
-            raise ValueError("Valhalla's table names a new country: %s" % name)
-        code = VALHALLA_COUNTRIES[name]
-        if code is None:
-            continue
-        values = dict(zip(VALHALLA_COLUMNS, _top_level_items(body)))
-        for mode, highway, flag in SHARED_PATHS:
-            if re.search(r"\b%s\b" % flag, values[highway]):
-                allowed[mode][highway].add(code)
+def _cell_parts(cell):
+    """A table cell's attributes, such as ``style="..."`` or ``rowspan="5"``, and its
+    content."""
+    parts = _top_level_split(cell, "|")
+    attributes = r"\s*([\w-]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s\"']+)\s*)+"
+    if len(parts) > 1 and re.fullmatch(attributes, parts[0]):
+        return parts[0].strip(), "|".join(parts[1:]).strip()
+    return "", cell.strip()
+
+
+def _column_names(cell):
+    """The keys a header cell names, such as ``{"foot", "ski"}`` for
+    ``foot<br/>ski``."""
+    cell = _cell_parts(cell)[1]
+    cell = re.sub(r"\[\[[Kk]ey:[^|\]]*\|([^\]]*)\]\]", r"\1", cell)
+    cell = re.sub(r"\{\{[Tt]ag(?:Key)?\|([^}|]*)\}\}", r"\1", cell)
+    return {
+        re.sub(r"[^a-z_]", "", part.lower().split("(")[0])
+        for part in re.split(r"<br\s*/?>", cell)
+    }
+
+
+def _highway_values(cell):
+    """The highway values the first cell of a row names, plain or as
+    ``{{TagValue|highway|...}}``."""
+    tagged = re.findall(r"\{\{[Tt]ag(?:Value)?\|highway\|([a-z_]+)\}\}", cell)
+    return set(tagged) | set(re.findall(r"[a-z_]+", re.sub(r"\{\{.*?\}\}", " ", cell)))
+
+
+def _table_rows(table):
+    """The column names of a wiki table and its rows, each a list of the cells'
+    attributes and contents."""
+    columns, rows, row = [], [], None
+    for line in table.splitlines()[1:]:
+        line = line.strip()
+        if line.startswith("|}"):
+            break
+        if line.startswith("|-"):
+            if row:
+                rows.append(row)
+            row = []
+        elif line.startswith("!"):
+            columns += [
+                _column_names(cell.lstrip("|"))
+                for cell in _top_level_split(line[1:], "!!")
+            ]
+        elif line.startswith("|") and not line.startswith("|+") and row is not None:
+            row += [_cell_parts(cell) for cell in _top_level_split(line[1:], "||")]
+        elif row:
+            attributes, content = row[-1]
+            row[-1] = (attributes, (content + "\n" + line).strip())
+    if row:
+        rows.append(row)
+    return columns, rows
+
+
+def _row_spans(attributes):
+    """The largest ``rowspan`` and ``colspan`` among the attributes of a row's cells, 1
+    without one. Raises ``ValueError`` for a span that is not a number."""
+    spans = []
+    for key in ("rowspan", "colspan"):
+        given = re.findall(key + r"\s*=\s*[\"']?([^\s\"']*)", attributes)
+        if not all(value.isdigit() for value in given):
+            raise ValueError(
+                "A span in the wiki's table is not a number: %r" % attributes
+            )
+        spans.append(max((int(value) for value in given), default=1))
+    return spans
+
+
+def _cell_allows_mode(cell):
+    """Whether a table cell lets the mode use the way: ``{{yes...}}`` and
+    ``{{partial...}}`` do, unless the latter says dismount; ``{{no...}}`` does not.
+    Raises ``ValueError`` for another value."""
+    value = re.search(r"\{\{(\w+)([^}]*)\}\}", cell)
+    if value is None or value.group(1).lower() not in ("yes", "no", "partial"):
+        raise ValueError("unknown access value in the wiki's table: %r" % cell)
+    kind = value.group(1).lower()
+    return kind == "yes" or (kind == "partial" and "dismount" not in cell.lower())
+
+
+def _section_defaults(name, section):
+    """The shared paths, as ``(mode, highway)``, that the tables of the country ``name``
+    in its section of the wiki page let the mode use: the first row that names the
+    highway value decides, leaving out the rows with merged cells (``colspan``, or
+    ``rowspan`` there or in a row above). Raises ``ValueError`` when the tables have no
+    column for a mode and for a row that names the highway value without a cell for
+    every column."""
+    found = re.findall(r"^\s*\{\|.*?^\s*\|\}", section, flags=re.M | re.S)
+    tables = [_table_rows(table) for table in found]
+    modes = {mode for mode, _ in SHARED_PATHS}
+    missing = sorted(
+        modes - {mode for columns, _ in tables for names in columns for mode in names}
+    )
+    if missing:
+        raise ValueError(
+            "The wiki's table for %s has no %s column" % (name, " or ".join(missing))
+        )
+    decided, allowed = set(), set()
+    for columns, rows in tables:
+        spanned = 0  # the rows below still covered by a rowspan cell
+        for row in rows:
+            attributes = " ".join(cell[0] for cell in row)
+            rows_down, across = _row_spans(attributes)
+            merged = spanned > 0 or rows_down > 1 or across > 1
+            spanned = max(spanned - 1, rows_down - 1)
+            highways = _highway_values(row[0][1])
+            for mode, highway in SHARED_PATHS:
+                index = [i for i, names in enumerate(columns) if mode in names]
+                if (mode, highway) in decided or not index or highway not in highways:
+                    continue
+                if merged:
+                    continue
+                decided.add((mode, highway))
+                if len(row) != len(columns):
+                    raise ValueError(
+                        "A row of the wiki's table for %s has %d cells for %d "
+                        "columns: %r" % (name, len(row), len(columns), row[0][1])
+                    )
+                if _cell_allows_mode(row[index[0]][1]):
+                    allowed.add((mode, highway))
+    return allowed
+
+
+def wiki_country_defaults(wikitext):
+    """For each shared path, the ISO codes of the countries whose table on the wiki page
+    lets the mode use such a way (see ``_section_defaults``). Raises ``ValueError`` for a
+    page without country sections, for a country it has no ISO code for and for a
+    country with two sections."""
+    text = _without_notes(wikitext)
+    by_country = text[text.index("== By country ==") : text.index("== See Also ==")]
+    sections = re.split(r"^===(?!=) *(.+?) *(?<!=)===\s*$", by_country, flags=re.M)[1:]
+    if not sections:
+        raise ValueError("The wiki page has no country sections")
+    allowed, seen = {path: set() for path in SHARED_PATHS}, set()
+    for name, section in zip(sections[0::2], sections[1::2]):
+        if name not in WIKI_COUNTRIES:
+            raise ValueError("The wiki page has a new country: %s" % name)
+        if name in seen:
+            raise ValueError("The wiki page has two sections for %s" % name)
+        seen.add(name)
+        for path in _section_defaults(name, section):
+            allowed[path].add(WIKI_COUNTRIES[name])
+    return allowed
+
+
+def country_access(wikitext, revision):
+    """The vendored access defaults from the wiki page's wikitext and ``TRAFFIC_LAW``: for
+    each mode's tag and highway value, the sorted ISO codes of the countries whose default
+    lets the mode use such a way, and the provisions of the countries added from their
+    law. ``revision`` is the page's revision id and date, named in the source."""
+    allowed = wiki_country_defaults(wikitext)
     law = {}
     for (mode, highway), provisions in TRAFFIC_LAW.items():
-        allowed[mode][highway].update(provisions)
+        allowed[mode, highway].update(provisions)
         law.setdefault(mode, {})[highway] = dict(sorted(provisions.items()))
+    by_mode = {}
+    for (mode, highway), codes in allowed.items():
+        by_mode.setdefault(mode, {})[highway] = sorted(codes)
     return {
-        "source": "Valhalla %s, valhalla/mjolnir/adminconstants.h, kCountryAccess "
-        "(MIT licence); the countries in 'law' from their traffic law"
-        % VALHALLA_RELEASE,
-        "allowed": {
-            mode: {highway: sorted(codes) for highway, codes in by_highway.items()}
-            for mode, by_highway in allowed.items()
-        },
+        "source": "OSM wiki, %s, revision %d of %s; the countries in 'law' from their "
+        "traffic law" % (WIKI_PAGE, *revision),
+        "allowed": by_mode,
         "law": law,
     }
 
 
-def update_access(source=None, license=None):
-    """Write the access defaults and their licence from ``source`` and ``license``, or from
-    the pinned release."""
+def _page_revision(response):
+    """The wikitext of the revision in the wiki API's ``response`` to ``WIKI_QUERY``, with
+    the revision's id and date."""
+    revision = response["query"]["pages"][0]["revisions"][0]
+    content = revision["slots"]["main"]["content"]
+    return content, (revision["revid"], revision["timestamp"][:10])
+
+
+def update_access(source=None):
+    """Write the access defaults from the wiki API's answer saved in ``source``, or from
+    the wiki page's latest revision."""
     if source is None:
-        source_bytes = _download(VALHALLA_URL + "valhalla/mjolnir/adminconstants.h")
+        response = _download(WIKI_API + "?" + WIKI_QUERY)
     else:
-        source_bytes = Path(source).read_bytes()
-    if license is None:
-        license_bytes = _download(VALHALLA_URL + "COPYING")
-    else:
-        license_bytes = Path(license).read_bytes()
-    access = country_access(source_bytes.decode("utf-8"))
+        response = Path(source).read_bytes()
+    access = country_access(*_page_revision(json.loads(response)))
     path = DATA_DIR / "country_access.json"
     path.write_text(
         json.dumps(access, indent=1, ensure_ascii=False) + "\n", encoding="utf-8"
     )
-    (DATA_DIR / "country_access.LICENSE.md").write_bytes(license_bytes)
     print("wrote %s" % path)
 
 
@@ -255,12 +423,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("target", choices=["access", "borders"])
     parser.add_argument("--source", help="read the data from this file")
-    parser.add_argument("--license", help="read the licence from this file")
+    parser.add_argument("--license", help="read the borders' licence from this file")
     args = parser.parse_args()
     if args.target == "borders":
         update_borders(args.source, args.license)
+    elif args.license is not None:
+        parser.error("--license is for the borders only")
     else:
-        update_access(args.source, args.license)
+        update_access(args.source)
 
 
 if __name__ == "__main__":

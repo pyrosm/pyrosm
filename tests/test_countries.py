@@ -80,22 +80,29 @@ def test_country_borders_refresh(tmp_path, monkeypatch):
 
 def test_countries_allowing():
     """The countries where pedestrians may use a cycle way and cyclists a foot way without
-    a tag for the mode, from Valhalla's table and, for Estonia, Lithuania, New Zealand,
-    Portugal and Ukraine, from their traffic law."""
+    a tag for the mode, from the OSM wiki's tables and, for Estonia, Lithuania, New
+    Zealand, Portugal and Ukraine, from their traffic law."""
     from pyrosm.data.countries import countries_allowing
 
     assert countries_allowing("foot", "cycleway") == {
-        "BE", "BY", "CH", "DK", "EE", "FI", "GB", "GR", "HU", "IS", "LT", "NL",
-        "NO", "NZ", "OM", "PH", "PL", "PT", "SE", "TH", "TR", "UA", "US",
+        "BE", "BY", "CH", "CN", "DK", "EE", "FI", "GB", "GR", "HU", "IS", "LT", "NL",
+        "NO", "NZ", "OM", "PH", "PL", "PT", "RU", "SE", "TH", "TR", "UA", "US",
     }  # fmt: skip
-    assert countries_allowing("bicycle", "footway") == {"AU", "BY", "IS", "NO"}
+    assert countries_allowing("bicycle", "footway") == {"BY", "IS", "NO", "RU"}
     assert countries_allowing("foot", "path") == frozenset()
 
 
 def test_country_access_refresh(tmp_path, monkeypatch):
-    """The refresh script reads the shared paths from Valhalla's table, leaves out the
-    parts of the United Kingdom, adds the countries of its traffic-law table with their
-    provisions and stops at a country it has no ISO code for."""
+    """The refresh script reads the shared paths from the country tables of the OSM wiki
+    page: ``yes`` and ``partial`` allow the mode, ``no`` and a ``partial`` dismount do
+    not, the first row naming the way decides, leaving out rows with merged cells, and
+    a table without a value leaves the country out; comments, footnotes, cell attributes
+    (spans of 1 merge nothing), header spellings, template names with a lower-case first
+    letter, separators inside templates and cells over several lines are read through. It adds the countries of its traffic-law table with
+    their provisions, takes the revision from the saved API answer, and stops at a page
+    without country sections, at a country it has no ISO code for or with two sections, at a table without a column for a mode, at a row
+    without a cell for every column, at a span that is not a number and at an unknown
+    value."""
     import importlib.util
     import json
     from pathlib import Path
@@ -109,31 +116,123 @@ def test_country_access_refresh(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    ped, bike = "baldr::kPedestrianAccess", "baldr::kBicycleAccess"
-    table = (
-        "const std::unordered_map<std::string, std::vector<int>>\n"
-        '    kCountryAccess{{"Finland", {-1, -1, -1, -1, (%s), -1, (%s | %s), -1, -1}},\n'
-        '                   {"Norway", {-1, -1, -1, (%s | %s), -1, -1, (%s), -1, -1}},\n'
-        '                   {"England", {-1, -1, -1, -1, -1, -1, (%s), -1, -1}},\n'
-        '                   {"Austria", {-1, -1, -1, -1, -1, -1, -1, (%s), -1}}};\n'
-    ) % (ped, ped, bike, ped, bike, ped, ped, ped)
+    wiki = """== Worldwide ==
+{| class="wikitable"
+! highway !! foot
+|-
+| cycleway || {{yes}}
+|}
+== By country ==
+=== Australia ===
+{| class="wikitable"
+ ! {{Tag|highway}} !! bicycle !! foot
+ |-
+ | {{TagValue|highway|path}} || colspan="2" rowspan="2" | ''See [[Guidelines|the guidelines]]''
+ |-
+ | {{TagValue|highway|cycleway}}
+ |}
+=== Finland ===
+{| class="wikitable"
+!| {{Tag|highway}}
+!| bicycle
+!| foot<br/>ski
+<!-- |-
+ | cycleway
+ | {{no}}
+ | {{no}} -->
+ |-
+ | cycleway
+ | {{yes||designated}}
+ | {{partial|yes (3)}}
+ |-
+ | footway
+ | {{no}} (6)
+ | {{yes|designated}}
+ |}
+=== Norway ===
+{| class="wikitable"
+!| {{Tag|highway}}
+!| [[Key:bicycle|bicycle]]<ref group="NO">A note | with a bar
+over two lines</ref>
+!| [[key:foot|foot]]{{Refn|group=no|name=b|A note on {{tag|foot}}}}
+ |-
+ | footway (in parks) || colspan="2" | ''See below''
+ |-
+ | * {{tagValue|highway|footway}}
+ | {{yes}}{{refn|group=no|name=a|Cyclists {{Tag|bicycle|yes}}}}
+ | {{yes}}
+ |-
+ | footway + footway=sidewalk
+ | {{no}}
+ | {{yes}}
+ |-
+ | * {{TagValue|highway|path}}
+* {{TagValue|highway|cycleway}}
+ | {{yes|designated}}
+ | {{yes|yes}}
+ |}
+==== Notes ====
+A subsection of Norway's section.
+{| class="wikitable"
+! highway !! bicycle !! foot
+|-
+| footway || {{no}} || {{no}}
+|}
+=== Switzerland ===
+{| class="wikitable"
+! scope="col" | {{Tag|highway}} !! scope="col" | bicycle !! scope="col" | foot
+ |-
+ | cycleway || {{yes|designated}} || rowspan="1" style="background:#ffd" | {{partial|No (4)}}
+ |-
+ | footway || {{partial|dismount}} || {{yes}}
+ |}
+== See Also ==
+"""
     law = sorted(module.TRAFFIC_LAW["foot", "cycleway"])
-    assert module.country_access(table)["allowed"] == {
-        "foot": {"cycleway": sorted(["FI", "NO"] + law)},
+    revision = (3111745, "2026-11-04")
+    access = module.country_access(wiki, revision)
+    assert access["allowed"] == {
+        "foot": {"cycleway": sorted(["CH", "FI", "NO"] + law)},
         "bicycle": {"footway": ["NO"]},
     }
+    assert "revision 3111745 of 2026-11-04" in access["source"]
     with pytest.raises(ValueError, match="Atlantis"):
-        module.country_access(table.replace("Austria", "Atlantis"))
-    source = tmp_path / "adminconstants.h"
-    source.write_text(table, encoding="utf-8")
-    license = tmp_path / "COPYING"
-    license.write_bytes(b"MIT License\n")
+        module.country_access(wiki.replace("Switzerland", "Atlantis"), revision)
+    with pytest.raises(ValueError, match="two sections for Switzerland"):
+        module.country_access(wiki.replace("=== Finland", "=== Switzerland"), revision)
+    with pytest.raises(ValueError, match="no country sections"):
+        module.country_access(wiki.replace("===", "===="), revision)
+    with pytest.raises(ValueError, match="maybe"):
+        module.country_access(wiki.replace("{{partial|dismount}}", "{{maybe}}"), revision)
+    with pytest.raises(ValueError, match="Finland has no bicycle column"):
+        module.country_access(wiki.replace("!| bicycle\n", ""), revision)
+    with pytest.raises(ValueError, match="Finland has 2 cells for 3 columns"):
+        module.country_access(wiki.replace(" | {{no}} (6)\n", ""), revision)
+    with pytest.raises(ValueError, match="not a number"):
+        module.country_access(wiki.replace('rowspan="1"', 'rowspan="all"'), revision)
+    answer = {
+        "query": {
+            "pages": [
+                {
+                    "revisions": [
+                        {
+                            "revid": 3111745,
+                            "timestamp": "2026-11-04T09:12:00Z",
+                            "slots": {"main": {"content": wiki}},
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    source = tmp_path / "access.json"
+    source.write_text(json.dumps(answer), encoding="utf-8")
     monkeypatch.setattr(module, "DATA_DIR", tmp_path)
-    module.update_access(source, license)
+    module.update_access(source)
     written = json.loads((tmp_path / "country_access.json").read_text(encoding="utf-8"))
-    assert written["allowed"]["foot"]["cycleway"] == sorted(["FI", "NO"] + law)
+    assert written["allowed"]["foot"]["cycleway"] == sorted(["CH", "FI", "NO"] + law)
     assert written["law"] == {"foot": {"cycleway": module.TRAFFIC_LAW["foot", "cycleway"]}}
-    assert (tmp_path / "country_access.LICENSE.md").read_bytes() == b"MIT License\n"
+    assert written["source"] == access["source"]
 
 
 def test_filter_for_extent(tmp_path):

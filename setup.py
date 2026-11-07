@@ -84,7 +84,6 @@ setup(
         "LICENSE",
         "vendor/khash/LICENSE",
         "vendor/libdeflate/COPYING",
-        "pyrosm/data/country_access.LICENSE.md",
         "pyrosm/data/country_borders.LICENSE.md",
     ],
     description="A Python tool to parse OSM data from Protobuf format into GeoDataFrame.",

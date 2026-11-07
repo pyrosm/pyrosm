@@ -34,6 +34,12 @@ new options that leave the defaults as they were, and fixes of calls that failed
 - **`oneway=reverse` in graphs.** A way tagged `oneway=reverse` is one-way against the order of
   its nodes. Graphs that follow the `oneway` tag now treat it like `oneway=-1`; earlier versions
   made it two-way. Very few ways have this tag, and nothing needs to change in your code.
+- **Country defaults for shared paths.** With the default `shared_paths="local"`, the `walking`
+  network keeps the cycle ways without a `foot` tag in China and Russia, and the `cycling` network
+  keeps the foot ways without a `bicycle` tag in Russia; earlier versions left them out. In
+  Australia, the `cycling` network leaves out the foot ways without a `bicycle` tag, which 0.29.0
+  kept. To get the earlier ways, read with `shared_paths="tagged"` in China and Russia and with
+  `shared_paths="all"` in Australia.
 
 ## pyrosm 0.29.0
 
