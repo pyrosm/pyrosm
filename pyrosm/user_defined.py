@@ -1,4 +1,3 @@
-from pyrosm.utils import warn_empty_result
 from pyrosm.data_manager import get_osm_data
 from pyrosm.frames import prepare_geodataframe
 
@@ -57,9 +56,7 @@ def get_user_defined_data(
         steps=steps,
     )
 
-    # If there weren't any data, return empty GeoDataFrame
     if nodes is None and ways is None and relations is None:
-        warn_empty_result("custom")
         return None
 
     # Ensure that ways are None if returning those are not requested
@@ -79,6 +76,4 @@ def get_user_defined_data(
         complete_relations=complete_relations,
         steps=steps,
     )
-    if gdf is None:
-        warn_empty_result("custom")
     return gdf

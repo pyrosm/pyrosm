@@ -74,16 +74,17 @@ def haversine(lat1, lng1, lat2, lng2, unit=Unit.KILOMETERS):
     return 2 * avg_earth_radius * np.arcsin(np.sqrt(d))
 
 
-def calculate_line_lengths(lines):
+def calculate_line_lengths(lines, decimals=0):
     """The length of each LineString in ``lines`` in metres: the haversine distances of its
-    segments rounded to millimetres, summed and rounded to metres."""
+    segments rounded to millimetres, summed and rounded to ``decimals`` (metres by
+    default)."""
     coords, owner = get_coordinates(lines, return_index=True)
-    return line_lengths(coords, owner, len(lines))
+    return line_lengths(coords, owner, len(lines), decimals)
 
 
-def line_lengths(coords, owner, n):
+def line_lengths(coords, owner, n, decimals=0):
     """The lengths of :func:`calculate_line_lengths` of ``n`` lines whose points are
-    ``coords``, the line of each point in ``owner``."""
+    ``coords``, the line of each point in ``owner``, rounded to ``decimals``."""
     lengths = np.zeros(n)
     same_line = owner[1:] == owner[:-1]
     lon, lat = coords[:, 0], coords[:, 1]
@@ -102,7 +103,7 @@ def line_lengths(coords, owner, n):
     for count in np.unique(counts[counts > 0]):
         rows = np.flatnonzero(counts == count)
         lengths[rows] = segments[starts[rows][:, None] + np.arange(count)].sum(axis=1)
-    return lengths.round(0)
+    return lengths.round(decimals)
 
 
 def segment_lengths(start, end):

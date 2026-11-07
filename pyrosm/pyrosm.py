@@ -550,6 +550,7 @@ class OSM:
         filter_type=None,
         tags_to_keep=None,
         shared_paths="local",
+        walking_areas=False,
     ):
         """
         Parses street networks from OSM
@@ -654,6 +655,19 @@ class OSM:
             and `'all'` apply only to the walking and cycling networks without a
             `custom_filter`.
 
+        walking_areas : bool (default: False)
+            If True, the edges also cross the walking areas of the network, such as
+            pedestrian squares and station halls: the closed ways tagged `area=yes` and
+            the multipolygon relations whose tags the network's filter keeps (it keeps
+            `highway=pedestrian` and `highway=footway` areas in the walking network),
+            or that the `custom_filter` keeps. The network's nodes on the outline of an
+            area, and its dead ends inside the area, are joined in pairs by an edge
+            along the shortest line inside the area, which bends only at the corners
+            where the outline or a hole turns into the area. A pair whose line passes
+            another of these nodes gets no edge of its own. These edges have the area's
+            `id`, `osm_type` and tags, and `True` in the column `walking_area`, which is
+            `False` for the other edges. Requires `nodes=True`.
+
         Returns
         -------
 
@@ -675,6 +689,12 @@ class OSM:
         custom_filter, filter_type = _network_filter_type(custom_filter, filter_type)
         advanced_filter = isinstance(custom_filter, CompiledFilter)
         network_type = network_type_of_read(network_type, custom_filter)
+        validate_bool(walking_areas, "walking_areas")
+        if walking_areas and not nodes:
+            raise ValueError(
+                "walking_areas=True needs nodes=True: the edges across an area join "
+                "the network's nodes."
+            )
 
         if self._use_engine():
             result = self._read_engine(
@@ -691,6 +711,17 @@ class OSM:
             )
             if (result[1] if nodes else result) is None:
                 _warn_no_edges(custom_filter)
+            elif walking_areas:
+                node_gdf, edges = result
+                result = node_gdf, self._with_walking_areas(
+                    node_gdf,
+                    edges,
+                    network_type,
+                    custom_filter,
+                    filter_type,
+                    shared_paths,
+                    timestamp,
+                )
             return result
 
         # Get filter (also validates a network_type given with a custom_filter, which sets
@@ -740,11 +771,64 @@ class OSM:
         edges = self._drop_node_lists(edges)
         if edges is None:
             _warn_no_edges(custom_filter)
+        elif walking_areas:
+            edges = self._with_walking_areas(
+                node_gdf,
+                edges,
+                network_type,
+                custom_filter,
+                filter_type,
+                shared_paths,
+                timestamp,
+            )
 
         # In case both edges and nodes are requested
         if nodes:
             return record_network_type((node_gdf, edges), network_type)
         return record_network_type(edges, network_type)
+
+    def _with_walking_areas(
+        self,
+        nodes,
+        edges,
+        network_type,
+        custom_filter,
+        filter_type,
+        shared_paths,
+        timestamp,
+    ):
+        """``edges`` of a network read with the edges across its walking areas and the
+        column ``walking_area`` (see :func:`pyrosm.walking_areas.add_crossings`)."""
+        from pyrosm.pbf_writer import _FIELD_COLS, _NETWORK_COLS
+        from pyrosm.walking_areas import add_crossings, area_filter, select_areas
+
+        osm_keys, keep, rule = area_filter(
+            network_type,
+            custom_filter,
+            filter_type,
+            shared_paths,
+            self.filepath,
+            self.bounding_box,
+        )
+        columns = [
+            col
+            for col in edges.columns
+            if col not in _FIELD_COLS and col not in _NETWORK_COLS
+        ]
+        candidates = self._read_custom_criteria(
+            {key: True for key in osm_keys},
+            None,
+            "keep",
+            None,
+            False,
+            True,
+            True,
+            ["area"],
+            True,
+            timestamp,
+            columns,
+        )
+        return add_crossings(nodes, edges, select_areas(candidates, keep, rule))
 
     @logged()
     @records_read(lambda args: _require_layer_key(args["custom_filter"], "building"))
@@ -1261,6 +1345,39 @@ class OSM:
 
         """
 
+        gdf = self._read_custom_criteria(
+            custom_filter,
+            osm_keys_to_keep,
+            filter_type,
+            tags_as_columns,
+            keep_nodes,
+            keep_ways,
+            keep_relations,
+            extra_attributes,
+            keep_other_tags,
+            timestamp,
+            tags_to_keep,
+        )
+        if gdf is None:
+            warn_empty_result("custom")
+        return gdf
+
+    def _read_custom_criteria(
+        self,
+        custom_filter,
+        osm_keys_to_keep,
+        filter_type,
+        tags_as_columns,
+        keep_nodes,
+        keep_ways,
+        keep_relations,
+        extra_attributes,
+        keep_other_tags,
+        timestamp,
+        tags_to_keep,
+    ):
+        """The frame of :meth:`get_data_by_custom_criteria`, or None when nothing
+        matches, without the warning of an empty result."""
         # custom_filter=None means "return everything": keep every tagged element
         # with no key/value filtering (issue #113). There is nothing to keep or exclude
         # by value then, so filter_type is ignored; it is pinned to a valid no-op so a
@@ -1297,8 +1414,6 @@ class OSM:
                 keep_other_tags=keep_other_tags,
                 tags_to_keep=tags_to_keep,
             )
-            if gdf is None:
-                warn_empty_result("custom")
             return gdf
 
         # keep_other_tags=False only skips tag work in the out-of-core decode; the in-memory
