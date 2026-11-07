@@ -1,15 +1,19 @@
 def test_country_codes():
     """The country of each point by the vendored borders, which also cover islands and the
-    water near the coast; a territory counts as its country; points far out at sea get
-    None, on both sides of the antimeridian too."""
+    water near the coast; a territory counts as its country unless the wiki gives it a
+    table; a disputed region that two countries' boundaries share and points far out at
+    sea get None, on both sides of the antimeridian too."""
     from pyrosm.data.countries import country_codes
 
     places = [
         (24.94, 60.17, "FI"),  # Helsinki
         (24.988, 60.146, "FI"),  # Suomenlinna, an island off Helsinki
         (21.37, 59.78, "FI"),  # Utö, an island in the outer archipelago
-        (19.131, 60.3005, "FI"),  # Märket, on the Åland Islands' side
+        (19.94, 60.10, "FI"),  # Mariehamn, on the Åland Islands
         (10.75, 59.91, "NO"),  # Oslo
+        (114.17, 22.30, "HK"),  # Hong Kong, with its own table on the wiki
+        (113.55, 22.19, "CN"),  # Macau
+        (34.10, 44.95, None),  # Simferopol, in both Russia's and Ukraine's boundary
         (179.9, -16.6, "FJ"),  # Fiji, east of the antimeridian
         (-179.9, -16.6, "FJ"),  # Fiji, west of it
         (-40.0, 30.0, None),  # the Atlantic
@@ -30,20 +34,32 @@ def test_country_codes_on_a_border(monkeypatch):
 
     areas = [shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1), shapely.box(2, 0, 3, 1)]
     codes = np.array(["AA", "BB", "BB"], dtype=object)
-    monkeypatch.setattr(countries, "_borders", lambda: (codes, shapely.STRtree(areas)))
+    monkeypatch.setattr(countries, "_borders", lambda: (codes, np.array(areas)))
     lon, lat = [0.5, 1.0, 2.0], [0.5, 0.5, 0.5]
     assert countries.country_codes(lon, lat).tolist() == ["AA", None, "BB"]
 
 
 def test_country_borders_refresh(tmp_path, monkeypatch):
-    """The refresh script keeps the areas with a geometry and a country, codes each by its
-    sovereign country, copies the licence, and writes the same bytes on every run."""
+    """The refresh script builds one area per country from its admin_level=2 boundary, a
+    ring inside another a hole; a territory counts as its country unless the wiki gives it
+    a table, and then it is cut out of its country; where two countries' boundaries
+    overlap, or one lies within the other, their common part stays in both; a download in
+    batches, gzip-compressed or not, writes the same bytes as the saved answer, on every
+    run; a relation that is not an administrative boundary is left out. A broken boundary,
+    a boundary without ways, two countries with one code, a wiki territory without a
+    boundary, two countries with the same area, three countries overlapping in one place,
+    an answer that reports a stopped query (downloaded or saved), a batch without exactly
+    its relations and a boundary whose tags change during the download stop the
+    refresh."""
+    import copy
     import gzip
     import importlib.util
     import json
     from pathlib import Path
+    from urllib.parse import parse_qs, urlsplit
 
     import pytest
+    from shapely.geometry import shape
 
     script = Path(__file__).parents[1] / "scripts" / "update_country_data.py"
     if not script.exists():
@@ -52,30 +68,136 @@ def test_country_borders_refresh(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    square = {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}
-    features = [
-        {"properties": {"nameEn": "Mainland Finland", "country": "FI"}, "geometry": square},
-        {"properties": {"iso1A2": "AX", "country": "FI"}, "geometry": square},
-        {"properties": {"iso1A2": "NO"}, "geometry": square},
-        {"properties": {"iso1A2": "EU"}, "geometry": None},
-        {"properties": {"nameEn": "No code"}, "geometry": square},
+    def way(*coords):
+        geometry = [{"lon": x, "lat": y} for x, y in coords]
+        return {"type": "way", "ref": 0, "role": "outer", "geometry": geometry}
+
+    def boundary(osm_id, code, level, *ways):
+        tags = {"boundary": "administrative", "admin_level": level}
+        if code is not None:
+            tags["ISO3166-1:alpha2"] = code
+        label = {"type": "node", "ref": 0, "role": "label"}
+        return {"type": "relation", "id": osm_id, "tags": tags, "members": [*ways, label]}
+
+    relations = [
+        boundary(
+            1,
+            "AA",
+            "2",
+            way((0, 0), (2, 0), (2, 2)),
+            way((2, 2), (0, 2), (0, 0)),
+            way((1.5, 1.5), (1.8, 1.5), (1.8, 1.8), (1.5, 1.8), (1.5, 1.5)),
+        ),
+        boundary(2, "BB", "2", way((2, 0), (4, 0), (4, 2), (2, 2), (2, 0))),
+        boundary(6, "CC", "2", way((3, 0), (5, 0), (5, 2), (3, 2), (3, 0))),
+        boundary(3, "AX", "3", way((0, 1), (0.2, 1), (0.2, 1.2), (0, 1))),
+        boundary(4, "HK", "3", way((0.5, 0.5), (1, 0.5), (1, 1), (0.5, 1), (0.5, 0.5))),
+        boundary(5, None, "4", way((3, 0), (3, 1), (3.5, 1), (3, 0))),
+        boundary(7, "EE", "2", way((2.2, 0.2), (2.6, 0.2), (2.6, 0.6), (2.2, 0.2))),
+        boundary(9, "QQ", "2", way((6, 0), (7, 0), (7, 1), (6, 0))),
     ]
-    source = tmp_path / "borders.json"
-    source.write_text(json.dumps({"type": "FeatureCollection", "features": features}))
-    license = tmp_path / "LICENSE.md"
-    license.write_bytes(b"ISC License\n")
+    relations[-1]["tags"]["boundary"] = "maritime"
+    answer = {"osm3s": {"timestamp_osm_base": "2026-11-07T08:00:00Z"}, "elements": relations}
+    source = tmp_path / "boundaries.json"
+    source.write_text(json.dumps(answer))
     out = tmp_path / "data"
     out.mkdir()
     monkeypatch.setattr(module, "DATA_DIR", out)
+    monkeypatch.setattr(module, "WIKI_COUNTRIES", {"Hong Kong": "HK"})
 
-    module.update_borders(source, license)
+    module.update_borders(source)
     first = (out / "country_borders.geojson.gz").read_bytes()
-    module.update_borders(source, license)
-    assert (out / "country_borders.geojson.gz").read_bytes() == first
     with gzip.open(out / "country_borders.geojson.gz", "rt") as f:
         borders = json.load(f)
-    assert [f["properties"]["iso"] for f in borders["features"]] == ["FI", "FI", "NO"]
-    assert (out / "country_borders.LICENSE.md").read_bytes() == b"ISC License\n"
+    assert "2026-11-07" in borders["source"]
+    areas = {f["properties"]["iso"]: shape(f["geometry"]) for f in borders["features"]}
+    assert list(areas) == ["AA", "BB", "CC", "EE", "HK"]
+    assert [round(areas[code].area, 6) for code in areas] == [3.66, 4.0, 4.0, 0.08, 0.25]
+    assert round(areas["BB"].intersection(areas["CC"]).area, 6) == 2.0
+    assert round(areas["BB"].intersection(areas["EE"]).area, 6) == 0.08
+
+    class Response:
+        def __init__(self, document, compressed):
+            self.body = json.dumps(document).encode()
+            self.headers = {}
+            if compressed:
+                self.body = gzip.compress(self.body)
+                self.headers["Content-Encoding"] = "gzip"
+
+        def read(self):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    sent, served = [], {"remark": None, "skip": None, "tags": {}}
+
+    def urlopen(request, context=None, timeout=None):
+        sent.append(request.get_header("Accept-encoding"))
+        query = parse_qs(urlsplit(request.full_url).query)["data"][0]
+        if query == module.BOUNDARIES_QUERY:
+            tags = [{"type": "relation", "id": r["id"], "tags": r["tags"]} for r in relations]
+            return Response({"osm3s": answer["osm3s"], "elements": tags}, True)
+        ids = query.split("relation(id:")[1].split(")")[0].split(",")
+        found = copy.deepcopy(
+            [r for r in relations if str(r["id"]) in ids and r["id"] != served["skip"]]
+        )
+        for relation in found:
+            if relation["id"] == 2:
+                relation["tags"].update(served["tags"])
+        document = {"osm3s": answer["osm3s"], "elements": found}
+        if served["remark"]:
+            document["remark"] = served["remark"]
+        return Response(document, False)
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(module, "GEOMETRY_BATCH", 2)
+    module.update_borders()
+    assert (out / "country_borders.geojson.gz").read_bytes() == first
+    assert set(sent) == {"gzip"}
+    served["remark"] = "runtime error: Query timed out"
+    with pytest.raises(ValueError, match="stopped the query: runtime error"):
+        module.update_borders()
+    served.update(remark=None, skip=2)
+    with pytest.raises(ValueError, match="returned the relations 1 for 1, 2"):
+        module.update_borders()
+    for changed in ({"admin_level": "4"}, {"ISO3166-1:alpha2": "ZZ"}, {"boundary": ""}):
+        served.update(skip=None, tags=changed)
+        with pytest.raises(ValueError, match="changed during the download"):
+            module.update_borders()
+    stopped = tmp_path / "stopped.json"
+    stopped.write_text(json.dumps({**answer, "remark": "runtime error: out of memory"}))
+    with pytest.raises(ValueError, match="stopped the query: runtime error"):
+        module.update_borders(stopped)
+
+    broken = copy.deepcopy(answer)
+    del broken["elements"][0]["members"][1]
+    wayless = copy.deepcopy(answer)
+    wayless["elements"][1]["members"] = wayless["elements"][1]["members"][-1:]
+    twice = copy.deepcopy(answer)
+    twice["elements"][1]["tags"]["ISO3166-1:alpha2"] = "AA"
+    missing = copy.deepcopy(answer)
+    del missing["elements"][4]
+    triple = copy.deepcopy(answer)
+    triple["elements"].append(
+        boundary(8, "DD", "2", way((3.5, 0), (4.5, 0), (4.5, 2), (3.5, 2), (3.5, 0)))
+    )
+    same = copy.deepcopy(answer)
+    same["elements"][2]["members"] = same["elements"][1]["members"]
+    cases = [
+        (broken, "relation 1 is not closed"),
+        (wayless, "relation 2 has no area"),
+        (same, "The boundaries of BB, CC are the same"),
+        (twice, "Two country boundaries have the code AA"),
+        (missing, "No boundary has the code HK"),
+        (triple, "The boundaries of BB, CC, DD overlap"),
+    ]
+    for document, message in cases:
+        with pytest.raises(ValueError, match=message):
+            module.country_borders(document)
 
 
 def test_countries_allowing():

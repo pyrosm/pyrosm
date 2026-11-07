@@ -131,7 +131,7 @@ A BibTeX entry and version-specific DOIs are available in the [documentation](ht
 
 ## License and copyright
 
-Pyrosm is licensed under the BSD 3-Clause License (see [license](LICENSE)). pyrosm includes country borders from [country-coder](https://github.com/rapideditor/country-coder) under the ISC License; its licence file is stored with the data in `pyrosm/data`. The countries' defaults for shared foot and cycle paths come from the tables of the OSM wiki page [OSM tags for routing/Access restrictions](https://wiki.openstreetmap.org/wiki/OSM_tags_for_routing/Access_restrictions).
+Pyrosm is licensed under the BSD 3-Clause License (see [license](LICENSE)). pyrosm includes country borders built from the national boundaries of OpenStreetMap. The countries' defaults for shared foot and cycle paths come from the tables of the OSM wiki page [OSM tags for routing/Access restrictions](https://wiki.openstreetmap.org/wiki/OSM_tags_for_routing/Access_restrictions).
 
 The OSM data is downloaded from two sources:
 

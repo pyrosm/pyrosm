@@ -79,12 +79,11 @@ if _linetrace:
 setup(
     name="pyrosm",
     version="0.29.0",
-    license_expression="BSD-3-Clause AND MIT AND ISC",
+    license_expression="BSD-3-Clause AND MIT",
     license_files=[
         "LICENSE",
         "vendor/khash/LICENSE",
         "vendor/libdeflate/COPYING",
-        "pyrosm/data/country_borders.LICENSE.md",
     ],
     description="A Python tool to parse OSM data from Protobuf format into GeoDataFrame.",
     long_description=read_long_description(),
