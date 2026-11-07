@@ -57,9 +57,10 @@ _FIELD_COLS = {
     "lat",
     "geometry",
 }
-# Numeric columns get_network computes: the end node ids of a segment and its length in
-# metres. A text column of one of these names holds the OSM tag of that name.
-_NETWORK_COLS = ("u", "v", "length")
+# Numeric columns get_network computes: the end node ids of a segment, its length in
+# metres, and whether it crosses a walking area. A text column of one of these names
+# holds the OSM tag of that name.
+_NETWORK_COLS = ("u", "v", "length", "walking_area")
 # The fields of a way record, next to its tags.
 _RECORD_FIELDS = {"id", "version", "timestamp", "visible", "nodes", "tags"}
 # Element fields the readers put into a JSON ``tags`` dict when they are not columns.
@@ -110,12 +111,15 @@ def _tag_key(col):
 
 def _frame_tag_columns(gdf):
     """The columns of ``gdf`` that hold tags: all but its geometry, the element fields
-    and the columns get_network computes (numeric ``u``, ``v`` and ``length``)."""
+    and the columns get_network computes (numeric ``u``, ``v`` and ``length``, boolean
+    ``walking_area``)."""
     computed = {
         col
         for col in _NETWORK_COLS
         if col in gdf.columns and pd.api.types.is_numeric_dtype(gdf[col])
     }
+    if _walking_area_flags(gdf) is not None:
+        computed.add("walking_area")
     return [
         col
         for col in gdf.columns
@@ -394,6 +398,28 @@ def _as_frames(data):
     if isinstance(data, (list, tuple)):
         return list(data)
     raise ValueError("'data' should be a GeoDataFrame or a list of GeoDataFrames.")
+
+
+def _walking_area_flags(gdf):
+    """Whether each row of ``gdf`` is an edge across a walking area (see
+    :meth:`pyrosm.OSM.get_network`): its ``walking_area`` values, a missing value as
+    False. None when ``gdf`` has no ``walking_area`` column of booleans (missing values
+    allowed); a column of other values holds the OSM tag of that name."""
+    values = gdf.get("walking_area")
+    if values is None:
+        return None
+    if not pd.api.types.is_bool_dtype(values) and not all(
+        isinstance(value, (bool, np.bool_)) for value in values.dropna()
+    ):
+        return None
+    return values.eq(True).fillna(False).to_numpy(dtype=bool)
+
+
+def _without_area_crossings(gdf):
+    """``gdf`` without its edges across walking areas (see :func:`_walking_area_flags`),
+    which are lines across an area, not elements."""
+    crossing = _walking_area_flags(gdf)
+    return gdf if crossing is None else gdf[~crossing]
 
 
 def _reproject_to_wgs84(frames):
@@ -1334,7 +1360,8 @@ def write_geodataframe_to_pbf(
     known = values != 0
     changesets = dict(zip(ids[known].tolist(), values[known].tolist()))
     way_records = list(way_records) + list(relation_member_ways or [])
-    frames = _reproject_to_wgs84(_as_frames(data))
+    frames = [_without_area_crossings(gdf) for gdf in _as_frames(data)]
+    frames = _reproject_to_wgs84(frames)
 
     way_by_id = {w["id"]: w for w in way_records}
     rel_ids = set(int(i) for i in relations["id"]) if "id" in relations else set()

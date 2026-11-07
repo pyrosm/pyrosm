@@ -585,15 +585,42 @@ def test_get_network_with_walking_areas(case):
 
 
 @pytest.mark.parametrize(
-    "kwargs, message",
+    "read, kwargs, message",
     [
-        ({"walking_areas": True}, "needs nodes=True"),
-        ({"walking_areas": "yes", "nodes": True}, "'walking_areas' should be boolean"),
+        ("get_network", {"walking_areas": True}, "needs nodes=True"),
+        (
+            "get_network",
+            {"walking_areas": "yes", "nodes": True},
+            "'walking_areas' should be boolean",
+        ),
+        ("get_graph", {"walking_areas": None}, "'walking_areas' should be boolean"),
     ],
 )
-def test_get_network_refuses_unusable_walking_areas(test_pbf, kwargs, message):
+def test_network_reads_refuse_unusable_walking_areas(test_pbf, read, kwargs, message):
     """walking_areas is a boolean, and the edges across areas need the network's nodes."""
     from pyrosm import OSM
 
     with pytest.raises(ValueError, match=message):
-        OSM(test_pbf).get_network(**kwargs)
+        getattr(OSM(test_pbf), read)(**kwargs)
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_get_network_with_walking_areas_reports_one_progress(engine, monkeypatch):
+    """The network read and the read of the walking areas report one progress from 0 to
+    100 %, which stays below 100 % until the edges across the areas are built."""
+    from pyrosm import OSM, walking_areas
+
+    seen = []
+    at_crossings = []
+    real = walking_areas.add_crossings
+
+    def add_crossings(*args):
+        at_crossings.append(seen[-1][0])
+        return real(*args)
+
+    monkeypatch.setattr(walking_areas, "add_crossings", add_crossings)
+    osm = OSM(get_data("helsinki_pbf"), engine=engine, progress=lambda *r: seen.append(r))
+    osm.get_network(nodes=True, walking_areas=True)
+    done = [d for d, _ in seen]
+    assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)
+    assert at_crossings[0] < 100

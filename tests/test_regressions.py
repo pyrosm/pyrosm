@@ -4539,6 +4539,29 @@ _GRAPH_STEPS = ["directing the edges", "keeping the largest connected part"]
         ),
         (
             "out_of_core",
+            "walking areas",
+            [
+                "indexing the file",
+                "decoding the blocks",
+                "gathering the nodes",
+                "building the edges",
+                "writing the result",
+                "loading the result",
+                "reading the walking areas",
+            ],
+        ),
+        (
+            "in_memory",
+            "walking areas",
+            [
+                "decoding the blocks",
+                "collecting the elements",
+                "building the edges",
+                "reading the walking areas",
+            ],
+        ),
+        (
+            "out_of_core",
             False,
             [
                 "indexing the file",
@@ -4560,23 +4583,34 @@ def test_get_graph_reports_one_progress(engine, simplify, read, fresh_cache, mon
     """get_graph showed the read and the graph as two progresses, the graph's counting
     steps, and the graph steps ignored the progress of the OSM object (progress=False
     still drew a bar). One progress from 0 to 100 % covers the read and the graph
-    steps, and progress=False draws no bar."""
+    steps, and progress=False draws no bar. With walking_areas, the read of the areas is
+    a step of it, and no step starts at 100 %."""
     from pyrosm import OSM, get_data
     from pyrosm.utils import progress
 
     started = []
     real = progress.Steps.start_step
-    monkeypatch.setattr(
-        progress.Steps,
-        "start_step",
-        lambda self, name: started.append(name) or real(self, name),
-    )
-    fp = get_data("test_pbf")
+
+    def start_step(self, name):
+        if self.desc.startswith("Building the graph"):
+            started.append((name, self.done))
+        return real(self, name)
+
+    monkeypatch.setattr(progress.Steps, "start_step", start_step)
+    walking_areas = simplify == "walking areas"
+    fp = get_data("helsinki_pbf" if walking_areas else "test_pbf")
     seen = []
     osm = OSM(fp, engine=engine, progress=lambda *report: seen.append(report))
-    osm.get_graph("driving", graph_type="networkx", simplify=simplify)
+    osm.get_graph(
+        "walking" if walking_areas else "driving",
+        graph_type="networkx",
+        simplify=bool(simplify),
+        walking_areas=walking_areas,
+    )
     graph = _GRAPH_STEPS + (["simplifying"] if simplify else [])
-    assert list(dict.fromkeys(started)) == read + graph + ["building the graph"]
+    names = [name for name, _ in started]
+    assert list(dict.fromkeys(names)) == read + graph + ["building the graph"]
+    assert all(done < 100 for _, done in started)
     done = [d for d, _ in seen]
     assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)
 
