@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 from pyrosm import get_data
 
@@ -375,3 +377,250 @@ def test_osh_network_does_not_leak_empty_tag_columns(helsinki_history_pbf):
     # 33 ways that were deleted before 2010. It grew by 8 cycle ways that the foot tag
     # opens to pedestrians.
     assert gdf.shape == (179, 22)
+
+
+def _walking_area_frames():
+    """Network nodes and edges around a hand-made walking area (a relation of two parts,
+    the first a square with a hole), in units of 1e-4 degrees near Helsinki."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, MultiPolygon, Polygon
+
+    def lonlat(x, y):
+        return 24.9 + x * 1e-4, 60.2 + y * 1e-4
+
+    outline = [(0, 0), (2, 0), (4, 0), (4, 2), (4, 4), (0, 4), (0, 3), (0, 2)]
+    hole = [(1.5, 1.8), (2.5, 1.8), (2.5, 3.0), (1.5, 3.0)]
+    second = [(6, 0), (7, 0), (7, 1), (6, 1)]
+    u_shape = [(10, 0), (13, 0), (13, 3), (12, 3), (12, 1), (11, 1), (11, 3), (10, 3)]
+    area = MultiPolygon(
+        [
+            Polygon([lonlat(*xy) for xy in outline], [[lonlat(*xy) for xy in hole]]),
+            Polygon([lonlat(*xy) for xy in second]),
+            Polygon([lonlat(*xy) for xy in u_shape]),
+        ]
+    )
+    points = {
+        1: (0, 2),  # A, a corner of the outline
+        2: (4, 2),  # B
+        22: (4, 2),  # a second node at B
+        3: (2, 0),  # C
+        4: (0.5, 3.5),  # D, the end of a way inside the area
+        5: (0, 3),  # E
+        6: (0, 4),  # F
+        7: (4, 1),  # on the outline but not at a corner of it
+        8: (1, 1),  # inside, on a way that goes on
+        9: (6, 0),
+        10: (7, 1),
+        11: (10, 3),  # the tips of the U, which see each other only around its corners
+        12: (13, 3),
+    }
+    nodes = pd.DataFrame(
+        [(i, *lonlat(*xy)) for i, xy in points.items()], columns=["id", "lon", "lat"]
+    )
+    ends = [(4, 1), (8, 1), (8, 3), (7, 2), (9, 10), (5, 6)]
+    edges = gpd.GeoDataFrame(
+        {
+            "id": range(len(ends)),
+            "osm_type": "way",
+            "highway": "footway",
+            "tags": None,
+            "u": [u for u, _ in ends],
+            "v": [v for _, v in ends],
+            "length": 1.0,
+        },
+        geometry=[
+            LineString([lonlat(*points[u]), lonlat(*points[v])]) for u, v in ends
+        ],
+        crs="EPSG:4326",
+    )
+    areas = gpd.GeoDataFrame(
+        {"id": [500], "osm_type": "relation", "highway": "pedestrian", "tags": None},
+        geometry=[area],
+        crs="EPSG:4326",
+    )
+    return nodes, edges, areas, lonlat
+
+
+@pytest.mark.parametrize("capped", [False, True])
+def test_walking_area_crossings(capped, monkeypatch):
+    """The network nodes at corners of an area's outline or of its holes, and the ends of
+    ways inside it, are joined in pairs along the shortest line inside the area, which
+    bends at the corners of the hole; a pair whose line passes another of them, and the
+    parts of a multipolygon between each other, get no edge. Over the point limit, the
+    lines bend only at other entrances, so the tips of a U get no edge."""
+    from pyrosm import walking_areas
+    from pyrosm.distance import Unit, haversine
+
+    nodes, edges, areas, lonlat = _walking_area_frames()
+    if capped:
+        monkeypatch.setattr(walking_areas, "MAX_VISIBILITY_POINTS", 3)
+    rows = walking_areas.crossing_rows(nodes, edges, areas)
+
+    pairs = set(zip(rows["u"], rows["v"]))
+    ends_at_b = {(1, 2), (1, 22), (2, 4), (22, 4), (2, 5), (22, 5), (2, 6), (22, 6)}
+    others = {(1, 3), (1, 4), (1, 5), (2, 3), (22, 3), (3, 4), (3, 5), (3, 6)}
+    others |= {(4, 5), (4, 6), (5, 6), (9, 10)}
+    assert pairs == (others if capped else others | ends_at_b | {(11, 12)})
+    assert list(rows.columns) == list(edges.columns)
+    assert (rows["id"] == 500).all() and (rows["highway"] == "pedestrian").all()
+    if capped:
+        return
+    bends = {(1, 2): [(0, 2), (1.5, 1.8), (2.5, 1.8), (4, 2)]}
+    bends[(2, 4)] = [(4, 2), (2.5, 3.0), (0.5, 3.5)]
+    bends[(11, 12)] = [(10, 3), (11, 1), (12, 1), (13, 3)]
+    for (u, v), path in bends.items():
+        row = rows[(rows["u"] == u) & (rows["v"] == v)].iloc[0]
+        xy = [lonlat(*p) for p in path]
+        np.testing.assert_allclose(row.geometry.coords, xy)
+        lon, lat = np.array(xy).T
+        pieces = haversine(lat[:-1], lon[:-1], lat[1:], lon[1:], unit=Unit.METERS)
+        assert row["length"] == pytest.approx(pieces.round(3).sum(), abs=1e-6)
+    without_tags = walking_areas.crossing_rows(nodes, edges.drop(columns="tags"), areas)
+    assert "tags" not in without_tags.columns
+    shrunk = areas.assign(geometry=[areas.geometry.iloc[0].geoms[1].buffer(-1e-6)])
+    assert walking_areas.crossing_rows(nodes, edges, shrunk) is None
+
+
+@pytest.mark.parametrize(
+    "network_type, kept",
+    [("walking", [1, 4, 8, 9]), ("cycling", [1, 8, 9]), ("driving", [])],
+)
+def test_walking_areas_pass_the_network_filter(network_type, kept, monkeypatch):
+    """A walking area is a closed way tagged area=yes or a multipolygon relation whose
+    tags the network's filter keeps. One built for another mode, without a tag of the
+    network's mode, counts where its country lets the mode use it: cyclists may use foot
+    ways in Norway, not in Finland."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, box
+
+    from pyrosm.data import countries
+    from pyrosm.walking_areas import area_filter, select_areas
+
+    # With the read's area unknown, each area is decided by its own country.
+    monkeypatch.setattr(countries, "read_extent", lambda *args: None)
+    helsinki = box(24.940, 60.170, 24.941, 60.171)
+    oslo = box(10.750, 59.910, 10.751, 59.911)
+    multipolygon, route = '{"type": "multipolygon"}', '{"type": "route"}'
+    rows = [
+        (1, "way", "pedestrian", "yes", None, None, None, helsinki),
+        (2, "way", "pedestrian", None, None, None, None, helsinki),
+        (3, "way", "footway", "yes", None, None, None, LineString([(24.94, 60.17)] * 2)),
+        (4, "relation", "footway", None, None, None, multipolygon, helsinki),
+        (5, "relation", "pedestrian", None, None, None, route, helsinki),
+        (6, "way", "footway", "yes", "no", None, None, helsinki),
+        (7, "way", "platform", "yes", None, None, None, helsinki),
+        (8, "way", "footway", "yes", None, None, None, oslo),
+        (9, "way", "footway", "yes", None, "yes", None, helsinki),
+    ]
+    columns = ["id", "osm_type", "highway", "area", "foot", "bicycle", "tags"]
+    candidates = gpd.GeoDataFrame(
+        [row[:-1] for row in rows],
+        columns=columns,
+        geometry=[row[-1] for row in rows],
+        crs="EPSG:4326",
+    )
+    _, keep, rule = area_filter(
+        network_type, None, None, "local", get_data("test_pbf"), None
+    )
+    assert select_areas(candidates, keep, rule)["id"].tolist() == kept
+
+
+@pytest.mark.parametrize("case", ["walking", "driving", "footway areas", "node lists"])
+def test_get_network_with_walking_areas(case):
+    """walking_areas=True adds the edges across the walking areas that the network's
+    filter keeps to the edges of the network, marked by the column walking_area, with the
+    area's id, type and tags; both engines return the same frames."""
+    from geopandas.testing import assert_geodataframe_equal
+
+    from pyrosm import OSM
+
+    kwargs = {"network_type": "walking"}
+    if case == "driving":
+        kwargs = {"network_type": "driving"}
+    elif case == "footway areas":
+        kwargs = {"custom_filter": {"highway": ["footway"]}}
+    frames = []
+    for engine in ("in_memory", "out_of_core"):
+        osm = OSM(
+            get_data("helsinki_pbf"), engine=engine, keep_node_info=case == "node lists"
+        )
+        frames.append(osm.get_network(nodes=True, walking_areas=True, **kwargs))
+    assert_geodataframe_equal(frames[0][1], frames[1][1], check_dtype=False)
+    _, plain = osm.get_network(nodes=True, **kwargs)
+    nodes, edges = frames[1]
+
+    crossing = edges[edges["walking_area"]]
+    assert edges["walking_area"].dtype == bool
+    assert len(edges) == len(plain) + len(crossing)
+    assert crossing["u"].isin(nodes["id"]).all() and crossing["v"].isin(nodes["id"]).all()
+    if case == "driving":
+        assert crossing.empty
+    elif case == "footway areas":
+        assert len(crossing) > 0 and (crossing["highway"] == "footway").all()
+    elif case == "node lists":
+        assert crossing["nodes"].map(list).tolist() == [
+            [u, v] for u, v in zip(crossing["u"], crossing["v"])
+        ]
+    else:
+        import json
+
+        import networkx as nx
+        import shapely
+
+        areas = osm.get_data_by_custom_criteria(
+            {"highway": True}, keep_nodes=False
+        ).set_index(["osm_type", "id"])
+        outlines = areas.geometry.loc[pd.MultiIndex.from_frame(crossing[["osm_type", "id"]])]
+        assert shapely.covers(
+            shapely.buffer(outlines.to_numpy(), 1e-7), crossing.geometry.to_numpy()
+        ).all()
+        ways = crossing[crossing["osm_type"] == "way"]
+        assert len(ways) > 0
+        assert all(json.loads(tags)["area"] == "yes" for tags in ways["tags"])
+        square = crossing[(crossing["osm_type"] == "relation") & (crossing["id"] == 2919118)]
+        assert (square["name"] == "Rautatientori").all()
+        assert (square["highway"] == "pedestrian").all()
+        assert nx.is_connected(nx.Graph(list(zip(square["u"], square["v"]))))
+        assert "walking_area" not in plain.columns
+
+
+@pytest.mark.parametrize(
+    "read, kwargs, message",
+    [
+        ("get_network", {"walking_areas": True}, "needs nodes=True"),
+        (
+            "get_network",
+            {"walking_areas": "yes", "nodes": True},
+            "'walking_areas' should be boolean",
+        ),
+        ("get_graph", {"walking_areas": None}, "'walking_areas' should be boolean"),
+    ],
+)
+def test_network_reads_refuse_unusable_walking_areas(test_pbf, read, kwargs, message):
+    """walking_areas is a boolean, and the edges across areas need the network's nodes."""
+    from pyrosm import OSM
+
+    with pytest.raises(ValueError, match=message):
+        getattr(OSM(test_pbf), read)(**kwargs)
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_get_network_with_walking_areas_reports_one_progress(engine, monkeypatch):
+    """The network read and the read of the walking areas report one progress from 0 to
+    100 %, which stays below 100 % until the edges across the areas are built."""
+    from pyrosm import OSM, walking_areas
+
+    seen = []
+    at_crossings = []
+    real = walking_areas.add_crossings
+
+    def add_crossings(*args):
+        at_crossings.append(seen[-1][0])
+        return real(*args)
+
+    monkeypatch.setattr(walking_areas, "add_crossings", add_crossings)
+    osm = OSM(get_data("helsinki_pbf"), engine=engine, progress=lambda *r: seen.append(r))
+    osm.get_network(nodes=True, walking_areas=True)
+    done = [d for d, _ in seen]
+    assert seen[0] == (0.0, 100) and seen[-1] == (100.0, 100) and done == sorted(done)
+    assert at_crossings[0] < 100

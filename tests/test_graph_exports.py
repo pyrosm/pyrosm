@@ -897,18 +897,33 @@ def test_graph_network_reads_the_network_tables(test_pbf, osm_kwargs, network_ty
         ("networkx", {}, {"network_type": "driving", "simplify": False}),
         ("networkx", {"engine": "in_memory"}, {"network_type": "driving"}),
         ("networkx", {}, {"network_type": "driving", "timestamp": "2010-01-01"}),
+        (
+            "networkx",
+            {},
+            {
+                "network_type": "walking",
+                "walking_areas": True,
+                "retain_all": True,
+                "simplify_kwargs": {"edge_attrs_differ": None},
+            },
+        ),
     ],
 )
 def test_get_graph_is_the_exported_network(request, graph_type, osm_kwargs, kwargs):
-    """get_graph builds the graph that to_graph builds from get_network(nodes=True)."""
+    """get_graph builds the graph that to_graph builds from get_network(nodes=True). With
+    walking_areas, no edge across a walking area is merged, so each is two edges of the
+    two-way walking graph."""
     import warnings
     from pyrosm import OSM
     from pyrosm.graphs import graph_tags
 
     if graph_type in ("pandarm", "pandana"):
         pytest.importorskip(graph_type)
-    history = "timestamp" in kwargs
-    pbf = request.getfixturevalue("helsinki_history_pbf" if history else "test_pbf")
+    if "walking_areas" in kwargs:
+        pbf = get_data("helsinki_pbf")
+    else:
+        history = "timestamp" in kwargs
+        pbf = request.getfixturevalue("helsinki_history_pbf" if history else "test_pbf")
     read_keys = (
         "network_type",
         "tags_to_keep",
@@ -916,6 +931,7 @@ def test_get_graph_is_the_exported_network(request, graph_type, osm_kwargs, kwar
         "custom_filter",
         "filter_type",
         "timestamp",
+        "walking_areas",
     )
     read = {k: v for k, v in kwargs.items() if k in read_keys}
     export = {k: v for k, v in kwargs.items() if k not in read_keys}
@@ -937,6 +953,9 @@ def test_get_graph_is_the_exported_network(request, graph_type, osm_kwargs, kwar
         expected = OSM.to_graph(nodes, edges, graph_type, **export)
         graph = OSM(pbf, **osm_kwargs).get_graph(graph_type=graph_type, **kwargs)
     assert _comparable(_graph_contents(graph)) == _comparable(_graph_contents(expected))
+    if kwargs.get("walking_areas"):
+        crossing = [data for *_, data in graph.edges(data=True) if data["walking_area"]]
+        assert len(crossing) == 2 * edges["walking_area"].sum() > 0
     if "tags_to_keep" in kwargs and kwargs.get("force_oneway"):
         # A graph that keeps the drawn direction reads no tag of the edges' directions
         tags = {key for *_, data in graph.edges(data=True) for key in data}

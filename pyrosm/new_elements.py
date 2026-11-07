@@ -22,6 +22,7 @@ from pyrosm.pbf_writer import (
     _record_tags,
     _reproject_to_wgs84,
     _tag_key,
+    _without_area_crossings,
 )
 
 # Metres per degree of latitude on the sphere of :func:`~pyrosm.distance.haversine`.
@@ -540,7 +541,8 @@ def new_elements(
     metres, or when there is none, a new node at the closest point within it on a
     segment of a ``snap_to`` way, inserted into every ``snap_to`` way along that segment;
     a vertex at a new Point, an inner vertex of a new line or a vertex of a new area does
-    not snap. The frame has a row per feature, whose ``nodes`` are the node ids of a way,
+    not snap. The edges of ``snap_to`` across walking areas are not snapped to. The frame
+    has a row per feature, whose ``nodes`` are the node ids of a way,
     a row per existing way that got a new node, and a Point row per new vertex node. The
     arguments are checked by :func:`validate_inputs`.
     """
@@ -550,7 +552,7 @@ def new_elements(
     snapped, segments, way_by_id = {}, None, None
     if snap_to is not None:
         way_by_id = {int(w["id"]): w for w in way_records}
-        way_ids, node_ids = _snap_targets(snap_to, way_by_id)
+        way_ids, node_ids = _snap_targets(_without_area_crossings(snap_to), way_by_id)
         candidates = _snap_candidates(way_ids, node_ids, way_by_id, node_coordinates)
         segments = _Segments(way_ids, way_by_id, node_coordinates)
         snapped = _snapped_ends(features, candidates, segments, snap_distance)

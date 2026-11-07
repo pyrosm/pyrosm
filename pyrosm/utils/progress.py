@@ -32,6 +32,7 @@ GATHERING_NODES = "gathering the nodes"
 BUILDING_EDGES = "building the edges"
 WRITING = "writing the result"
 LOADING = "loading the result"
+WALKING_AREAS = "reading the walking areas"
 
 
 def _bar_class():

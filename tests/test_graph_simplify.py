@@ -631,7 +631,8 @@ def test_stitch_geometries_empty():
 def test_chain_is_not_merged_across_speed_or_road_class_changes(differ):
     """By default a chain is cut where ``maxspeed`` changes (also between a missing and a
     set value) or ``highway`` changes; ``edge_attrs_differ=None`` or ``()`` merges it
-    whole."""
+    whole, except the edges across walking areas, each of which stays an edge of its
+    own."""
     from pyrosm.graph_simplify import simplify_graph
 
     nodes = GeoDataFrame(
@@ -644,7 +645,7 @@ def test_chain_is_not_merged_across_speed_or_road_class_changes(differ):
         crs="epsg:4326",
     )
     # one-way chain 1->...->6: equal at 2, set->missing at 3, missing->set at 4,
-    # highway change at 5
+    # highway change at 5; the edges 3->4 and 4->5 cross walking areas
     edges = GeoDataFrame(
         {
             "u": [1, 2, 3, 4, 5],
@@ -652,6 +653,7 @@ def test_chain_is_not_merged_across_speed_or_road_class_changes(differ):
             "length": [1.0] * 5,
             "maxspeed": ["50", "50", None, "60", "60"],
             "highway": ["residential"] * 4 + ["primary"],
+            "walking_area": [False, False, True, True, False],
             "geometry": [LineString([(i, 0), (i + 1, 0)]) for i in range(5)],
         },
         crs="epsg:4326",
@@ -663,7 +665,7 @@ def test_chain_is_not_merged_across_speed_or_road_class_changes(differ):
         assert pairs == [(1, 3), (3, 4), (4, 5), (5, 6)]
         assert not simplified["maxspeed"].map(lambda v: isinstance(v, list)).any()
     else:
-        assert pairs == [(1, 6)]
+        assert pairs == [(1, 3), (3, 4), (4, 5), (5, 6)]
     assert simplified["length"].sum() == pytest.approx(5.0)
 
 

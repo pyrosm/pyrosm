@@ -336,7 +336,9 @@ def simplify_graph(
     A chain is not merged across a change of ``maxspeed`` or ``highway`` (the default
     ``edge_attrs_differ``; a missing value next to a set one counts as a change), so each
     simplified edge has one speed limit and one road class; ``edge_attrs_differ=None``
-    merges across them as OSMnx does by default.
+    merges across them as OSMnx does by default. An edge across a walking area
+    (``walking_area`` True, see :meth:`pyrosm.OSM.get_network`) is never merged with
+    another edge, whatever ``edge_attrs_differ`` says.
 
     A node with a value for one of ``node_attrs_include``, a node column or a tag in the
     nodes' ``tags``, stays an end of its edges (a warning names a name no node has).
@@ -774,6 +776,15 @@ def _simplify_rows(
                 stacklevel=_stacklevel_outside_pyrosm(),
             )
         node_include_mask = nm
+    if "walking_area" in edges.columns:
+        # Both ends of an edge across a walking area end their edges, so it is never
+        # merged with another edge.
+        crossing = pd.Series(edges.values("walking_area")[rows]).eq(True).to_numpy()
+        ends = np.zeros(n_nodes, dtype=bool)
+        ends[u[crossing]] = ends[v[crossing]] = True
+        node_include_mask = (
+            ends if node_include_mask is None else node_include_mask | ends
+        )
     del nid, nid_to_factor, x, y, present, keep, fpos
 
     is_endpoint = detect_endpoints(

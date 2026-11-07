@@ -3723,3 +3723,54 @@ def test_add_elements_inserts_into_every_way_along_a_segment():
         [(0.0, 0.0), (0.00025, 0.0), (0.00075, 0.0), (0.001, 0.0)],
         [(0.001, 0.0), (0.00075, 0.0), (0.00025, 0.0), (0.0, 0.0)],
     ]
+
+
+@pytest.mark.parametrize("operation", ["write_pbf", "add_elements"])
+def test_edges_across_walking_areas_are_not_elements(operation, tmp_path):
+    """The edges across walking areas of get_network(walking_areas=True) are lines across
+    an area, not elements: write_pbf writes the network as without them, and add_elements
+    does not snap to the area they cross."""
+    import pandas as pd
+    import shapely
+
+    from pyrosm.pbf_writer import _frame_tag_columns
+
+    fp = get_data("helsinki_pbf")
+    _, edges = OSM(fp).get_network("walking", nodes=True, walking_areas=True)
+    plain = edges[~edges["walking_area"]].drop(columns="walking_area")
+    if operation == "write_pbf":
+        # Nullable and object columns, missing on an edge that does not cross an area
+        nullable = edges.astype({"walking_area": "boolean"})
+        nullable.loc[0, "walking_area"] = pd.NA
+        objects = edges.astype({"walking_area": object})
+        objects.loc[0, "walking_area"] = None
+        written = []
+        frames = (("areas", edges), ("nullable", nullable), ("objects", objects))
+        for name, frame in frames + (("plain", plain),):
+            OSM(fp).write_pbf(frame, str(tmp_path / name), subset_only=True)
+            written.append((tmp_path / name).read_bytes())
+        assert written[0] == written[1] == written[2] == written[3]
+        # A column of text of that name holds the OSM tag
+        assert "walking_area" in _frame_tag_columns(plain.assign(walking_area="yes"))
+        return
+    # A corner of a closed-way walking area farther than 1e-5 degrees (over 0.5 m) from
+    # every edge of the network
+    crossing = edges[edges["walking_area"] & (edges["osm_type"] == "way")]
+    areas = OSM(fp).get_data_by_custom_criteria({"highway": True}, keep_nodes=False)
+    outline = areas[areas["id"].isin(crossing["id"]) & (areas["osm_type"] == "way")]
+    corners = shapely.points(shapely.get_coordinates(outline.geometry.boundary))
+    far = shapely.STRtree(plain.geometry.to_numpy()).query(
+        corners, predicate="dwithin", distance=1e-5
+    )
+    corner = np.delete(corners, np.unique(far[0]))[0]
+    lane = gpd.GeoDataFrame(
+        {"highway": ["footway"]},
+        geometry=[LineString([(corner.x, corner.y), (corner.x + 1e-3, corner.y)])],
+        crs="EPSG:4326",
+    )
+    added = [
+        OSM(fp).add_elements(lane, snap_to=frame, snap_distance=0.5)
+        for frame in (edges, plain)
+    ]
+    assert added[0].drop(columns="geometry").equals(added[1].drop(columns="geometry"))
+    assert added[0]["nodes"].iloc[0][0] < 0

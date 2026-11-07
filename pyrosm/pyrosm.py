@@ -50,7 +50,10 @@ from pyrosm.utils.progress import (
     COMPLETING_WAYS,
     DECODING,
     SELECTING_VERSIONS,
+    WALKING_AREAS,
+    Steps,
     read_steps,
+    start_step,
     stepping,
     validate_progress,
 )
@@ -550,6 +553,7 @@ class OSM:
         filter_type=None,
         tags_to_keep=None,
         shared_paths="local",
+        walking_areas=False,
     ):
         """
         Parses street networks from OSM
@@ -654,6 +658,19 @@ class OSM:
             and `'all'` apply only to the walking and cycling networks without a
             `custom_filter`.
 
+        walking_areas : bool (default: False)
+            If True, the edges also cross the walking areas of the network, such as
+            pedestrian squares and station halls: the closed ways tagged `area=yes` and
+            the multipolygon relations whose tags the network's filter keeps (it keeps
+            `highway=pedestrian` and `highway=footway` areas in the walking network),
+            or that the `custom_filter` keeps. The network's nodes on the outline of an
+            area, and its dead ends inside the area, are joined in pairs by an edge
+            along the shortest line inside the area, which bends only at the corners
+            where the outline or a hole turns into the area. A pair whose line passes
+            another of these nodes gets no edge of its own. These edges have the area's
+            `id`, `osm_type` and tags, and `True` in the column `walking_area`, which is
+            `False` for the other edges. Requires `nodes=True`.
+
         Returns
         -------
 
@@ -673,9 +690,55 @@ class OSM:
         # Resolve the custom filter, filter_type and network type once, so the engine and
         # in-memory paths agree.
         custom_filter, filter_type = _network_filter_type(custom_filter, filter_type)
-        advanced_filter = isinstance(custom_filter, CompiledFilter)
         network_type = network_type_of_read(network_type, custom_filter)
+        validate_bool(walking_areas, "walking_areas")
+        if walking_areas and not nodes:
+            raise ValueError(
+                "walking_areas=True needs nodes=True: the edges across an area join "
+                "the network's nodes."
+            )
+        with self._walking_area_steps(walking_areas, timestamp):
+            return self._read_network(
+                network_type,
+                extra_attributes,
+                nodes,
+                timestamp,
+                custom_filter,
+                filter_type,
+                tags_to_keep,
+                shared_paths,
+                walking_areas,
+            )
 
+    @contextlib.contextmanager
+    def _walking_area_steps(self, walking_areas, timestamp):
+        """With ``walking_areas``, report the network read and the read of the walking
+        areas as one progress, unless the read is part of an operation whose progress
+        planned it (see :meth:`get_graph`)."""
+        if not walking_areas or isinstance(self.progress, Steps):
+            yield
+            return
+        shares = self._network_read_shares(False, timestamp, walking_areas)
+        with read_steps(
+            self.filepath, self.progress, shares
+        ) as steps, self._progress_as(steps):
+            yield
+
+    def _read_network(
+        self,
+        network_type,
+        extra_attributes,
+        nodes,
+        timestamp,
+        custom_filter,
+        filter_type,
+        tags_to_keep,
+        shared_paths,
+        walking_areas,
+    ):
+        """The frames of :meth:`get_network`, with its ``custom_filter`` and
+        ``filter_type`` resolved and its ``network_type`` that of the read."""
+        advanced_filter = isinstance(custom_filter, CompiledFilter)
         if self._use_engine():
             result = self._read_engine(
                 engine_backend.get_network,
@@ -691,6 +754,17 @@ class OSM:
             )
             if (result[1] if nodes else result) is None:
                 _warn_no_edges(custom_filter)
+            elif walking_areas:
+                node_gdf, edges = result
+                result = node_gdf, self._with_walking_areas(
+                    node_gdf,
+                    edges,
+                    network_type,
+                    custom_filter,
+                    filter_type,
+                    shared_paths,
+                    timestamp,
+                )
             return result
 
         # Get filter (also validates a network_type given with a custom_filter, which sets
@@ -740,11 +814,68 @@ class OSM:
         edges = self._drop_node_lists(edges)
         if edges is None:
             _warn_no_edges(custom_filter)
+        elif walking_areas:
+            edges = self._with_walking_areas(
+                node_gdf,
+                edges,
+                network_type,
+                custom_filter,
+                filter_type,
+                shared_paths,
+                timestamp,
+            )
 
         # In case both edges and nodes are requested
         if nodes:
             return record_network_type((node_gdf, edges), network_type)
         return record_network_type(edges, network_type)
+
+    def _with_walking_areas(
+        self,
+        nodes,
+        edges,
+        network_type,
+        custom_filter,
+        filter_type,
+        shared_paths,
+        timestamp,
+    ):
+        """``edges`` of a network read with the edges across its walking areas and the
+        column ``walking_area`` (see :func:`pyrosm.walking_areas.add_crossings`)."""
+        from pyrosm.pbf_writer import _FIELD_COLS, _NETWORK_COLS
+        from pyrosm.walking_areas import add_crossings, area_filter, select_areas
+
+        advance = start_step(self.progress, WALKING_AREAS)
+        osm_keys, keep, rule = area_filter(
+            network_type,
+            custom_filter,
+            filter_type,
+            shared_paths,
+            self.filepath,
+            self.bounding_box,
+        )
+        columns = [
+            col
+            for col in edges.columns
+            if col not in _FIELD_COLS and col not in _NETWORK_COLS
+        ]
+        with self._progress_as(False):
+            candidates = self._read_custom_criteria(
+                {key: True for key in osm_keys},
+                None,
+                "keep",
+                None,
+                False,
+                True,
+                True,
+                ["area"],
+                True,
+                timestamp,
+                columns,
+            )
+        edges = add_crossings(nodes, edges, select_areas(candidates, keep, rule))
+        advance(1, 1)
+        return edges
 
     @logged()
     @records_read(lambda args: _require_layer_key(args["custom_filter"], "building"))
@@ -1261,6 +1392,39 @@ class OSM:
 
         """
 
+        gdf = self._read_custom_criteria(
+            custom_filter,
+            osm_keys_to_keep,
+            filter_type,
+            tags_as_columns,
+            keep_nodes,
+            keep_ways,
+            keep_relations,
+            extra_attributes,
+            keep_other_tags,
+            timestamp,
+            tags_to_keep,
+        )
+        if gdf is None:
+            warn_empty_result("custom")
+        return gdf
+
+    def _read_custom_criteria(
+        self,
+        custom_filter,
+        osm_keys_to_keep,
+        filter_type,
+        tags_as_columns,
+        keep_nodes,
+        keep_ways,
+        keep_relations,
+        extra_attributes,
+        keep_other_tags,
+        timestamp,
+        tags_to_keep,
+    ):
+        """The frame of :meth:`get_data_by_custom_criteria`, or None when nothing
+        matches, without the warning of an empty result."""
         # custom_filter=None means "return everything": keep every tagged element
         # with no key/value filtering (issue #113). There is nothing to keep or exclude
         # by value then, so filter_type is ignored; it is pinned to a valid no-op so a
@@ -1297,8 +1461,6 @@ class OSM:
                 keep_other_tags=keep_other_tags,
                 tags_to_keep=tags_to_keep,
             )
-            if gdf is None:
-                warn_empty_result("custom")
             return gdf
 
         # keep_other_tags=False only skips tag work in the out-of-core decode; the in-memory
@@ -1543,6 +1705,9 @@ class OSM:
             from their geometry: ``Point`` -> node, ``LineString`` -> way, hole-less
             ``Polygon`` -> closed way. Polygons with holes, MultiPolygon and
             MultiLineString geometries are not supported and raise ``ValueError``.
+            The edges across walking areas of :meth:`get_network` (``walking_area``
+            True) are lines across an area, not elements, and are not written; nor is
+            the ``walking_area`` column.
 
         output_path : str
             Where to write the PBF.
@@ -1705,7 +1870,8 @@ class OSM:
         snap_to : GeoDataFrame, optional
             A frame read from this object, such as the edges of :meth:`get_network`: the
             nodes of its ways, and its nodes, are the nodes the ends of new lines snap
-            to. Given together with ``snap_distance``.
+            to. Its edges across walking areas (``walking_area`` True) are left out.
+            Given together with ``snap_distance``.
 
         snap_distance : float, optional
             The largest distance, in metres, that an end of a new line moves to snap to
@@ -1758,6 +1924,7 @@ class OSM:
         timestamp=None,
         shared_paths="local",
         force_oneway=False,
+        walking_areas=False,
     ):
         """
         Read the street network of ``network_type``, or the network of a
@@ -1767,8 +1934,9 @@ class OSM:
         With the out-of-core engine the simplified graph is built straight from the
         ways and nodes read from the file: the tables of every street segment and of
         every node that ``get_network(nodes=True)`` returns are not built, so the read
-        takes less memory. With ``simplify=False`` or the in-memory engine, the tables are
-        read with ``get_network`` and exported with ``to_graph``.
+        takes less memory. With ``simplify=False``, ``walking_areas=True`` or the
+        in-memory engine, the tables are read with ``get_network`` and exported with
+        ``to_graph``.
 
         The read and the export show one progress as the ``progress`` of this object
         says: a bar "Building the graph of <file>" from 0 to 100 % with the current step
@@ -1777,8 +1945,11 @@ class OSM:
         Parameters
         ----------
 
-        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep, timestamp, shared_paths
-            As in :meth:`get_network`. With ``tags_to_keep``, the tags the graph is built
+        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep, timestamp, shared_paths, walking_areas
+            As in :meth:`get_network`. With ``walking_areas=True``, the edges across
+            walking areas have ``True`` in the edge attribute ``walking_area`` and are
+            never merged with other edges when the graph is simplified. With
+            ``tags_to_keep``, the tags the graph is built
             from are read too: those of its edges' directions (``oneway`` and
             ``junction``, and ``oneway:bicycle`` for cycling; none with
             ``force_oneway``) and, with ``simplify``, the ``edge_attrs_differ`` tags (by
@@ -1795,6 +1966,7 @@ class OSM:
         None when the network is empty.
         """
         validate_graph_type(graph_type)
+        validate_bool(walking_areas, "walking_areas")
         follows_drawn_direction(force_bidirectional, force_oneway)
         network_type = network_type_of_read(network_type, custom_filter)
         if tags_to_keep is not None:
@@ -1819,7 +1991,8 @@ class OSM:
             tags_to_keep,
             shared_paths,
         )[0]
-        shares = self._graph_read_shares(simplify, timestamp)
+        from_tables = not simplify or walking_areas
+        shares = self._network_read_shares(not from_tables, timestamp, walking_areas)
         shares.update(
             step_shares(simplify, retain_all, validate_graph_type(graph_type))
         )
@@ -1831,7 +2004,7 @@ class OSM:
             leave=False,
             timed=True,
         ) as steps, self._progress_as(steps):
-            if simplify and self._use_engine():
+            if not from_tables and self._use_engine():
                 nodes, edges = self._read_engine(
                     graph_network,
                     timestamp,
@@ -1855,6 +2028,7 @@ class OSM:
                     filter_type=filter_type,
                     tags_to_keep=tags_to_keep,
                     shared_paths=shared_paths,
+                    walking_areas=walking_areas,
                 )
             if edges is None:
                 return None
@@ -1875,12 +2049,15 @@ class OSM:
                 force_oneway=force_oneway,
             )
 
-    def _graph_read_shares(self, simplify, timestamp):
-        """The shares of the steps of the read of :meth:`get_graph`, in seconds of reads of
-        Paris, as the shares of the graph steps are (see
-        :func:`pyrosm.graphs.step_shares`)."""
+    def _network_read_shares(self, from_reader, timestamp, walking_areas=False):
+        """The shares of the steps of a network read for :meth:`get_graph` or
+        :meth:`get_network`, in seconds of reads of Paris, as the shares of the graph steps
+        are (see :func:`pyrosm.graphs.step_shares`): of a graph built straight from the
+        reader of the out-of-core engine when ``from_reader``, else of the tables of
+        :meth:`get_network`. With ``walking_areas``, the read of the walking areas, a
+        second read of the file, takes as long as the network read."""
         if self._use_engine():
-            if simplify:
+            if from_reader:
                 shares, seconds = GRAPH_SHARES, _GRAPH_READ_SECONDS
             else:
                 shares, seconds = NETWORK_NODES_SHARES, _NETWORK_NODES_READ_SECONDS
@@ -1889,7 +2066,10 @@ class OSM:
             shares = self._parse_shares() if self._parse_needed() else {}
             shares.update(_NETWORK_NODES_SHARES)
             seconds = _DECODING_SECONDS
-        return {name: share * seconds for name, share in shares.items()}
+        shares = {name: share * seconds for name, share in shares.items()}
+        if walking_areas:
+            shares[WALKING_AREAS] = sum(shares.values())
+        return shares
 
     @contextlib.contextmanager
     def _progress_as(self, progress):
