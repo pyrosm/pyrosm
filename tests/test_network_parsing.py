@@ -471,7 +471,7 @@ def test_walking_area_crossings(capped, monkeypatch):
     for (u, v), path in bends.items():
         row = rows[(rows["u"] == u) & (rows["v"] == v)].iloc[0]
         xy = [lonlat(*p) for p in path]
-        assert list(row.geometry.coords) == pytest.approx(xy)
+        np.testing.assert_allclose(row.geometry.coords, xy)
         lon, lat = np.array(xy).T
         pieces = haversine(lat[:-1], lon[:-1], lat[1:], lon[1:], unit=Unit.METERS)
         assert row["length"] == pytest.approx(pieces.round(3).sum(), abs=1e-6)
