@@ -1659,7 +1659,7 @@ class OSM:
         """
         New OSM elements from the features of ``data``, for :meth:`write_pbf` to write
         with ``apply_geometry=True``; with ``snap_to``, the ends of new lines join the
-        existing nodes near them.
+        existing nodes or ways near them.
 
         Each feature becomes a new element: a ``Point`` a node, a ``LineString`` a way and
         a ``Polygon`` without holes a closed way. Its columns are its tags, which
@@ -1675,7 +1675,11 @@ class OSM:
         With ``snap_to`` and ``snap_distance``, the first and last point of each new line
         moves to the closest node of ``snap_to`` within ``snap_distance`` metres, and the
         new way uses that node, so a network read from the written file routes over the
-        line. An end with no such node stays where it is, and so does an end on a new
+        line. When no node is that close but a way of ``snap_to`` is, the end moves to the
+        closest point of that way and a new node there joins the line to the way: it is
+        inserted into the way's nodes, and into those of every other way of ``snap_to``
+        along the same segment. A node within the distance is chosen over a closer point
+        between nodes. An end with neither stays where it is, and so does an end on a new
         Point, an inner point of another new line or a corner of a new polygon, joined to
         that feature. Only the ends snap, so a line that crosses a street is not joined
         to it there, and Points and Polygons never snap: new buildings, for example, are
@@ -1705,16 +1709,19 @@ class OSM:
 
         snap_distance : float, optional
             The largest distance, in metres, that an end of a new line moves to snap to
-            a node.
+            a node or a way.
 
         Returns
         -------
         GeoDataFrame
             A row per feature of ``data``, in order, with its ``id``, ``osm_type``,
-            ``nodes`` (the node ids of a way) and the feature's columns, then a
-            ``Point`` row per new node of the lines and polygons, in EPSG:4326. A
-            snapped end is at the coordinates of its node. Write it with
-            ``write_pbf(..., apply_geometry=True)``, alone or with other frames.
+            ``nodes`` (the node ids of a way) and the feature's columns; a row per
+            existing way that got a new node, with its new ``nodes`` and all its tags
+            (those without a column in the JSON ``tags`` column); then a ``Point`` row
+            per new node of the lines and polygons, in EPSG:4326. A snapped end is at
+            the coordinates of its node. Write it with ``write_pbf(...,
+            apply_geometry=True)``, alone or with frames that have no ``nodes`` column
+            for those ways (whose old node lists would conflict with the new ones).
         """
         from pyrosm.new_elements import new_elements, validate_inputs
 

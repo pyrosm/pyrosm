@@ -3673,3 +3673,53 @@ def test_add_elements_snaps_across_the_antimeridian(side):
     lon, lat = np.array([-side * 179.99995]), np.array([-16.5])
     assert _nearest_nodes(lon, lat, node, 20).tolist() == [0]
     assert _nearest_nodes(lon, lat, node, 5).tolist() == [-1]
+
+
+def test_add_elements_snaps_to_segments(tiny_pbf, tmp_path):
+    """An end with no node within ``snap_distance`` but a segment of a ``snap_to`` way
+    within it gets a new node there, inserted into that way in order along the segment,
+    and the way keeps its tags; a node within the distance wins over a closer segment."""
+    osm = OSM(tiny_pbf)
+    lanes = gpd.GeoDataFrame(
+        {"highway": ["cycleway"] * 3},
+        geometry=[
+            # 4 m from the middle of segment 3-4, 3 m from its first quarter, and 1 m
+            # from segment 4-5 but 6 m from node 5
+            LineString([(24.9410, 60.1745), (24.94243524, 60.17251602)]),
+            LineString([(24.9405, 60.1740), (24.94220143, 60.17226202)]),
+            LineString([(24.9450, 60.1720), (24.9439355, 60.17395569)]),
+        ],
+        crs="EPSG:4326",
+    )
+    added = osm.add_elements(lanes, snap_to=osm.get_network(), snap_distance=10)
+
+    middle, quarter = added["nodes"].iloc[0][-1], added["nodes"].iloc[1][-1]
+    assert added["nodes"].iloc[2][-1] == 5
+    way = added[(added["osm_type"] == "way") & (added["id"] == 11)].iloc[0]
+    assert way["nodes"] == [3, quarter, middle, 4, 5]
+    assert way["highway"] == "residential" and way["tags"] == {"name": "way-11"}
+
+    out = str(tmp_path / "split.osm.pbf")
+    osm.write_pbf(added, out, apply_geometry=True)
+    _, _, _, coords, way_refs = _read_elements(out)
+    assert way_refs[11] == [3, quarter, middle, 4, 5] and way_refs[-1][-1] == middle
+    assert coords[middle] == pytest.approx((24.9425, 60.1725), abs=1e-6)
+    assert _way_tags(out)[11] == {"highway": "residential", "name": "way-11"}
+
+
+def test_add_elements_inserts_into_every_way_along_a_segment():
+    """A new node on a segment goes into each way with that segment, in order along it,
+    also into a way that runs the other way along it; a way's row has a LineString
+    through the nodes the file holds (node 12 is outside it)."""
+    from pyrosm.new_elements import _Segments, _split_ways, _way_rows
+    from pyrosm.node_lookup import NodeLocations
+
+    nodes = NodeLocations({"id": [10, 11], "lon": [0.0, 0.001], "lat": [0.0, 0.0]})
+    ways = {1: {"id": 1, "nodes": [10, 11]}, 2: {"id": 2, "nodes": [11, 10, 12]}}
+    split = _split_ways({0: {-1: 0.25, -2: 0.75}}, _Segments([1, 2], ways, nodes), ways)
+    assert split == {1: [10, -1, -2, 11], 2: [11, -2, -1, 10, 12]}
+    rows = _way_rows(split, ways, nodes, {-1: (0.00025, 0.0), -2: (0.00075, 0.0)})
+    assert [list(row[3].coords) for row in rows] == [
+        [(0.0, 0.0), (0.00025, 0.0), (0.00075, 0.0), (0.001, 0.0)],
+        [(0.001, 0.0), (0.00075, 0.0), (0.00025, 0.0), (0.0, 0.0)],
+    ]

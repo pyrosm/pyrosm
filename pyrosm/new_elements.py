@@ -1,9 +1,11 @@
 """New OSM elements from the features of GeoDataFrames, in the form
 ``pyrosm.OSM.write_pbf(..., apply_geometry=True)`` writes, with the ends of new lines
-joined to existing nodes (``pyrosm.OSM.add_elements``)."""
+joined to existing nodes or to new nodes on existing ways (``pyrosm.OSM.add_elements``).
+"""
 
 import math
 import numbers
+from collections import namedtuple
 
 import numpy as np
 import pandas as pd
@@ -17,7 +19,9 @@ from pyrosm.pbf_writer import (
     _infer_osm_type,
     _normalize_id,
     _normalize_osm_type,
+    _record_tags,
     _reproject_to_wgs84,
+    _tag_key,
 )
 
 # Metres per degree of latitude on the sphere of :func:`~pyrosm.distance.haversine`.
@@ -54,13 +58,13 @@ def validate_inputs(data, snap_to, snap_distance):
         )
 
 
-def _snap_candidates(snap_to, way_by_id, node_coordinates):
-    """The ids, longitudes and latitudes of the nodes of the elements of ``snap_to``
-    (the nodes of its ways, and its nodes) that the parsed file holds, sorted by id."""
+def _snap_targets(snap_to, way_by_id):
+    """The ids of the ways of ``snap_to`` that the parsed file holds, sorted, and the
+    ids of its nodes."""
     missing = [None] * len(snap_to)
     otypes = snap_to["osm_type"] if "osm_type" in snap_to.columns else missing
     oids = snap_to["id"] if "id" in snap_to.columns else missing
-    ids = []
+    way_ids, node_ids = set(), []
     for otype, oid, geom in zip(otypes, oids, snap_to.geometry):
         if isinstance(otype, (str, bytes)):
             otype = _normalize_osm_type(otype)
@@ -68,9 +72,18 @@ def _snap_candidates(snap_to, way_by_id, node_coordinates):
             otype = _infer_osm_type(geom)
         oid = _normalize_id(oid)
         if otype == "way" and oid in way_by_id:
-            ids.extend(way_by_id[oid]["nodes"])
+            way_ids.add(oid)
         elif otype == "node" and oid is not None:
-            ids.append(oid)
+            node_ids.append(oid)
+    return sorted(way_ids), node_ids
+
+
+def _snap_candidates(way_ids, node_ids, way_by_id, node_coordinates):
+    """The ids, longitudes and latitudes of the nodes of the ways ``way_ids`` and of the
+    nodes ``node_ids`` that the parsed file holds, sorted by id."""
+    ids = list(node_ids)
+    for wid in way_ids:
+        ids.extend(way_by_id[wid]["nodes"])
     ids = np.unique(np.asarray(ids, dtype=np.int64))
     idx, lon, lat = node_coordinates.gather(ids)
     found = idx >= 0
@@ -82,15 +95,9 @@ def _snap_candidates(snap_to, way_by_id, node_coordinates):
     return ids[found], lon[found], lat[found]
 
 
-def _nearest_nodes(lon, lat, candidates, max_distance):
-    """For each point (``lon``, ``lat``), the index into ``candidates`` (see
-    :func:`_snap_candidates`) of the closest node within ``max_distance`` metres, or -1.
-    Of nodes at the same distance, the one with the smallest id is chosen."""
-    _, cand_lon, cand_lat = candidates
-    nearest = np.full(len(lon), -1, dtype=np.int64)
-    if len(lon) == 0:
-        return nearest
-    tree = shapely.STRtree(shapely.points(cand_lon, cand_lat))
+def _query_pairs(tree, lon, lat, max_distance):
+    """The (point, tree item) index pairs of the points (``lon``, ``lat``) and the items
+    of ``tree`` whose boxes meet a box of ``max_distance`` metres around the point."""
     dlat = max_distance / _METRES_PER_DEGREE
     cos = np.cos(np.radians(np.minimum(np.abs(lat) + dlat, 90.0)))
     dlon = np.minimum(dlat / np.maximum(cos, 1e-9), 180.0)
@@ -104,19 +111,101 @@ def _nearest_nodes(lon, lat, candidates, max_distance):
         x, y, dx = lon[rows] + shift, lat[rows], dlon[rows]
         p, c = tree.query(shapely.box(x - dx, y - dlat, x + dx, y + dlat))
         pairs.append((rows[p], c))
-    point = np.concatenate([p for p, _ in pairs])
-    cand = np.concatenate([c for _, c in pairs])
+    return np.concatenate([p for p, _ in pairs]), np.concatenate([c for _, c in pairs])
+
+
+def _closest_per_point(n, point, item, dist, *ties):
+    """For each of ``n`` points, the ``item`` of its pair with the smallest ``dist``
+    (ties broken by ``ties``, then the item), or -1 when it has no pair."""
+    closest = np.full(n, -1, dtype=np.int64)
+    order = np.lexsort((item,) + tuple(reversed(ties)) + (dist, point))
+    point, item = point[order], item[order]
+    first = np.ones(len(point), dtype=bool)
+    first[1:] = point[1:] != point[:-1]
+    closest[point[first]] = item[first]
+    return closest
+
+
+def _nearest_nodes(lon, lat, candidates, max_distance):
+    """For each point (``lon``, ``lat``), the index into ``candidates`` (see
+    :func:`_snap_candidates`) of the closest node within ``max_distance`` metres, or -1.
+    Of nodes at the same distance, the one with the smallest id is chosen."""
+    _, cand_lon, cand_lat = candidates
+    if len(lon) == 0:
+        return np.full(0, -1, dtype=np.int64)
+    tree = shapely.STRtree(shapely.points(cand_lon, cand_lat))
+    point, cand = _query_pairs(tree, lon, lat, max_distance)
     dist = haversine(
         lat[point], lon[point], cand_lat[cand], cand_lon[cand], unit=Unit.METERS
     )
     near = dist <= max_distance
-    point, cand, dist = point[near], cand[near], dist[near]
-    order = np.lexsort((cand, dist, point))
-    point, cand = point[order], cand[order]
-    first = np.ones(len(point), dtype=bool)
-    first[1:] = point[1:] != point[:-1]
-    nearest[point[first]] = cand[first]
-    return nearest
+    return _closest_per_point(len(lon), point[near], cand[near], dist[near])
+
+
+class _Segments:
+    """The segments between the consecutive nodes of the ways ``way_ids``: per segment
+    its way, the position of its first node in the way, its two nodes and their
+    coordinates. Segments with a node the parsed file does not hold, and segments that
+    cross the antimeridian, are left out."""
+
+    def __init__(self, way_ids, way_by_id, node_coordinates):
+        way, pos, a, b = [], [], [], []
+        for wid in way_ids:
+            refs = [int(r) for r in way_by_id[wid]["nodes"]]
+            way.extend([wid] * (len(refs) - 1))
+            pos.extend(range(len(refs) - 1))
+            a.extend(refs[:-1])
+            b.extend(refs[1:])
+        a, b = np.asarray(a, dtype=np.int64), np.asarray(b, dtype=np.int64)
+        ia, ax, ay = node_coordinates.gather(a)
+        ib, bx, by = node_coordinates.gather(b)
+        keep = (ia >= 0) & (ib >= 0) & (np.abs(bx - ax) <= 180.0)
+        self.way = np.asarray(way, dtype=np.int64)[keep]
+        self.pos = np.asarray(pos, dtype=np.int64)[keep]
+        self.a, self.b = a[keep], b[keep]
+        self.ax, self.ay, self.bx, self.by = ax[keep], ay[keep], bx[keep], by[keep]
+        self._tree = shapely.STRtree(
+            shapely.linestrings(
+                np.stack([self.ax, self.ay, self.bx, self.by], axis=1).reshape(-1, 2, 2)
+            )
+        )
+
+    def closest(self, lon, lat, max_distance):
+        """For each point (``lon``, ``lat``), the segment with the closest point within
+        ``max_distance`` metres strictly between its nodes (-1 when there is none), that
+        point's longitude and latitude, and its fraction of the way from the segment's
+        first node to its second. Ties go to the smallest way id and position."""
+        n = len(lon)
+        seg, x, y, frac = np.full(n, -1), np.zeros(n), np.zeros(n), np.zeros(n)
+        if n == 0 or len(self.a) == 0:
+            return seg, x, y, frac
+        point, item = _query_pairs(self._tree, lon, lat, max_distance)
+        # Project in a plane where a degree of longitude is cos(latitude) as long.
+        scale = np.cos(np.radians(lat[point]))
+        dx = (self.bx[item] - self.ax[item]) * scale
+        dy = self.by[item] - self.ay[item]
+        px = ((lon[point] - self.ax[item] + 180.0) % 360.0 - 180.0) * scale
+        py = lat[point] - self.ay[item]
+        length2 = dx * dx + dy * dy
+        t = np.where(
+            length2 > 0, (px * dx + py * dy) / np.where(length2 > 0, length2, 1), 0
+        )
+        cx = self.ax[item] + t * (self.bx[item] - self.ax[item])
+        cy = self.ay[item] + t * (self.by[item] - self.ay[item])
+        dist = haversine(lat[point], lon[point], cy, cx, unit=Unit.METERS)
+        near = (dist <= max_distance) & (t > 0) & (t < 1)
+        pair = np.flatnonzero(near)
+        best = _closest_per_point(
+            n, point[pair], pair, dist[pair], self.way[item[pair]], self.pos[item[pair]]
+        )
+        found = best >= 0
+        seg[found] = item[best[found]]
+        x[found], y[found], frac[found] = (
+            cx[best[found]],
+            cy[best[found]],
+            t[best[found]],
+        )
+        return seg, x, y, frac
 
 
 class _Feature:
@@ -236,9 +325,16 @@ def _fixed_points(features):
     return keys
 
 
-def _snapped_ends(features, candidates, snap_distance):
-    """The node of ``candidates`` that each end of each line snaps to, as
-    ``{(feature index, 0 or -1): candidate index}``. An end at a new Point, an inner
+_Snap = namedtuple("_Snap", "node x y segment frac")
+_Snap.__doc__ = """Where an end of a new line snaps: to the existing ``node`` at (``x``,
+``y``), or, with ``node`` None, to a new node at (``x``, ``y``), ``frac`` of the way
+along the ``segment`` (see :class:`_Segments`)."""
+
+
+def _snapped_ends(features, candidates, segments, snap_distance):
+    """Where each end of each line snaps, as ``{(feature index, 0 or -1): _Snap}``: to
+    the closest node of ``candidates`` within ``snap_distance`` metres, or when there is
+    none, to the closest point of ``segments`` within it. An end at a new Point, an inner
     vertex of a new line or a vertex of a new area stays there, joined to that
     feature."""
     fixed = _fixed_points(features)
@@ -258,29 +354,47 @@ def _snapped_ends(features, candidates, snap_distance):
     leaders = sorted(first.values())
     xy = np.array([coords[i] for i in leaders], dtype=np.float64).reshape(-1, 2)
     nearest = _nearest_nodes(xy[:, 0], xy[:, 1], candidates, snap_distance)
-    snapped = dict(zip(leaders, nearest.tolist()))
-    return {end: snapped[g] for end, g in zip(ends, group) if snapped[g] >= 0}
+    loose = np.flatnonzero(nearest < 0)
+    seg, sx, sy, frac = segments.closest(xy[loose, 0], xy[loose, 1], snap_distance)
+    snaps = {}
+    for i, c in zip(leaders, nearest.tolist()):
+        if c >= 0:
+            ids, lon, lat = candidates
+            snaps[i] = _Snap(int(ids[c]), float(lon[c]), float(lat[c]), None, None)
+    for j, s in enumerate(seg.tolist()):
+        if s >= 0:
+            snaps[leaders[loose[j]]] = _Snap(
+                None, float(sx[j]), float(sy[j]), s, float(frac[j])
+            )
+    return {end: snaps[g] for end, g in zip(ends, group) if g in snaps}
 
 
-def _assign_ids(features, nodes, first_way, snapped, candidates):
+def _assign_ids(features, nodes, first_way, snapped):
     """Give each feature its id, and each line and area its node ids: new nodes from
-    ``nodes``, and at the ``snapped`` ends the nodes of ``candidates``. Returns the
-    lowest way id given out."""
+    ``nodes``, and at the ``snapped`` ends (see :func:`_snapped_ends`) the existing node
+    or a new node on a segment. Returns the lowest way id given out, and the new nodes on
+    segments as ``{segment: {node id: fraction along the segment}}``."""
     for feature in features:
         if feature.kind == "node":
             geom = feature.geometry
             feature.id = nodes.point(geom.x, geom.y)
     way_id = first_way
+    on_segments = {}
     for n, feature in enumerate(features):
         if feature.kind == "node":
             continue
         xy = feature.vertices()
         ends = {}
         for end in (0, len(xy) - 1):
-            c = snapped.get((n, 0 if end == 0 else -1))
-            if c is not None:
-                ends[end] = int(candidates[0][c])
-                xy[end] = (float(candidates[1][c]), float(candidates[2][c]))
+            snap = snapped.get((n, 0 if end == 0 else -1))
+            if snap is None:
+                continue
+            xy[end] = (snap.x, snap.y)
+            if snap.node is not None:
+                ends[end] = snap.node
+            else:
+                ends[end] = nodes.vertex(snap.x, snap.y)
+                on_segments.setdefault(snap.segment, {})[ends[end]] = snap.frac
         refs = [
             ends[i] if i in ends else nodes.vertex(x, y) for i, (x, y) in enumerate(xy)
         ]
@@ -295,7 +409,56 @@ def _assign_ids(features, nodes, first_way, snapped, candidates):
         way_id -= 1
         feature.id = way_id
         feature.refs = refs
-    return way_id
+    return way_id, on_segments
+
+
+def _split_ways(on_segments, segments, way_by_id):
+    """The node ids of the ways that get the new nodes ``on_segments`` (see
+    :func:`_assign_ids`), as ``{way id: node ids}``: each new node goes between the two
+    nodes of its segment in every way of ``segments`` with that segment, in order along
+    it."""
+    by_pair = {}  # (smaller node, larger node) -> {node id: fraction from the smaller}
+    for s, new in on_segments.items():
+        a, b = int(segments.a[s]), int(segments.b[s])
+        pair = (min(a, b), max(a, b))
+        for nid, frac in new.items():
+            by_pair.setdefault(pair, {})[nid] = frac if a < b else 1.0 - frac
+    inserts = {}  # (way id, position) -> node ids to put after that position
+    for (low, high), new in by_pair.items():
+        along = sorted(new, key=new.get)
+        hits = ((segments.a == low) & (segments.b == high)) | (
+            (segments.a == high) & (segments.b == low)
+        )
+        for s in np.flatnonzero(hits).tolist():
+            ordered = along if segments.a[s] == low else along[::-1]
+            inserts[(int(segments.way[s]), int(segments.pos[s]))] = ordered
+    split = {}
+    for wid in sorted({w for w, _ in inserts}):
+        refs = [int(r) for r in way_by_id[wid]["nodes"]]
+        out = []
+        for i, ref in enumerate(refs):
+            out.append(ref)
+            out.extend(inserts.get((wid, i), ()))
+        split[wid] = out
+    return split
+
+
+def _way_rows(split, way_by_id, node_coordinates, new_xy):
+    """A row per way of ``split`` (see :func:`_split_ways`): its id, node ids, tags and
+    a LineString through those of its nodes the parsed file or ``new_xy`` (``{node id:
+    (lon, lat)}``) holds."""
+    rows = []
+    for wid, refs in split.items():
+        ids = np.asarray(refs, dtype=np.int64)
+        idx, lon, lat = node_coordinates.gather(ids)
+        xy = []
+        for nid, i, x, y in zip(refs, idx.tolist(), lon.tolist(), lat.tolist()):
+            if i >= 0:
+                xy.append((x, y))
+            elif nid in new_xy:
+                xy.append(new_xy[nid])
+        rows.append((wid, refs, _record_tags(way_by_id[wid]), shapely.LineString(xy)))
+    return rows
 
 
 def _field_columns(ids, osm_types, refs):
@@ -310,9 +473,11 @@ def _field_columns(ids, osm_types, refs):
     )
 
 
-def _elements_frame(frames, features, vertices):
+def _elements_frame(frames, features, way_rows, vertices):
     """The frame of the new elements: a row per feature with its columns other than the
-    replaced ones (see ``_REPLACED_COLS``), then a Point row per new vertex node."""
+    replaced ones (see ``_REPLACED_COLS``), a row per way of ``way_rows`` (see
+    :func:`_way_rows`) with all its tags, in the tag columns or else in the JSON
+    ``tags`` column, then a Point row per new vertex node."""
     tables, start = [], 0
     for gdf in frames:
         part = features[start : start + len(gdf)]
@@ -325,11 +490,30 @@ def _elements_frame(frames, features, vertices):
         dropped = [gdf.geometry.name] + [c for c in gdf.columns if c in _REPLACED_COLS]
         tags = pd.DataFrame(gdf.drop(columns=dropped)).reset_index(drop=True)
         tables.append(pd.concat([fields, tags], axis=1))
+    if way_rows:
+        columns = {
+            _tag_key(col): col
+            for table in tables
+            for col in table.columns[3:]
+            if col != "tags" and _tag_key(col) is not None
+        }
+        records = []
+        for wid, refs, tags, _ in way_rows:
+            record = {"id": wid, "osm_type": "way", "nodes": refs}
+            rest = {}
+            for key, value in tags.items():
+                if key in columns:
+                    record[columns[key]] = value
+                else:
+                    rest[key] = value
+            record["tags"] = rest or None
+            records.append(record)
+        tables.append(pd.DataFrame(records))
     count = len(vertices)
     tables.append(
         _field_columns([v[0] for v in vertices], ["node"] * count, [None] * count)
     )
-    geometry = [f.geometry for f in features]
+    geometry = [f.geometry for f in features] + [row[3] for row in way_rows]
     geometry += [shapely.Point(x, y) for _, x, y in vertices]
     return GeoDataFrame(
         pd.concat(tables, ignore_index=True), geometry=geometry, crs="EPSG:4326"
@@ -352,21 +536,30 @@ def new_elements(
     file (``node_coordinates`` and ``way_records``) and below ``used_ids``. The vertices
     of the lines and areas become new nodes, shared with the new Points and vertices at
     the same coordinates. With ``snap_to``, the first and last vertex of each line is the
-    closest node of ``snap_to`` (see :func:`_snap_candidates`) within ``snap_distance``
-    metres, when there is one and the vertex is not at a new Point, an inner vertex of a
-    new line or a vertex of a new area. The frame has a row per feature, whose ``nodes``
-    are the node ids of a way, and then a Point row per new vertex node. The arguments
-    are checked by :func:`validate_inputs`.
+    closest node of ``snap_to`` (see :func:`_snap_targets`) within ``snap_distance``
+    metres, or when there is none, a new node at the closest point within it on a
+    segment of a ``snap_to`` way, inserted into every ``snap_to`` way along that segment;
+    a vertex at a new Point, an inner vertex of a new line or a vertex of a new area does
+    not snap. The frame has a row per feature, whose ``nodes`` are the node ids of a way,
+    a row per existing way that got a new node, and a Point row per new vertex node. The
+    arguments are checked by :func:`validate_inputs`.
     """
     frames = _reproject_to_wgs84(_as_frames(data))
     features = _features(frames)
     first_node, first_way = _first_ids(node_coordinates, way_records, used_ids)
-    snapped, candidates = {}, None
+    snapped, segments, way_by_id = {}, None, None
     if snap_to is not None:
         way_by_id = {int(w["id"]): w for w in way_records}
-        candidates = _snap_candidates(snap_to, way_by_id, node_coordinates)
-        snapped = _snapped_ends(features, candidates, snap_distance)
+        way_ids, node_ids = _snap_targets(snap_to, way_by_id)
+        candidates = _snap_candidates(way_ids, node_ids, way_by_id, node_coordinates)
+        segments = _Segments(way_ids, way_by_id, node_coordinates)
+        snapped = _snapped_ends(features, candidates, segments, snap_distance)
     nodes = _NewNodes(first_node)
-    low_way = _assign_ids(features, nodes, first_way, snapped, candidates)
-    frame = _elements_frame(frames, features, nodes.vertices)
+    low_way, on_segments = _assign_ids(features, nodes, first_way, snapped)
+    way_rows = []
+    if on_segments:
+        split = _split_ways(on_segments, segments, way_by_id)
+        new_xy = {nid: (x, y) for nid, x, y in nodes.vertices}
+        way_rows = _way_rows(split, way_by_id, node_coordinates, new_xy)
+    frame = _elements_frame(frames, features, way_rows, nodes.vertices)
     return frame, (nodes.next_id + 1, low_way)
