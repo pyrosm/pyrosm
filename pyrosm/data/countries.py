@@ -1,6 +1,6 @@
-"""The country of a location on land, from the vendored borders of country-coder, and
-the countries' access defaults for shared paths, from the OSM wiki's tables with the
-countries added from their traffic law."""
+"""The country of a location, from the national boundaries of OpenStreetMap, and the
+countries' access defaults for shared paths, from the OSM wiki's tables with the countries
+added from their traffic law."""
 
 import functools
 import gzip
@@ -17,25 +17,28 @@ _ACCESS_PATH = Path(__file__).with_name("country_access.json")
 
 @functools.lru_cache(maxsize=None)
 def _borders():
-    """The ISO codes of the areas' countries and an STRtree of the areas."""
+    """The ISO codes of the areas' countries and the areas, prepared for point tests."""
     with gzip.open(_BORDERS_PATH, "rt", encoding="utf-8") as f:
         features = json.load(f)["features"]
     codes = np.array([f["properties"]["iso"] for f in features], dtype=object)
-    return codes, shapely.STRtree([shape(f["geometry"]) for f in features])
+    areas = np.array([shape(f["geometry"]) for f in features])
+    shapely.prepare(areas)
+    return codes, areas
 
 
 def country_codes(lon, lat):
     """The ISO 3166-1 alpha-2 code of the country of each point (``lon``, ``lat`` in
     EPSG:4326), as an object array. A territory counts as its country (the Åland Islands as
-    ``FI``). A point outside every country, such as far out at sea, and a point on a border
+    ``FI``), except one with its own table of access defaults on the OSM wiki (Hong Kong,
+    ``HK``). A point outside every country, such as far out at sea, and a point on a border
     between two countries get ``None``."""
-    codes, tree = _borders()
+    codes, areas = _borders()
     points = shapely.points(
         np.atleast_1d(np.asarray(lon, dtype=float)),
         np.atleast_1d(np.asarray(lat, dtype=float)),
     )
     result = np.full(len(points), None, dtype=object)
-    point, area = tree.query(points, predicate="intersects")
+    area, point = shapely.STRtree(points).query(areas, predicate="intersects")
     if len(point) == 0:
         return result
     order = np.lexsort((codes[area].astype(str), point))
@@ -68,8 +71,8 @@ _EXTENT_MARGIN = 0.05
 def countries_in(geometry):
     """The sorted ISO codes of the countries whose areas ``geometry`` (EPSG:4326)
     touches."""
-    codes, tree = _borders()
-    return sorted(set(codes[tree.query(geometry, predicate="intersects")]))
+    codes, areas = _borders()
+    return sorted(set(codes[shapely.intersects(areas, geometry)]))
 
 
 def read_extent(filepath, bounding_box=None):

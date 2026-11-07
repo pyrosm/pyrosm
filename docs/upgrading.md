@@ -40,6 +40,15 @@ new options that leave the defaults as they were, and fixes of calls that failed
   Australia, the `cycling` network leaves out the foot ways without a `bicycle` tag, which 0.29.0
   kept. To get the earlier ways, read with `shared_paths="tagged"` in China and Russia and with
   `shared_paths="all"` in Australia.
+- **Country borders from OpenStreetMap.** With the default `shared_paths="local"`, the
+  `walking` network leaves out the cycle ways without a `foot` tag in Greenland and the Faroe
+  Islands, in the Cook Islands, Niue and Tokelau, and in the Isle of Man, Jersey, Guernsey,
+  Gibraltar and the other British overseas territories, which 0.29.0 kept as parts of Denmark,
+  New Zealand and the United Kingdom. OSM maps these territories as countries of their own.
+  To keep such cycle ways there, read with `shared_paths="all"`. Hong Kong and Crimea do not
+  count as China and Russia for the change above, so their cycle ways without a `foot` tag
+  stay out, as in 0.29.0. Near a land border, a way can get a different country than in
+  0.29.0, as the borders follow OSM's boundaries more closely.
 
 ## pyrosm 0.29.0
 

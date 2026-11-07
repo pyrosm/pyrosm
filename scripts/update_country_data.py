@@ -1,15 +1,17 @@
 #!/usr/bin/env python
 """Refresh the vendored country data in ``pyrosm/data``.
 
-``borders``: reads the borders of country-coder (ISC licence), the dataset the iD editor
-uses to find the country of a point on land, keeps each area's geometry and the ISO 3166-1
-alpha-2 code of its country (the sovereign country for a territory or part of a country,
-such as ``FI`` for the Åland Islands and Mainland Finland), and writes
-``pyrosm/data/country_borders.geojson.gz``, with the release read as the top-level
-``source`` member, and the licence as ``pyrosm/data/country_borders.LICENSE.md``::
+``borders``: reads the national boundaries of OpenStreetMap through the Overpass API (the
+``admin_level=2`` boundary relations, which take in the territorial sea) and writes
+``pyrosm/data/country_borders.geojson.gz``: one area per ISO 3166-1 alpha-2 code, simplified
+to within ``TOLERANCE``, with the data's date in the top-level ``source`` member. A
+territory inside a country counts as that country (the Åland Islands as ``FI``), except a
+territory that the wiki page below gives its own table (Hong Kong), which gets its own
+area. Where the boundaries of two countries overlap, as in some disputed regions, the
+overlap belongs to both::
 
     python scripts/update_country_data.py borders
-    python scripts/update_country_data.py borders --source borders.json --license LICENSE.md
+    python scripts/update_country_data.py borders --source boundaries.json
 
 ``access``: reads the country tables of the OSM wiki page "OSM tags for routing/Access
 restrictions" and writes ``pyrosm/data/country_access.json``: for each shared path, the
@@ -24,10 +26,12 @@ the ``law`` member::
     python scripts/update_country_data.py access
     python scripts/update_country_data.py access --source access_restrictions.json
 
-With ``--source`` (and ``--license`` for the borders), the files are read from disk
-instead of downloaded; for the access defaults, the source is the wiki API's answer that
-the download reads (``WIKI_API`` with ``WIKI_QUERY``), saved as JSON. The gzip file is
-written without a timestamp, so the same data gives the same bytes.
+With ``--source``, the data is read from a file instead of downloaded: for the borders, an
+Overpass API answer in JSON with the boundary relations and their geometry, such as the
+answer to ``BOUNDARIES_QUERY`` with ``out geom`` in place of ``out tags``; for the access
+defaults, the wiki API's answer that the download reads (``WIKI_API`` with
+``WIKI_QUERY``). The gzip file is written without a timestamp, so the same data gives the
+same bytes.
 """
 
 import argparse
@@ -40,13 +44,24 @@ import urllib.request
 from pathlib import Path
 
 import certifi
+import numpy as np
+import shapely
+from shapely.geometry import mapping
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "pyrosm" / "data"
-COUNTRY_CODER_RELEASE = "v5.6.1"
-COUNTRY_CODER_URL = (
-    "https://raw.githubusercontent.com/rapideditor/country-coder/"
-    f"{COUNTRY_CODER_RELEASE}/"
+OVERPASS_API = "https://overpass-api.de/api/interpreter"
+# The boundaries that carry a country code: countries at admin_level 2, territories such as
+# Hong Kong at lower levels.
+BOUNDARIES_QUERY = (
+    "[out:json][timeout:600];"
+    'relation["boundary"="administrative"]["ISO3166-1:alpha2"];out tags;'
 )
+GEOMETRY_QUERY = "[out:json][timeout:900];relation(id:%s);out geom;"
+GEOMETRY_BATCH = 10
+# The borders are simplified to within this distance, in degrees (about 1 km), and their
+# coordinates rounded to this precision.
+TOLERANCE = 0.01
+PRECISION = 1e-5
 WIKI_API = "https://wiki.openstreetmap.org/w/api.php"
 WIKI_PAGE = "OSM tags for routing/Access restrictions"
 # The query for the page's latest revision: its wikitext, id and date.
@@ -119,35 +134,138 @@ TRAFFIC_LAW = {
 
 
 def _download(url):
-    """The bytes at ``url``."""
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    """The bytes at ``url``, sent gzip-compressed where the server can."""
+    headers = {"User-Agent": USER_AGENT, "Accept-Encoding": "gzip"}
+    request = urllib.request.Request(url, headers=headers)
     context = ssl.create_default_context(cafile=certifi.where())
-    with urllib.request.urlopen(request, context=context, timeout=120) as response:
-        return response.read()
+    with urllib.request.urlopen(request, context=context, timeout=900) as response:
+        data = response.read()
+        if response.headers.get("Content-Encoding") == "gzip":
+            data = gzip.decompress(data)
+        return data
 
 
-def country_borders(country_coder):
-    """The vendored borders: a FeatureCollection of the areas with a geometry, each with
-    the ISO code of its country as the property ``iso``."""
-    features = []
-    for feature in country_coder["features"]:
-        if not feature.get("geometry"):
+def _complete_answer(answer):
+    """The Overpass API's ``answer``, checked: ValueError when it reports that its query
+    stopped early, such as on a timeout, so that its elements may be incomplete."""
+    if "remark" in answer:
+        raise ValueError("The Overpass API stopped the query: %s" % answer["remark"])
+    return answer
+
+
+def _overpass(query):
+    """The Overpass API's answer to ``query``, checked by :func:`_complete_answer`."""
+    url = OVERPASS_API + "?" + urllib.parse.urlencode({"data": query})
+    return _complete_answer(json.loads(_download(url)))
+
+
+def border_relations(boundaries):
+    """The ids of the boundary relations that the borders are built from, by ISO code: each
+    country's ``admin_level=2`` boundary and, for a territory that the wiki gives its own
+    table (``WIKI_COUNTRIES``), its boundary of the lowest admin level."""
+    countries, territories = {}, {}
+    for element in boundaries:
+        tags = element.get("tags", {})
+        code, level = tags.get("ISO3166-1:alpha2"), tags.get("admin_level", "")
+        if code is None or tags.get("boundary") != "administrative":
             continue
-        properties = feature["properties"]
-        code = properties.get("country") or properties.get("iso1A2")
-        if not code:
-            continue
-        features.append(
-            {
-                "type": "Feature",
-                "properties": {"iso": code},
-                "geometry": feature["geometry"],
-            }
+        if level == "2":
+            if code in countries:
+                raise ValueError("Two country boundaries have the code %s" % code)
+            countries[code] = element["id"]
+        elif code in WIKI_COUNTRIES.values() and level.isdigit():
+            territories.setdefault(code, []).append((int(level), element["id"]))
+    for code, candidates in territories.items():
+        countries.setdefault(code, min(candidates)[1])
+    missing = sorted(set(WIKI_COUNTRIES.values()) - set(countries))
+    if missing:
+        raise ValueError("No boundary has the code %s of the wiki" % ", ".join(missing))
+    return countries
+
+
+def relation_area(relation):
+    """The area of a boundary relation: the rings that its member ways form, a ring inside
+    another a hole. ValueError when a way is not part of a ring or the relation has no
+    area."""
+    lines = [
+        shapely.linestrings(
+            [(point["lon"], point["lat"]) for point in member["geometry"]]
         )
+        for member in relation["members"]
+        if member["type"] == "way"
+    ]
+    if any(not part.is_empty for part in shapely.polygonize_full(lines)[1:]):
+        raise ValueError("The boundary relation %d is not closed" % relation["id"])
+    area = shapely.build_area(shapely.geometrycollections(lines))
+    if area.is_empty:
+        raise ValueError("The boundary relation %d has no area" % relation["id"])
+    return area
+
+
+def _coverage_pieces(areas, codes):
+    """The areas cut into pieces that do not overlap, and the indices of the areas that
+    each piece belongs to: where two areas overlap or one lies within the other, such as in
+    a disputed region, their common part is a piece of both. ValueError when two areas are
+    the same or three overlap in one place."""
+    pieces, owners = list(areas), [[i] for i in range(len(areas))]
+    tree = shapely.STRtree(areas)
+    first, second = tree.query(areas, predicate="contains")
+    contains = {(i, j) for i, j in zip(first, second) if i != j}
+    same = sorted({codes[i] for i, j in contains if (j, i) in contains})
+    if same:
+        raise ValueError("The boundaries of %s are the same" % ", ".join(same))
+    first, second = tree.query(areas, predicate="overlaps")
+    pairs = {(min(i, j), max(i, j)) for i, j in [*zip(first, second), *contains]}
+    for i, j in sorted(pairs):
+        parts = shapely.get_parts(shapely.intersection(areas[i], areas[j]))
+        overlap = shapely.multipolygons(parts[shapely.get_type_id(parts) == 3])
+        if overlap.is_empty:
+            continue
+        pieces[i] = shapely.difference(pieces[i], overlap)
+        pieces[j] = shapely.difference(pieces[j], overlap)
+        pieces.append(overlap)
+        owners.append([i, j])
+    pieces = np.array(pieces)
+    invalid = ~shapely.is_empty(shapely.coverage_invalid_edges(pieces))
+    if invalid.any():
+        names = sorted({codes[i] for k in np.flatnonzero(invalid) for i in owners[k]})
+        raise ValueError(
+            "The boundaries of %s overlap where they cannot be split" % ", ".join(names)
+        )
+    return pieces, owners
+
+
+def country_borders(document):
+    """The vendored borders from an Overpass answer with the boundary relations and their
+    geometry: a FeatureCollection with one area per ISO code (the property ``iso``),
+    sorted by code. A territory's area is cut out of its country's; where two countries'
+    boundaries overlap, the overlap stays in both. The areas are simplified together, so
+    that neighbours keep a common border."""
+    relations = {e["id"]: e for e in document["elements"] if e["type"] == "relation"}
+    ids = border_relations(relations.values())
+    codes = sorted(ids)
+    areas = np.array([relation_area(relations[ids[code]]) for code in codes])
+    territory = np.array(
+        [relations[ids[code]]["tags"]["admin_level"] != "2" for code in codes]
+    )
+    if territory.any():
+        cut = shapely.union_all(areas[territory])
+        areas[~territory] = shapely.difference(areas[~territory], cut)
+    pieces, owners = _coverage_pieces(areas, codes)
+    pieces = shapely.coverage_simplify(pieces, TOLERANCE)
+    areas = [
+        shapely.union_all([pieces[k] for k, owner in enumerate(owners) if i in owner])
+        for i in range(len(codes))
+    ]
+    areas = shapely.set_precision(areas, PRECISION, mode="pointwise")
+    features = [
+        {"type": "Feature", "properties": {"iso": code}, "geometry": mapping(area)}
+        for code, area in zip(codes, areas)
+    ]
     return {
         "type": "FeatureCollection",
-        "source": "country-coder %s, src/data/borders.json (ISC licence)"
-        % COUNTRY_CODER_RELEASE,
+        "source": "OpenStreetMap contributors (ODbL), national boundaries of %s"
+        % document["osm3s"]["timestamp_osm_base"][:10],
         "features": features,
     }
 
@@ -160,21 +278,34 @@ def write_gzip_json(path, document):
             f.write(data)
 
 
-def update_borders(source=None, license=None):
-    """Write the borders and their licence from ``source`` and ``license``, or from the
-    pinned release."""
+def update_borders(source=None):
+    """Write the borders from the Overpass answer saved in ``source``, or from the
+    boundaries' current geometry."""
     if source is None:
-        source_bytes = _download(COUNTRY_CODER_URL + "src/data/borders.json")
+        listing = _overpass(BOUNDARIES_QUERY)
+        selection = border_relations(listing["elements"])
+        ids = sorted(selection.values())
+        document = {"osm3s": listing["osm3s"], "elements": []}
+        for start in range(0, len(ids), GEOMETRY_BATCH):
+            batch = ids[start : start + GEOMETRY_BATCH]
+            answer = _overpass(GEOMETRY_QUERY % ",".join(map(str, batch)))
+            found = sorted(
+                e["id"] for e in answer["elements"] if e["type"] == "relation"
+            )
+            if found != batch:
+                raise ValueError(
+                    "The Overpass API returned the relations %s for %s"
+                    % (", ".join(map(str, found)), ", ".join(map(str, batch)))
+                )
+            document["elements"] += answer["elements"]
+            print("read %d of %d boundaries" % (start + len(batch), len(ids)))
+        if border_relations(document["elements"]) != selection:
+            raise ValueError("The boundaries changed during the download; run it again")
     else:
-        source_bytes = Path(source).read_bytes()
-    if license is None:
-        license_bytes = _download(COUNTRY_CODER_URL + "LICENSE.md")
-    else:
-        license_bytes = Path(license).read_bytes()
-    borders = country_borders(json.loads(source_bytes))
+        document = _complete_answer(json.loads(Path(source).read_bytes()))
+    borders = country_borders(document)
     path = DATA_DIR / "country_borders.geojson.gz"
     write_gzip_json(path, borders)
-    (DATA_DIR / "country_borders.LICENSE.md").write_bytes(license_bytes)
     print("wrote %d areas to %s" % (len(borders["features"]), path))
 
 
@@ -423,12 +554,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("target", choices=["access", "borders"])
     parser.add_argument("--source", help="read the data from this file")
-    parser.add_argument("--license", help="read the borders' licence from this file")
     args = parser.parse_args()
     if args.target == "borders":
-        update_borders(args.source, args.license)
-    elif args.license is not None:
-        parser.error("--license is for the borders only")
+        update_borders(args.source)
     else:
         update_access(args.source)
 
