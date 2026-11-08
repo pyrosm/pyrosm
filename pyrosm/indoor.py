@@ -1,7 +1,10 @@
 """The indoor elements of a network read with ``indoor_elements=True``.
 
 The platforms (:data:`PLATFORM_FILTER`) are edges of the network, also those that its
-type leaves out, such as ``highway=platform`` in a walking network. The edges get the level at each of their two ends, ``u_level`` and ``v_level``, from the
+type leaves out, such as ``highway=platform`` in a walking network. The platform areas and
+the indoor corridors and areas (:data:`INDOOR_AREA_FILTER`) are crossed as walking areas
+are, each on its own level, entered also through the doors on their outlines, which
+connect areas that share them. The edges get the level at each of their two ends, ``u_level`` and ``v_level``, from the
 OSM ``level`` tags (see :func:`pyrosm.levels.level_ranges`). An edge with one level has it
 at both ends. A level list or range on stairs or an escalator runs between the levels of
 the walkways at its two ends; on another walkway, such as a corridor tagged ``level=0;1``,
@@ -26,6 +29,13 @@ PLATFORM_FILTER = {
     "public_transport": ["platform"],
     "highway": ["platform"],
 }
+
+# The areas a read with indoor_elements=True crosses, each on its own level: the platform
+# areas and the indoor corridors and areas of Simple Indoor Tagging.
+INDOOR_AREA_FILTER = {"indoor": ["corridor", "area"], **PLATFORM_FILTER}
+
+# The nodes through which an indoor area is also entered: its doors and entrances.
+DOOR_FILTER = {"door": [True], "entrance": [True]}
 
 
 def check_indoor_read(network_type, custom_filter, nodes):
@@ -168,4 +178,62 @@ def with_platforms(nodes, edges, platform_nodes, platforms, walking_areas=False)
     nodes = GeoDataFrame(
         pd.concat([nodes, added], ignore_index=True), geometry="geometry", crs=nodes.crs
     )
+    return nodes, edges
+
+
+def indoor_areas(candidates, edges):
+    """The areas among ``candidates`` (a read of :data:`INDOOR_AREA_FILTER`), their
+    polygons and multipolygons, without those whose edges across are already in
+    ``edges`` (with ``walking_areas=True``); None when there are none."""
+    if candidates is None:
+        return None
+    areas = candidates[candidates.geometry.geom_type.isin(["Polygon", "MultiPolygon"])]
+    if "walking_area" in edges.columns:
+        crossed = edges[edges["walking_area"]]
+        done = set(zip(crossed["osm_type"], crossed["id"]))
+        areas = areas[[key not in done for key in zip(areas["osm_type"], areas["id"])]]
+    return areas.reset_index(drop=True) if len(areas) else None
+
+
+def with_indoor_crossings(nodes, edges, areas, doors):
+    """The ``nodes`` and ``edges`` of a network read with the edges across the indoor
+    ``areas`` (see :func:`pyrosm.walking_areas.crossing_rows`), marked True in the column
+    ``walking_area`` (False on the other edges), entered through the network's nodes and
+    the ``doors`` (a frame of nodes with ``id``, ``lon`` and ``lat``) on the areas'
+    outlines, without those between two nodes an edge already joins; the doors that
+    the new edges use join the nodes."""
+    from pyrosm.walking_areas import crossing_rows
+
+    if "walking_area" not in edges.columns:
+        edges = edges.assign(walking_area=False)
+    if areas is None:
+        return nodes, edges
+    entrances = nodes[["id", "lon", "lat"]]
+    if doors is not None:
+        new_doors = doors[~doors["id"].isin(nodes["id"])][["id", "lon", "lat"]]
+        entrances = pd.concat([entrances, new_doors], ignore_index=True)
+    plain = edges[~edges["walking_area"]]
+    rows = crossing_rows(entrances, plain, areas)
+    if rows is not None:
+        # A line along the outline of an area that is an edge itself (a platform's ring)
+        joined = set(zip(edges["u"], edges["v"])) | set(zip(edges["v"], edges["u"]))
+        rows = rows[[pair not in joined for pair in zip(rows["u"], rows["v"])]]
+    if rows is None or rows.empty:
+        return nodes, edges
+    rows = rows.assign(walking_area=True)
+    attrs = dict(edges.attrs)
+    edges = GeoDataFrame(
+        pd.concat([edges, rows], ignore_index=True), geometry="geometry", crs=edges.crs
+    )
+    edges.attrs = attrs
+    if doors is not None:
+        used = set(rows["u"]) | set(rows["v"])
+        added = doors[doors["id"].isin(used) & ~doors["id"].isin(nodes["id"])]
+        if len(added):
+            added = added[[col for col in nodes.columns if col in added.columns]]
+            nodes = GeoDataFrame(
+                pd.concat([nodes, added], ignore_index=True),
+                geometry="geometry",
+                crs=nodes.crs,
+            )
     return nodes, edges

@@ -67,8 +67,12 @@ from shapely.geometry import (
 from pyrosm.boundary import get_boundary_data
 from pyrosm.layers import get_layer_data, without_building_parts
 from pyrosm.indoor import (
+    DOOR_FILTER,
+    INDOOR_AREA_FILTER,
     PLATFORM_FILTER,
     check_indoor_read,
+    indoor_areas,
+    with_indoor_crossings,
     with_levels,
     with_platform_filter,
     with_platforms,
@@ -689,7 +693,11 @@ class OSM:
         indoor_elements : bool (default: False)
             If True, the platforms (`railway=platform`, `public_transport=platform` and
             `highway=platform` ways) are edges of the network too, also where its type
-            leaves them out, and the edges get the level at each of their two ends in
+            leaves them out. The platform areas and the indoor corridors and areas
+            (`indoor=corridor|area`) are crossed as with `walking_areas`, each on its
+            own level, entered also through the doors and entrances on their outlines,
+            which join the nodes when an edge uses them; these edges are marked in the
+            column `walking_area`. The edges get the level at each of their two ends in
             the columns `u_level` and `v_level`, from the OSM `level` tags: an edge with
             one level has it at both ends; stairs and escalators run between the levels
             of the walkways they join (also those tagged with no level or one level); a
@@ -758,6 +766,7 @@ class OSM:
             if edges is None:
                 _warn_no_edges(custom_filter)
                 return node_gdf, edges
+            node_gdf, edges = self._with_indoor_areas(node_gdf, edges, timestamp)
             result = node_gdf, with_levels(edges)
         return result
 
@@ -931,6 +940,48 @@ class OSM:
         edges = add_crossings(nodes, edges, select_areas(candidates, keep, rule))
         advance(1, 1)
         return edges
+
+    def _with_indoor_areas(self, nodes, edges, timestamp):
+        """``nodes`` and ``edges`` of an indoor network read with the edges across its
+        indoor areas and the doors they use (see
+        :func:`pyrosm.indoor.with_indoor_crossings`)."""
+        from pyrosm.pbf_writer import _FIELD_COLS, _NETWORK_COLS
+
+        columns = [
+            col
+            for col in edges.columns
+            if col not in _FIELD_COLS and col not in _NETWORK_COLS
+        ]
+        with self._progress_as(False):
+            candidates = self._read_custom_criteria(
+                INDOOR_AREA_FILTER,
+                None,
+                "keep",
+                None,
+                False,
+                True,
+                True,
+                ["area"],
+                True,
+                timestamp,
+                columns,
+            )
+            doors = self._read_custom_criteria(
+                DOOR_FILTER,
+                None,
+                "keep",
+                None,
+                True,
+                False,
+                False,
+                None,
+                True,
+                timestamp,
+                None,
+            )
+        return with_indoor_crossings(
+            nodes, edges, indoor_areas(candidates, edges), doors
+        )
 
     @logged()
     @records_read(lambda args: _require_layer_key(args["custom_filter"], "building"))

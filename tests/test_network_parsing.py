@@ -649,10 +649,12 @@ def test_network_reads_refuse_unusable_walking_areas(test_pbf, read, kwargs, mes
         getattr(OSM(test_pbf), read)(**kwargs)
 
 
-def test_get_network_with_indoor_elements():
+@pytest.mark.parametrize("walking_areas", [False, True])
+def test_get_network_with_indoor_elements(walking_areas):
     """indoor_elements=True adds the platforms, also those the walking network leaves
     out (way 35744431, railway=platform, has no highway tag), once each and with their
-    nodes, and u_level and v_level; both engines return the same frames: the escalators
+    nodes, crosses the platform areas (way 8137136), and adds u_level and v_level; both
+    engines return the same frames: the escalators
     of ways 18378805 (level=-3;-2) and 655180399 (level=0;2) run between the levels at
     their ends; without the option the columns and platforms are not there. A read
     whose filter keeps no other way returns the platforms."""
@@ -664,7 +666,7 @@ def test_get_network_with_indoor_elements():
 
     frames = [
         OSM(get_data("helsinki_pbf"), engine=engine).get_network(
-            "walking", nodes=True, indoor_elements=True, walking_areas=True
+            "walking", nodes=True, indoor_elements=True, walking_areas=walking_areas
         )
         for engine in ("in_memory", "out_of_core")
     ]
@@ -672,9 +674,11 @@ def test_get_network_with_indoor_elements():
         assert_geodataframe_equal(first, second, check_dtype=False)
     nodes, edges = frames[1]
     assert 35744431 in set(edges["id"])
-    assert not edges.duplicated(["id", "u", "v"]).any()
+    assert not edges.duplicated(["osm_type", "id", "u", "v"]).any()
     assert edges["u"].isin(nodes["id"]).all() and edges["v"].isin(nodes["id"]).all()
     assert edges["walking_area"].dtype == bool
+    platform_area = (edges["osm_type"] == "way") & (edges["id"] == 8137136)
+    assert (platform_area & edges["walking_area"]).any()
     note = edges.attrs["pyrosm_read"]["filter"]
     assert [["railway", "eq", "platform", 0]] in note
     ends = edges.set_index("id")[["u_level", "v_level"]]
@@ -752,6 +756,43 @@ def test_indoor_platforms_merge():
         "railway": ["platform"],
         "public_transport": ["platform"],
     }
+
+
+def test_indoor_area_crossings_enter_through_doors():
+    """Indoor areas are crossed as walking areas are, entered also through a door on the
+    outline that is not a node of the network, which then joins the nodes; without
+    areas the edges get walking_area False; an area already crossed, or not a polygon,
+    is not crossed again."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, Point
+
+    from pyrosm.indoor import indoor_areas, with_indoor_crossings
+
+    nodes, edges, areas, lonlat = _walking_area_frames()
+    points = gpd.points_from_xy(nodes["lon"], nodes["lat"])
+    nodes = gpd.GeoDataFrame(nodes, geometry=points, crs=4326)
+    x, y = lonlat(4, 4)  # a corner of the outline, not a node of the network
+    door = gpd.GeoDataFrame(
+        {"id": [99], "lon": [x], "lat": [y], "door": ["yes"]},
+        geometry=[Point(x, y)],
+        crs=4326,
+    )
+    same, plain = with_indoor_crossings(nodes, edges, None, door)
+    assert same is nodes and not plain["walking_area"].any()
+    with_door, crossed = with_indoor_crossings(nodes, edges, areas, door)
+    across = crossed[crossed["walking_area"]]
+    assert 99 in set(across["u"]) | set(across["v"])
+    assert 99 in set(with_door["id"]) and "door" not in with_door.columns
+    assert with_indoor_crossings(nodes, edges, areas, None)[1]["walking_area"].any()
+    # The same lines across another area that is crossed already are not repeated
+    other = across.assign(id=501)
+    again = gpd.GeoDataFrame(pd.concat([plain, other], ignore_index=True), crs=4326)
+    assert len(with_indoor_crossings(nodes, again, areas, door)[1]) == len(again)
+    inner = areas.assign(geometry=[areas.geometry.iloc[0].geoms[1].buffer(-1e-6)])
+    assert not with_indoor_crossings(nodes, edges, inner, None)[1]["walking_area"].any()
+    assert indoor_areas(areas, crossed) is None and indoor_areas(None, plain) is None
+    lines = areas.assign(geometry=[LineString([(0, 0), (1, 1)])])
+    assert indoor_areas(lines, plain) is None
 
 
 def test_indoor_levels_of_edge_ends():
