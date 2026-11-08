@@ -28,7 +28,8 @@ _STYLES = {
     "crossing": ("Lines across areas", "#b8bcc4", 1.5, "solid"),
     "area": ("Area outlines", "#5b6170", 2.5, "dot"),
 }
-# The route: dark and wide, to stand out from every kind by lightness, not by hue alone
+# The route: dark, wide and long-dashed, to stand out from every kind by lightness, not by
+# hue alone, with the kind of edge beneath showing in the gaps
 _ROUTE_COLOUR = "#1f2329"
 _PLATFORM_TAGS = ("railway", "public_transport", "highway")
 _ENTRANCES = ("subway_entrance", "train_station_entrance")
@@ -172,8 +173,8 @@ def plot_3d(edges, nodes=None, center=None, radius=None, route=None, areas=None)
         of ``center``, and the entrances within it.
     route : list of node ids (optional)
         A path through the network, such as a shortest path of a networkx graph, drawn
-        as a wide dark line along the edges between its nodes (``u`` and ``v``), with
-        markers at its two ends; a click on "Route" in the legend hides it.
+        as a wide, dark, long-dashed line along the edges between its nodes (``u`` and
+        ``v``), with markers at its two ends; a click on "Route" in the legend hides it.
     areas : GeoDataFrame (optional)
         Polygons, such as platform areas or squares, drawn as outlines at their
         ``level`` (street level without one); lines are drawn as they are.
@@ -270,7 +271,7 @@ def _add_route(go, figure, route, ends, origin):
         line_trace.add(*_line_points(line, z_a, z_b, origin, vertical=lift), "route")
     if not line_trace.x:
         return
-    figure.add_trace(_lines(go, line_trace, "Route", _ROUTE_COLOUR, 10.0, "solid"))
+    figure.add_trace(_lines(go, line_trace, "Route", _ROUTE_COLOUR, 10.0, "longdash"))
     points = [i for i, x in enumerate(line_trace.x) if x is not None]
     first, last = points[0], points[-1]
     figure.add_trace(
