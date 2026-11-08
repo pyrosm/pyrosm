@@ -653,8 +653,9 @@ def test_network_reads_refuse_unusable_walking_areas(test_pbf, read, kwargs, mes
 def test_get_network_with_indoor_elements(walking_areas):
     """indoor_elements=True adds the platforms, also those the walking network leaves
     out (way 35744431, railway=platform, has no highway tag), once each and with their
-    nodes, crosses the platform areas (way 8137136), and adds u_level and v_level; both
-    engines return the same frames: the escalators
+    nodes, crosses the platform areas (way 8137136), and adds u_level, v_level and
+    vertical (way 23653232 is stairs, a platform is neither); both engines return the
+    same frames: the escalators
     of ways 18378805 (level=-3;-2) and 655180399 (level=0;2) run between the levels at
     their ends; without the option the columns and platforms are not there. A read
     whose filter keeps no other way returns the platforms."""
@@ -681,9 +682,11 @@ def test_get_network_with_indoor_elements(walking_areas):
     assert (platform_area & edges["walking_area"]).any()
     note = edges.attrs["pyrosm_read"]["filter"]
     assert [["railway", "eq", "platform", 0]] in note
-    ends = edges.set_index("id")[["u_level", "v_level"]]
-    assert sorted(ends.loc[18378805]) == [-3.0, -2.0]
-    assert sorted(ends.loc[655180399]) == [0.0, 2.0]
+    ends = edges.set_index("id")[["u_level", "v_level", "vertical"]]
+    assert sorted(ends.loc[18378805, ["u_level", "v_level"]]) == [-3.0, -2.0]
+    assert sorted(ends.loc[655180399, ["u_level", "v_level"]]) == [0.0, 2.0]
+    assert set(ends.loc[[18378805, 23653232], "vertical"]) == {"escalator", "stairs"}
+    assert ends.loc[[35744431], "vertical"].isna().all()
     _, plain = OSM(get_data("helsinki_pbf")).get_network("walking", nodes=True)
     assert "u_level" not in plain.columns and 35744431 not in set(plain["id"])
     # A filter that keeps no way: the platforms alone, without an empty-data warning
@@ -800,8 +803,9 @@ def test_indoor_levels_of_edge_ends():
     range run between the levels of the walkways at their ends, also when one end is
     unknown (none when both are, or when both ends touch only the same level), and
     those with no level or one level take the walkways' levels when they differ; a
-    walkway tagged with several levels and an edge without one have none."""
-    from pyrosm.indoor import edge_levels
+    walkway tagged with several levels and an edge without one have none. Moving steps
+    are escalators, other steps stairs."""
+    from pyrosm.indoor import edge_levels, edge_vertical
 
     rows = [
         (1, 2, {"highway": "corridor", "level": "-1"}),
@@ -821,6 +825,12 @@ def test_indoor_levels_of_edge_ends():
     u_level, v_level = edge_levels(edges, [r[2] for r in rows])
     expected = [(-1, -1), (0, 0), (-1, 0), (0, 1), (None, None), (-1, 0), (-1, -1)]
     expected += [(None, None), (1, 0), (None, None), (None, None), (0, -1)]
+    moving = [
+        {"highway": "steps", "conveying": "no"},
+        {"highway": "footway", "conveying": "yes"},
+        {},
+    ]
+    assert edge_vertical(moving) == ["stairs", None, None]
     assert [
         (None if np.isnan(a) else a, None if np.isnan(b) else b)
         for a, b in zip(u_level, v_level)

@@ -73,7 +73,7 @@ from pyrosm.indoor import (
     check_indoor_read,
     indoor_areas,
     with_indoor_crossings,
-    with_levels,
+    with_indoor_columns,
     with_platform_filter,
     with_platforms,
 )
@@ -702,8 +702,10 @@ class OSM:
             one level has it at both ends; stairs and escalators run between the levels
             of the walkways they join (also those tagged with no level or one level); a
             walkway tagged with several levels, such as `level=0;1`, and an edge
-            without a `level` tag have no level (NaN). For the network types `walking`,
-            `all` and `all_public` and with a `custom_filter`. Requires `nodes=True`.
+            without a `level` tag have no level (NaN). The column `vertical` is
+            `escalator` for steps that move (`conveying`), `stairs` for other steps and
+            missing on other edges. For the network types `walking`, `all` and
+            `all_public` and with a `custom_filter`. Requires `nodes=True`.
 
         Returns
         -------
@@ -767,7 +769,7 @@ class OSM:
                 _warn_no_edges(custom_filter)
                 return node_gdf, edges
             node_gdf, edges = self._with_indoor_areas(node_gdf, edges, timestamp)
-            result = node_gdf, with_levels(edges)
+            result = node_gdf, with_indoor_columns(edges)
         return result
 
     @contextlib.contextmanager
