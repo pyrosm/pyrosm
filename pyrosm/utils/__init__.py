@@ -11,9 +11,10 @@ from shapely.geometry import (
     Polygon,
     box,
 )
-from pyrosm.exceptions import PBFNotImplemented
+from pyrosm.exceptions import Notice, PBFNotImplemented
 import functools
 import inspect
+import logging
 import os
 from pathlib import Path
 import geopandas as gpd
@@ -436,6 +437,13 @@ def _stacklevel_outside_pyrosm():
 def warn_future(message):
     """Warn with ``message`` as a ``FutureWarning``, pointing at the user's call."""
     warnings.warn(message, FutureWarning, stacklevel=_stacklevel_outside_pyrosm())
+
+
+def notice(message):
+    """Show ``message`` as a :class:`~pyrosm.exceptions.Notice` at the user's call, and
+    log it at INFO under the ``pyrosm`` logger."""
+    warnings.warn(message, Notice, stacklevel=_stacklevel_outside_pyrosm())
+    logging.getLogger("pyrosm").info(message)
 
 
 # The messages ``warn_future_once`` has shown in this process.

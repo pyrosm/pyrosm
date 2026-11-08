@@ -86,8 +86,8 @@ Logging
 
    enable_logging
 
-Exceptions
-----------
+Exceptions and notices
+----------------------
 
 .. currentmodule:: pyrosm.exceptions
 
@@ -101,6 +101,7 @@ Exceptions
    InvalidOSMFileError
    PBFNotImplemented
    PBFException
+   Notice
 
 Graph simplification
 --------------------

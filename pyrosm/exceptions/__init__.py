@@ -12,6 +12,8 @@
 - :class:`DownloadError`: one file could not be downloaded, after the retries (an
   :class:`ExtractDownloadError`, a ``ValueError`` and an ``OSError``); raised by
   :func:`pyrosm.get_data` and the other download functions.
+- :class:`Notice`: the category of the messages in which pyrosm tells what it did on
+  the user's behalf, such as writing elements it generated (a ``UserWarning``).
 """
 
 
@@ -79,3 +81,9 @@ class RequestRefusedError(DownloadError):
     User-Agent, or a 4th full download of one URL in 24 hours. The message says why and how
     to go on. ``attempts`` is the number of requests sent, 0 when none was.
     """
+
+
+class Notice(UserWarning):
+    """A message in which pyrosm tells what it did on the user's behalf, such as writing
+    the elements it generated. It is shown like a warning, at the user's call, and can be
+    silenced with ``warnings.simplefilter("ignore", pyrosm.Notice)``."""

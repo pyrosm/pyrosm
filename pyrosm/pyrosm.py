@@ -1710,8 +1710,11 @@ class OSM:
             ``Polygon`` -> closed way. Polygons with holes, MultiPolygon and
             MultiLineString geometries are not supported and raise ``ValueError``.
             The edges across walking areas of :meth:`get_network` (``walking_area``
-            True) are lines across an area, not elements, and are not written; nor is
-            the ``walking_area`` column.
+            True) are written as new ways with negative ids, each from its node ``u``
+            to its node ``v`` through new nodes where its line bends, with the area's
+            tags without ``area=yes`` and ``type=multipolygon``; a
+            :class:`~pyrosm.exceptions.Notice` says how many. The ``walking_area``
+            column is not written.
 
         output_path : str
             Where to write the PBF.

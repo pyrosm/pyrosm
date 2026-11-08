@@ -23,7 +23,7 @@ from geopandas import GeoDataFrame
 
 from pyrosm.filter_compiler import CompiledFilter, Condition
 from pyrosm.pbf_export import _any_member, write_pbf_from_records
-from pyrosm.utils import _stacklevel_outside_pyrosm
+from pyrosm.utils import _stacklevel_outside_pyrosm, notice
 from pyrosm.utils.progress import start_step
 from pyrosm.way_store import NodeTags
 
@@ -420,6 +420,60 @@ def _without_area_crossings(gdf):
     which are lines across an area, not elements."""
     crossing = _walking_area_flags(gdf)
     return gdf if crossing is None else gdf[~crossing]
+
+
+def _area_crossing_ways(frames):
+    """The edges across walking areas in ``frames`` (see :func:`_walking_area_flags`) as
+    ``(u, corners, v, tags)``: the nodes at the two ends, the (lon, lat) corners where
+    the line bends between them, and the area's tags without ``area=yes`` and
+    ``type=multipolygon``."""
+    found = []
+    for gdf in frames:
+        crossing = _walking_area_flags(gdf)
+        if crossing is None or not crossing.any():
+            continue
+        rows = gdf[crossing]
+        for u, v, line, tags in zip(
+            rows["u"],
+            rows["v"],
+            rows.geometry,
+            _frame_tags(rows, _frame_tag_columns(rows)),
+        ):
+            if line is None or line.is_empty or line.geom_type != "LineString":
+                raise ValueError(
+                    "write_pbf: the edge across a walking area from node %d to node %d "
+                    "has no LineString geometry to write." % (u, v)
+                )
+            tags = {
+                key: value
+                for key, value in tags.items()
+                if (key, value) not in (("area", "yes"), ("type", "multipolygon"))
+            }
+            corners = [(c[0], c[1]) for c in line.coords[1:-1]]
+            found.append((int(u), corners, int(v), tags))
+    return found
+
+
+def _check_crossing_ends(crossings, node_coordinates, new_nodes, removed_nodes):
+    """Raise a ValueError when an edge of ``crossings`` (see :func:`_area_crossing_ways`)
+    ends at a node that is neither in the file nor among the ids ``new_nodes`` added by
+    the write, or that the write removes."""
+
+    def written(node):
+        return (node in node_coordinates or node in new_nodes) and (
+            node not in removed_nodes
+        )
+
+    missing = [
+        [node for node in (u, v) if not written(node)] for u, _, v, _ in crossings
+    ]
+    missing = [nodes for nodes in missing if nodes]
+    if missing:
+        raise ValueError(
+            "write_pbf: %d edges across walking areas end at nodes that are not in the "
+            "written file (e.g. node %d), so they cannot be written as ways."
+            % (len(missing), missing[0][0])
+        )
 
 
 def _reproject_to_wgs84(frames):
@@ -1116,6 +1170,14 @@ class _RecordBuilder:
             self._way_counter -= 1
         self.add_new_way(wid, refs, tags)
 
+    def add_way_between(self, u, corners, v, tags):
+        """Add a new way from the node ``u`` to the node ``v`` through new nodes at the
+        (lon, lat) ``corners``, with the OSM tags ``tags``; return its generated id."""
+        refs = [u] + [self._node_for(x, y, u) for x, y in corners] + [v]
+        wid = self._way_counter
+        self._add_way(refs, tags)
+        return wid
+
     def add_geometry(self, oid, geom, tags, wid=None):
         if geom is None or geom.is_empty:
             raise ValueError(
@@ -1360,8 +1422,9 @@ def write_geodataframe_to_pbf(
     known = values != 0
     changesets = dict(zip(ids[known].tolist(), values[known].tolist()))
     way_records = list(way_records) + list(relation_member_ways or [])
-    frames = [_without_area_crossings(gdf) for gdf in _as_frames(data)]
-    frames = _reproject_to_wgs84(frames)
+    frames = _reproject_to_wgs84(_as_frames(data))
+    crossings = _area_crossing_ways(frames)
+    frames = [_without_area_crossings(gdf) for gdf in frames]
 
     way_by_id = {w["id"]: w for w in way_records}
     rel_ids = set(int(i) for i in relations["id"]) if "id" in relations else set()
@@ -1383,6 +1446,12 @@ def write_geodataframe_to_pbf(
     )
     _warn_partial_edits(edits, plan)
     _warn_lost_tags(edits, plan, source_tags)
+    _check_crossing_ends(
+        crossings,
+        node_coordinates,
+        {node[0] for node in edits.new_nodes},
+        plan.removed_nodes,
+    )
 
     keep_nodes = keep_ways = keep_rels = None
     if subset_only:
@@ -1395,6 +1464,8 @@ def write_geodataframe_to_pbf(
         )
         for _, refs, _ in new_ways:
             keep_nodes.update(refs)
+        for u, _, v, _ in crossings:
+            keep_nodes.update((u, v))
     elif bounded:
         way_ids = np.fromiter(way_by_id, dtype=np.int64, count=len(way_by_id))
         node_ids = np.asarray(node_coordinates.ids, dtype=np.int64)
@@ -1418,6 +1489,18 @@ def write_geodataframe_to_pbf(
     )
     for oid, geom, tags, wid in edits.auto_rows:
         builder.add_geometry(oid, geom, tags, wid)
+    crossing_ids = [builder.add_way_between(*crossing) for crossing in crossings]
+    if crossing_ids:
+        ids = (
+            "id %d" % crossing_ids[0]
+            if len(crossing_ids) == 1
+            else "ids %d to %d" % (crossing_ids[0], crossing_ids[-1])
+        )
+        notice(
+            "write_pbf writes %d edges across walking areas as new ways (%s): each "
+            "joins its two nodes, through new nodes where its line bends, with the "
+            "area's tags without area=yes." % (len(crossing_ids), ids)
+        )
 
     payload = builder.node_payload()
     return write_pbf_from_records(
