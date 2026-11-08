@@ -1051,6 +1051,60 @@ def test_indoor_graph_keeps_vertical_edges_and_level_changes():
     assert levels == {(1, 4): (-1.0, 0.0), (4, 1): (0.0, -1.0)}
 
 
+@pytest.mark.parametrize("network_type", ["walking", "custom"])
+@pytest.mark.parametrize("simplify", [True, False])
+def test_escalators_run_in_the_direction_they_move(simplify, network_type):
+    """In a graph of an indoor network, an escalator tagged conveying=forward runs only in
+    the direction its way is drawn in and conveying=backward only against it, also
+    against a oneway tag of a directed network, and conveying=yes as the network type
+    says (here both ways), simplified or not; force_bidirectional makes them all
+    two-way."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, Point
+
+    from pyrosm import OSM
+
+    lon = [24.9 + x * 1e-3 for x in range(4)]
+    nodes = gpd.GeoDataFrame(
+        {"id": [1, 2, 3, 4], "lon": lon, "lat": [60.2] * 4},
+        geometry=[Point(x, 60.2) for x in lon],
+        crs=4326,
+    )
+    rows = [(1, 2, 0, -1, "forward"), (2, 3, -1, -2, "backward"), (3, 4, -2, -3, "yes")]
+    edges = gpd.GeoDataFrame(
+        {
+            "id": [20, 21, 22],
+            "osm_type": "way",
+            "highway": "steps",
+            "conveying": [r[4] for r in rows],
+            "oneway": ["-1", "yes", None],
+            "u": [r[0] for r in rows],
+            "v": [r[1] for r in rows],
+            "length": 1.0,
+            "u_level": [float(r[2]) for r in rows],
+            "v_level": [float(r[3]) for r in rows],
+            "vertical": "escalator",
+        },
+        geometry=[LineString([(lon[a - 1], 60.2), (lon[b - 1], 60.2)]) for a, b, *_ in rows],
+        crs=4326,
+    )
+
+    def pairs(**kwargs):
+        graph = OSM.to_graph(
+            nodes,
+            edges,
+            graph_type="networkx",
+            network_type=network_type,
+            retain_all=True,
+            simplify=simplify,
+            **kwargs,
+        )
+        return sorted(graph.edges())
+
+    assert pairs() == [(1, 2), (3, 2), (3, 4), (4, 3)]
+    assert pairs(force_bidirectional=True) == [(1, 2), (2, 1), (2, 3), (3, 2), (3, 4), (4, 3)]
+
+
 @pytest.mark.parametrize("engine, simplify", [("in_memory", True), ("out_of_core", False)])
 def test_get_graph_with_indoor_elements(engine, simplify):
     """get_graph(indoor_elements=True) carries the levels and vertical marks, keeps the
