@@ -6634,3 +6634,18 @@ def test_write_pbf_subset_keeps_the_nodes_of_new_ways(tmp_path):
     )
     _, edges = OSM(out).get_network("cycling", nodes=True)
     assert edges[["u", "v"]].values.tolist() == [ends]
+
+
+def test_walking_areas_leave_out_dead_ends_off_the_area_level():
+    """Walking areas joined every dead end inside an area, judged in 2D, so corridor and
+    stair ends under a street-level square got edges across the square (#906). The steps
+    of way 16759162 (``tunnel=yes``, ``layer=-1``) end inside the pedestrian area of
+    relation 2919182: they get no edge across it, and the area keeps its other edges."""
+    from pyrosm import OSM, get_data
+
+    _, edges = OSM(get_data("helsinki_pbf")).get_network(
+        "walking", nodes=True, walking_areas=True
+    )
+    across = edges[edges["walking_area"] & (edges["id"] == 2919182)]
+    assert len(across) > 0
+    assert not across[["u", "v"]].isin([173248872]).to_numpy().any()

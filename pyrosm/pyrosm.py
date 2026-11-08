@@ -664,12 +664,16 @@ class OSM:
             the multipolygon relations whose tags the network's filter keeps (it keeps
             `highway=pedestrian` and `highway=footway` areas in the walking network),
             or that the `custom_filter` keeps. The network's nodes on the outline of an
-            area, and its dead ends inside the area, are joined in pairs by an edge
-            along the shortest line inside the area, which bends only at the corners
-            where the outline or a hole turns into the area. A pair whose line passes
-            another of these nodes gets no edge of its own. These edges have the area's
-            `id`, `osm_type` and tags, and `True` in the column `walking_area`, which is
-            `False` for the other edges. Requires `nodes=True`.
+            area, and its dead ends inside the area on the area's level, are joined in
+            pairs by an edge along the shortest line inside the area, which bends only
+            at the corners where the outline or a hole turns into the area. A dead end
+            is on the area's level when their `level` tags share a level or, when
+            either has no `level`, when both are below, at or above street level by
+            `level`, `layer` and `tunnel` (without these tags, at street level). A
+            pair whose line passes another of these nodes gets no edge of its own.
+            These edges have the area's `id`, `osm_type` and tags, and `True` in the
+            column `walking_area`, which is `False` for the other edges. Requires
+            `nodes=True`.
 
         Returns
         -------

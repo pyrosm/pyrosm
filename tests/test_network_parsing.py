@@ -482,6 +482,39 @@ def test_walking_area_crossings(capped, monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "end_tags, area_tags, joined",
+    [
+        ({}, {}, True),
+        ({"level": "-1"}, {}, False),
+        ({"tunnel": "yes"}, {}, False),
+        ({"tunnel": "building_passage"}, {}, True),
+        ({"layer": "1"}, {}, False),
+        ({"level": "1"}, {"level": "0-2"}, True),
+        ({"level": "-1;0"}, {}, True),
+        ({"level": "-1-1"}, {}, True),
+        ({"level": "-2"}, {"level": "-1"}, False),
+        ({"layer": "-1", "tunnel": "yes"}, {"level": "-1"}, True),
+        ({"level": "B1", "layer": "x"}, {}, True),
+        ({"layer": "nan"}, {}, True),
+    ],
+)
+def test_walking_areas_join_dead_ends_on_their_level(end_tags, area_tags, joined):
+    """A dead end inside an area is joined only on the area's level: by overlapping
+    level ranges when both have a level, else by the side of street level from the
+    levels, layer and tunnel; no such tag (or a level or layer that is not a number) is
+    street level."""
+    from rapidjson import dumps
+
+    from pyrosm import walking_areas
+
+    nodes, edges, areas, _ = _walking_area_frames()
+    edges.loc[0, "tags"] = dumps(end_tags)  # the way that ends at node 4, inside
+    areas.loc[0, "tags"] = dumps(area_tags)
+    rows = walking_areas.crossing_rows(nodes, edges, areas)
+    assert ((rows["u"] == 4) | (rows["v"] == 4)).any() == joined
+
+
+@pytest.mark.parametrize(
     "network_type, kept",
     [("walking", [1, 4, 8, 9]), ("cycling", [1, 8, 9]), ("driving", [])],
 )

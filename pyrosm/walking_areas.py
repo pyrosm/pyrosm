@@ -2,9 +2,10 @@
 
 A walking area is a closed way tagged ``area=yes`` or a multipolygon relation, such as a
 pedestrian square, whose tags pass the network's filter. Its entrances are the network's
-nodes on its outline and the network's dead ends inside it. Each pair of entrances gets
-one edge along the shortest line inside the area, which bends only at the area's inward
-corners: the corners of the outline that point into the area and those of its holes.
+nodes on its outline and the network's dead ends inside it on the area's level. Each
+pair of entrances gets one edge along the shortest line inside the area, which bends
+only at the area's inward corners: the corners of the outline that point into the area
+and those of its holes.
 """
 
 import math
@@ -16,6 +17,7 @@ from geopandas import GeoDataFrame
 from rapidjson import dumps
 
 from pyrosm.distance import calculate_line_lengths
+from pyrosm.levels import level_ranges
 from pyrosm.new_elements import _coordinate_key
 from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_key
 
@@ -109,16 +111,27 @@ def crossing_rows(nodes, edges, areas):
     area_rows, node_rows = shapely.STRtree(shapely.points(lon, lat)).query(
         geometries, predicate="intersects"
     )
+    positions = _dead_end_level_positions(edges, ids[node_rows[dead_end[node_rows]]])
+    area_positions = [
+        _level_position(tags) for tags in _frame_tags(areas, _frame_tag_columns(areas))
+    ]
     found = []
     for area in np.unique(area_rows):
         candidates = node_rows[area_rows == area]
+        joinable = np.array(
+            [
+                bool(end) and _on_same_level(positions[i], area_positions[area])
+                for i, end in zip(ids[candidates], dead_end[candidates])
+            ],
+            dtype=bool,
+        )
         for part in shapely.get_parts(geometries[area]):
             entrances = _entrances(
                 part,
                 ids[candidates],
                 lon[candidates],
                 lat[candidates],
-                dead_end[candidates],
+                joinable,
             )
             for u, v, line in _part_crossings(part, entrances):
                 found.append((area, u, v, line))
@@ -148,6 +161,64 @@ def crossing_rows(nodes, edges, areas):
         ["osm_type", "id", "u", "v"], kind="stable", ignore_index=True
     )
     return GeoDataFrame(crossings, geometry="geometry", crs=edges.crs)
+
+
+def _dead_end_level_positions(edges, dead_ends):
+    """``{node id: position}`` of the nodes ``dead_ends``, each a node of one of
+    ``edges``, by the tags of that edge (see :func:`_level_position`)."""
+    u = edges["u"].to_numpy()
+    v = edges["v"].to_numpy()
+    rows = np.flatnonzero(np.isin(u, dead_ends) | np.isin(v, dead_ends))
+    subset = edges.iloc[rows]
+    wanted = set(dead_ends.tolist())
+    positions = {}
+    for a, b, tags in zip(
+        u[rows], v[rows], _frame_tags(subset, _frame_tag_columns(subset))
+    ):
+        position = _level_position(tags)
+        for node in (a, b):
+            if node in wanted:
+                positions[node] = position
+    return positions
+
+
+def _level_position(tags):
+    """Where an element with the OSM tags ``tags`` is: ``(ranges, sides)``, the
+    ranges of its ``level`` tag (see :func:`pyrosm.levels.level_ranges`) or None, and
+    the sides of street level it is on, -1 below, 0 at and 1 above. The sides come from
+    the levels when the element has them, else from ``layer``, and ``tunnel=yes``
+    without a positive layer is below; an element with none of these tags is at street
+    level."""
+    ranges = level_ranges(tags.get("level"))
+    if ranges:
+        sides = set()
+        for low, high in ranges:
+            sides.update((int(np.sign(low)), int(np.sign(high))))
+            if low < 0 < high:
+                sides.add(0)
+        return ranges, sides
+    try:
+        layer = float(tags.get("layer", 0))
+    except (TypeError, ValueError):
+        layer = 0.0
+    if not math.isfinite(layer):
+        layer = 0.0
+    if tags.get("tunnel") == "yes" and layer <= 0:
+        layer = -1.0
+    return None, {int(np.sign(layer))}
+
+
+def _on_same_level(a, b):
+    """Whether the positions ``a`` and ``b`` (see :func:`_level_position`) share a
+    level: two level ranges that overlap when both have levels, else a side of street
+    level."""
+    if a[0] and b[0]:
+        return any(
+            low_a <= high_b and low_b <= high_a
+            for low_a, high_a in a[0]
+            for low_b, high_b in b[0]
+        )
+    return bool(a[1] & b[1])
 
 
 def _entrances(polygon, ids, lon, lat, dead_end):
