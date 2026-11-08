@@ -66,6 +66,18 @@ from shapely.geometry import (
 )
 from pyrosm.boundary import get_boundary_data
 from pyrosm.layers import get_layer_data, without_building_parts
+from pyrosm.indoor import (
+    DOOR_FILTER,
+    INDOOR_AREA_FILTER,
+    PLATFORM_FILTER,
+    check_indoor_read,
+    indoor_areas,
+    split_lifts,
+    with_indoor_crossings,
+    with_indoor_columns,
+    with_platform_filter,
+    with_platforms,
+)
 from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
@@ -119,11 +131,14 @@ _DECODING_SECONDS = 3.5
 def _network_read_filter(args):
     """The filter a ``get_network`` call selects its ways by (see
     :func:`pyrosm.utils.records_read`): its ``custom_filter`` when that keeps, otherwise
-    the ways with a ``highway`` tag."""
+    the ways with a ``highway`` tag; with ``indoor_elements``, also the platforms."""
     custom_filter, filter_type = _network_filter_type(
         args["custom_filter"], args["filter_type"]
     )
-    return custom_filter if filter_type == "keep" else {"highway": [True]}
+    read_filter = custom_filter if filter_type == "keep" else {"highway": [True]}
+    if args.get("indoor_elements") and isinstance(read_filter, dict):
+        read_filter = with_platform_filter(read_filter)
+    return read_filter
 
 
 def _warn_no_edges(custom_filter):
@@ -554,6 +569,7 @@ class OSM:
         tags_to_keep=None,
         shared_paths="local",
         walking_areas=False,
+        indoor_elements=False,
     ):
         """
         Parses street networks from OSM
@@ -664,12 +680,38 @@ class OSM:
             the multipolygon relations whose tags the network's filter keeps (it keeps
             `highway=pedestrian` and `highway=footway` areas in the walking network),
             or that the `custom_filter` keeps. The network's nodes on the outline of an
-            area, and its dead ends inside the area, are joined in pairs by an edge
-            along the shortest line inside the area, which bends only at the corners
-            where the outline or a hole turns into the area. A pair whose line passes
-            another of these nodes gets no edge of its own. These edges have the area's
-            `id`, `osm_type` and tags, and `True` in the column `walking_area`, which is
-            `False` for the other edges. Requires `nodes=True`.
+            area, and its dead ends inside the area on the area's level, are joined in
+            pairs by an edge along the shortest line inside the area, which bends only
+            at the corners where the outline or a hole turns into the area. A dead end
+            is on the area's level when their `level` tags share a level or, when
+            either has no `level`, when both are below, at or above street level by
+            `level`, `layer` and `tunnel` (without these tags, at street level). A
+            pair whose line passes another of these nodes gets no edge of its own.
+            These edges have the area's `id`, `osm_type` and tags, and `True` in the
+            column `walking_area`, which is `False` for the other edges. Requires
+            `nodes=True`.
+
+        indoor_elements : bool (default: False)
+            If True, the platforms (`railway=platform`, `public_transport=platform` and
+            `highway=platform` ways) are edges of the network too, also where its type
+            leaves them out. The platform areas and the indoor corridors and areas
+            (`indoor=corridor|area`) are crossed as with `walking_areas`, each on its
+            own level, entered also through the doors and entrances on their outlines,
+            which join the nodes when an edge uses them; these edges are marked in the
+            column `walking_area`. The edges get the level at each of their two ends in
+            the columns `u_level` and `v_level`, from the OSM `level` tags: an edge with
+            one level has it at both ends; stairs and escalators run between the levels
+            of the walkways they join (also those tagged with no level or one level); a
+            walkway tagged with several levels, such as `level=0;1`, and an edge
+            without a `level` tag have no level (NaN). The column `vertical` is
+            `escalator` for steps that move (`conveying`), `stairs` for other steps and
+            missing on other edges. A lift node (`highway=elevator`) where edges on
+            several levels meet is split into one node per level: the lowest keeps the
+            node's id, the others get negative ids derived from it, each edge ends at
+            the copy of its level, and edges of length 0 with the lift node's id,
+            `osm_type` "node" and `vertical` "lift" join the copies of neighbouring
+            levels. For the network types `walking`, `all` and `all_public` and with a
+            `custom_filter`. Requires `nodes=True`.
 
         Returns
         -------
@@ -692,13 +734,16 @@ class OSM:
         custom_filter, filter_type = _network_filter_type(custom_filter, filter_type)
         network_type = network_type_of_read(network_type, custom_filter)
         validate_bool(walking_areas, "walking_areas")
+        validate_bool(indoor_elements, "indoor_elements")
         if walking_areas and not nodes:
             raise ValueError(
                 "walking_areas=True needs nodes=True: the edges across an area join "
                 "the network's nodes."
             )
+        if indoor_elements:
+            check_indoor_read(network_type, custom_filter, nodes)
         with self._walking_area_steps(walking_areas, timestamp):
-            return self._read_network(
+            result = self._read_network(
                 network_type,
                 extra_attributes,
                 nodes,
@@ -708,7 +753,30 @@ class OSM:
                 tags_to_keep,
                 shared_paths,
                 walking_areas,
+                warn_empty=not indoor_elements,
             )
+        if indoor_elements:
+            platform_nodes, platforms = self._read_network(
+                network_type_of_read(None, PLATFORM_FILTER),
+                extra_attributes,
+                True,
+                timestamp,
+                PLATFORM_FILTER,
+                "keep",
+                tags_to_keep,
+                shared_paths,
+                False,
+                warn_empty=False,
+            )
+            node_gdf, edges = with_platforms(
+                *result, platform_nodes, platforms, walking_areas
+            )
+            if edges is None:
+                _warn_no_edges(custom_filter)
+                return node_gdf, edges
+            node_gdf, edges = self._with_indoor_areas(node_gdf, edges, timestamp)
+            result = split_lifts(node_gdf, with_indoor_columns(edges))
+        return result
 
     @contextlib.contextmanager
     def _walking_area_steps(self, walking_areas, timestamp):
@@ -735,9 +803,11 @@ class OSM:
         tags_to_keep,
         shared_paths,
         walking_areas,
+        warn_empty=True,
     ):
         """The frames of :meth:`get_network`, with its ``custom_filter`` and
-        ``filter_type`` resolved and its ``network_type`` that of the read."""
+        ``filter_type`` resolved and its ``network_type`` that of the read; a read
+        without edges warns unless not ``warn_empty``."""
         advanced_filter = isinstance(custom_filter, CompiledFilter)
         if self._use_engine():
             result = self._read_engine(
@@ -753,7 +823,8 @@ class OSM:
                 shared_paths=shared_paths,
             )
             if (result[1] if nodes else result) is None:
-                _warn_no_edges(custom_filter)
+                if warn_empty:
+                    _warn_no_edges(custom_filter)
             elif walking_areas:
                 node_gdf, edges = result
                 result = node_gdf, self._with_walking_areas(
@@ -813,7 +884,8 @@ class OSM:
 
         edges = self._drop_node_lists(edges)
         if edges is None:
-            _warn_no_edges(custom_filter)
+            if warn_empty:
+                _warn_no_edges(custom_filter)
         elif walking_areas:
             edges = self._with_walking_areas(
                 node_gdf,
@@ -876,6 +948,48 @@ class OSM:
         edges = add_crossings(nodes, edges, select_areas(candidates, keep, rule))
         advance(1, 1)
         return edges
+
+    def _with_indoor_areas(self, nodes, edges, timestamp):
+        """``nodes`` and ``edges`` of an indoor network read with the edges across its
+        indoor areas and the doors they use (see
+        :func:`pyrosm.indoor.with_indoor_crossings`)."""
+        from pyrosm.pbf_writer import _FIELD_COLS, _NETWORK_COLS
+
+        columns = [
+            col
+            for col in edges.columns
+            if col not in _FIELD_COLS and col not in _NETWORK_COLS
+        ]
+        with self._progress_as(False):
+            candidates = self._read_custom_criteria(
+                INDOOR_AREA_FILTER,
+                None,
+                "keep",
+                None,
+                False,
+                True,
+                True,
+                ["area"],
+                True,
+                timestamp,
+                columns,
+            )
+            doors = self._read_custom_criteria(
+                DOOR_FILTER,
+                None,
+                "keep",
+                None,
+                True,
+                False,
+                False,
+                None,
+                True,
+                timestamp,
+                None,
+            )
+        return with_indoor_crossings(
+            nodes, edges, indoor_areas(candidates, edges), doors
+        )
 
     @logged()
     @records_read(lambda args: _require_layer_key(args["custom_filter"], "building"))
@@ -1365,6 +1479,12 @@ class OSM:
 
         keep_relations : bool
             Whether or not the relations should be kept in the resulting GeoDataFrame if they are found.
+            A relation tagged ``type=multipolygon`` or ``type=boundary`` is returned
+            with the area of its member ways, and those ways are not rows of their
+            own. Any other relation, such as a stop area or a route, is returned with a
+            GeometryCollection of its member ways (as lines) and member nodes (as
+            points), and its member ways that match the filter are also rows of their
+            own.
 
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
@@ -1706,8 +1826,14 @@ class OSM:
             ``Polygon`` -> closed way. Polygons with holes, MultiPolygon and
             MultiLineString geometries are not supported and raise ``ValueError``.
             The edges across walking areas of :meth:`get_network` (``walking_area``
-            True) are lines across an area, not elements, and are not written; nor is
-            the ``walking_area`` column.
+            True) are written as new ways with negative ids, each from its node ``u``
+            to its node ``v`` through new nodes where its line bends, with the area's
+            tags without ``area=yes`` and ``type=multipolygon``. The lifts that an
+            indoor network split per level are written so: the copies as new nodes
+            tagged ``highway=elevator`` with their level, the lift edges as new ways
+            tagged ``highway=elevator``, and the ways at those lifts end at the copy of
+            their level. A :class:`~pyrosm.exceptions.Notice` says how many of these
+            elements are written. The ``walking_area`` column is not written.
 
         output_path : str
             Where to write the PBF.
@@ -1925,6 +2051,7 @@ class OSM:
         shared_paths="local",
         force_oneway=False,
         walking_areas=False,
+        indoor_elements=False,
     ):
         """
         Read the street network of ``network_type``, or the network of a
@@ -1945,10 +2072,14 @@ class OSM:
         Parameters
         ----------
 
-        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep, timestamp, shared_paths, walking_areas
+        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep, timestamp, shared_paths, walking_areas, indoor_elements
             As in :meth:`get_network`. With ``walking_areas=True``, the edges across
             walking areas have ``True`` in the edge attribute ``walking_area`` and are
             never merged with other edges when the graph is simplified. With
+            ``indoor_elements=True``, the edges carry ``u_level``, ``v_level`` and
+            ``vertical`` as attributes, the lifts are split per level, and
+            simplification never merges stairs, escalators or lifts with other edges,
+            nor edges across a change of level. With
             ``tags_to_keep``, the tags the graph is built
             from are read too: those of its edges' directions (``oneway`` and
             ``junction``, and ``oneway:bicycle`` for cycling; none with
@@ -1967,8 +2098,11 @@ class OSM:
         """
         validate_graph_type(graph_type)
         validate_bool(walking_areas, "walking_areas")
+        validate_bool(indoor_elements, "indoor_elements")
         follows_drawn_direction(force_bidirectional, force_oneway)
         network_type = network_type_of_read(network_type, custom_filter)
+        if indoor_elements:
+            check_indoor_read(network_type, custom_filter, True)
         if tags_to_keep is not None:
             validate_tags_as_columns(tags_to_keep, "tags_to_keep")
             tags_to_keep = list(tags_to_keep) + [
@@ -1991,7 +2125,7 @@ class OSM:
             tags_to_keep,
             shared_paths,
         )[0]
-        from_tables = not simplify or walking_areas
+        from_tables = not simplify or walking_areas or indoor_elements
         shares = self._network_read_shares(not from_tables, timestamp, walking_areas)
         shares.update(
             step_shares(simplify, retain_all, validate_graph_type(graph_type))
@@ -2029,6 +2163,7 @@ class OSM:
                     tags_to_keep=tags_to_keep,
                     shared_paths=shared_paths,
                     walking_areas=walking_areas,
+                    indoor_elements=indoor_elements,
                 )
             if edges is None:
                 return None

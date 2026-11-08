@@ -23,7 +23,7 @@ from geopandas import GeoDataFrame
 
 from pyrosm.filter_compiler import CompiledFilter, Condition
 from pyrosm.pbf_export import _any_member, write_pbf_from_records
-from pyrosm.utils import _stacklevel_outside_pyrosm
+from pyrosm.utils import _stacklevel_outside_pyrosm, notice
 from pyrosm.utils.progress import start_step
 from pyrosm.way_store import NodeTags
 
@@ -58,9 +58,11 @@ _FIELD_COLS = {
     "geometry",
 }
 # Numeric columns get_network computes: the end node ids of a segment, its length in
-# metres, and whether it crosses a walking area. A text column of one of these names
-# holds the OSM tag of that name.
-_NETWORK_COLS = ("u", "v", "length", "walking_area")
+# metres, whether it crosses a walking area, and the levels at its two ends. A text column
+# of one of these names holds the OSM tag of that name.
+_NETWORK_COLS = ("u", "v", "length", "walking_area", "u_level", "v_level")
+# The values of the column ``vertical`` that get_network(indoor_elements=True) computes.
+_VERTICAL_VALUES = {"escalator", "stairs", "lift"}
 # The fields of a way record, next to its tags.
 _RECORD_FIELDS = {"id", "version", "timestamp", "visible", "nodes", "tags"}
 # Element fields the readers put into a JSON ``tags`` dict when they are not columns.
@@ -111,8 +113,9 @@ def _tag_key(col):
 
 def _frame_tag_columns(gdf):
     """The columns of ``gdf`` that hold tags: all but its geometry, the element fields
-    and the columns get_network computes (numeric ``u``, ``v`` and ``length``, boolean
-    ``walking_area``)."""
+    and the columns get_network computes (numeric ``u``, ``v``, ``length``,
+    ``u_level`` and ``v_level``, boolean ``walking_area``, and ``vertical`` in an indoor
+    network, see :func:`_is_indoor_network`)."""
     computed = {
         col
         for col in _NETWORK_COLS
@@ -120,6 +123,8 @@ def _frame_tag_columns(gdf):
     }
     if _walking_area_flags(gdf) is not None:
         computed.add("walking_area")
+    if _is_indoor_network(gdf):
+        computed.add("vertical")
     return [
         col
         for col in gdf.columns
@@ -128,6 +133,20 @@ def _frame_tag_columns(gdf):
         and _column_name(col) not in computed
         and _tag_key(col) is not None
     ]
+
+
+def _is_indoor_network(gdf):
+    """Whether ``gdf`` holds the edges of get_network(indoor_elements=True): numeric
+    ``u_level`` and ``v_level`` columns, and a ``vertical`` column of its values only.
+    """
+    if "vertical" not in gdf.columns:
+        return False
+    if not all(
+        col in gdf.columns and pd.api.types.is_numeric_dtype(gdf[col])
+        for col in ("u_level", "v_level")
+    ):
+        return False
+    return set(gdf["vertical"].dropna()) <= _VERTICAL_VALUES
 
 
 def _add_dict_tags(tags, extra, columns=()):
@@ -420,6 +439,190 @@ def _without_area_crossings(gdf):
     which are lines across an area, not elements."""
     crossing = _walking_area_flags(gdf)
     return gdf if crossing is None else gdf[~crossing]
+
+
+def _area_crossing_ways(frames):
+    """The edges across walking areas in ``frames`` (see :func:`_walking_area_flags`) as
+    ``(u, corners, v, tags)``: the nodes at the two ends, the (lon, lat) corners where
+    the line bends between them, and the area's tags without ``area=yes`` and
+    ``type=multipolygon``."""
+    found = []
+    for gdf in frames:
+        crossing = _walking_area_flags(gdf)
+        if crossing is None or not crossing.any():
+            continue
+        rows = gdf[crossing]
+        for u, v, line, tags in zip(
+            rows["u"],
+            rows["v"],
+            rows.geometry,
+            _frame_tags(rows, _frame_tag_columns(rows)),
+        ):
+            if line is None or line.is_empty or line.geom_type != "LineString":
+                raise ValueError(
+                    "write_pbf: the edge across a walking area from node %d to node %d "
+                    "has no LineString geometry to write." % (u, v)
+                )
+            tags = {
+                key: value
+                for key, value in tags.items()
+                if (key, value) not in (("area", "yes"), ("type", "multipolygon"))
+            }
+            corners = [(c[0], c[1]) for c in line.coords[1:-1]]
+            found.append((int(u), corners, int(v), tags))
+    return found
+
+
+def _lift_parts(frames):
+    """The lifts split per level in ``frames`` (see :func:`pyrosm.indoor.split_lifts`),
+    as ``(copies, lifts, repoint)``: the copies ``{node id: (lon, lat, level, lift node
+    id)}`` (the lowest level is the lift node itself), the lift edges as ``(u, corners, v, tags)``
+    with the tags ``highway=elevator`` and the two levels, and ``{(way id, lift node
+    id): copy id}`` for the ways that end at a copy."""
+    copies, lifts = {}, []
+    for gdf in frames:
+        lift = _lift_rows(gdf)
+        if not lift.any():
+            continue
+        rows = gdf[lift]
+        for lift, u, v, low, high, line in zip(
+            rows["id"],
+            rows["u"],
+            rows["v"],
+            rows["u_level"],
+            rows["v_level"],
+            rows.geometry,
+        ):
+            x, y = line.coords[0][:2]
+            for node, level in ((int(u), low), (int(v), high)):
+                if node == int(lift):
+                    continue
+                copy = (x, y, level, int(lift))
+                if copies.get(node, copy) != copy:
+                    raise ValueError(
+                        "write_pbf: the lift edges give the copy %d of a split lift "
+                        "two different places, levels or lifts." % node
+                    )
+                copies[node] = copy
+            tags = {
+                "highway": "elevator",
+                "level": "%s;%s" % (_tag_str(low), _tag_str(high)),
+            }
+            lifts.append((int(u), [], int(v), tags))
+    ends = {}  # (way id, lift node id) -> the lift's nodes the way's segments end at
+    lift_nodes = {copy[3] for copy in copies.values()}
+    for gdf in frames:
+        if not copies or "u" not in gdf.columns or "osm_type" not in gdf.columns:
+            continue
+        segment = (gdf["osm_type"] == "way").to_numpy().copy()
+        crossing = _walking_area_flags(gdf)
+        if crossing is not None:
+            segment &= ~crossing  # a line across an area, not a segment of its way
+        ways = gdf[segment]
+        for way, u, v in zip(ways["id"], ways["u"], ways["v"]):
+            for node in (int(u), int(v)):
+                if node in copies or node in lift_nodes:
+                    lift = copies[node][3] if node in copies else node
+                    ends.setdefault((int(way), lift), set()).add(node)
+    repoint = {}
+    for (way, lift), nodes in ends.items():
+        if len(nodes) > 1:
+            raise ValueError(
+                "write_pbf: way %d meets lift node %d on two levels, so the copy of "
+                "each of its ends there cannot be told apart." % (way, lift)
+            )
+        node = nodes.pop()
+        if node != lift:
+            repoint[(way, lift)] = node
+    return copies, lifts, repoint
+
+
+def _copy_rows(gdf, copies):
+    """Whether each row of ``gdf`` is a node with the id of a lift copy (see
+    :func:`_lift_parts`): a row of a frame of nodes (no ``u`` column) with ``osm_type``
+    "node", or a point without an ``osm_type`` column."""
+    if not copies or "u" in gdf.columns or "id" not in gdf.columns:
+        return np.zeros(len(gdf), dtype=bool)
+    if "osm_type" in gdf.columns:
+        nodes = (gdf["osm_type"] == "node").to_numpy()
+    else:
+        nodes = (gdf.geometry.geom_type == "Point").to_numpy()
+    return nodes & gdf["id"].isin(list(copies)).to_numpy()
+
+
+def _check_copy_rows(frames, copies):
+    """Raise a ValueError when a node row of ``frames`` has the id of a lift copy (see
+    :func:`_copy_rows`) but not its place: a node the caller added with that id."""
+    for gdf in frames:
+        found = _copy_rows(gdf, copies)
+        if not found.any():
+            continue
+        rows = gdf[found]
+        for node, point in zip(rows["id"], rows.geometry):
+            x, y = copies[int(node)][:2]
+            if point is None or abs(point.x - x) > 1e-9 or abs(point.y - y) > 1e-9:
+                raise ValueError(
+                    "write_pbf: node %d has the id of a copy of a split lift but not "
+                    "its place." % int(node)
+                )
+
+
+def _lift_rows(gdf):
+    """Whether each row of ``gdf`` is a lift edge of an indoor network (see
+    :func:`pyrosm.indoor.split_lifts`): ``vertical`` "lift" and ``osm_type`` "node" in a
+    frame of :func:`_is_indoor_network`."""
+    if not _is_indoor_network(gdf) or "osm_type" not in gdf.columns:
+        return np.zeros(len(gdf), dtype=bool)
+    return ((gdf["vertical"] == "lift") & (gdf["osm_type"] == "node")).to_numpy()
+
+
+def _without_lift_rows(gdf, copies):
+    """``gdf`` without its lift edges (see :func:`_lift_rows`) and, in a frame of
+    nodes, the lift ``copies`` (see :func:`_lift_parts`): parts of the lifts split per
+    level, not elements of the file."""
+    gdf = gdf[~_lift_rows(gdf)]
+    return gdf[~_copy_rows(gdf, copies)]
+
+
+def _repoint_lift_ways(edits, way_by_id, repoint):
+    """Point the ways of ``repoint`` (see :func:`_lift_parts`) at the copy of their
+    lift node, in ``edits.way_refs``; a way that passes the lift node more than once
+    raises a ValueError."""
+    for (way, lift), copy in repoint.items():
+        if way not in way_by_id:
+            continue
+        refs = edits.way_refs.get(way)
+        if refs is None:
+            refs = [int(node) for node in way_by_id[way]["nodes"]]
+        if refs.count(lift) > 1:
+            raise ValueError(
+                "write_pbf: way %d passes lift node %d more than once, so the copy of "
+                "each of its visits there cannot be told apart." % (way, lift)
+            )
+        edits.way_refs[way] = [copy if node == lift else node for node in refs]
+
+
+def _check_generated_ends(generated, node_coordinates, new_nodes, removed_nodes):
+    """Raise a ValueError when an edge of ``generated`` (``(u, corners, v, tags)``: the
+    edges across walking areas and the lift edges) ends at a node that is neither in
+    the file nor among the ids ``new_nodes`` added by the write, or that the write
+    removes."""
+
+    def written(node):
+        return (node in node_coordinates or node in new_nodes) and (
+            node not in removed_nodes
+        )
+
+    missing = [
+        [node for node in (u, v) if not written(node)] for u, _, v, _ in generated
+    ]
+    missing = [nodes for nodes in missing if nodes]
+    if missing:
+        raise ValueError(
+            "write_pbf: %d edges that pyrosm made (across walking areas or for lifts) "
+            "end at nodes that are not in the written file (e.g. node %d), so they "
+            "cannot be written as ways." % (len(missing), missing[0][0])
+        )
 
 
 def _reproject_to_wgs84(frames):
@@ -1116,6 +1319,14 @@ class _RecordBuilder:
             self._way_counter -= 1
         self.add_new_way(wid, refs, tags)
 
+    def add_way_between(self, u, corners, v, tags):
+        """Add a new way from the node ``u`` to the node ``v`` through new nodes at the
+        (lon, lat) ``corners``, with the OSM tags ``tags``; return its generated id."""
+        refs = [u] + [self._node_for(x, y, u) for x, y in corners] + [v]
+        wid = self._way_counter
+        self._add_way(refs, tags)
+        return wid
+
     def add_geometry(self, oid, geom, tags, wid=None):
         if geom is None or geom.is_empty:
             raise ValueError(
@@ -1360,8 +1571,13 @@ def write_geodataframe_to_pbf(
     known = values != 0
     changesets = dict(zip(ids[known].tolist(), values[known].tolist()))
     way_records = list(way_records) + list(relation_member_ways or [])
-    frames = [_without_area_crossings(gdf) for gdf in _as_frames(data)]
-    frames = _reproject_to_wgs84(frames)
+    frames = _reproject_to_wgs84(_as_frames(data))
+    crossings = _area_crossing_ways(frames)
+    copies, lifts, repoint = _lift_parts(frames)
+    _check_copy_rows(frames, copies)
+    frames = [
+        _without_lift_rows(_without_area_crossings(gdf), copies) for gdf in frames
+    ]
 
     way_by_id = {w["id"]: w for w in way_records}
     rel_ids = set(int(i) for i in relations["id"]) if "id" in relations else set()
@@ -1371,6 +1587,20 @@ def write_geodataframe_to_pbf(
     edits = _collect_edits(
         frames, way_by_id, node_coordinates, rel_ids, apply_geometry, source_tags
     )
+    added = {node[0] for node in edits.new_nodes}
+    taken = sorted(node for node in copies if node in node_coordinates or node in added)
+    if taken:
+        raise ValueError(
+            "write_pbf: the ids of the lift copies %s are those of other nodes."
+            % taken[:5]
+        )
+    for node, (x, y, level, lift) in copies.items():
+        # A copy stays where its lift node is, also when the write moves that node
+        x, y = edits.node_coords.get(lift, (x, y))
+        _check_lonlat(x, y, node)
+        tags = {"highway": "elevator", "level": _tag_str(level)}
+        edits.new_nodes.append((node, x, y, tags))
+    _repoint_lift_ways(edits, way_by_id, repoint)
     deletions = _parse_deletions(delete, node_coordinates, way_by_id, rel_ids)
     plan, new_ways = _build_plan(
         edits,
@@ -1383,6 +1613,12 @@ def write_geodataframe_to_pbf(
     )
     _warn_partial_edits(edits, plan)
     _warn_lost_tags(edits, plan, source_tags)
+    _check_generated_ends(
+        crossings + lifts,
+        node_coordinates,
+        {node[0] for node in edits.new_nodes},
+        plan.removed_nodes,
+    )
 
     keep_nodes = keep_ways = keep_rels = None
     if subset_only:
@@ -1395,6 +1631,8 @@ def write_geodataframe_to_pbf(
         )
         for _, refs, _ in new_ways:
             keep_nodes.update(refs)
+        for u, _, v, _ in crossings + lifts:
+            keep_nodes.update((u, v))
     elif bounded:
         way_ids = np.fromiter(way_by_id, dtype=np.int64, count=len(way_by_id))
         node_ids = np.asarray(node_coordinates.ids, dtype=np.int64)
@@ -1418,6 +1656,26 @@ def write_geodataframe_to_pbf(
     )
     for oid, geom, tags, wid in edits.auto_rows:
         builder.add_geometry(oid, geom, tags, wid)
+    crossing_ids = [builder.add_way_between(*crossing) for crossing in crossings]
+    lift_ids = [builder.add_way_between(*lift) for lift in lifts]
+    if lift_ids:
+        notice(
+            "write_pbf writes the lifts split per level: %d copies of lift nodes as "
+            "new nodes, %d lift edges as new ways tagged highway=elevator (ids %d to "
+            "%d), and the ways at those lifts end at the copy of their level."
+            % (len(copies), len(lift_ids), lift_ids[0], lift_ids[-1])
+        )
+    if crossing_ids:
+        ids = (
+            "id %d" % crossing_ids[0]
+            if len(crossing_ids) == 1
+            else "ids %d to %d" % (crossing_ids[0], crossing_ids[-1])
+        )
+        notice(
+            "write_pbf writes %d edges across walking areas as new ways (%s): each "
+            "joins its two nodes, through new nodes where its line bends, with the "
+            "area's tags without area=yes." % (len(crossing_ids), ids)
+        )
 
     payload = builder.node_payload()
     return write_pbf_from_records(

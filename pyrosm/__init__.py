@@ -15,6 +15,7 @@ from pyrosm._log import enable_logging  # noqa: E402
 # entry points (e.g. the multiprocessing workers in pyrosm.pbf_export, which only
 # need protobuf + numpy) do not pay that cost when importing a pyrosm submodule.
 __all__ = [
+    "Notice",
     "OSM",
     "enable_logging",
     "find_extracts",
@@ -25,10 +26,19 @@ __all__ = [
     "get_data_by_geocoding",
     "get_path",
     "merge_pbf",
+    "plot_3d",
 ]
 
 
 def __getattr__(name):
+    if name == "plot_3d":
+        from pyrosm.plot3d import plot_3d
+
+        return plot_3d
+    if name == "Notice":
+        from pyrosm.exceptions import Notice
+
+        return Notice
     if name == "OSM":
         from pyrosm.pyrosm import OSM
 

@@ -5,6 +5,7 @@ from pyrosm.tagparser cimport explode_tag_array
 from pyrosm.filter_compiler import compile_custom_filter, CompiledFilter, rename_filter_key
 from pyrosm.way_store import NodeTags, WayStore
 from pyrosm.geometry import AREA_BY_TAGS, tags_make_area
+from pyrosm.grouping_relations import member_ids as grouping_member_ids
 from pyrosm.utils.progress import COLLECTING, start_step
 import numpy as np
 
@@ -86,11 +87,13 @@ cdef separate_relation_ways(way_records, relation_way_ids):
             normal_ways.append(way)
     return normal_ways, relation_ways
 
-cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, data_filter, filter_type, relation_member_ways=None, bint keep_all=False):
+cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, data_filter, filter_type, relation_member_ways=None, bint keep_all=False, area_way_ids=None):
     """The way arrays of the kept standalone ways and of the relations' member ways:
     ``(way_arrays, relation_arrays)``, each ``None`` when empty. The standalone ways also
     carry, under ``AREA_BY_TAGS``, whether their tags make them areas when closed. From a
-    WayStore, only the ways the key check of filter_osm_records can keep are built."""
+    WayStore, only the ways the key check of filter_osm_records can keep are built. With
+    ``area_way_ids`` (the member ways of the relations that form areas), a member way of
+    another relation that passes the filter is also a standalone way."""
     # A way record holds its tag keyed "id" as "id_tag", and "id" is the way's id.
     data_filter, osm_keys = rename_filter_key(data_filter, osm_keys, "id", "id_tag")
     if isinstance(way_records, WayStore):
@@ -121,7 +124,12 @@ cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, da
     relation_arrays = None
     if relation_way_ids is not None:
         # Separate ways that are part of a relation
-        ways, relation_ways = separate_relation_ways(ways, relation_way_ids)
+        candidates = ways
+        ways, relation_ways = separate_relation_ways(candidates, relation_way_ids)
+        if area_way_ids is not None:
+            ways = _with_grouping_members(candidates, relation_way_ids, relation_ways,
+                                          area_way_ids, data_filter, osm_keys,
+                                          filter_type, keep_all)
         relation_ways = relation_ways + extra_relation_ways
         if len(relation_ways) > 0:
             relation_ways = convert_way_records_to_lists(relation_ways, tags_as_columns)
@@ -139,10 +147,33 @@ cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, da
 
     return way_arrays, relation_arrays
 
+cdef list _with_grouping_members(ways, relation_way_ids, relation_ways, area_way_ids,
+                                 data_filter, osm_keys, filter_type, bint keep_all):
+    """The standalone ways among ``ways`` (in their order): those not in
+    ``relation_way_ids``, and the member ways (``relation_ways``) of the relations that
+    group their members (not in ``area_way_ids``) that pass the filter, as copies."""
+    area = set(np.asarray(area_way_ids).tolist())
+    members = set(np.asarray(relation_way_ids).tolist())
+    candidates = [way for way in relation_ways if way["id"] not in area]
+    matching = {
+        way["id"]
+        for way in filter_osm_records(candidates, data_filter, osm_keys, None,
+                                      filter_type, keep_all)
+    }
+    return [
+        dict(way) if way["id"] in matching else way
+        for way in ways
+        if way["id"] not in members or way["id"] in matching
+    ]
+
 cpdef _get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, bint keep_metadata=True, relation_member_ways=None, bint keep_all=False):
     return get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, keep_metadata, relation_member_ways, keep_all)
 
-cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, bint keep_metadata=True, relation_member_ways=None, bint keep_all=False):
+cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, bint keep_metadata=True, relation_member_ways=None, bint keep_all=False, bint grouping=False):
+    """The kept standalone ways, the relations' member ways and the kept relations. With
+    ``grouping``, the relations that group their members keep their member ways that
+    pass the filter as standalone ways, and are kept with only member nodes (see
+    :mod:`pyrosm.grouping_relations`)."""
 
     # Structural columns that must always be kept; element metadata (timestamp,
     # version) is materialized only when keep_metadata is True. Build a new list
@@ -152,10 +183,11 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
     if keep_metadata:
         tags_as_columns = tags_as_columns + ["timestamp", "version"]
 
-    # If any way records weren't passed in, cannot parse anything
-    if way_records is None:
+    # Without way records only relations that group member nodes can be returned
+    if way_records is None and (relations is None or not grouping):
         return None, None, None
 
+    area_way_ids, grouping_nodes = None, ()
     # Get relations for specified OSM keys (one or multiple)
     if relations is not None:
         filtered_relations = get_relation_arrays(relations, osm_keys, data_filter, filter_type, keep_all)
@@ -168,26 +200,33 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
 
             if type(relation_way_ids) not in [list, np.ndarray]:
                 raise ValueError("'relation_way_ids' should be a list or an array.")
+            if grouping:
+                area_way_ids = grouping_member_ids(filtered_relations, "way", False)
+                grouping_nodes = grouping_member_ids(filtered_relations, "node", True)
     else:
         relation_way_ids = None
         filtered_relations = None
 
     # Get ways (separately as "normal" ways and relation_ways)
-    ways, relation_ways = get_way_arrays(way_records,
-                                         relation_way_ids,
-                                         osm_keys,
-                                         tags_as_columns,
-                                         data_filter,
-                                         filter_type,
-                                         relation_member_ways,
-                                         keep_all)
+    ways, relation_ways = None, None
+    if way_records is not None:
+        ways, relation_ways = get_way_arrays(way_records,
+                                             relation_way_ids,
+                                             osm_keys,
+                                             tags_as_columns,
+                                             data_filter,
+                                             filter_type,
+                                             relation_member_ways,
+                                             keep_all,
+                                             area_way_ids)
 
-    # If relation ways could not be parsed, also relations should be returned as None
-    if relation_ways is None:
+    # If relation ways could not be parsed, also relations should be returned as None,
+    # unless they group member nodes
+    if relation_ways is None and not len(grouping_nodes):
         filtered_relations = None
 
     # If there weren't any ways or relations return None
-    if ways is None and relation_ways is None:
+    if ways is None and relation_ways is None and filtered_relations is None:
         return None, None, None
 
     return ways, relation_ways, filtered_relations
@@ -218,7 +257,7 @@ cdef get_osm_nodes(node_arrays, osm_keys, tags_as_columns, data_filter, filter_t
     filtered_nodes.update(tags)
     return filtered_nodes
 
-cdef _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys, bint keep_metadata=True, relation_member_ways=None, bint keep_all=False):
+cdef _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys, bint keep_metadata=True, relation_member_ways=None, bint keep_all=False, bint grouping_relations=False):
     """The nodes, ways, relation member ways and relations that pass the filter
     ``data_filter`` (its keys ``osm_keys`` parsed from it when None), as arrays."""
     if osm_keys is None:
@@ -236,11 +275,12 @@ cdef _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_fi
         node_arrays = None
 
     # Parse ways and relations
-    ways, relation_ways, filtered_relations = get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, keep_metadata, relation_member_ways, keep_all)
+    ways, relation_ways, filtered_relations = get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_columns, data_filter, filter_type, keep_metadata, relation_member_ways, keep_all, grouping_relations)
     return node_arrays, ways, relation_ways, filtered_relations
 
-cpdef get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys=None, bint keep_metadata=True, relation_member_ways=None, bint keep_all=False, steps=None):
+cpdef get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys=None, bint keep_metadata=True, relation_member_ways=None, bint keep_all=False, steps=None, bint grouping_relations=False):
     """The elements that pass the filter (see :func:`_get_osm_data`), selected as the step
-    :data:`~pyrosm.utils.progress.COLLECTING` of ``steps`` (or None)."""
+    :data:`~pyrosm.utils.progress.COLLECTING` of ``steps`` (or None); with
+    ``grouping_relations`` as :func:`get_osm_ways_and_relations` with ``grouping``."""
     start_step(steps, COLLECTING)
-    return _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys, keep_metadata, relation_member_ways, keep_all)
+    return _get_osm_data(node_arrays, way_records, relations, tags_as_columns, data_filter, filter_type, osm_keys, keep_metadata, relation_member_ways, keep_all, grouping_relations)

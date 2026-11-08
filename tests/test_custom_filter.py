@@ -413,9 +413,10 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
         filter_type="keep",
     )
     assert isinstance(filtered, GeoDataFrame)
-    # #21: 6 fewer than before -- relations osmium cannot assemble are no longer
-    # force-closed into spurious polygons by the multipolygon-algorithm fix.
-    assert len(filtered) == 5536
+    # #21: relations osmium cannot assemble are not force-closed into spurious
+    # polygons. #911: every stop area is a row (101 had no polygon), and its member
+    # platforms are rows of their own (860).
+    assert len(filtered) == 6497
 
     # Combining a True ("any value") filter with an explicit-value filter
     # should keep all buildings AND railway=station features (issue #224).
@@ -426,8 +427,9 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
     # Assert on row/content counts (stable), not the column count: the latter
     # can be polluted by extra_attributes leaking into the shared config when
     # other tests run first.
-    assert len(gdf) == 176742
-    assert gdf["building"].notna().sum() == 176675
+    # #911: the 5 building ways of a relation that is not a multipolygon are rows too
+    assert len(gdf) == 176747
+    assert gdf["building"].notna().sum() == 176680
     assert (gdf["railway"] == "station").sum() == 67
 
     # Test a more complicated query
@@ -450,8 +452,9 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
     for col in required_columns:
         assert col in transit.columns
 
-    # Check individual counts
-    correct_counts = {"railway": 1456, "route": 824, "bus": 79}
+    # Check individual counts. #911: the ways of the routes are rows of their own, and
+    # 20 routes without a line geometry are rows too.
+    correct_counts = {"railway": 3649, "route": 855, "bus": 205}
 
     for col in required_columns:
         cnt = len(transit[col].dropna())
@@ -487,7 +490,7 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
         assert v in bus
 
     assert isinstance(transit, GeoDataFrame)
-    assert len(transit) == 2357
+    assert len(transit) == 4707
 
     # When using custom filters all records should have a value
     # at least on one of the attributes specified in the custom_filter

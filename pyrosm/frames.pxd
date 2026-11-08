@@ -13,4 +13,5 @@ cpdef prepare_geodataframe(nodes,
                            calculate_seg_lengths=*,
                            bint keep_metadata=*,
                            bint complete_relations=*,
-                           steps=*)
+                           steps=*,
+                           bint grouping_relations=*)

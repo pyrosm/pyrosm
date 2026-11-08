@@ -43,6 +43,14 @@ Exporting to a graph
    OSM.get_graph
    OSM.to_graph
 
+Viewing indoor networks in 3D
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autosummary::
+   :toctree: api/
+
+   plot_3d
+
 Saving, cropping and merging PBF files
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -86,8 +94,8 @@ Logging
 
    enable_logging
 
-Exceptions
-----------
+Exceptions and notices
+----------------------
 
 .. currentmodule:: pyrosm.exceptions
 
@@ -101,6 +109,7 @@ Exceptions
    InvalidOSMFileError
    PBFNotImplemented
    PBFException
+   Notice
 
 Graph simplification
 --------------------

@@ -70,11 +70,34 @@ cdef get_ways_for_relation(member_ids, member_roles, building_relation_ways, way
     ways = filter_array_dict_by_indices_or_mask(building_relation_ways, rows)
     return member_ids, member_roles, ways
 
-cdef get_relations(relations, relation_ways, node_coordinates, bint keep_metadata=True):
+cdef get_relations(relations, relation_ways, node_coordinates, bint keep_metadata=True,
+                   bint grouping=False, member_box=None):
     """The relation records of ``relations``; in a threaded read built by vectorized shapely
-    calls over all of them (see ``pyrosm.engine.relation_geometry``)."""
+    calls over all of them (see ``pyrosm.engine.relation_geometry``). With ``grouping``,
+    the relations that group their members get a GeometryCollection of them (see
+    :mod:`pyrosm.grouping_relations`; member nodes only inside ``member_box``, when
+    given), in the order of ``relations``."""
     from pyrosm.engine.pool import in_threaded_read
 
+    if grouping:
+        from pyrosm.grouping_relations import grouping_records, is_grouping
+
+        flags = np.array([is_grouping(tags) for tags in relations["tags"]], dtype=bool)
+        if flags.any():
+            records = grouping_records(
+                filter_array_dict_by_indices_or_mask(relations, np.flatnonzero(flags)),
+                relation_ways, node_coordinates, keep_metadata, member_box,
+            )
+            if not flags.all():
+                records += get_relations(
+                    filter_array_dict_by_indices_or_mask(relations, np.flatnonzero(~flags)),
+                    relation_ways, node_coordinates, keep_metadata,
+                )
+                order = {rid: i for i, rid in enumerate(relations["id"].tolist())}
+                records.sort(key=lambda record: order[int(record["id"])])
+            return records
+    if relation_ways is None:
+        return []
     if in_threaded_read():
         from pyrosm.engine.relation_geometry import relation_records as batched
 
@@ -235,7 +258,10 @@ cpdef list relation_records(relations, relation_ways, node_coordinates,
 
     return prepared_relations
 
-cdef _prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep, bint keep_metadata=True):
+cdef _prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep, bint keep_metadata=True,
+                        bint grouping=False, member_box=None):
+    """The arrays of the relation records (see :func:`get_relations`) with the tags
+    ``tags_to_keep`` as columns, or an empty GeoDataFrame when no relation is built."""
     # Structural columns are always kept; element metadata only when requested.
     tags_to_keep += ["id", "nodes"]
     if keep_metadata:
@@ -243,7 +269,8 @@ cdef _prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep
     tags_to_keep += ["geometry"]
 
     # Also geometries are parsed in this step
-    relation_records = get_relations(relations, relation_ways, node_coordinates, keep_metadata)
+    relation_records = get_relations(relations, relation_ways, node_coordinates, keep_metadata,
+                                     grouping, member_box)
 
     # Return empty frame if no relation records were successfully parsed
     if len(relation_records) == 0:
@@ -253,5 +280,7 @@ cdef _prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep
     arrays = convert_to_arrays_and_drop_empty(data)
     return arrays
 
-cpdef prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep, bint keep_metadata=True):
-    return _prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep, keep_metadata)
+cpdef prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep, bint keep_metadata=True,
+                        bint grouping=False, member_box=None):
+    return _prepare_relations(relations, relation_ways, node_coordinates, tags_to_keep, keep_metadata,
+                              grouping, member_box)
