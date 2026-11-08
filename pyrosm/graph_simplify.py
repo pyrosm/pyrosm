@@ -76,6 +76,55 @@ def _distinct_neighbour_count(u, v, n_nodes):
     return counts
 
 
+def _float_values(edges, col, rows):
+    """The values of the column ``col`` of ``edges`` at ``rows`` as floats, NaN where a
+    value is missing."""
+    values = pd.to_numeric(pd.Series(edges.values(col)[rows]))
+    return values.to_numpy(dtype=float, na_value=np.nan)
+
+
+def _chain_levels(edges, seg_rows, seg_swapped, chain_ptr):
+    """``{"u_level": ..., "v_level": ...}`` of the simplified edges of an indoor
+    network: the level where each chain starts (at its first segment's start) and where
+    it ends (at its last segment's end), the segments ``seg_rows`` read in their
+    direction of travel (``seg_swapped`` from ``v`` to ``u``); empty without these
+    columns."""
+    if "u_level" not in edges.columns or "v_level" not in edges.columns:
+        return {}
+    u_level = _float_values(edges, "u_level", seg_rows)
+    v_level = _float_values(edges, "v_level", seg_rows)
+    start = np.where(seg_swapped, v_level, u_level)
+    end = np.where(seg_swapped, u_level, v_level)
+    return {"u_level": start[chain_ptr[:-1]], "v_level": end[chain_ptr[1:] - 1]}
+
+
+def _indoor_ends(edges, rows, swapped, u, v, n_nodes):
+    """The nodes (factor-indexed, over ``n_nodes``) that end their edges in an indoor
+    network (see :meth:`pyrosm.OSM.get_network` with ``indoor_elements``): both ends of
+    stairs, escalators and lifts (a ``vertical`` value), and the nodes where the
+    ``u_level``/``v_level`` of the edge ends there differ (a missing level next to a set
+    one counts as a difference); ``swapped`` rows run from their ``v`` to their ``u``.
+    None without these columns."""
+    if not all(col in edges.columns for col in ("vertical", "u_level", "v_level")):
+        return None
+    ends = np.zeros(n_nodes, dtype=bool)
+    vertical = pd.Series(edges.values("vertical")[rows]).notna().to_numpy()
+    ends[u[vertical]] = ends[v[vertical]] = True
+    u_level, v_level = (_float_values(edges, c, rows) for c in ("u_level", "v_level"))
+    levels = np.concatenate(
+        [np.where(swapped, v_level, u_level), np.where(swapped, u_level, v_level)]
+    )
+    at = pd.DataFrame(
+        {
+            "node": np.concatenate([u, v]),
+            "level": np.where(np.isnan(levels), np.inf, levels),
+        }
+    )
+    counts = at.groupby("node")["level"].nunique()
+    ends[counts.index[counts.to_numpy() > 1].to_numpy()] = True
+    return ends
+
+
 def detect_endpoints(u, v, n_nodes, *, edge_attr_values=None, node_include_mask=None):
     """Boolean array marking which factor-indexed nodes are endpoints (kept).
 
@@ -338,7 +387,8 @@ def simplify_graph(
     simplified edge has one speed limit and one road class; ``edge_attrs_differ=None``
     merges across them as OSMnx does by default. An edge across a walking area
     (``walking_area`` True, see :meth:`pyrosm.OSM.get_network`) is never merged with
-    another edge, whatever ``edge_attrs_differ`` says.
+    another edge, whatever ``edge_attrs_differ`` says, and neither, in an indoor network,
+    are stairs, escalators and lifts, nor edges across a change of level.
 
     A node with a value for one of ``node_attrs_include``, a node column or a tag in the
     nodes' ``tags``, stays an end of its edges (a warning names a name no node has).
@@ -785,6 +835,11 @@ def _simplify_rows(
         node_include_mask = (
             ends if node_include_mask is None else node_include_mask | ends
         )
+    indoor = _indoor_ends(edges, rows, swapped, u, v, n_nodes)
+    if indoor is not None:
+        node_include_mask = (
+            indoor if node_include_mask is None else node_include_mask | indoor
+        )
     del nid, nid_to_factor, x, y, present, keep, fpos
 
     is_endpoint = detect_endpoints(
@@ -873,12 +928,14 @@ def _simplify_rows(
     # A chain is "mixed" iff two adjacent consumed segments of it disagree on the column:
     # one has a value and the other none, or both have values that differ. Only the mixed
     # chains' values are read out for their lists.
+    levels = _chain_levels(edges, seg_rows, swapped[chain_edge_ids], chain_ptr)
     merge_cols = [
         c
         for c in edges.columns
         if c not in (from_id_col, to_id_col, geom_col)
         and c not in length_cols
         and c not in aggregations
+        and c not in levels
     ]
     inner = seg_chain[1:] == seg_chain[:-1]
     listed = []
@@ -901,6 +958,8 @@ def _simplify_rows(
             colvals[k] = values[at : at + size].tolist()
             at += size
         out[col] = pd.Series(colvals, index=out.index, dtype=object)
+    for col, values in levels.items():
+        out[col] = values
     if listed:
         _warn_listed_numbers(listed, n_chains)
     for name, flags in (directions or {}).items():

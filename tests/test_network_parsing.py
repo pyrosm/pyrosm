@@ -638,6 +638,12 @@ def test_get_network_with_walking_areas(case):
             {"network_type": "driving", "indoor_elements": True, "nodes": True},
             "not with 'driving'",
         ),
+        ("get_graph", {"indoor_elements": "yes"}, "'indoor_elements' should be boolean"),
+        (
+            "get_graph",
+            {"network_type": "cycling", "indoor_elements": True},
+            "not with 'cycling'",
+        ),
     ],
 )
 def test_network_reads_refuse_unusable_walking_areas(test_pbf, read, kwargs, message):

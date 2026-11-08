@@ -225,6 +225,15 @@ cpdef directed_rows(edges, direction, direction_suffix, force_bidirectional,
     return rows, swapped
 
 
+cdef dict _reversed_names(edges, from_id_col, to_id_col):
+    """The column renames that turn ``edges`` around: its from- and to-node columns,
+    and the levels at its two ends (``u_level``, ``v_level``) when it has both."""
+    names = {from_id_col: to_id_col, to_id_col: from_id_col}
+    if "u_level" in edges.columns and "v_level" in edges.columns:
+        names.update({"u_level": "v_level", "v_level": "u_level"})
+    return names
+
+
 cdef _with_lines_reversed(edges):
     """``edges`` with the line of each row (its active geometry, when it has one)
     reversed."""
@@ -258,15 +267,15 @@ cpdef generate_directed_edges(edges,
     to-node, whatever the 'direction' column says.
 
     An edge travelled against its way gets the way's line reversed, so every line runs
-    from the edge's from-node to its to-node.
+    from the edge's from-node to its to-node, and its ``u_level`` and ``v_level``
+    swapped.
     """
     if force_oneway:
         return edges
     if force_bidirectional:
         # Flip from/to values
         edges_dir2 = _with_lines_reversed(edges.copy(deep=True).rename(
-            columns={to_id_col: from_id_col,
-                     from_id_col: to_id_col}
+            columns=_reversed_names(edges, from_id_col, to_id_col)
         ))
         return pd.concat([edges, edges_dir2], ignore_index=True)
 
@@ -281,7 +290,9 @@ cpdef generate_directed_edges(edges,
     edge_cnt = len(edges)
     twoway_edges = edges.loc[~oneway_mask].copy()
     twoway_edges_dir2 = _with_lines_reversed(
-        twoway_edges.copy(deep=True).rename(columns={to_id_col: from_id_col, from_id_col: to_id_col})
+        twoway_edges.copy(deep=True).rename(
+            columns=_reversed_names(edges, from_id_col, to_id_col)
+        )
     )
     twoway_edges_dir2.index = np.arange(edge_cnt, edge_cnt + len(twoway_edges))
 
@@ -290,7 +301,7 @@ cpdef generate_directed_edges(edges,
 
     # Flip the from/to ids for against edges
     against_edges = _with_lines_reversed(
-        against_edges.rename(columns={from_id_col: to_id_col, to_id_col: from_id_col})
+        against_edges.rename(columns=_reversed_names(edges, from_id_col, to_id_col))
     )
 
     # Stack everything (keep order)

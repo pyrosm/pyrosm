@@ -993,3 +993,90 @@ def test_get_graph_of_an_empty_network_is_none(test_pbf, tmp_path, engine, no_se
     with pytest.warns(UserWarning):
         graph = osm.get_graph("driving", **kwargs)
     assert graph is None
+
+
+def test_indoor_graph_keeps_vertical_edges_and_level_changes():
+    """Simplifying an indoor network never merges a vertical edge (here a lift) with
+    another edge, nor two edges whose levels differ where they meet (in both directions
+    of travel); without the indoor columns the same chain becomes one edge."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, Point
+
+    from pyrosm import OSM
+
+    lon = [24.9 + x * 1e-3 for x in range(6)]
+    nodes = gpd.GeoDataFrame(
+        {"id": [1, 2, 3, 4, 5, 6], "lon": lon, "lat": [60.2] * 6},
+        geometry=[Point(x, 60.2) for x in lon],
+        crs=4326,
+    )
+    rows = [(1, 2, -1, -1, None), (2, 3, -1, -1, None), (3, 4, 0, 0, None)]
+    rows += [(4, 5, 0, 1, "lift"), (5, 6, 1, 1, None)]
+    edges = gpd.GeoDataFrame(
+        {
+            "id": [10, 11, 12, 13, 14],
+            "osm_type": "way",
+            "highway": "corridor",
+            "u": [r[0] for r in rows],
+            "v": [r[1] for r in rows],
+            "length": 1.0,
+            "u_level": [float(r[2]) for r in rows],
+            "v_level": [float(r[3]) for r in rows],
+            "vertical": [r[4] for r in rows],
+        },
+        geometry=[LineString([(lon[a - 1], 60.2), (lon[b - 1], 60.2)]) for a, b, *_ in rows],
+        crs=4326,
+    )
+
+    def graph_of(frame):
+        return OSM.to_graph(
+            nodes, frame, graph_type="networkx", network_type="walking", retain_all=True
+        )
+
+    def links(frame):
+        return sorted({(u, v) for u, v in graph_of(frame).edges() if u < v})
+
+    assert links(edges) == [(1, 3), (3, 4), (4, 5), (5, 6)]
+    assert links(edges.drop(columns=["u_level", "v_level", "vertical"])) == [(1, 6)]
+    # A ramp from level -1 to 0 between corridors on those levels changes no level at
+    # its ends, in either direction of travel
+    ramp = edges.iloc[:3].assign(
+        u_level=[-1.0, -1.0, 0.0], v_level=[-1.0, 0.0, 0.0], vertical=None
+    )
+    assert links(ramp) == [(1, 4)]
+    levels = {
+        (u, v): (d["u_level"], d["v_level"])
+        for u, v, d in graph_of(ramp).edges(data=True)
+    }
+    assert levels == {(1, 4): (-1.0, 0.0), (4, 1): (0.0, -1.0)}
+
+
+@pytest.mark.parametrize("engine, simplify", [("in_memory", True), ("out_of_core", False)])
+def test_get_graph_with_indoor_elements(engine, simplify):
+    """get_graph(indoor_elements=True) carries the levels and vertical marks, keeps the
+    escalator of way 18378805 as an edge of its own, and joins the levels of lift node
+    2039713549 by lift edges of length 0 in both directions, each with the levels of
+    its own direction, simplified or not."""
+    from pyrosm import OSM
+
+    graph = OSM(get_data("helsinki_pbf"), engine=engine).get_graph(
+        "walking",
+        graph_type="networkx",
+        indoor_elements=True,
+        retain_all=True,
+        simplify=simplify,
+    )
+    escalator = [
+        d for _, _, d in graph.edges(data=True) if d.get("osmid") == 18378805
+    ]
+    assert escalator and all(d["vertical"] == "escalator" for d in escalator)
+    assert {(d["u_level"], d["v_level"]) for d in escalator} == {(-3, -2), (-2, -3)}
+    lift = {
+        (u, v, d["length"], d["u_level"], d["v_level"])
+        for u, v, d in graph.edges(data=True)
+        if d.get("vertical") == "lift" and 2039713549 in (u, v)
+    }
+    assert lift == {
+        (2039713549, -2039713549001, 0.0, -2.0, 0.0),
+        (-2039713549001, 2039713549, 0.0, 0.0, -2.0),
+    }

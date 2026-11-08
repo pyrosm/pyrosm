@@ -2051,6 +2051,7 @@ class OSM:
         shared_paths="local",
         force_oneway=False,
         walking_areas=False,
+        indoor_elements=False,
     ):
         """
         Read the street network of ``network_type``, or the network of a
@@ -2071,10 +2072,14 @@ class OSM:
         Parameters
         ----------
 
-        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep, timestamp, shared_paths, walking_areas
+        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep, timestamp, shared_paths, walking_areas, indoor_elements
             As in :meth:`get_network`. With ``walking_areas=True``, the edges across
             walking areas have ``True`` in the edge attribute ``walking_area`` and are
             never merged with other edges when the graph is simplified. With
+            ``indoor_elements=True``, the edges carry ``u_level``, ``v_level`` and
+            ``vertical`` as attributes, the lifts are split per level, and
+            simplification never merges stairs, escalators or lifts with other edges,
+            nor edges across a change of level. With
             ``tags_to_keep``, the tags the graph is built
             from are read too: those of its edges' directions (``oneway`` and
             ``junction``, and ``oneway:bicycle`` for cycling; none with
@@ -2093,8 +2098,11 @@ class OSM:
         """
         validate_graph_type(graph_type)
         validate_bool(walking_areas, "walking_areas")
+        validate_bool(indoor_elements, "indoor_elements")
         follows_drawn_direction(force_bidirectional, force_oneway)
         network_type = network_type_of_read(network_type, custom_filter)
+        if indoor_elements:
+            check_indoor_read(network_type, custom_filter, True)
         if tags_to_keep is not None:
             validate_tags_as_columns(tags_to_keep, "tags_to_keep")
             tags_to_keep = list(tags_to_keep) + [
@@ -2117,7 +2125,7 @@ class OSM:
             tags_to_keep,
             shared_paths,
         )[0]
-        from_tables = not simplify or walking_areas
+        from_tables = not simplify or walking_areas or indoor_elements
         shares = self._network_read_shares(not from_tables, timestamp, walking_areas)
         shares.update(
             step_shares(simplify, retain_all, validate_graph_type(graph_type))
@@ -2155,6 +2163,7 @@ class OSM:
                     tags_to_keep=tags_to_keep,
                     shared_paths=shared_paths,
                     walking_areas=walking_areas,
+                    indoor_elements=indoor_elements,
                 )
             if edges is None:
                 return None
