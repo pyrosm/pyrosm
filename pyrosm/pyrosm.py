@@ -1369,6 +1369,12 @@ class OSM:
 
         keep_relations : bool
             Whether or not the relations should be kept in the resulting GeoDataFrame if they are found.
+            A relation tagged ``type=multipolygon`` or ``type=boundary`` is returned
+            with the area of its member ways, and those ways are not rows of their
+            own. Any other relation, such as a stop area or a route, is returned with a
+            GeometryCollection of its member ways (as lines) and member nodes (as
+            points), and its member ways that match the filter are also rows of their
+            own.
 
         extra_attributes : list (optional)
             Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.

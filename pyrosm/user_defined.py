@@ -54,6 +54,7 @@ def get_user_defined_data(
         relation_member_ways=relation_member_ways,
         keep_all=keep_all,
         steps=steps,
+        grouping_relations=True,
     )
 
     if nodes is None and ways is None and relations is None:
@@ -75,5 +76,6 @@ def get_user_defined_data(
         keep_metadata=keep_metadata,
         complete_relations=complete_relations,
         steps=steps,
+        grouping_relations=True,
     )
     return gdf

@@ -82,11 +82,14 @@ def _stream_layer_to_parquet(
     keep_other_tags=True,
     keep_node_info=False,
     steps=None,
+    grouping_relations=False,
 ):
     """Stream the layer (point nodes, then ways in chunks, then relations) to a
     GeoParquet at ``output``, a few chunks in memory at a time (see
     :func:`~pyrosm.engine.ways.chunk_tables`). Returns the path, or ``None`` if there
-    was nothing to write. ``keep_node_info`` keeps the ways' ``nodes`` column. The work
+    was nothing to write. ``keep_node_info`` keeps the ways' ``nodes`` column;
+    ``grouping_relations`` returns the relations that group their members with them (see
+    :mod:`pyrosm.grouping_relations`). The work
     is the steps ``COLLECTING`` and ``BUILDING`` (by tables written) of ``steps`` (a
     :class:`~pyrosm.utils.progress.Steps`, or None)."""
     import pyarrow.parquet as pq
@@ -102,6 +105,7 @@ def _stream_layer_to_parquet(
         keep_relations,
         bounding_box,
         complete_relations,
+        grouping_relations,
     )
     if collected is None:
         return None
@@ -137,6 +141,7 @@ def _stream_layer_to_parquet(
             keep_other_tags=keep_other_tags,
             keep_node_info=keep_node_info,
             way_columns=way_columns,
+            grouping_relations=grouping_relations,
         )
         if gdf is None or len(gdf) == 0:
             return None

@@ -16,6 +16,8 @@ from pyrosm.tagparser import explode_node_tag_array
 from pyrosm.data_filter import element_should_be_kept
 from pyrosm.data.countries import way_points
 from pyrosm.geometry import AREA_BY_TAGS, tags_make_area
+from pyrosm.grouping_relations import is_grouping
+from pyrosm.grouping_relations import member_ids as grouping_member_ids
 from pyrosm.engine.decode import (
     _is_threaded,
     _object_array,
@@ -221,12 +223,15 @@ def _node_lookup(shard_paths, needed):
     )
 
 
-def _coordinates(shard_paths, kept, relation_ways):
-    """The coordinate store of the nodes the ways ``kept`` and ``relation_ways`` refer to
-    (see :func:`_node_lookup`); for a threaded decode gathered on threads."""
+def _coordinates(shard_paths, kept, relation_ways, member_nodes=None):
+    """The coordinate store of the nodes the ways ``kept`` and ``relation_ways`` refer to,
+    and of the relation member nodes ``member_nodes`` (see :func:`_node_lookup`); for a
+    threaded decode gathered on threads."""
     if not _is_threaded(shard_paths):
-        return _node_lookup(shard_paths, _needed_node_ids(kept, relation_ways))
-    return node_coordinates(shard_paths, _node_refs(kept, relation_ways))
+        return _node_lookup(
+            shard_paths, _needed_node_ids(kept, relation_ways, member_nodes)
+        )
+    return node_coordinates(shard_paths, _node_refs(kept, relation_ways, member_nodes))
 
 
 # Node-record column dtypes for the graph-export gather (id/coords + element metadata).
@@ -528,19 +533,31 @@ def _collect_relation_ways(shard_paths, member_ids, in_box=None):
     return {"id": ids, "nodes": nodes}
 
 
-def _restrict_relations_to_box(relations, present_ids):
+def _restrict_relations_to_box(relations, present_ids, box_nodes=None):
     """Keep only the relations with at least one member way inside the box (``present_ids``)
     -- out-of-box relations are dropped by the final spatial filter anyway, and excluding
-    them here keeps their tags from leaking as spurious all-None columns. Returns the
-    filtered struct and its way-member ids (``(None, empty)`` if none qualify)."""
-    mask = np.array(
-        [
-            not present_ids.isdisjoint(
-                m["member_id"][m["member_type"] == b"way"].tolist()
+    them here keeps their tags from leaking as spurious all-None columns. With
+    ``box_nodes`` (the ids of the nodes in the box), a relation that groups its members
+    (see :mod:`pyrosm.grouping_relations`) is also kept for a member node in the box.
+    Returns the filtered struct and its way-member ids (``(None, empty)`` if none
+    qualify)."""
+    inside = None if box_nodes is None else set(box_nodes.tolist())
+
+    def in_box(row, members):
+        if not present_ids.isdisjoint(
+            members["member_id"][members["member_type"] == b"way"].tolist()
+        ):
+            return True
+        return (
+            inside is not None
+            and is_grouping(relations["tags"][row])
+            and not inside.isdisjoint(
+                members["member_id"][members["member_type"] == b"node"].tolist()
             )
-            for m in relations["members"]
-        ],
-        dtype=bool,
+        )
+
+    mask = np.array(
+        [in_box(row, m) for row, m in enumerate(relations["members"])], dtype=bool
     )
     if not mask.any():
         return None, np.empty(0, np.int64)
@@ -736,8 +753,9 @@ def _result_tag_columns(kept, tags_as_columns, keep_metadata, keep_other_tags=Tr
     return columns
 
 
-def _node_refs(kept, relation_ways):
-    """The node-ref arrays of the kept ways and of the relation member ways."""
+def _node_refs(kept, relation_ways, member_nodes=None):
+    """The node-ref arrays of the kept ways and of the relation member ways, and the
+    relation member nodes ``member_nodes``."""
     refs = []
     if isinstance(kept, ElementStore):
         refs.append(kept.refs)
@@ -745,18 +763,21 @@ def _node_refs(kept, relation_ways):
         refs.extend(kept["nodes"])
     if relation_ways is not None:
         refs.extend(relation_ways["nodes"])
+    if member_nodes is not None and len(member_nodes):
+        refs.append(np.asarray(member_nodes, dtype=np.int64))
     return refs
 
 
-def _needed_node_ids(kept, relation_ways):
+def _needed_node_ids(kept, relation_ways, member_nodes=None):
     """The unique node ids referenced by the kept standalone ways and the relation
-    member ways -- the only coordinates the gather has to pull off disk. Returned sorted
+    member ways, and the relation member nodes ``member_nodes`` -- the only coordinates
+    the gather has to pull off disk. Returned sorted
     (the node gather's searchsorted lookup needs it ordered); the unique set is built with
     pandas' hashtable rather than ``np.unique``'s sort, which is markedly faster on the
     tens of millions of refs a country-scale read produces."""
     import pandas as pd
 
-    refs = _node_refs(kept, relation_ways)
+    refs = _node_refs(kept, relation_ways, member_nodes)
     if not refs:
         return np.empty(0, np.int64)
     unique = pd.unique(np.concatenate(refs))
@@ -773,9 +794,13 @@ def _collect_layer(
     keep_relations=True,
     bounding_box=None,
     complete_relations=False,
+    grouping_relations=False,
 ):
     """Shared collection for both output modes: node features, standalone ways, relations,
-    their member ways and the node coordinates the ways/relations reference. ``filter_spec``
+    their member ways and the node coordinates the ways/relations reference. With
+    ``grouping_relations``, only the member ways of the relations that form areas are left
+    out of the standalone ways, and a relation that groups its members is kept with only
+    member nodes present (see :mod:`pyrosm.grouping_relations`). ``filter_spec``
     is ``(osm_keys, data_filter, filter_type)``; the spilled key-presence candidates are
     refined here by pyrosm's exact value filter. ``keep_ways`` / ``keep_relations`` drop
     those element kinds from the output (``get_data_by_custom_criteria``). With a
@@ -785,6 +810,7 @@ def _collect_layer(
     keep = _keep_fn(filter_spec)
 
     in_box = _in_box_nodes(shard_paths) if bounding_box is not None else None
+    member_nodes = None
     if keep_relations:
         relations, member_ids = _collect_relations(shard_paths, keep)
         if relations is not None and in_box is not None:
@@ -793,27 +819,40 @@ def _collect_layer(
             # creating spurious all-None columns and matches the in-memory completion scope).
             present = _collect_relation_ways(shard_paths, member_ids, in_box)
             present_ids = set() if present is None else set(present["id"].tolist())
-            relations, member_ids = _restrict_relations_to_box(relations, present_ids)
+            relations, member_ids = _restrict_relations_to_box(
+                relations, present_ids, in_box if grouping_relations else None
+            )
         member_box = None if complete_relations else in_box
         relation_ways = (
             _collect_relation_ways(shard_paths, member_ids, member_box)
             if relations is not None
             else None
         )
-        # No member way present (all outside the data/box) -> the relation can't be built.
-        if relation_ways is None:
+        if grouping_relations and relations is not None:
+            member_nodes = grouping_member_ids(relations, "node", True)
+            exclude_ids = np.unique(grouping_member_ids(relations, "way", False))
+        else:
+            exclude_ids = member_ids
+        # No member way present (all outside the data/box) -> the relation can't be built,
+        # unless it groups member nodes.
+        if relation_ways is None and not (
+            member_nodes is not None and len(member_nodes)
+        ):
             relations = None
     else:
         # Without relations there is no member-way set, so matching ways that would have
         # been members stay as standalone ways (matching get_data_by_custom_criteria).
-        relations, relation_ways, member_ids = None, None, np.empty(0, np.int64)
+        relations, relation_ways = None, None
+        exclude_ids = np.empty(0, np.int64)
     kept = (
-        _collect_kept_ways(shard_paths, member_ids, keep, in_box) if keep_ways else None
+        _collect_kept_ways(shard_paths, exclude_ids, keep, in_box)
+        if keep_ways
+        else None
     )
     node_features = _collect_node_features(
         shard_paths, tags_as_columns, keep_metadata, keep
     )
     if kept is None and relations is None and node_features is None:
         return None
-    node_coordinates = _coordinates(shard_paths, kept, relation_ways)
+    node_coordinates = _coordinates(shard_paths, kept, relation_ways, member_nodes)
     return node_features, kept, relations, relation_ways, node_coordinates

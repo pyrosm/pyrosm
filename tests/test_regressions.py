@@ -6649,3 +6649,93 @@ def test_walking_areas_leave_out_dead_ends_off_the_area_level():
     across = edges[edges["walking_area"] & (edges["id"] == 2919182)]
     assert len(across) > 0
     assert not across[["u", "v"]].isin([173248872]).to_numpy().any()
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_custom_criteria_keep_the_member_ways_of_stop_areas(engine):
+    """A custom-criteria read left out every way that was a member of a matched relation,
+    so adding public_transport=stop_area to a platform filter lost the platforms, and a
+    stop area came back only when its member ways closed into a polygon (#911). The
+    platform ways are the same with stop areas in the filter, each stop area is a row
+    with a GeometryCollection of its member ways and nodes (also when it has only member
+    nodes; in a box only those inside it), and the member ways of a multipolygon (the
+    buildings inside Rautatientori) are still not rows of their own."""
+    import shapely
+
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"), engine=engine)
+    columns = ["railway", "public_transport", "highway", "building"]
+    platforms = osm.get_data_by_custom_criteria(
+        {"railway": ["platform"]}, tags_as_columns=columns
+    )
+    both = osm.get_data_by_custom_criteria(
+        {"railway": ["platform"], "public_transport": ["stop_area"]},
+        tags_as_columns=columns,
+    )
+    ways = both.loc[both["osm_type"] == "way", "id"]
+    assert set(ways) == set(platforms.loc[platforms["osm_type"] == "way", "id"])
+    assert 35744431 in set(ways)  # a platform of stop area 7591444
+    areas = both[both["osm_type"] == "relation"].set_index("id")
+    assert set(areas.index) == {6828961, 7591444, 7591445}
+    parts = areas.geometry[7591444]
+    assert parts.geom_type == "GeometryCollection"
+    assert {part.geom_type for part in parts.geoms} == {"Point", "LineString"}
+    square = osm.get_data_by_custom_criteria(
+        {"highway": ["pedestrian"], "building": True}, tags_as_columns=columns
+    )
+    assert 2919118 in set(square.loc[square["osm_type"] == "relation", "id"])
+    assert not {300626401, 464740791} & set(square.loc[square["osm_type"] == "way", "id"])
+    # A relation of member nodes only, one of its three nodes in the file
+    cameras = osm.get_data_by_custom_criteria({"type": ["surveillance"]})
+    camera = cameras[cameras["osm_type"] == "relation"].set_index("id").geometry[51578]
+    assert [(p.geom_type, p.x, p.y) for p in camera.geoms] == [
+        ("Point", 24.9353741, 60.1707807)
+    ]
+    # In a box, member nodes count only inside it, as member ways do
+    box = [24.9425, 60.1700, 24.9445, 60.1712]
+    boxed = OSM(get_data("helsinki_pbf"), bounding_box=box, engine=engine)
+    boxed = boxed.get_data_by_custom_criteria({"public_transport": ["stop_area"]})
+    area = boxed[boxed["osm_type"] == "relation"].set_index("id").geometry[7591445]
+    assert [(p.geom_type, shapely.box(*box).covers(p)) for p in area.geoms] == [
+        ("Point", True)
+    ]
+
+
+def test_grouping_relation_geometry_from_the_members_found():
+    """A grouping relation's GeometryCollection holds the members found: a member way
+    with at least two located nodes as a line, a located member node as a point, no
+    member relation; a relation with none of them is left out; metadata only with
+    keep_metadata (#911)."""
+    import numpy as np
+
+    from pyrosm.grouping_relations import grouping_records
+    from pyrosm.node_lookup import NodeLocations
+
+    nodes = NodeLocations({"id": [1, 2, 3], "lon": [0.0, 1.0, 2.0], "lat": [0.0] * 3})
+
+    def members(ids, kinds):
+        return {
+            "member_id": np.array(ids, dtype=np.int64),
+            "member_type": np.array(kinds, dtype=object),
+            "member_role": np.array([""] * len(ids), dtype=object),
+        }
+
+    relations = {
+        "id": np.array([10, 11], dtype=np.int64),
+        "members": [
+            members([100, 101, 3, 12], [b"way", b"way", b"node", b"relation"]),
+            members([101, 9], [b"way", b"node"]),
+        ],
+        "tags": [{"type": "public_transport"}, {"type": "route"}],
+        "visible": np.array([True, True]),
+    }
+    ways = {"id": np.array([100, 101]), "nodes": [np.array([1, 2]), np.array([3, 99])]}
+    records = grouping_records(relations, ways, nodes, keep_metadata=False)
+    assert [record["id"] for record in records] == [10]
+    assert records[0]["geometry"].wkt == (
+        "GEOMETRYCOLLECTION (LINESTRING (0 0, 1 0), POINT (2 0))"
+    )
+    assert "version" not in records[0] and records[0]["type"] == "public_transport"
+    records = grouping_records(relations, None, nodes, keep_metadata=False)
+    assert records[0]["geometry"].wkt == "GEOMETRYCOLLECTION (POINT (2 0))"
