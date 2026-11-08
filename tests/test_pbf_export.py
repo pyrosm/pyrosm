@@ -3758,12 +3758,13 @@ def test_edges_across_walking_areas_in_write_pbf_and_add_elements(operation, tmp
             with pytest.warns(Notice, match=message) as caught:
                 OSM(fp).write_pbf(frame, path, subset_only=True)
             assert [w.filename for w in caught if w.category is Notice] == [__file__]
-            written.append(
-                OSM(path, keep_metadata=False).get_network("walking", nodes=True)
-            )
+            nodes, back = OSM(path).get_network("walking", nodes=True)
+            # The new elements carry the time of writing
+            written.append([frame.drop(columns="timestamp") for frame in (nodes, back)])
         for nodes, back in written[1:]:
             assert_geodataframe_equal(nodes, written[0][0])
             assert_geodataframe_equal(back, written[0][1])
+        back = written[0][1]
         old = back[back["id"] > 0]
         assert set(zip(old["id"], old["u"], old["v"])) == set(
             zip(plain["id"], plain["u"], plain["v"])
