@@ -6,8 +6,12 @@
 
 # -- Project information -----------------------------------------------------
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
+
+# Make the docs' own Sphinx extensions in _ext importable.
+sys.path.insert(0, str(Path(__file__).parent))
 
 current_year = datetime.now().year
 
@@ -38,7 +42,15 @@ extensions = [
     "sphinx_design",
     # Write llms.txt, an index of the pages for language models.
     "sphinx_llms_txt",
+    "sphinxcontrib.bibtex",
+    # APA-style bibliography and author-year citations without brackets.
+    "_ext.apa_citations",
 ]
+
+# Cite papers from references.bib in MyST as ``({cite:label}`key`)``; the
+# References page lists them.
+bibtex_bibfiles = ["references.bib"]
+bibtex_reference_style = "author_year_no_brackets"
 
 # Generate the per-object stub pages referenced by the autosummary tables at build time.
 autosummary_generate = True
