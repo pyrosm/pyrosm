@@ -644,11 +644,15 @@ def test_get_network_with_walking_areas(case):
             {"network_type": "cycling", "indoor_elements": True},
             "not with 'cycling'",
         ),
+        ("get_network", {"escalator_slope": True}, "escalator_slope should be an angle"),
+        ("get_graph", {"escalator_slope": 90}, "escalator_slope should be an angle"),
+        ("get_network", {"escalator_slope": "30"}, "escalator_slope should be an angle"),
     ],
 )
 def test_network_reads_refuse_unusable_walking_areas(test_pbf, read, kwargs, message):
     """walking_areas and indoor_elements are booleans, need the network's nodes, and
-    indoor_elements needs a walking network type or a custom filter."""
+    indoor_elements needs a walking network type or a custom filter; escalator_slope is
+    None or an angle of at least 0 and below 90 degrees, not a boolean."""
     from pyrosm import OSM
 
     with pytest.raises(ValueError, match=message):
@@ -709,6 +713,44 @@ def test_get_network_with_indoor_elements(walking_areas):
             indoor_elements=True,
         )
     assert 35744431 in set(platforms["id"]) and "u_level" in platforms.columns
+
+
+def test_escalator_length_along_its_slope():
+    """With indoor_elements=True, the length of an escalator is its length on the map
+    divided by the cosine of escalator_slope (30 degrees by default), also in get_graph;
+    None keeps the map length, and the other edges keep theirs."""
+    import math
+
+    from pyrosm import OSM
+
+    osm = OSM(get_data("helsinki_pbf"))
+    lengths = {}
+    for slope in (30, None):
+        _, edges = osm.get_network(
+            "walking", nodes=True, indoor_elements=True, escalator_slope=slope
+        )
+        lengths[slope] = edges.set_index(["osm_type", "id", "u", "v"])
+    sloped, flat = lengths[30], lengths[None]
+    escalator = flat["vertical"] == "escalator"
+    assert escalator.sum() > 0
+    expected = flat.loc[escalator, "length"] / math.cos(math.radians(30))
+    assert sloped.loc[escalator, "length"].to_numpy() == pytest.approx(
+        expected.to_numpy(), abs=1e-3
+    )
+    assert sloped.loc[~escalator, "length"].equals(flat.loc[~escalator, "length"])
+    graph = osm.get_graph(
+        "walking",
+        graph_type="networkx",
+        indoor_elements=True,
+        retain_all=True,
+        simplify=False,
+        escalator_slope=60,
+    )
+    edges = graph.edges(data=True)
+    steep = [d["length"] for _, _, d in edges if d.get("osmid") == 18378805]
+    # cos(60 degrees) = 0.5, and the walking graph has both directions of each edge
+    map_lengths = flat.xs(18378805, level="id")["length"].tolist()
+    assert sorted(steep) == pytest.approx(sorted([2 * x for x in map_lengths] * 2))
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])

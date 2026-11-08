@@ -12,11 +12,15 @@ the data does not say which part is on which level, and both ends stay empty. St
 an escalator without a level range (no ``level`` tag or a single level) take their ends
 from the walkways they join, when each end has one level and the two differ. An edge
 without a ``level`` tag otherwise has no level. The column ``vertical`` marks escalators
-and stairs. A lift node (``highway=elevator``) where walkways on several levels meet is
-split into one node per level, joined by lift edges (see :func:`split_lifts`).
+and stairs; the ``length`` of an escalator is measured along its slope (see
+:func:`with_indoor_columns`). A lift node (``highway=elevator``) where walkways on several
+levels meet is split into one node per level, joined by lift edges (see
+:func:`split_lifts`).
 """
 
 import json
+import math
+import numbers
 
 import numpy as np
 import pandas as pd
@@ -129,6 +133,24 @@ def _span_ends(at_u, at_v, low, high):
     return None
 
 
+def check_escalator_slope(escalator_slope):
+    """Raise a ValueError unless ``escalator_slope`` is None or an angle in degrees of
+    at least 0 and below 90; True and False are refused, which Python counts as 1 and
+    0."""
+    if escalator_slope is None:
+        return
+    if (
+        isinstance(escalator_slope, bool)
+        or not isinstance(escalator_slope, numbers.Real)
+        or not 0 <= escalator_slope < 90
+    ):
+        raise ValueError(
+            "escalator_slope should be an angle in degrees of at least 0 and below 90, "
+            "or None to keep the length of escalators on the map, not %r."
+            % (escalator_slope,)
+        )
+
+
 def edge_vertical(tags):
     """The vertical movement of edges with the OSM tags ``tags`` (a list of dicts):
     ``"escalator"`` for steps that move (``conveying`` other than no), ``"stairs"`` for
@@ -143,15 +165,23 @@ def edge_vertical(tags):
     return kinds
 
 
-def with_indoor_columns(edges):
+def with_indoor_columns(edges, escalator_slope):
     """``edges`` (the frame of a network read with ``nodes=True``) with the columns
     ``u_level`` and ``v_level`` (see :func:`edge_levels`) and ``vertical`` (see
-    :func:`edge_vertical`)."""
+    :func:`edge_vertical`). The ``length`` of an escalator is its length on the map
+    divided by the cosine of ``escalator_slope`` (degrees), its length along a slope of
+    that angle, in millimetres; None keeps the length on the map."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     tags = _frame_tags(edges, _frame_tag_columns(edges))
     u_level, v_level = edge_levels(edges, tags)
-    return edges.assign(u_level=u_level, v_level=v_level, vertical=edge_vertical(tags))
+    vertical = edge_vertical(tags)
+    edges = edges.assign(u_level=u_level, v_level=v_level, vertical=vertical)
+    if escalator_slope is not None:
+        escalator = edges["vertical"] == "escalator"
+        along = edges.loc[escalator, "length"] / math.cos(math.radians(escalator_slope))
+        edges.loc[escalator, "length"] = along.round(3)
+    return edges
 
 
 def with_platform_filter(read_filter):
