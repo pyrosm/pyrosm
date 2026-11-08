@@ -627,14 +627,80 @@ def test_get_network_with_walking_areas(case):
             "'walking_areas' should be boolean",
         ),
         ("get_graph", {"walking_areas": None}, "'walking_areas' should be boolean"),
+        ("get_network", {"indoor_elements": True}, "indoor_elements=True needs nodes"),
+        (
+            "get_network",
+            {"indoor_elements": 1, "nodes": True},
+            "'indoor_elements' should be boolean",
+        ),
+        (
+            "get_network",
+            {"network_type": "driving", "indoor_elements": True, "nodes": True},
+            "not with 'driving'",
+        ),
     ],
 )
 def test_network_reads_refuse_unusable_walking_areas(test_pbf, read, kwargs, message):
-    """walking_areas is a boolean, and the edges across areas need the network's nodes."""
+    """walking_areas and indoor_elements are booleans, need the network's nodes, and
+    indoor_elements needs a walking network type or a custom filter."""
     from pyrosm import OSM
 
     with pytest.raises(ValueError, match=message):
         getattr(OSM(test_pbf), read)(**kwargs)
+
+
+def test_get_network_with_indoor_elements():
+    """indoor_elements=True adds u_level and v_level, the same in both engines: the
+    escalators of ways 18378805 (level=-3;-2) and 655180399 (level=0;2) run between the
+    levels at their ends; without the option the columns are not there."""
+    from pyrosm import OSM
+
+    frames = [
+        OSM(get_data("helsinki_pbf"), engine=engine).get_network(
+            "walking", nodes=True, indoor_elements=True
+        )[1]
+        for engine in ("in_memory", "out_of_core")
+    ]
+    pd.testing.assert_frame_equal(
+        frames[0][["u_level", "v_level"]], frames[1][["u_level", "v_level"]]
+    )
+    ends = frames[1].set_index("id")[["u_level", "v_level"]]
+    assert sorted(ends.loc[18378805]) == [-3.0, -2.0]
+    assert sorted(ends.loc[655180399]) == [0.0, 2.0]
+    _, plain = OSM(get_data("helsinki_pbf")).get_network("walking", nodes=True)
+    assert "u_level" not in plain.columns
+
+
+def test_indoor_levels_of_edge_ends():
+    """An edge with one level has it at both ends; stairs and escalators with a level
+    range run between the levels of the walkways at their ends, also when one end is
+    unknown (none when both are, or when both ends touch only the same level), and
+    those with no level or one level take the walkways' levels when they differ; a
+    walkway tagged with several levels and an edge without one have none."""
+    from pyrosm.indoor import edge_levels
+
+    rows = [
+        (1, 2, {"highway": "corridor", "level": "-1"}),
+        (3, 4, {"highway": "corridor", "level": "0"}),
+        (2, 3, {"highway": "steps", "conveying": "yes", "level": "0;-1"}),
+        (4, 5, {"highway": "steps", "level": "0-1"}),
+        (5, 6, {"highway": "corridor", "level": "0;1"}),
+        (1, 4, {"highway": "steps"}),
+        (1, 7, {"highway": "steps", "level": "-1"}),
+        (7, 8, {"highway": "footway"}),
+        (9, 4, {"highway": "steps", "level": "0;1"}),
+        (10, 11, {"highway": "steps", "level": "2;3"}),
+        (2, 1, {"highway": "steps", "level": "-1;0"}),
+        (3, 2, {"highway": "steps", "level": "-1;0"}),
+    ]
+    edges = pd.DataFrame({"u": [r[0] for r in rows], "v": [r[1] for r in rows]})
+    u_level, v_level = edge_levels(edges, [r[2] for r in rows])
+    expected = [(-1, -1), (0, 0), (-1, 0), (0, 1), (None, None), (-1, 0), (-1, -1)]
+    expected += [(None, None), (1, 0), (None, None), (None, None), (0, -1)]
+    assert [
+        (None if np.isnan(a) else a, None if np.isnan(b) else b)
+        for a, b in zip(u_level, v_level)
+    ] == expected
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])

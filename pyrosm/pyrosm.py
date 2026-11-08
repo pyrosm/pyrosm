@@ -66,6 +66,7 @@ from shapely.geometry import (
 )
 from pyrosm.boundary import get_boundary_data
 from pyrosm.layers import get_layer_data, without_building_parts
+from pyrosm.indoor import check_indoor_read, with_levels
 from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
@@ -554,6 +555,7 @@ class OSM:
         tags_to_keep=None,
         shared_paths="local",
         walking_areas=False,
+        indoor_elements=False,
     ):
         """
         Parses street networks from OSM
@@ -675,6 +677,15 @@ class OSM:
             column `walking_area`, which is `False` for the other edges. Requires
             `nodes=True`.
 
+        indoor_elements : bool (default: False)
+            If True, the edges get the level at each of their two ends in the columns
+            `u_level` and `v_level`, from the OSM `level` tags: an edge with one level
+            has it at both ends; stairs and escalators run between the levels of the
+            walkways they join (also those tagged with no level or one level); a
+            walkway tagged with several levels, such as `level=0;1`, and an edge without
+            a `level` tag have no level (NaN). For the network types `walking`, `all`
+            and `all_public` and with a `custom_filter`. Requires `nodes=True`.
+
         Returns
         -------
 
@@ -696,13 +707,16 @@ class OSM:
         custom_filter, filter_type = _network_filter_type(custom_filter, filter_type)
         network_type = network_type_of_read(network_type, custom_filter)
         validate_bool(walking_areas, "walking_areas")
+        validate_bool(indoor_elements, "indoor_elements")
         if walking_areas and not nodes:
             raise ValueError(
                 "walking_areas=True needs nodes=True: the edges across an area join "
                 "the network's nodes."
             )
+        if indoor_elements:
+            check_indoor_read(network_type, custom_filter, nodes)
         with self._walking_area_steps(walking_areas, timestamp):
-            return self._read_network(
+            result = self._read_network(
                 network_type,
                 extra_attributes,
                 nodes,
@@ -713,6 +727,9 @@ class OSM:
                 shared_paths,
                 walking_areas,
             )
+        if indoor_elements and result[1] is not None:
+            result = result[0], with_levels(result[1])
+        return result
 
     @contextlib.contextmanager
     def _walking_area_steps(self, walking_areas, timestamp):

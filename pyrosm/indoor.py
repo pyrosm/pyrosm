@@ -1,0 +1,115 @@
+"""The indoor elements of a network read with ``indoor_elements=True``.
+
+The edges get the level at each of their two ends, ``u_level`` and ``v_level``, from the
+OSM ``level`` tags (see :func:`pyrosm.levels.level_ranges`). An edge with one level has it
+at both ends. A level list or range on stairs or an escalator runs between the levels of
+the walkways at its two ends; on another walkway, such as a corridor tagged ``level=0;1``,
+the data does not say which part is on which level, and both ends stay empty. Stairs and
+an escalator without a level range (no ``level`` tag or a single level) take their ends
+from the walkways they join, when each end has one level and the two differ. An edge
+without a ``level`` tag otherwise has no level.
+"""
+
+import numpy as np
+import pandas as pd
+
+from pyrosm.levels import level_ranges
+
+# The network types whose reads take indoor_elements=True.
+INDOOR_NETWORK_TYPES = ("walking", "all", "all_public")
+
+
+def check_indoor_read(network_type, custom_filter, nodes):
+    """Raise a ValueError when a network read cannot take ``indoor_elements=True``: a
+    network type other than :data:`INDOOR_NETWORK_TYPES` without a ``custom_filter``, or
+    a read without ``nodes``."""
+    if custom_filter is None and network_type not in INDOOR_NETWORK_TYPES:
+        raise ValueError(
+            "indoor_elements=True works with the network types %s and with a "
+            "custom_filter, not with %r."
+            % (", ".join(repr(t) for t in INDOOR_NETWORK_TYPES), network_type)
+        )
+    if not nodes:
+        raise ValueError(
+            "indoor_elements=True needs nodes=True: the levels are those of the edges' "
+            "two nodes."
+        )
+
+
+def _is_vertical(tags):
+    """Whether an edge with the OSM tags ``tags`` is stairs or an escalator."""
+    return tags.get("highway") == "steps" or tags.get("conveying") not in (None, "no")
+
+
+def edge_levels(edges, tags):
+    """``(u_level, v_level)``: float arrays of the level at each end of ``edges`` (a
+    frame with ``u`` and ``v``), whose OSM tags are ``tags`` (a list of dicts in their
+    order), as the module docstring describes; NaN where the level is not known."""
+    n = len(edges)
+    low, high = np.full(n, np.nan), np.full(n, np.nan)
+    vertical = np.zeros(n, dtype=bool)
+    for i, row_tags in enumerate(tags):
+        ranges = level_ranges(row_tags.get("level"))
+        if ranges:
+            low[i] = min(r[0] for r in ranges)
+            high[i] = max(r[1] for r in ranges)
+        vertical[i] = _is_vertical(row_tags)
+    single = low == high
+    listed = high > low
+    u_level = np.where(single, low, np.nan)
+    v_level = u_level.copy()
+    u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
+    flat = single & ~vertical
+    ends = pd.DataFrame(
+        {"node": np.concatenate([u[flat], v[flat]]), "level": np.tile(low[flat], 2)}
+    )
+    levels_at = ends.groupby("node")["level"].unique().to_dict()
+    for i in np.flatnonzero(vertical & listed):
+        ends = _span_ends(
+            _span_levels(levels_at.get(u[i], ()), low[i], high[i]),
+            _span_levels(levels_at.get(v[i], ()), low[i], high[i]),
+            low[i],
+            high[i],
+        )
+        if ends is not None:
+            u_level[i], v_level[i] = ends
+    for i in np.flatnonzero(vertical & ~listed):
+        a, b = levels_at.get(u[i], ()), levels_at.get(v[i], ())
+        if len(a) == 1 and len(b) == 1 and a[0] != b[0]:
+            u_level[i], v_level[i] = a[0], b[0]
+    return u_level, v_level
+
+
+def _span_levels(levels, low, high):
+    """The ``levels`` of the walkways at an end of stairs or an escalator spanning
+    ``low`` to ``high`` that lie in the span, the span's own ends first."""
+    inside = [level for level in levels if low <= level <= high]
+    return [level for level in inside if level in (low, high)] + [
+        level for level in inside if level not in (low, high)
+    ]
+
+
+def _span_ends(at_u, at_v, low, high):
+    """``(u level, v level)`` of stairs or an escalator spanning ``low`` to ``high``,
+    from the span levels ``at_u`` and ``at_v`` of the walkways at its two ends: two
+    different ones when they allow it; with one end unknown, the other end of the span
+    when the known level is a span end; else None."""
+    for a in at_u:
+        for b in at_v:
+            if a != b:
+                return a, b
+    if at_u and not at_v and at_u[0] in (low, high):
+        return at_u[0], high if at_u[0] == low else low
+    if at_v and not at_u and at_v[0] in (low, high):
+        return (high if at_v[0] == low else low), at_v[0]
+    return None
+
+
+def with_levels(edges):
+    """``edges`` (the frame of a network read with ``nodes=True``) with the columns
+    ``u_level`` and ``v_level`` (see :func:`edge_levels`)."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
+    tags = _frame_tags(edges, _frame_tag_columns(edges))
+    u_level, v_level = edge_levels(edges, tags)
+    return edges.assign(u_level=u_level, v_level=v_level)
