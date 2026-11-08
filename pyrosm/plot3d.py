@@ -21,16 +21,16 @@ _STYLES = {
     "street": ("Walkways at street level", "#8a8f98", 1.5, "solid"),
     "levels": ("Walkways on other levels", "#3987e5", 3.5, "solid"),
     "multi": ("Walkways tagged with several levels", "#3987e5", 3.0, "dot"),
-    "escalator": ("Escalators", "#d95926", 6.0, "solid"),
+    "escalator": ("Escalators", "#c98500", 6.0, "solid"),
     "stairs": ("Stairs", "#199e70", 5.0, "solid"),
     "lift": ("Lifts", "#6250d6", 5.0, "dash"),
     "platform": ("Platforms", "#e87ba4", 5.0, "solid"),
     "crossing": ("Lines across areas", "#b8bcc4", 1.5, "solid"),
     "area": ("Area outlines", "#5b6170", 2.5, "dot"),
 }
-# The route: dark, wide and densely dashed, to stand out from every kind by lightness, not by
-# hue alone, with the kind of edge beneath showing in the gaps
-_ROUTE_COLOUR = "#1f2329"
+# The route: red, wide and solid, drawn over the edges; the escalators are amber so that
+# they stay apart from it
+_ROUTE_COLOUR = "#e8002d"
 _PLATFORM_TAGS = ("railway", "public_transport", "highway")
 _ENTRANCES = ("subway_entrance", "train_station_entrance")
 
@@ -173,8 +173,8 @@ def plot_3d(edges, nodes=None, center=None, radius=None, route=None, areas=None)
         of ``center``, and the entrances within it.
     route : list of node ids (optional)
         A path through the network, such as a shortest path of a networkx graph, drawn
-        as a wide, dark, dashed line along the edges between its nodes (``u`` and ``v``),
-        with markers at its two ends; a click on "Route" in the legend hides it.
+        as a wide red line along the edges between its nodes (``u`` and ``v``), with
+        markers at its two ends; a click on "Route" in the legend hides it.
     areas : GeoDataFrame (optional)
         Polygons, such as platform areas or squares, drawn as outlines at their
         ``level`` (street level without one); lines are drawn as they are.
@@ -271,7 +271,7 @@ def _add_route(go, figure, route, ends, origin):
         line_trace.add(*_line_points(line, z_a, z_b, origin, vertical=lift), "route")
     if not line_trace.x:
         return
-    figure.add_trace(_lines(go, line_trace, "Route", _ROUTE_COLOUR, 10.0, "dash"))
+    figure.add_trace(_lines(go, line_trace, "Route", _ROUTE_COLOUR, 10.0, "solid"))
     points = [i for i, x in enumerate(line_trace.x) if x is not None]
     first, last = points[0], points[-1]
     figure.add_trace(
