@@ -693,6 +693,22 @@ def test_get_network_with_indoor_elements():
     assert 35744431 in set(platforms["id"]) and "u_level" in platforms.columns
 
 
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_indoor_read_that_finds_nothing(engine):
+    """An indoor read whose filter keeps no way, of a file without platforms, returns
+    no frames and warns once that it found nothing."""
+    from pyrosm import OSM
+
+    osm = OSM(get_data("test_pbf"), engine=engine)
+    with pytest.warns(UserWarning, match="Could not find any edges") as caught:
+        result = osm.get_network(
+            custom_filter={"highway": ["no-such-value"]},
+            nodes=True,
+            indoor_elements=True,
+        )
+    assert result == (None, None) and len(caught) == 1
+
+
 def test_indoor_platforms_merge():
     """A read without platforms stays as it is; the platforms add the ways that are not
     edges yet (an edge across a walking area with the same id is a relation's) and
