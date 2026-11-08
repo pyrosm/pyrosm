@@ -2094,9 +2094,10 @@ class OSM:
             ``indoor_elements=True``, the edges carry ``u_level``, ``v_level`` and
             ``vertical`` as attributes, the lifts are split per level, and
             simplification never merges stairs, escalators or lifts with other edges,
-            nor edges across a change of level. With
-            ``tags_to_keep``, the tags the graph is built
-            from are read too: those of its edges' directions (``oneway`` and
+            nor edges across a change of level. An escalator tagged
+            ``conveying=forward`` or ``conveying=backward`` runs only in the direction
+            it moves (see :meth:`to_graph`). With ``tags_to_keep``, the tags the graph
+            is built from are read too: those of its edges' directions (``oneway`` and
             ``junction``, and ``oneway:bicycle`` for cycling; none with
             ``force_oneway``) and, with ``simplify``, the ``edge_attrs_differ`` tags (by
             default ``maxspeed`` and ``highway``), so the graph is the same and only
@@ -2272,7 +2273,11 @@ class OSM:
         column, as driving does: a way tagged ``oneway=yes`` (or ``-1``, or a roundabout)
         is one-way and every other way two-way; ``force_bidirectional=True`` makes every
         edge two-way, and ``force_oneway=True`` keeps every edge in the direction its
-        way is drawn in, e.g. downstream for rivers.
+        way is drawn in, e.g. downstream for rivers. In the edges of
+        ``get_network(..., indoor_elements=True)``, an escalator (``vertical``
+        "escalator") tagged ``conveying=forward`` runs only in the direction its way is
+        drawn in, and one tagged ``conveying=backward`` only against it, whatever the
+        network type; ``force_bidirectional`` and ``force_oneway`` override this.
 
         The graph is topologically simplified before export: interstitial degree-2
         nodes are removed and each intersection-to-intersection chain is collapsed into
