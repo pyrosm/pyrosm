@@ -13,7 +13,8 @@ an escalator without a level range (no ``level`` tag or a single level) take the
 from the walkways they join, when each end has one level and the two differ. An edge
 without a ``level`` tag otherwise has no level. The column ``vertical`` marks escalators
 and stairs; the ``length`` of an escalator is measured along its slope (see
-:func:`with_indoor_columns`). A lift node (``highway=elevator``) where walkways on several
+:func:`with_indoor_columns`), and in a graph an escalator runs only in the direction it
+moves (see :func:`escalator_one_way`). A lift node (``highway=elevator``) where walkways on several
 levels meet is split into one node per level, joined by lift edges (see
 :func:`split_lifts`).
 """
@@ -163,6 +164,25 @@ def edge_vertical(tags):
             kind = "escalator" if moving else "stairs"
         kinds.append(kind)
     return kinds
+
+
+def escalator_one_way(edges):
+    """``(forward, backward)`` by position in ``edges``: whether each edge is an escalator
+    (``vertical`` "escalator") that moves only from its ``u`` to its ``v`` node
+    (``conveying=forward``, the direction the way is drawn in) or only from ``v`` to ``u``
+    (``conveying=backward``); None when ``edges`` have no escalators."""
+    if "vertical" not in edges.columns:
+        return None
+    escalator = (edges["vertical"] == "escalator").to_numpy()
+    if not escalator.any():
+        return None
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
+    rows = np.flatnonzero(escalator)
+    tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges))
+    conveying = np.full(len(edges), None, dtype=object)
+    conveying[rows] = [row_tags.get("conveying") for row_tags in tags]
+    return conveying == "forward", conveying == "backward"
 
 
 def with_indoor_columns(edges, escalator_slope):
