@@ -24,10 +24,12 @@ _STYLES = {
     "escalator": ("Escalators", "#d95926", 6.0, "solid"),
     "stairs": ("Stairs", "#199e70", 5.0, "solid"),
     "lift": ("Lifts", "#6250d6", 5.0, "dash"),
-    "platform": ("Platforms", "#1f9a1f", 5.0, "solid"),
+    "platform": ("Platforms", "#e87ba4", 5.0, "solid"),
     "crossing": ("Lines across areas", "#b8bcc4", 1.5, "solid"),
     "area": ("Area outlines", "#5b6170", 2.5, "dot"),
 }
+# The route: dark and wide, to stand out from every kind by lightness, not by hue alone
+_ROUTE_COLOUR = "#1f2329"
 _PLATFORM_TAGS = ("railway", "public_transport", "highway")
 _ENTRANCES = ("subway_entrance", "train_station_entrance")
 
@@ -170,7 +172,8 @@ def plot_3d(edges, nodes=None, center=None, radius=None, route=None, areas=None)
         of ``center``, and the entrances within it.
     route : list of node ids (optional)
         A path through the network, such as a shortest path of a networkx graph, drawn
-        as a wide translucent band along the edges between its nodes (``u`` and ``v``).
+        as a wide dark line along the edges between its nodes (``u`` and ``v``), with
+        markers at its two ends; a click on "Route" in the legend hides it.
     areas : GeoDataFrame (optional)
         Polygons, such as platform areas or squares, drawn as outlines at their
         ``level`` (street level without one); lines are drawn as they are.
@@ -228,24 +231,13 @@ def plot_3d(edges, nodes=None, center=None, radius=None, route=None, areas=None)
         if has_ends:
             ends[(row.u, row.v)] = (row.geometry, z_u, z_v, lift)
     figure = go.Figure()
-    if route is not None:
-        band = _Trace()
-        for a, b in zip(route[:-1], route[1:]):
-            if (a, b) in ends:
-                line, z_a, z_b, lift = ends[(a, b)]
-            elif (b, a) in ends:
-                line, z_b, z_a, lift = ends[(b, a)]
-                line = line.reverse()
-            else:
-                continue
-            band.add(*_line_points(line, z_a, z_b, origin, vertical=lift), "route")
-        if band.x:
-            figure.add_trace(_lines(go, band, "Route", "#9aa0a6", 12.0, "solid", 0.35))
     if areas is not None:
         _add_area_outlines(traces["area"], areas.to_crs(crs), middle, radius)
     for kind, (name, colour, width, dash) in _STYLES.items():
         if traces[kind].x:
-            figure.add_trace(_lines(go, traces[kind], name, colour, width, dash, 1.0))
+            figure.add_trace(_lines(go, traces[kind], name, colour, width, dash))
+    if route is not None:
+        _add_route(go, figure, route, ends, origin)
     if nodes is not None:
         _add_entrances(go, figure, nodes.to_crs(crs), middle, radius)
     figure.update_layout(
@@ -262,8 +254,43 @@ def plot_3d(edges, nodes=None, center=None, radius=None, route=None, areas=None)
     return figure
 
 
-def _lines(go, trace, name, colour, width, dash, opacity):
-    """A plotly line trace of the points of ``trace``."""
+def _add_route(go, figure, route, ends, origin):
+    """Add the ``route`` (node ids) as a line along the edges between consecutive nodes,
+    either way (``ends``: ``{(u, v): (line, z at u, z at v, lift)}``), with markers at
+    its first and last point; steps without an edge are left out."""
+    line_trace = _Trace()
+    for a, b in zip(route[:-1], route[1:]):
+        if (a, b) in ends:
+            line, z_a, z_b, lift = ends[(a, b)]
+        elif (b, a) in ends:
+            line, z_b, z_a, lift = ends[(b, a)]
+            line = line.reverse()
+        else:
+            continue
+        line_trace.add(*_line_points(line, z_a, z_b, origin, vertical=lift), "route")
+    if not line_trace.x:
+        return
+    figure.add_trace(_lines(go, line_trace, "Route", _ROUTE_COLOUR, 10.0, "solid"))
+    points = [i for i, x in enumerate(line_trace.x) if x is not None]
+    first, last = points[0], points[-1]
+    figure.add_trace(
+        go.Scatter3d(
+            x=[line_trace.x[first], line_trace.x[last]],
+            y=[line_trace.y[first], line_trace.y[last]],
+            z=[line_trace.z[first], line_trace.z[last]],
+            text=["route start", "route end"],
+            mode="markers",
+            name="Route ends",
+            legendgroup="Route",
+            showlegend=False,
+            marker=dict(size=7, symbol="circle", color=_ROUTE_COLOUR),
+            hovertemplate="%{text}<extra></extra>",
+        )
+    )
+
+
+def _lines(go, trace, name, colour, width, dash):
+    """A plotly line trace of the points of ``trace``, its own group in the legend."""
     return go.Scatter3d(
         x=trace.x,
         y=trace.y,
@@ -271,7 +298,7 @@ def _lines(go, trace, name, colour, width, dash, opacity):
         text=trace.text,
         mode="lines",
         name=name,
-        opacity=opacity,
+        legendgroup=name,
         line=dict(color=colour, width=width, dash=dash),
         hovertemplate="%{text}<extra></extra>",
     )

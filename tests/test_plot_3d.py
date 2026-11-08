@@ -27,7 +27,7 @@ def _traces(figure):
 def test_plot_3d_draws_an_indoor_network(indoor):
     """Each kind of edge is a legend entry; the lift of node 2039713549 is a vertical
     line from level -2 to 0; a radius keeps what reaches near the center; the route is
-    a band that rises through the lift (a step that is not an edge left out, no band
+    a line, drawn over the edges with markers at its ends, that rises through the lift (a step that is not an edge left out, no band
     without the u and v columns; repeated index labels are fine); polygon and line
     areas are outlines at the level of their JSON tags (the point at the center left
     out) and entrances markers."""
@@ -48,6 +48,14 @@ def test_plot_3d_draws_an_indoor_network(indoor):
     route_z = pd.Series(traces["Route"].z)
     steps = [list(part.dropna()) for _, part in route_z.groupby(route_z.isna().cumsum())]
     assert [-2.0, 0.0] in steps
+    line, ends = traces["Route"], traces["Route ends"]
+    points = [p for p in zip(line.x, line.y, line.z) if p[0] is not None]
+    assert list(zip(ends.x, ends.y, ends.z)) == [points[0], points[-1]]
+    assert ends.legendgroup == line.legendgroup and ends.showlegend is False
+    assert line.line.color == ends.marker.color == "#1f2329"
+    assert traces["Platforms"].line.color == "#e87ba4"
+    names = [trace.name for trace in figure.data]
+    assert names.index("Route") > names.index("Platforms")
     area = traces["Area outlines"]
     assert min(z for z in area.z if z is not None) < 0
     assert (0, 0) not in set(zip(area.x, area.y))
