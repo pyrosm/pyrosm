@@ -299,7 +299,7 @@ def result_tag_columns(store, tags_as_columns, keep_metadata, keep_other_tags):
         len(tag_cols),
     )
     columns = {tag_cols[i] for i in np.flatnonzero(present)}
-    leftover = leftover or not {"version", "timestamp", "visible"}.issubset(column_keys)
+    leftover = leftover or "visible" not in column_keys
     requested = None if keep_other_tags else set(tags_as_columns)
     for w in np.flatnonzero(special):
         keys = set(store.tags(w, requested))
@@ -349,10 +349,8 @@ class ChunkContext:
 
             bounding_box = box(*bounding_box)
         self.area = bounding_box
-        # Whether the JSON ``tags`` column is built, and the metadata fields it holds.
+        # Whether the JSON ``tags`` column is built, and whether it holds ``visible``.
         self.json = keep_other_tags and "tags" in way_columns
-        self.json_version = self.json and not self.version_col
-        self.json_timestamp = self.json and not self.timestamp_col
         self.json_visible = self.json and not self.visible_col
         # The output tag columns: the tag columns the result has, in column order.
         # ``out_column[c]`` is tag column ``c``'s position among them, -1 when not output.
@@ -376,13 +374,9 @@ class ChunkContext:
         store = self.store
         col_lists, leftover, _ = _route_tags(
             [store.tags(w, self.requested) for w in ways],
-            store.version[ways],
-            store.timestamp[ways],
             store.visible[ways],
             self.tag_cols,
             self.keep_other_tags,
-            self.json_version,
-            self.json_timestamp,
             self.json_visible,
         )
         return col_lists, leftover
@@ -402,12 +396,8 @@ class ChunkContext:
             out_column=self.out_column,
             n_out=len(self.out_names),
             special=self.special[rows],
-            version=store.version,
-            timestamp=store.timestamp,
             visible=store.visible,
             json=self.json,
-            json_version=self.json_version,
-            json_timestamp=self.json_timestamp,
             json_visible=self.json_visible,
         )
 
@@ -552,15 +542,11 @@ def _build_chunk(ctx, rows):
         out_column=ctx.out_column,
         n_out=len(ctx.out_names),
         special=special,
-        version=store.version,
-        timestamp=store.timestamp,
         visible=store.visible,
         nodes=ctx.node_coordinates,
         network=ctx.network,
         area_by_tags=ctx.area_by_tags,
         json=ctx.json,
-        json_version=ctx.json_version,
-        json_timestamp=ctx.json_timestamp,
         json_visible=ctx.json_visible,
     )
     if len(chunk["check"]):
@@ -874,12 +860,8 @@ def _node_tag_columns(store, tags_as_columns):
         out_column=np.array([position.get(k, -1) for k in column_keys], dtype=np.int32),
         n_out=len(names),
         special=special,
-        version=store.version,
-        timestamp=store.timestamp,
         visible=store.visible,
         json=True,
-        json_version=False,
-        json_timestamp=False,
         json_visible=False,
     )
     columns = [_string_array(*arrays) for arrays in built["columns"]]

@@ -9,6 +9,9 @@ new options that leave the defaults as they were, and fixes of calls that failed
 
 ## Unreleased
 
+- **Metadata in the `tags` column.** With `OSM(..., keep_metadata=False)`, the JSON `tags`
+  column no longer holds the `version` and `timestamp` of ways. Code that read them from `tags`
+  gets them with `keep_metadata=True`, the default, from the `version` and `timestamp` columns.
 - **Relations in custom-criteria reads.** `get_data_by_custom_criteria` returns the relations
   that group elements, such as stop areas and routes, as rows of their own. The geometry of such
   a row is a GeometryCollection of the relation's member ways and nodes. The member ways that

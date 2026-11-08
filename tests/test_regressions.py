@@ -6739,3 +6739,38 @@ def test_grouping_relation_geometry_from_the_members_found():
     assert "version" not in records[0] and records[0]["type"] == "public_transport"
     records = grouping_records(relations, None, nodes, keep_metadata=False)
     assert records[0]["geometry"].wkt == "GEOMETRYCOLLECTION (POINT (2 0))"
+
+
+@pytest.mark.parametrize("engine", ["out_of_core", "in_memory"])
+@pytest.mark.parametrize("other", [{}, {"example:key": "x"}], ids=["no other tags", "other tag"])
+def test_keep_metadata_false_leaves_metadata_out_of_tags(tmp_path, engine, other):
+    """With keep_metadata=False, the version and timestamp of ways went into the JSON
+    'tags' column (#931). They are left out, so a way whose tags are all columns has no
+    'tags' column, in both readers."""
+    import json
+
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    nodes = {
+        "id": np.arange(1, 5, dtype=np.int64),
+        "lon": np.array([24.90, 24.91, 24.91, 24.90]),
+        "lat": np.array([60.10, 60.10, 60.11, 60.11]),
+        "version": np.full(4, 3, dtype=np.int64),
+        "timestamp": np.full(4, 1600000000, dtype=np.int64),
+        "changeset": np.full(4, 77, dtype=np.int64),
+        "tags": [None] * 4,
+    }
+    ways = [{"id": 10, "refs": [1, 2, 3, 4, 1], "version": 2, "timestamp": 1600000000,
+             "changeset": 88, "tags": {"building": "yes", **other}}]
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "way.osm.pbf"), (24.89, 60.09, 24.92, 60.12)
+    )
+    buildings = OSM(path, keep_metadata=False, engine=engine).get_buildings()
+    assert buildings["building"].tolist() == ["yes"]
+    if other:
+        assert [json.loads(t) for t in buildings["tags"]] == [other]
+    else:
+        assert "tags" not in buildings.columns

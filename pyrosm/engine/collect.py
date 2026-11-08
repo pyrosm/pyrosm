@@ -584,23 +584,13 @@ def _way_column_keys(tags_as_columns, keep_metadata):
     return keys, [k for k in keys if k not in _WAY_FIELDS]
 
 
-def _route_tags(
-    tags,
-    version,
-    timestamp,
-    visible,
-    tag_cols,
-    keep_other_tags,
-    json_version,
-    json_timestamp,
-    json_visible,
-):
+def _route_tags(tags, visible, tag_cols, keep_other_tags, json_visible):
     """The tag columns and the JSON ``tags`` values of ways with the tag dicts ``tags``, as
     the in-memory reader's ``convert_way_records_to_lists`` routes them: ``(col_lists,
     leftover, has_leftover)``. A tag in ``tag_cols`` (one keyed ``id`` as ``id_tag``) goes
     to its column, None where a way lacks it. With ``keep_other_tags`` every other tag goes
-    to the JSON, after the metadata fields the ``json_*`` flags name; ``leftover`` is None
-    for a way with nothing there (and for every way without ``keep_other_tags``)."""
+    to the JSON, after ``visible`` when ``json_visible``; ``leftover`` is None for a way
+    with nothing there (and for every way without ``keep_other_tags``)."""
     n = len(tags)
     tag_col_set = set(tag_cols)
     col_lists = {k: [None] * n for k in tag_cols}
@@ -610,13 +600,8 @@ def _route_tags(
         tag = tags[i]
         # ``other is None``: the JSON is not kept.
         other = {} if keep_other_tags else None
-        if other is not None:
-            if json_version:
-                other["version"] = int(version[i])
-            if json_timestamp:
-                other["timestamp"] = int(timestamp[i])
-            if json_visible:
-                other["visible"] = bool(visible[i])
+        if other is not None and json_visible:
+            other["visible"] = bool(visible[i])
         for k, v in tag.items():
             key = "id_tag" if k == "id" else k
             if key in tag_col_set:
@@ -642,10 +627,10 @@ def _ways_arrays(
     pyrosm's assembly expects, matching the in-memory reader column for column.
 
     Routing mirrors the in-memory reader's ``convert_way_records_to_lists`` on the columns:
-    the requested ``tags_as_columns`` become their own columns; every other tag -- and the
-    metadata fields not promoted to a column (``version``/``timestamp`` without
-    ``keep_metadata``, ``visible`` unless requested) -- goes into the JSON ``tags`` column in
-    the same field order; a tag literally keyed ``id`` is surfaced as ``id_tag``. The tag
+    the requested ``tags_as_columns`` become their own columns; every other tag -- and
+    ``visible`` unless requested -- goes into the JSON ``tags`` column in the same field
+    order, while ``version`` and ``timestamp`` without ``keep_metadata`` are left out; a tag
+    literally keyed ``id`` is surfaced as ``id_tag``. The tag
     columns plus that JSON column run through pyrosm's own ``columns_to_arrays`` (per-key
     dtypes, all-None drop), so they are byte-identical to the in-memory reader; ``id`` and the
     kept metadata go through the same conversion, and ``nodes`` is attached directly as the
@@ -691,15 +676,7 @@ def _ways_arrays(
         }
     else:
         col_lists, leftover, has_leftover = _route_tags(
-            cols["tags"],
-            cols["version"],
-            cols["timestamp"],
-            cols["visible"],
-            tag_cols,
-            keep_other_tags,
-            not version_col,
-            not timestamp_col,
-            not visible_col,
+            cols["tags"], cols["visible"], tag_cols, keep_other_tags, not visible_col
         )
     ids, nodes = cols["id"], cols["nodes"]
     version, timestamp, visible = cols["version"], cols["timestamp"], cols["visible"]
@@ -731,14 +708,15 @@ def _ways_arrays(
 def _result_tag_columns(kept, tags_as_columns, keep_metadata, keep_other_tags=True):
     """The tag columns :func:`_ways_arrays` gives all the ``kept`` ways together: the
     requested tags that occur in any of them (a tag keyed ``id`` as ``id_tag``) and, when
-    any way has leftover tags or metadata, the JSON ``tags`` column."""
+    any way has leftover tags, or ``visible`` is not a column, the JSON ``tags`` column.
+    """
     if isinstance(kept, ElementStore):
         return result_tag_columns(kept, tags_as_columns, keep_metadata, keep_other_tags)
     column_keys, tag_cols = _way_column_keys(tags_as_columns, keep_metadata)
     tag_col_set = set(tag_cols)
     tags = kept["tags"]
     columns = set()
-    leftover = not {"version", "timestamp", "visible"}.issubset(column_keys)
+    leftover = "visible" not in column_keys
     # The keys of a batch of ways at a time, so that only the requested ones are kept.
     batch = 10_000
     for start in range(0, len(tags), batch):

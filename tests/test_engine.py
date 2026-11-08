@@ -1041,7 +1041,6 @@ _NODES = {
     50: (10.0, 95.0),
 }
 _BUILDING = [(b"building", b"yes")]
-_METADATA = ("version", "timestamp", "visible")
 _ESCAPED = 'Tie "A"\n\t\x01\x7f\\/\r\b\x0cä€\U0001f600'.encode()
 _CRAFTED_WAYS = [
     (1, [1, 2, 3, 4, 1], _BUILDING),
@@ -1105,12 +1104,10 @@ def test_engine_store_tag_columns_match_the_python_path(
     by_dicts = store.way_columns(None if keys is None else keys | set(_GEOMETRY_TAG_KEYS))
     col_lists, leftover, _ = collect._route_tags(
         by_dicts["tags"],
-        store.version,
-        store.timestamp,
         store.visible,
         tag_cols,
         keep_other_tags,
-        *(keep_other_tags and k not in column_keys for k in _METADATA),
+        keep_other_tags and "visible" not in column_keys,
     )
     columns, json = tag_lists(store, tags_as_columns, keep_metadata, keep_other_tags)
     assert {k: v.tolist() for k, v in columns.items()} == col_lists
@@ -1588,12 +1585,8 @@ def test_way_columns_tag_columns_check_their_arrays():
         out_column=np.array([0], dtype=np.int32),
         n_out=1,
         special=np.ones(n, dtype=np.uint8),
-        version=store.version,
-        timestamp=store.timestamp,
         visible=store.visible,
         json=True,
-        json_version=True,
-        json_timestamp=True,
         json_visible=True,
     )
     for change, match in (
@@ -1619,11 +1612,7 @@ def test_way_columns_tag_columns_check_their_arrays():
             "valid": np.ones(4, dtype=np.uint8),
             "column": np.full(4, -1, dtype=np.int32),
             "special": np.zeros(1, dtype=np.uint8),
-            "version": cut.version,
-            "timestamp": cut.timestamp,
             "visible": cut.visible,
-            "json_version": False,
-            "json_timestamp": False,
             "json_visible": False,
         }
     )
@@ -1642,10 +1631,9 @@ def test_route_tags_drops_the_tags_of_no_column_without_other_tags():
     store = _way_store(_CRAFTED_WAYS)
     requested = ["building", "source", "id_tag"]
     _, tag_cols = collect._way_column_keys(requested, True)
-    metadata = (store.version, store.timestamp, store.visible)
     routed = [
         collect._route_tags(
-            store.way_columns(keys)["tags"], *metadata, tag_cols, False, False, False, False
+            store.way_columns(keys)["tags"], store.visible, tag_cols, False, False
         )[:2]
         for keys in (set(requested), set(requested) | set(_GEOMETRY_TAG_KEYS))
     ]
