@@ -627,14 +627,286 @@ def test_get_network_with_walking_areas(case):
             "'walking_areas' should be boolean",
         ),
         ("get_graph", {"walking_areas": None}, "'walking_areas' should be boolean"),
+        ("get_network", {"indoor_elements": True}, "indoor_elements=True needs nodes"),
+        (
+            "get_network",
+            {"indoor_elements": 1, "nodes": True},
+            "'indoor_elements' should be boolean",
+        ),
+        (
+            "get_network",
+            {"network_type": "driving", "indoor_elements": True, "nodes": True},
+            "not with 'driving'",
+        ),
+        ("get_graph", {"indoor_elements": "yes"}, "'indoor_elements' should be boolean"),
+        (
+            "get_graph",
+            {"network_type": "cycling", "indoor_elements": True},
+            "not with 'cycling'",
+        ),
     ],
 )
 def test_network_reads_refuse_unusable_walking_areas(test_pbf, read, kwargs, message):
-    """walking_areas is a boolean, and the edges across areas need the network's nodes."""
+    """walking_areas and indoor_elements are booleans, need the network's nodes, and
+    indoor_elements needs a walking network type or a custom filter."""
     from pyrosm import OSM
 
     with pytest.raises(ValueError, match=message):
         getattr(OSM(test_pbf), read)(**kwargs)
+
+
+@pytest.mark.parametrize("walking_areas", [False, True])
+def test_get_network_with_indoor_elements(walking_areas):
+    """indoor_elements=True adds the platforms, also those the walking network leaves
+    out (way 35744431, railway=platform, has no highway tag), once each and with their
+    nodes, crosses the platform areas (way 8137136), and adds u_level, v_level and
+    vertical (way 23653232 is stairs, a platform is neither), and splits lift node
+    2039713549 per level; both engines return the same frames: the escalators
+    of ways 18378805 (level=-3;-2) and 655180399 (level=0;2) run between the levels at
+    their ends; without the option the columns and platforms are not there. A read
+    whose filter keeps no other way returns the platforms."""
+    import warnings
+
+    from geopandas.testing import assert_geodataframe_equal
+
+    from pyrosm import OSM
+
+    frames = [
+        OSM(get_data("helsinki_pbf"), engine=engine).get_network(
+            "walking", nodes=True, indoor_elements=True, walking_areas=walking_areas
+        )
+        for engine in ("in_memory", "out_of_core")
+    ]
+    for first, second in zip(*frames):
+        assert_geodataframe_equal(first, second, check_dtype=False)
+    nodes, edges = frames[1]
+    assert 35744431 in set(edges["id"])
+    assert not edges.duplicated(["osm_type", "id", "u", "v"]).any()
+    assert edges["u"].isin(nodes["id"]).all() and edges["v"].isin(nodes["id"]).all()
+    assert edges["walking_area"].dtype == bool
+    platform_area = (edges["osm_type"] == "way") & (edges["id"] == 8137136)
+    assert (platform_area & edges["walking_area"]).any()
+    note = edges.attrs["pyrosm_read"]["filter"]
+    assert [["railway", "eq", "platform", 0]] in note
+    ends = edges.set_index("id")[["u_level", "v_level", "vertical"]]
+    assert sorted(ends.loc[18378805, ["u_level", "v_level"]]) == [-3.0, -2.0]
+    assert sorted(ends.loc[655180399, ["u_level", "v_level"]]) == [0.0, 2.0]
+    assert set(ends.loc[[18378805, 23653232], "vertical"]) == {"escalator", "stairs"}
+    assert ends.loc[[35744431], "vertical"].isna().all()
+    # The lift node 2039713549 joins walkways on levels -2 and 0
+    lift = edges[(edges["vertical"] == "lift") & (edges["id"] == 2039713549)]
+    assert lift[["u", "v"]].values.tolist() == [[2039713549, -2039713549001]]
+    assert -2039713549001 in set(edges.loc[edges["id"] == 470012326, "v"])
+    assert -2039713549001 in set(nodes["id"])
+    _, plain = OSM(get_data("helsinki_pbf")).get_network("walking", nodes=True)
+    assert "u_level" not in plain.columns and 35744431 not in set(plain["id"])
+    # A filter that keeps no way: the platforms alone, without an empty-data warning
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _, platforms = OSM(get_data("helsinki_pbf")).get_network(
+            custom_filter={"highway": ["no-such-value"]},
+            nodes=True,
+            indoor_elements=True,
+        )
+    assert 35744431 in set(platforms["id"]) and "u_level" in platforms.columns
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_indoor_read_that_finds_nothing(engine):
+    """An indoor read whose filter keeps no way, of a file without platforms, returns
+    no frames and warns once that it found nothing."""
+    from pyrosm import OSM
+
+    osm = OSM(get_data("test_pbf"), engine=engine)
+    with pytest.warns(UserWarning, match="Could not find any edges") as caught:
+        result = osm.get_network(
+            custom_filter={"highway": ["no-such-value"]},
+            nodes=True,
+            indoor_elements=True,
+        )
+    assert result == (None, None) and len(caught) == 1
+
+
+def test_indoor_platforms_merge():
+    """A read without platforms stays as it is; the platforms add the ways that are not
+    edges yet (an edge across a walking area with the same id is a relation's) and
+    their new nodes (without a walking_area column when the read has none); the
+    recorded filter keeps the platforms next to the network's keys."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, Point
+
+    from pyrosm.indoor import with_platform_filter, with_platforms
+
+    points = [Point(0, 0), Point(1, 0), Point(2, 0)]
+    nodes = gpd.GeoDataFrame({"id": [1, 2]}, geometry=points[:2], crs=4326)
+    line = LineString(points[:2])
+    edges = gpd.GeoDataFrame({"id": [10], "u": [1], "v": [2]}, geometry=[line], crs=4326)
+    assert with_platforms(nodes, edges, None, None)[1] is edges
+    only = with_platforms(None, None, nodes, edges, walking_areas=True)[1]
+    assert only["walking_area"].tolist() == [False]
+    platform_nodes = gpd.GeoDataFrame({"id": [2, 3]}, geometry=points[1:], crs=4326)
+    platforms = gpd.GeoDataFrame(
+        {"id": [10, 20], "u": [1, 2], "v": [2, 3]},
+        geometry=[line, LineString(points[1:])],
+        crs=4326,
+    )
+    added = with_platforms(nodes, edges, platform_nodes, platforms)
+    assert added[1]["id"].tolist() == [10, 20] and added[0]["id"].tolist() == [1, 2, 3]
+    assert "walking_area" not in added[1].columns
+    # An edge across a walking area numbered like a platform way
+    crossing = edges.assign(osm_type="relation", id=20, walking_area=True)
+    ways = gpd.GeoDataFrame(pd.concat([edges.assign(osm_type="way"), crossing]))
+    nodes, edges = with_platforms(nodes, ways, platform_nodes, platforms)
+    assert edges["id"].tolist() == [10, 20, 20]
+    assert edges["walking_area"].tolist()[-1] is False
+    assert with_platform_filter({"highway": ["footway"]}) == {
+        "highway": ["footway", "platform"],
+        "railway": ["platform"],
+        "public_transport": ["platform"],
+    }
+    assert with_platform_filter({"highway": True, "area": True}) == {
+        "highway": [True],
+        "area": [True],
+        "railway": ["platform"],
+        "public_transport": ["platform"],
+    }
+
+
+def test_indoor_area_crossings_enter_through_doors():
+    """Indoor areas are crossed as walking areas are, entered also through a door on the
+    outline that is not a node of the network, which then joins the nodes; without
+    areas the edges get walking_area False; an area already crossed, or not a polygon,
+    is not crossed again."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, Point
+
+    from pyrosm.indoor import indoor_areas, with_indoor_crossings
+
+    nodes, edges, areas, lonlat = _walking_area_frames()
+    points = gpd.points_from_xy(nodes["lon"], nodes["lat"])
+    nodes = gpd.GeoDataFrame(nodes, geometry=points, crs=4326)
+    x, y = lonlat(4, 4)  # a corner of the outline, not a node of the network
+    door = gpd.GeoDataFrame(
+        {"id": [99], "lon": [x], "lat": [y], "door": ["yes"]},
+        geometry=[Point(x, y)],
+        crs=4326,
+    )
+    same, plain = with_indoor_crossings(nodes, edges, None, door)
+    assert same is nodes and not plain["walking_area"].any()
+    with_door, crossed = with_indoor_crossings(nodes, edges, areas, door)
+    across = crossed[crossed["walking_area"]]
+    assert 99 in set(across["u"]) | set(across["v"])
+    assert 99 in set(with_door["id"]) and "door" not in with_door.columns
+    assert with_indoor_crossings(nodes, edges, areas, None)[1]["walking_area"].any()
+    # The same lines across another area that is crossed already are not repeated
+    other = across.assign(id=501)
+    again = gpd.GeoDataFrame(pd.concat([plain, other], ignore_index=True), crs=4326)
+    assert len(with_indoor_crossings(nodes, again, areas, door)[1]) == len(again)
+    inner = areas.assign(geometry=[areas.geometry.iloc[0].geoms[1].buffer(-1e-6)])
+    assert not with_indoor_crossings(nodes, edges, inner, None)[1]["walking_area"].any()
+    assert indoor_areas(areas, crossed) is None and indoor_areas(None, plain) is None
+    lines = areas.assign(geometry=[LineString([(0, 0), (1, 1)])])
+    assert indoor_areas(lines, plain) is None
+
+
+def test_indoor_lifts_split_per_level():
+    """A lift node where edges on three levels meet becomes one node per level: the
+    lowest keeps the id, each edge ends at the copy of its level (an end without a level
+    stays at the lowest), and lift edges join neighbouring levels; a lift node with one
+    level (tags as JSON text) and a node that is not a lift stay as they are."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, Point
+
+    from pyrosm.indoor import lift_copy_id, split_lifts
+
+    tags = [{"highway": "elevator"}, {"highway": "elevator"}, {}, {}]
+    nodes = gpd.GeoDataFrame(
+        {"id": [1, 2, 3, 4], "tags": tags},
+        geometry=[Point(0, 0), Point(1, 0), Point(2, 0), Point(3, 0)],
+        crs=4326,
+    )
+    ends = [(3, 1, -1.0), (1, 4, 0.0), (4, 1, 2.0), (1, 3, np.nan), (2, 3, 0.0)]
+    edges = gpd.GeoDataFrame(
+        {
+            "id": [10, 11, 12, 13, 14],
+            "osm_type": "way",
+            "u": [e[0] for e in ends],
+            "v": [e[1] for e in ends],
+            "u_level": [e[2] for e in ends],
+            "v_level": [e[2] for e in ends],
+        },
+        geometry=[LineString([(0, 0), (1, 1)])] * 5,
+        crs=4326,
+    )
+    nodes, edges = split_lifts(nodes, edges)
+    copy0, copy2 = lift_copy_id(1, 1), lift_copy_id(1, 2)
+    assert edges.loc[:4, ["u", "v"]].values.tolist() == [
+        [3, 1], [copy0, 4], [4, copy2], [1, 3], [2, 3]
+    ]
+    lifts = edges[edges["vertical"] == "lift"]
+    assert lifts[["id", "osm_type", "u", "v", "length"]].values.tolist() == [
+        [1, "node", 1, copy0, 0.0],
+        [1, "node", copy0, copy2, 0.0],
+    ]
+    assert sorted(nodes["id"]) == [copy2, copy0, 1, 2, 3, 4]
+    assert split_lifts(nodes.drop(columns="tags"), edges)[1] is edges
+    one_level = nodes.assign(tags=["{}", '{"highway": "elevator"}'] + ["{}"] * 4)
+    assert split_lifts(one_level, edges)[1] is edges
+    # A copy's id taken by another node
+    taken = gpd.GeoDataFrame(
+        {"id": [1, 2, copy0], "tags": [{"highway": "elevator"}, {}, {}]},
+        geometry=[Point(0, 0)] * 3,
+        crs=4326,
+    )
+    two = gpd.GeoDataFrame(
+        {"u": [2, 1], "v": [1, copy0], "u_level": [-1.0, 0.0], "v_level": [-1.0, 0.0]},
+        geometry=[LineString([(0, 0), (1, 1)])] * 2,
+        crs=4326,
+    )
+    with pytest.raises(ValueError, match="cannot be split per level"):
+        split_lifts(taken, two)
+    # A lift node that pyrosm wrote (negative id) is not split
+    written = taken.assign(id=[-1, 2, 3])
+    assert split_lifts(written, two.replace({1: -1}))[1]["u"].tolist() == [2, -1]
+
+
+def test_indoor_levels_of_edge_ends():
+    """An edge with one level has it at both ends; stairs and escalators with a level
+    range run between the levels of the walkways at their ends, also when one end is
+    unknown (none when both are, or when both ends touch only the same level), and
+    those with no level or one level take the walkways' levels when they differ; a
+    walkway tagged with several levels and an edge without one have none. Moving steps
+    are escalators, other steps stairs."""
+    from pyrosm.indoor import edge_levels, edge_vertical
+
+    rows = [
+        (1, 2, {"highway": "corridor", "level": "-1"}),
+        (3, 4, {"highway": "corridor", "level": "0"}),
+        (2, 3, {"highway": "steps", "conveying": "yes", "level": "0;-1"}),
+        (4, 5, {"highway": "steps", "level": "0-1"}),
+        (5, 6, {"highway": "corridor", "level": "0;1"}),
+        (1, 4, {"highway": "steps"}),
+        (1, 7, {"highway": "steps", "level": "-1"}),
+        (7, 8, {"highway": "footway"}),
+        (9, 4, {"highway": "steps", "level": "0;1"}),
+        (10, 11, {"highway": "steps", "level": "2;3"}),
+        (2, 1, {"highway": "steps", "level": "-1;0"}),
+        (3, 2, {"highway": "steps", "level": "-1;0"}),
+    ]
+    edges = pd.DataFrame({"u": [r[0] for r in rows], "v": [r[1] for r in rows]})
+    u_level, v_level = edge_levels(edges, [r[2] for r in rows])
+    expected = [(-1, -1), (0, 0), (-1, 0), (0, 1), (None, None), (-1, 0), (-1, -1)]
+    expected += [(None, None), (1, 0), (None, None), (None, None), (0, -1)]
+    moving = [
+        {"highway": "steps", "conveying": "no"},
+        {"highway": "footway", "conveying": "yes"},
+        {},
+    ]
+    assert edge_vertical(moving) == ["stairs", None, None]
+    assert [
+        (None if np.isnan(a) else a, None if np.isnan(b) else b)
+        for a, b in zip(u_level, v_level)
+    ] == expected
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])

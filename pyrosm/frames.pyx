@@ -115,12 +115,20 @@ cpdef prepare_node_gdf(nodes):
         node_gdf = gpd.GeoDataFrame()
     return node_gdf
 
-cpdef prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns, bint keep_metadata=True):
+cpdef prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns, bint keep_metadata=True,
+                           bint grouping_relations=False, member_box=None):
+    """The GeoDataFrame of the ``relations`` (``osm_type`` "relation"), built from their
+    member ways ``relation_ways`` and the nodes in ``node_coordinates``, with the tags
+    ``tags_as_columns`` as columns; with ``grouping_relations``, the relations that group
+    their members have a GeometryCollection of them (member nodes only inside
+    ``member_box``, when given). An empty GeoDataFrame when no relation is built."""
     if relations is not None:
         relations = prepare_relations(relations, relation_ways,
                                       node_coordinates,
                                       tags_as_columns,
-                                      keep_metadata)
+                                      keep_metadata,
+                                      grouping_relations,
+                                      member_box)
 
         # prepare_relations returns an empty GeoDataFrame when no relation could
         # be assembled into a geometry (e.g. every boundary relation is incomplete
@@ -165,9 +173,12 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
                            calculate_seg_lengths=False,
                            bint keep_metadata=True,
                            bint complete_relations=False,
-                           steps=None):
+                           steps=None,
+                           bint grouping_relations=False):
     """The GeoDataFrame of the nodes, ways and relations of a read (a network's edges,
-    and with them its nodes, with ``parse_network``), built in the steps
+    and with them its nodes, with ``parse_network``), the relations that group their
+    members with a GeometryCollection of them with ``grouping_relations`` (see
+    :mod:`pyrosm.grouping_relations`), built in the steps
     :data:`~pyrosm.utils.progress.BUILDING_WAYS` and
     :data:`~pyrosm.utils.progress.BUILDING_RELATIONS` (a network's
     :data:`~pyrosm.utils.progress.BUILDING_EDGES`) of ``steps`` (or None)."""
@@ -196,7 +207,13 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
     # Prepare relation data
     if not parse_network:
         start_step(steps, BUILDING_RELATIONS)
-    relation_gdf = prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns, keep_metadata)
+    # Without completion, a relation's member nodes count only inside the box, as its
+    # member ways do
+    member_box = None
+    if bounding_box is not None and not complete_relations:
+        member_box = box(*bounding_box) if isinstance(bounding_box, list) else bounding_box
+    relation_gdf = prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns, keep_metadata,
+                                        grouping_relations, member_box)
 
     # When not parsing the network,
     # nodes should be kept as part of the main output

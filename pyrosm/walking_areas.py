@@ -17,7 +17,7 @@ from geopandas import GeoDataFrame
 from rapidjson import dumps
 
 from pyrosm.distance import calculate_line_lengths
-from pyrosm.levels import level_ranges
+from pyrosm.levels import level_ranges, tag_layer
 from pyrosm.new_elements import _coordinate_key
 from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_key
 
@@ -197,15 +197,7 @@ def _level_position(tags):
             if low < 0 < high:
                 sides.add(0)
         return ranges, sides
-    try:
-        layer = float(tags.get("layer", 0))
-    except (TypeError, ValueError):
-        layer = 0.0
-    if not math.isfinite(layer):
-        layer = 0.0
-    if tags.get("tunnel") == "yes" and layer <= 0:
-        layer = -1.0
-    return None, {int(np.sign(layer))}
+    return None, {int(np.sign(tag_layer(tags)))}
 
 
 def _on_same_level(a, b):

@@ -9,6 +9,26 @@ new options that leave the defaults as they were, and fixes of calls that failed
 
 ## Unreleased
 
+- **Relations in custom-criteria reads.** `get_data_by_custom_criteria` returns the relations
+  that group elements, such as stop areas and routes, as rows of their own. The geometry of such
+  a row is a GeometryCollection of the relation's member ways and nodes. The member ways that
+  match the filter are rows of their own too. Earlier versions left out every member way of a
+  matched relation. They returned a stop area or route only when its member ways formed a
+  polygon or a line, and then with that polygon or line as its geometry. On the Helsinki region extract that pyrosm's tests use,
+  `custom_filter={"public_transport": True}` returns 6,497 rows instead of 5,536. Multipolygon and
+  boundary relations, and the other layer reads, are unchanged. To get the lines of routes, take
+  the rows whose geometry is a GeometryCollection and keep the line parts of their geometries:
+
+  ```python
+  import shapely
+
+  grouped = gdf[gdf.geom_type == "GeometryCollection"]
+  lines = grouped.geometry.apply(
+      lambda g: shapely.MultiLineString(
+          [part for part in g.geoms if part.geom_type == "LineString"]
+      )
+  )
+  ```
 - **Plain dictionary filters of networks.** A plain dictionary `custom_filter` of `get_network`
   and `get_graph` that keeps ways selects them by its own keys. Earlier versions considered only
   ways that have a `highway` tag. A plain dictionary with only a `highway` key, and a plain

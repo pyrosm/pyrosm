@@ -56,6 +56,7 @@ Current features
 - merge overlapping PBF extracts, such as two country extracts around a border town, into one file (NEW in v0.14.0)
 - edit the geometry of an OSM network -- move nodes, reshape ways, delete elements -- and write it back to PBF (NEW in v0.12.0)
 - export networks as a directed graph to ``igraph``, ``networkx`` and ``pandarm``, optionally with topological simplification (NEW in v0.11.0)
+- add the passages, platforms, stairs, escalators and lifts inside stations to a walking network, with the level at each end of an edge, and view the network in 3D
 
 When should I use Pyrosm?
 -------------------------
@@ -102,6 +103,8 @@ See :doc:`How to cite pyrosm <citation>` for the full reference and a BibTeX ent
     tags_and_columns.ipynb
     saving_and_cropping.ipynb
     graphs.ipynb
+    walking_areas.ipynb
+    indoor_networks.ipynb
     recipes.ipynb
     command_line.ipynb
 

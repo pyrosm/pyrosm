@@ -65,6 +65,7 @@ def _get_layer(
     progress=None,
     keep_node_info=False,
     unix_time=None,
+    grouping_relations=False,
 ):
     """Read a layer: decode the file in parallel selecting the elements that carry any of
     the filter keys (``osm_keys`` if given, else ``custom_filter``'s keys, or every tagged
@@ -88,6 +89,8 @@ def _get_layer(
     ``OSM(..., keep_node_info=True)`` does. ``unix_time`` (seconds), for a history file
     (``.osh.pbf``), reads each element's version at that time, as
     ``OSM(...).get_buildings(timestamp=...)`` and the other layer reads do.
+    ``grouping_relations`` returns the relations that group their members with them (see
+    :mod:`pyrosm.grouping_relations`), as ``get_data_by_custom_criteria`` does.
     """
     validate_progress(progress)
     workers = default_workers(workers)
@@ -135,6 +138,8 @@ def _get_layer(
             }
             if unix_time is not None:
                 key_params["unix_time"] = unix_time
+            if grouping_relations:
+                key_params["grouping_relations"] = True
             cache_path = cache.result_path(filepath, key_params)
             result = cache.materialize(
                 cache_path,
@@ -157,6 +162,7 @@ def _get_layer(
                         keep_other_tags=keep_other_tags,
                         keep_node_info=keep_node_info,
                         steps=steps,
+                        grouping_relations=grouping_relations,
                     ),
                     bbox_bounds=bounds,
                     requested_tag_keys=requested_tag_keys,
@@ -184,6 +190,7 @@ def _get_layer(
                 keep_other_tags=keep_other_tags,
                 keep_node_info=keep_node_info,
                 steps=steps,
+                grouping_relations=grouping_relations,
             )
 
         result = _decode_and_run(
@@ -563,6 +570,7 @@ def get_data_by_custom_criteria(
         progress=progress,
         keep_node_info=keep_node_info,
         unix_time=unix_time,
+        grouping_relations=True,
     )
 
 
