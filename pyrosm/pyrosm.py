@@ -70,6 +70,7 @@ from pyrosm.indoor import (
     DOOR_FILTER,
     INDOOR_AREA_FILTER,
     PLATFORM_FILTER,
+    check_escalator_slope,
     check_indoor_read,
     indoor_areas,
     split_lifts,
@@ -570,6 +571,7 @@ class OSM:
         shared_paths="local",
         walking_areas=False,
         indoor_elements=False,
+        escalator_slope=30,
     ):
         """
         Parses street networks from OSM
@@ -713,6 +715,16 @@ class OSM:
             levels. For the network types `walking`, `all` and `all_public` and with a
             `custom_filter`. Requires `nodes=True`.
 
+        escalator_slope : float or None (default: 30)
+            With `indoor_elements=True`, the angle in degrees at which escalators climb.
+            The `length` of an escalator (`vertical` "escalator") is measured along its
+            slope, so it includes the height the escalator climbs: pyrosm divides the
+            length on the map by the cosine of this angle. At 30 degrees, the length is
+            1.155 times the length on the map. 30 degrees is the most that the
+            escalator standards EN 115-1 and ASME A17.1 allow; EN 115-1 allows 35
+            degrees for small rises. `None` keeps the length on the map. The length of
+            stairs is their length on the map, and lift edges have length 0.
+
         Returns
         -------
 
@@ -735,6 +747,7 @@ class OSM:
         network_type = network_type_of_read(network_type, custom_filter)
         validate_bool(walking_areas, "walking_areas")
         validate_bool(indoor_elements, "indoor_elements")
+        check_escalator_slope(escalator_slope)
         if walking_areas and not nodes:
             raise ValueError(
                 "walking_areas=True needs nodes=True: the edges across an area join "
@@ -775,7 +788,8 @@ class OSM:
                 _warn_no_edges(custom_filter)
                 return node_gdf, edges
             node_gdf, edges = self._with_indoor_areas(node_gdf, edges, timestamp)
-            result = split_lifts(node_gdf, with_indoor_columns(edges))
+            edges = with_indoor_columns(edges, escalator_slope)
+            result = split_lifts(node_gdf, edges)
         return result
 
     @contextlib.contextmanager
@@ -2052,6 +2066,7 @@ class OSM:
         force_oneway=False,
         walking_areas=False,
         indoor_elements=False,
+        escalator_slope=30,
     ):
         """
         Read the street network of ``network_type``, or the network of a
@@ -2072,7 +2087,7 @@ class OSM:
         Parameters
         ----------
 
-        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep, timestamp, shared_paths, walking_areas, indoor_elements
+        network_type, extra_attributes, custom_filter, filter_type, tags_to_keep, timestamp, shared_paths, walking_areas, indoor_elements, escalator_slope
             As in :meth:`get_network`. With ``walking_areas=True``, the edges across
             walking areas have ``True`` in the edge attribute ``walking_area`` and are
             never merged with other edges when the graph is simplified. With
@@ -2099,6 +2114,7 @@ class OSM:
         validate_graph_type(graph_type)
         validate_bool(walking_areas, "walking_areas")
         validate_bool(indoor_elements, "indoor_elements")
+        check_escalator_slope(escalator_slope)
         follows_drawn_direction(force_bidirectional, force_oneway)
         network_type = network_type_of_read(network_type, custom_filter)
         if indoor_elements:
@@ -2164,6 +2180,7 @@ class OSM:
                     shared_paths=shared_paths,
                     walking_areas=walking_areas,
                     indoor_elements=indoor_elements,
+                    escalator_slope=escalator_slope,
                 )
             if edges is None:
                 return None
