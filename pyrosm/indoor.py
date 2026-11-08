@@ -1,6 +1,7 @@
 """The indoor elements of a network read with ``indoor_elements=True``.
 
-The edges get the level at each of their two ends, ``u_level`` and ``v_level``, from the
+The platforms (:data:`PLATFORM_FILTER`) are edges of the network, also those that its
+type leaves out, such as ``highway=platform`` in a walking network. The edges get the level at each of their two ends, ``u_level`` and ``v_level``, from the
 OSM ``level`` tags (see :func:`pyrosm.levels.level_ranges`). An edge with one level has it
 at both ends. A level list or range on stairs or an escalator runs between the levels of
 the walkways at its two ends; on another walkway, such as a corridor tagged ``level=0;1``,
@@ -12,11 +13,19 @@ without a ``level`` tag otherwise has no level.
 
 import numpy as np
 import pandas as pd
+from geopandas import GeoDataFrame
 
 from pyrosm.levels import level_ranges
 
 # The network types whose reads take indoor_elements=True.
 INDOOR_NETWORK_TYPES = ("walking", "all", "all_public")
+
+# The ways a read with indoor_elements=True adds to the network as platforms.
+PLATFORM_FILTER = {
+    "railway": ["platform"],
+    "public_transport": ["platform"],
+    "highway": ["platform"],
+}
 
 
 def check_indoor_read(network_type, custom_filter, nodes):
@@ -113,3 +122,50 @@ def with_levels(edges):
     tags = _frame_tags(edges, _frame_tag_columns(edges))
     u_level, v_level = edge_levels(edges, tags)
     return edges.assign(u_level=u_level, v_level=v_level)
+
+
+def with_platform_filter(read_filter):
+    """The keep filter ``read_filter`` (a dict of value lists, or of single values) that
+    also keeps the platforms of :data:`PLATFORM_FILTER`."""
+    combined = {
+        key: list(values) if isinstance(values, (list, tuple, set)) else [values]
+        for key, values in read_filter.items()
+    }
+    for key, values in PLATFORM_FILTER.items():
+        kept = combined.setdefault(key, [])
+        if True not in kept:
+            kept.extend(value for value in values if value not in kept)
+    return combined
+
+
+def with_platforms(nodes, edges, platform_nodes, platforms, walking_areas=False):
+    """The ``nodes`` and ``edges`` of a network read with the ``platforms`` (the edges of
+    a read of :data:`PLATFORM_FILTER`) whose ways are not edges yet (an edge across a
+    walking area carries a relation's id, which does not count), after them, and the
+    ``platform_nodes`` they add; the platforms alone when ``edges`` is None, with a
+    ``walking_area`` column of False with ``walking_areas``."""
+    if platforms is None or platforms.empty:
+        return nodes, edges
+    if edges is None:
+        if walking_areas:
+            platforms = platforms.assign(walking_area=False)
+        return platform_nodes, platforms
+    ways = edges["id"]
+    if "osm_type" in edges.columns:
+        ways = ways[edges["osm_type"] == "way"]
+    new = platforms[~platforms["id"].isin(ways)]
+    if "walking_area" in edges.columns:
+        new = new.assign(walking_area=False)
+    attrs = dict(edges.attrs)
+    edges = GeoDataFrame(
+        pd.concat([edges, new], ignore_index=True), geometry="geometry", crs=edges.crs
+    )
+    edges.attrs = attrs
+    used = pd.unique(np.concatenate([new["u"].to_numpy(), new["v"].to_numpy()]))
+    added = platform_nodes[
+        platform_nodes["id"].isin(used) & ~platform_nodes["id"].isin(nodes["id"])
+    ]
+    nodes = GeoDataFrame(
+        pd.concat([nodes, added], ignore_index=True), geometry="geometry", crs=nodes.crs
+    )
+    return nodes, edges

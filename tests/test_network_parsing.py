@@ -650,25 +650,92 @@ def test_network_reads_refuse_unusable_walking_areas(test_pbf, read, kwargs, mes
 
 
 def test_get_network_with_indoor_elements():
-    """indoor_elements=True adds u_level and v_level, the same in both engines: the
-    escalators of ways 18378805 (level=-3;-2) and 655180399 (level=0;2) run between the
-    levels at their ends; without the option the columns are not there."""
+    """indoor_elements=True adds the platforms, also those the walking network leaves
+    out (way 35744431, railway=platform, has no highway tag), once each and with their
+    nodes, and u_level and v_level; both engines return the same frames: the escalators
+    of ways 18378805 (level=-3;-2) and 655180399 (level=0;2) run between the levels at
+    their ends; without the option the columns and platforms are not there. A read
+    whose filter keeps no other way returns the platforms."""
+    import warnings
+
+    from geopandas.testing import assert_geodataframe_equal
+
     from pyrosm import OSM
 
     frames = [
         OSM(get_data("helsinki_pbf"), engine=engine).get_network(
-            "walking", nodes=True, indoor_elements=True
-        )[1]
+            "walking", nodes=True, indoor_elements=True, walking_areas=True
+        )
         for engine in ("in_memory", "out_of_core")
     ]
-    pd.testing.assert_frame_equal(
-        frames[0][["u_level", "v_level"]], frames[1][["u_level", "v_level"]]
-    )
-    ends = frames[1].set_index("id")[["u_level", "v_level"]]
+    for first, second in zip(*frames):
+        assert_geodataframe_equal(first, second, check_dtype=False)
+    nodes, edges = frames[1]
+    assert 35744431 in set(edges["id"])
+    assert not edges.duplicated(["id", "u", "v"]).any()
+    assert edges["u"].isin(nodes["id"]).all() and edges["v"].isin(nodes["id"]).all()
+    assert edges["walking_area"].dtype == bool
+    note = edges.attrs["pyrosm_read"]["filter"]
+    assert [["railway", "eq", "platform", 0]] in note
+    ends = edges.set_index("id")[["u_level", "v_level"]]
     assert sorted(ends.loc[18378805]) == [-3.0, -2.0]
     assert sorted(ends.loc[655180399]) == [0.0, 2.0]
     _, plain = OSM(get_data("helsinki_pbf")).get_network("walking", nodes=True)
-    assert "u_level" not in plain.columns
+    assert "u_level" not in plain.columns and 35744431 not in set(plain["id"])
+    # A filter that keeps no way: the platforms alone, without an empty-data warning
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _, platforms = OSM(get_data("helsinki_pbf")).get_network(
+            custom_filter={"highway": ["no-such-value"]},
+            nodes=True,
+            indoor_elements=True,
+        )
+    assert 35744431 in set(platforms["id"]) and "u_level" in platforms.columns
+
+
+def test_indoor_platforms_merge():
+    """A read without platforms stays as it is; the platforms add the ways that are not
+    edges yet (an edge across a walking area with the same id is a relation's) and
+    their new nodes (without a walking_area column when the read has none); the
+    recorded filter keeps the platforms next to the network's keys."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, Point
+
+    from pyrosm.indoor import with_platform_filter, with_platforms
+
+    points = [Point(0, 0), Point(1, 0), Point(2, 0)]
+    nodes = gpd.GeoDataFrame({"id": [1, 2]}, geometry=points[:2], crs=4326)
+    line = LineString(points[:2])
+    edges = gpd.GeoDataFrame({"id": [10], "u": [1], "v": [2]}, geometry=[line], crs=4326)
+    assert with_platforms(nodes, edges, None, None)[1] is edges
+    only = with_platforms(None, None, nodes, edges, walking_areas=True)[1]
+    assert only["walking_area"].tolist() == [False]
+    platform_nodes = gpd.GeoDataFrame({"id": [2, 3]}, geometry=points[1:], crs=4326)
+    platforms = gpd.GeoDataFrame(
+        {"id": [10, 20], "u": [1, 2], "v": [2, 3]},
+        geometry=[line, LineString(points[1:])],
+        crs=4326,
+    )
+    added = with_platforms(nodes, edges, platform_nodes, platforms)
+    assert added[1]["id"].tolist() == [10, 20] and added[0]["id"].tolist() == [1, 2, 3]
+    assert "walking_area" not in added[1].columns
+    # An edge across a walking area numbered like a platform way
+    crossing = edges.assign(osm_type="relation", id=20, walking_area=True)
+    ways = gpd.GeoDataFrame(pd.concat([edges.assign(osm_type="way"), crossing]))
+    nodes, edges = with_platforms(nodes, ways, platform_nodes, platforms)
+    assert edges["id"].tolist() == [10, 20, 20]
+    assert edges["walking_area"].tolist()[-1] is False
+    assert with_platform_filter({"highway": ["footway"]}) == {
+        "highway": ["footway", "platform"],
+        "railway": ["platform"],
+        "public_transport": ["platform"],
+    }
+    assert with_platform_filter({"highway": True, "area": True}) == {
+        "highway": [True],
+        "area": [True],
+        "railway": ["platform"],
+        "public_transport": ["platform"],
+    }
 
 
 def test_indoor_levels_of_edge_ends():

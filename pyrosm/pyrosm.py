@@ -66,7 +66,13 @@ from shapely.geometry import (
 )
 from pyrosm.boundary import get_boundary_data
 from pyrosm.layers import get_layer_data, without_building_parts
-from pyrosm.indoor import check_indoor_read, with_levels
+from pyrosm.indoor import (
+    PLATFORM_FILTER,
+    check_indoor_read,
+    with_levels,
+    with_platform_filter,
+    with_platforms,
+)
 from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
 from pyrosm.user_defined import get_user_defined_data
@@ -120,11 +126,14 @@ _DECODING_SECONDS = 3.5
 def _network_read_filter(args):
     """The filter a ``get_network`` call selects its ways by (see
     :func:`pyrosm.utils.records_read`): its ``custom_filter`` when that keeps, otherwise
-    the ways with a ``highway`` tag."""
+    the ways with a ``highway`` tag; with ``indoor_elements``, also the platforms."""
     custom_filter, filter_type = _network_filter_type(
         args["custom_filter"], args["filter_type"]
     )
-    return custom_filter if filter_type == "keep" else {"highway": [True]}
+    read_filter = custom_filter if filter_type == "keep" else {"highway": [True]}
+    if args.get("indoor_elements") and isinstance(read_filter, dict):
+        read_filter = with_platform_filter(read_filter)
+    return read_filter
 
 
 def _warn_no_edges(custom_filter):
@@ -678,13 +687,15 @@ class OSM:
             `nodes=True`.
 
         indoor_elements : bool (default: False)
-            If True, the edges get the level at each of their two ends in the columns
-            `u_level` and `v_level`, from the OSM `level` tags: an edge with one level
-            has it at both ends; stairs and escalators run between the levels of the
-            walkways they join (also those tagged with no level or one level); a
-            walkway tagged with several levels, such as `level=0;1`, and an edge without
-            a `level` tag have no level (NaN). For the network types `walking`, `all`
-            and `all_public` and with a `custom_filter`. Requires `nodes=True`.
+            If True, the platforms (`railway=platform`, `public_transport=platform` and
+            `highway=platform` ways) are edges of the network too, also where its type
+            leaves them out, and the edges get the level at each of their two ends in
+            the columns `u_level` and `v_level`, from the OSM `level` tags: an edge with
+            one level has it at both ends; stairs and escalators run between the levels
+            of the walkways they join (also those tagged with no level or one level); a
+            walkway tagged with several levels, such as `level=0;1`, and an edge
+            without a `level` tag have no level (NaN). For the network types `walking`,
+            `all` and `all_public` and with a `custom_filter`. Requires `nodes=True`.
 
         Returns
         -------
@@ -726,9 +737,28 @@ class OSM:
                 tags_to_keep,
                 shared_paths,
                 walking_areas,
+                warn_empty=not indoor_elements,
             )
-        if indoor_elements and result[1] is not None:
-            result = result[0], with_levels(result[1])
+        if indoor_elements:
+            platform_nodes, platforms = self._read_network(
+                network_type_of_read(None, PLATFORM_FILTER),
+                extra_attributes,
+                True,
+                timestamp,
+                PLATFORM_FILTER,
+                "keep",
+                tags_to_keep,
+                shared_paths,
+                False,
+                warn_empty=False,
+            )
+            node_gdf, edges = with_platforms(
+                *result, platform_nodes, platforms, walking_areas
+            )
+            if edges is None:
+                _warn_no_edges(custom_filter)
+                return node_gdf, edges
+            result = node_gdf, with_levels(edges)
         return result
 
     @contextlib.contextmanager
@@ -756,9 +786,11 @@ class OSM:
         tags_to_keep,
         shared_paths,
         walking_areas,
+        warn_empty=True,
     ):
         """The frames of :meth:`get_network`, with its ``custom_filter`` and
-        ``filter_type`` resolved and its ``network_type`` that of the read."""
+        ``filter_type`` resolved and its ``network_type`` that of the read; a read
+        without edges warns unless not ``warn_empty``."""
         advanced_filter = isinstance(custom_filter, CompiledFilter)
         if self._use_engine():
             result = self._read_engine(
@@ -774,7 +806,8 @@ class OSM:
                 shared_paths=shared_paths,
             )
             if (result[1] if nodes else result) is None:
-                _warn_no_edges(custom_filter)
+                if warn_empty:
+                    _warn_no_edges(custom_filter)
             elif walking_areas:
                 node_gdf, edges = result
                 result = node_gdf, self._with_walking_areas(
@@ -834,7 +867,8 @@ class OSM:
 
         edges = self._drop_node_lists(edges)
         if edges is None:
-            _warn_no_edges(custom_filter)
+            if warn_empty:
+                _warn_no_edges(custom_filter)
         elif walking_areas:
             edges = self._with_walking_areas(
                 node_gdf,
