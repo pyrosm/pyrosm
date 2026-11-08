@@ -129,7 +129,11 @@ setup(
     ],
     python_requires=">=3.11",
     install_requires=requirements,
-    extras_require={"notebook": ["ipywidgets>=8"], "recipes": ["pyyaml"]},
+    extras_require={
+        "notebook": ["ipywidgets>=8"],
+        "recipes": ["pyyaml"],
+        "3d": ["plotly"],
+    },
     entry_points={"console_scripts": ["pyrosm = pyrosm.cli:main"]},
     ext_modules=_ext_modules,
 )

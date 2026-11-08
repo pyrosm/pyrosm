@@ -43,6 +43,14 @@ Exporting to a graph
    OSM.get_graph
    OSM.to_graph
 
+Viewing indoor networks in 3D
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autosummary::
+   :toctree: api/
+
+   plot_3d
+
 Saving, cropping and merging PBF files
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

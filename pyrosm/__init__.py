@@ -26,10 +26,15 @@ __all__ = [
     "get_data_by_geocoding",
     "get_path",
     "merge_pbf",
+    "plot_3d",
 ]
 
 
 def __getattr__(name):
+    if name == "plot_3d":
+        from pyrosm.plot3d import plot_3d
+
+        return plot_3d
     if name == "Notice":
         from pyrosm.exceptions import Notice
 
