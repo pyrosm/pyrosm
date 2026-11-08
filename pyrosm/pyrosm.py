@@ -72,6 +72,7 @@ from pyrosm.indoor import (
     PLATFORM_FILTER,
     check_indoor_read,
     indoor_areas,
+    split_lifts,
     with_indoor_crossings,
     with_indoor_columns,
     with_platform_filter,
@@ -704,8 +705,13 @@ class OSM:
             walkway tagged with several levels, such as `level=0;1`, and an edge
             without a `level` tag have no level (NaN). The column `vertical` is
             `escalator` for steps that move (`conveying`), `stairs` for other steps and
-            missing on other edges. For the network types `walking`, `all` and
-            `all_public` and with a `custom_filter`. Requires `nodes=True`.
+            missing on other edges. A lift node (`highway=elevator`) where edges on
+            several levels meet is split into one node per level: the lowest keeps the
+            node's id, the others get negative ids derived from it, each edge ends at
+            the copy of its level, and edges of length 0 with the lift node's id,
+            `osm_type` "node" and `vertical` "lift" join the copies of neighbouring
+            levels. For the network types `walking`, `all` and `all_public` and with a
+            `custom_filter`. Requires `nodes=True`.
 
         Returns
         -------
@@ -769,7 +775,7 @@ class OSM:
                 _warn_no_edges(custom_filter)
                 return node_gdf, edges
             node_gdf, edges = self._with_indoor_areas(node_gdf, edges, timestamp)
-            result = node_gdf, with_indoor_columns(edges)
+            result = split_lifts(node_gdf, with_indoor_columns(edges))
         return result
 
     @contextlib.contextmanager
@@ -1822,9 +1828,12 @@ class OSM:
             The edges across walking areas of :meth:`get_network` (``walking_area``
             True) are written as new ways with negative ids, each from its node ``u``
             to its node ``v`` through new nodes where its line bends, with the area's
-            tags without ``area=yes`` and ``type=multipolygon``; a
-            :class:`~pyrosm.exceptions.Notice` says how many. The ``walking_area``
-            column is not written.
+            tags without ``area=yes`` and ``type=multipolygon``. The lifts that an
+            indoor network split per level are written so: the copies as new nodes
+            tagged ``highway=elevator`` with their level, the lift edges as new ways
+            tagged ``highway=elevator``, and the ways at those lifts end at the copy of
+            their level. A :class:`~pyrosm.exceptions.Notice` says how many of these
+            elements are written. The ``walking_area`` column is not written.
 
         output_path : str
             Where to write the PBF.

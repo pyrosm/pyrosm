@@ -3834,3 +3834,100 @@ def test_edges_across_walking_areas_in_write_pbf_and_add_elements(operation, tmp
     ]
     assert added[0].drop(columns="geometry").equals(added[1].drop(columns="geometry"))
     assert added[0]["nodes"].iloc[0][0] < 0
+
+
+def test_write_pbf_writes_lifts_split_per_level(tmp_path):
+    """The lifts an indoor network split per level are written as copies (new nodes, that
+    move with a moved lift node),
+    lift ways tagged highway=elevator and walkways that end at the copy of their level,
+    with a Notice; the written file connects the levels through the lift way and has
+    no tags of the computed columns. A deleted lift node, or a file that has the
+    copies' ids already, is refused."""
+    import networkx as nx
+
+    from pyrosm import Notice
+
+    osm = OSM(get_data("helsinki_pbf"))
+    nodes, edges = osm.get_network("walking", nodes=True, indoor_elements=True)
+    path = str(tmp_path / "lifts.osm.pbf")
+    with pytest.warns(Notice, match="3 copies of lift nodes as new nodes, 3 lift edges"):
+        osm.write_pbf([nodes, edges], path, subset_only=True)
+    # Moving a lift node moves its copies
+    lift = nodes[nodes["id"] == 2039713549].assign(geometry=[Point(24.95, 60.17)])
+    moved = str(tmp_path / "moved.osm.pbf")
+    with pytest.warns(Notice):
+        osm.write_pbf([lift, edges], moved, subset_only=True, apply_geometry=True)
+    copy = OSM(moved, keep_node_info=True).get_network("walking", nodes=True)[0]
+    copy = copy.set_index("id").loc[-2039713549001]
+    assert (copy["lon"], copy["lat"]) == pytest.approx((24.95, 60.17))
+    _, back = OSM(path).get_network("walking", nodes=True)
+    assert -2039713549001 in set(back.loc[back["id"] == 470012326, "v"])
+    lift = back[(back["highway"] == "elevator") & (back["u"] == 2039713549)]
+    assert lift["v"].tolist() == [-2039713549001]
+    graph = nx.Graph(list(zip(back["u"], back["v"])))
+    assert nx.has_path(graph, 2039713539, 2039713561)
+    # The columns the indoor read computes are not tags
+    assert not back["tags"].dropna().str.contains("u_level|vertical").any()
+    with pytest.raises(ValueError, match="for lifts"):
+        osm.write_pbf([nodes, edges], path, delete=[("node", 2039713549)])
+    with pytest.raises(ValueError, match="ids of the lift copies"):
+        OSM(path).write_pbf([nodes, edges], str(tmp_path / "again.osm.pbf"))
+
+
+def test_ways_point_at_the_copy_of_a_split_lift():
+    """A way at a split lift ends at the copy of its level in the written file, also
+    when the write edits its member list already; a way not in the file is skipped, and
+    one that passes the lift node twice is refused."""
+    from pyrosm.pbf_writer import _Edits, _repoint_lift_ways
+
+    edits = _Edits()
+    edits.way_refs[2] = [5, 1, 6]
+    ways = {1: {"nodes": [3, 1]}, 2: {"nodes": [5, 1]}}
+    _repoint_lift_ways(edits, ways, {(1, 1): -1001, (2, 1): -1001, (9, 1): -1001})
+    assert edits.way_refs == {1: [3, -1001], 2: [5, -1001, 6]}
+    with pytest.raises(ValueError, match="passes lift node 1 more than once"):
+        _repoint_lift_ways(_Edits(), {3: {"nodes": [1, 5, 1]}}, {(3, 1): -1001})
+
+
+def test_split_lift_parts_that_cannot_be_written():
+    """A way that meets a split lift on two levels, a node row with a copy's id but
+    another place, and two lifts with the same copy id are refused."""
+    from shapely.geometry import LineString, Point
+
+    from pyrosm.pbf_writer import _check_copy_rows, _lift_parts
+
+    lift = gpd.GeoDataFrame(
+        {
+            "id": [1, 7, 7],
+            "osm_type": ["node", "way", "way"],
+            "u": [1, 3, 1],
+            "v": [-1001, -1001, 4],
+            "u_level": [0.0, 1.0, 0.0],
+            "v_level": [1.0, 1.0, 0.0],
+            "vertical": ["lift", None, None],
+        },
+        geometry=[LineString([(0, 0), (0, 0)])] * 3,
+        crs=4326,
+    )
+    with pytest.raises(ValueError, match="meets lift node 1 on two levels"):
+        _lift_parts([lift])
+    copies, _, repoint = _lift_parts([lift.iloc[:2]])
+    assert repoint == {(7, 1): -1001}
+    # A vertical column without the level columns is a tag, not a lift
+    assert _lift_parts([lift.drop(columns="u_level")]) == ({}, [], {})
+    # A line across the area of way 7 that ends at the lift is no segment of way 7
+    across = lift.assign(walking_area=[False, False, True])
+    assert _lift_parts([across])[2] == {(7, 1): -1001}
+    node = gpd.GeoDataFrame({"id": [-1001]}, geometry=[Point(1, 1)], crs=4326)
+    with pytest.raises(ValueError, match="id of a copy of a split lift"):
+        _check_copy_rows([node], copies)
+    way = gpd.GeoDataFrame(
+        {"id": [-1001], "osm_type": ["way"]},
+        geometry=[LineString([(1, 1), (2, 2)])],
+        crs=4326,
+    )
+    _check_copy_rows([way], copies)  # a way with that id is no copy
+    other = lift.iloc[:1].assign(id=2, u=2, geometry=[LineString([(5, 5), (5, 5)])])
+    with pytest.raises(ValueError, match="two different places"):
+        _lift_parts([lift.iloc[:1], other])
+

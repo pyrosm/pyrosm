@@ -12,12 +12,16 @@ the data does not say which part is on which level, and both ends stay empty. St
 an escalator without a level range (no ``level`` tag or a single level) take their ends
 from the walkways they join, when each end has one level and the two differ. An edge
 without a ``level`` tag otherwise has no level. The column ``vertical`` marks escalators
-and stairs.
+and stairs. A lift node (``highway=elevator``) where walkways on several levels meet is
+split into one node per level, joined by lift edges (see :func:`split_lifts`).
 """
+
+import json
 
 import numpy as np
 import pandas as pd
 from geopandas import GeoDataFrame
+from shapely.geometry import LineString
 
 from pyrosm.levels import level_ranges
 
@@ -252,4 +256,106 @@ def with_indoor_crossings(nodes, edges, areas, doors):
                 geometry="geometry",
                 crs=nodes.crs,
             )
+    return nodes, edges
+
+
+# The largest lift node id whose copies' ids (see lift_copy_id) fit in a signed 64-bit
+# integer.
+_MAX_LIFT_ID = (2**63 - 1) // 1000 - 1
+
+
+def lift_copy_id(lift, rank):
+    """The id of the copy of the lift node ``lift`` at its ``rank``-th level from the
+    lowest (1 or more): negative and the same on every read."""
+    return -(int(lift) * 1000 + rank)
+
+
+def _lift_ids(nodes):
+    """The ids of the lift nodes (``highway=elevator``) among ``nodes``, by their
+    ``tags`` column (dicts, or JSON text)."""
+    if "tags" not in nodes.columns:
+        return set()
+    found = set()
+    for node, tags in zip(nodes["id"], nodes["tags"]):
+        if isinstance(tags, str):
+            tags = json.loads(tags)
+        if isinstance(tags, dict) and tags.get("highway") == "elevator":
+            found.add(int(node))
+    return found
+
+
+def split_lifts(nodes, edges):
+    """``nodes`` and ``edges`` (with ``u_level`` and ``v_level``) with each lift node
+    where edges on two or more levels meet split into one node per level: the lowest
+    keeps the node's id, the others get :func:`lift_copy_id`, and each edge ends at the
+    copy of its level there (an end without a level stays at the lowest). Lift edges of
+    length 0 join the copies of neighbouring levels, with the lift node's id and
+    ``osm_type`` "node", ``highway`` "elevator" and ``vertical`` "lift". A copy id that
+    another node has already raises a ValueError; a lift node with a negative id (one
+    pyrosm wrote) is not split."""
+    lifts = _lift_ids(nodes)
+    if not lifts:
+        return nodes, edges
+    u, v = edges["u"].to_numpy().copy(), edges["v"].to_numpy().copy()
+    u_level, v_level = edges["u_level"].to_numpy(), edges["v_level"].to_numpy()
+    levels = {}
+    for ends, end_levels in ((u, u_level), (v, v_level)):
+        for i in np.flatnonzero(np.isin(ends, list(lifts)) & ~np.isnan(end_levels)):
+            levels.setdefault(int(ends[i]), set()).add(float(end_levels[i]))
+    at = nodes.set_index("id")
+    taken = set(nodes["id"].tolist())
+    copies, lift_rows = [], []
+    for lift, found in sorted(levels.items()):
+        if len(found) < 2 or not 0 < lift <= _MAX_LIFT_ID:
+            continue
+        ordered = sorted(found)
+        ids = {level: lift_copy_id(lift, rank) for rank, level in enumerate(ordered)}
+        ids[ordered[0]] = lift
+        clash = [node for node in list(ids.values())[1:] if node in taken]
+        if clash or len(ordered) >= 1000:
+            raise ValueError(
+                "Lift node %d cannot be split per level: the ids of its copies, %s, "
+                "are taken or too many." % (lift, sorted(ids.values())[:3])
+            )
+        taken.update(ids.values())
+        for ends, end_levels in ((u, u_level), (v, v_level)):
+            for i in np.flatnonzero((ends == lift) & ~np.isnan(end_levels)):
+                ends[i] = ids[float(end_levels[i])]
+        row = at.loc[lift]
+        point = row.geometry
+        for level in ordered[1:]:
+            copies.append(dict(row, id=ids[level]))
+        for low, high in zip(ordered, ordered[1:]):
+            lift_rows.append(
+                {
+                    "id": lift,
+                    "osm_type": "node",
+                    "highway": "elevator",
+                    "u": ids[low],
+                    "v": ids[high],
+                    "length": 0.0,
+                    "u_level": low,
+                    "v_level": high,
+                    "vertical": "lift",
+                    "geometry": LineString([point, point]),
+                }
+            )
+    if not lift_rows:
+        return nodes, edges
+    edges = edges.assign(u=u, v=v)
+    if "walking_area" in edges.columns:
+        for row in lift_rows:
+            row["walking_area"] = False
+    attrs = dict(edges.attrs)
+    edges = GeoDataFrame(
+        pd.concat([edges, pd.DataFrame(lift_rows)], ignore_index=True),
+        geometry="geometry",
+        crs=edges.crs,
+    )
+    edges.attrs = attrs
+    nodes = GeoDataFrame(
+        pd.concat([nodes, pd.DataFrame(copies)], ignore_index=True),
+        geometry="geometry",
+        crs=nodes.crs,
+    )
     return nodes, edges

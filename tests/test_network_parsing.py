@@ -654,8 +654,8 @@ def test_get_network_with_indoor_elements(walking_areas):
     """indoor_elements=True adds the platforms, also those the walking network leaves
     out (way 35744431, railway=platform, has no highway tag), once each and with their
     nodes, crosses the platform areas (way 8137136), and adds u_level, v_level and
-    vertical (way 23653232 is stairs, a platform is neither); both engines return the
-    same frames: the escalators
+    vertical (way 23653232 is stairs, a platform is neither), and splits lift node
+    2039713549 per level; both engines return the same frames: the escalators
     of ways 18378805 (level=-3;-2) and 655180399 (level=0;2) run between the levels at
     their ends; without the option the columns and platforms are not there. A read
     whose filter keeps no other way returns the platforms."""
@@ -687,6 +687,11 @@ def test_get_network_with_indoor_elements(walking_areas):
     assert sorted(ends.loc[655180399, ["u_level", "v_level"]]) == [0.0, 2.0]
     assert set(ends.loc[[18378805, 23653232], "vertical"]) == {"escalator", "stairs"}
     assert ends.loc[[35744431], "vertical"].isna().all()
+    # The lift node 2039713549 joins walkways on levels -2 and 0
+    lift = edges[(edges["vertical"] == "lift") & (edges["id"] == 2039713549)]
+    assert lift[["u", "v"]].values.tolist() == [[2039713549, -2039713549001]]
+    assert -2039713549001 in set(edges.loc[edges["id"] == 470012326, "v"])
+    assert -2039713549001 in set(nodes["id"])
     _, plain = OSM(get_data("helsinki_pbf")).get_network("walking", nodes=True)
     assert "u_level" not in plain.columns and 35744431 not in set(plain["id"])
     # A filter that keeps no way: the platforms alone, without an empty-data warning
@@ -796,6 +801,67 @@ def test_indoor_area_crossings_enter_through_doors():
     assert indoor_areas(areas, crossed) is None and indoor_areas(None, plain) is None
     lines = areas.assign(geometry=[LineString([(0, 0), (1, 1)])])
     assert indoor_areas(lines, plain) is None
+
+
+def test_indoor_lifts_split_per_level():
+    """A lift node where edges on three levels meet becomes one node per level: the
+    lowest keeps the id, each edge ends at the copy of its level (an end without a level
+    stays at the lowest), and lift edges join neighbouring levels; a lift node with one
+    level (tags as JSON text) and a node that is not a lift stay as they are."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, Point
+
+    from pyrosm.indoor import lift_copy_id, split_lifts
+
+    tags = [{"highway": "elevator"}, {"highway": "elevator"}, {}, {}]
+    nodes = gpd.GeoDataFrame(
+        {"id": [1, 2, 3, 4], "tags": tags},
+        geometry=[Point(0, 0), Point(1, 0), Point(2, 0), Point(3, 0)],
+        crs=4326,
+    )
+    ends = [(3, 1, -1.0), (1, 4, 0.0), (4, 1, 2.0), (1, 3, np.nan), (2, 3, 0.0)]
+    edges = gpd.GeoDataFrame(
+        {
+            "id": [10, 11, 12, 13, 14],
+            "osm_type": "way",
+            "u": [e[0] for e in ends],
+            "v": [e[1] for e in ends],
+            "u_level": [e[2] for e in ends],
+            "v_level": [e[2] for e in ends],
+        },
+        geometry=[LineString([(0, 0), (1, 1)])] * 5,
+        crs=4326,
+    )
+    nodes, edges = split_lifts(nodes, edges)
+    copy0, copy2 = lift_copy_id(1, 1), lift_copy_id(1, 2)
+    assert edges.loc[:4, ["u", "v"]].values.tolist() == [
+        [3, 1], [copy0, 4], [4, copy2], [1, 3], [2, 3]
+    ]
+    lifts = edges[edges["vertical"] == "lift"]
+    assert lifts[["id", "osm_type", "u", "v", "length"]].values.tolist() == [
+        [1, "node", 1, copy0, 0.0],
+        [1, "node", copy0, copy2, 0.0],
+    ]
+    assert sorted(nodes["id"]) == [copy2, copy0, 1, 2, 3, 4]
+    assert split_lifts(nodes.drop(columns="tags"), edges)[1] is edges
+    one_level = nodes.assign(tags=["{}", '{"highway": "elevator"}'] + ["{}"] * 4)
+    assert split_lifts(one_level, edges)[1] is edges
+    # A copy's id taken by another node
+    taken = gpd.GeoDataFrame(
+        {"id": [1, 2, copy0], "tags": [{"highway": "elevator"}, {}, {}]},
+        geometry=[Point(0, 0)] * 3,
+        crs=4326,
+    )
+    two = gpd.GeoDataFrame(
+        {"u": [2, 1], "v": [1, copy0], "u_level": [-1.0, 0.0], "v_level": [-1.0, 0.0]},
+        geometry=[LineString([(0, 0), (1, 1)])] * 2,
+        crs=4326,
+    )
+    with pytest.raises(ValueError, match="cannot be split per level"):
+        split_lifts(taken, two)
+    # A lift node that pyrosm wrote (negative id) is not split
+    written = taken.assign(id=[-1, 2, 3])
+    assert split_lifts(written, two.replace({1: -1}))[1]["u"].tolist() == [2, -1]
 
 
 def test_indoor_levels_of_edge_ends():
