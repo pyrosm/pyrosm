@@ -20,16 +20,16 @@ from pyrosm.levels import level_ranges, tag_layer
 
 # (name in the legend, colour, line width, dash) of each kind of edge
 _STYLES = {
-    "street": ("Walkways at street level", "#8a8f98", 1.5, "solid"),
+    "street": ("Walkways at street level", "#c3c7ce", 1.5, "solid"),
     "levels": ("Walkways on other levels", "#3987e5", 3.5, "solid"),
     "multi": ("Walkways tagged with several levels", "#3987e5", 3.0, "dot"),
     "escalator": ("Escalators", "#c98500", 6.0, "solid"),
     "moving_walkway": ("Moving walkways", "#c98500", 6.0, "dash"),
-    "stairs": ("Stairs", "#199e70", 5.0, "solid"),
-    "lift": ("Lifts", "#6250d6", 5.0, "dash"),
-    "platform": ("Platforms", "#e87ba4", 5.0, "solid"),
+    "stairs": ("Stairs", "#444b55", 5.0, "solid"),
+    "lift": ("Lifts", "#8e44ad", 5.0, "dash"),
+    "platform": ("Platforms", "#199e70", 5.0, "solid"),
     "crossing": ("Lines across areas", "#b8bcc4", 1.5, "solid"),
-    "area": ("Area outlines", "#5b6170", 2.5, "dot"),
+    "area": ("Area outlines", "#8a8f98", 2.5, "dot"),
 }
 # The route: red, wide and solid, drawn over the edges; the escalators are amber so that
 # they stay apart from it
