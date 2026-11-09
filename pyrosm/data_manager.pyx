@@ -192,11 +192,11 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
     if relations is not None:
         filtered_relations = get_relation_arrays(relations, osm_keys, data_filter, filter_type, keep_all)
 
-        # Get all way-ids that are associated with relations
+        # The ids of the relations' way members (a node or relation can share a way's id)
         relation_way_ids = None
         if filtered_relations is not None:
             members = concatenate_dicts_of_arrays(filtered_relations['members'])
-            relation_way_ids = members["member_id"]
+            relation_way_ids = members["member_id"][members["member_type"] == b"way"]
 
             if type(relation_way_ids) not in [list, np.ndarray]:
                 raise ValueError("'relation_way_ids' should be a list or an array.")
