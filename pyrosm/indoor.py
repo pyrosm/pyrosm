@@ -132,6 +132,47 @@ def edge_levels(edges, tags, node_levels=None):
     return u_level, v_level
 
 
+def stair_end_levels(edges, ends):
+    """``{node: level}`` for the nodes ``ends`` that end stairs, escalators or moving
+    walkways with a level range in ``edges``, where :func:`edge_levels` finds the level
+    of that end from the rest of the way: from the walkways at its other end, or from
+    its incline."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
+    u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
+    at_end = np.flatnonzero(np.isin(u, ends) | np.isin(v, ends))
+    if "id" not in edges.columns or not len(at_end):
+        return {}
+    columns = _frame_tag_columns(edges)
+    stairs = []
+    for row, tags in zip(at_end, _frame_tags(edges.iloc[at_end], columns)):
+        ranges = level_ranges(tags.get("level"))
+        if (
+            _is_vertical(tags)
+            and ranges
+            and len({r for pair in ranges for r in pair}) > 1
+        ):
+            stairs.append(row)
+    if not stairs:
+        return {}
+    ways = np.isin(edges["id"].to_numpy(), edges["id"].to_numpy()[stairs])
+    way_nodes = np.concatenate([u[ways], v[ways]])
+    near = np.flatnonzero(np.isin(u, way_nodes) | np.isin(v, way_nodes))
+    subset = edges.iloc[near]
+    u_level, v_level = edge_levels(subset, _frame_tags(subset, columns))
+    wanted = set(np.asarray(ends).tolist()) & set(
+        np.concatenate([u[stairs], v[stairs]]).tolist()
+    )
+    found = {}
+    for a, b, level_a, level_b, way in zip(
+        u[near], v[near], u_level, v_level, ways[near]
+    ):
+        for node, level in ((a, level_a), (b, level_b)):
+            if way and node in wanted and not np.isnan(level):
+                found[node] = float(level)
+    return found
+
+
 def _rise(tags):
     """1 when a way with the OSM tags ``tags`` rises along its drawn direction
     (``incline=up``), -1 when it falls (``incline=down``), else 0."""

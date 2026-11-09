@@ -2,7 +2,9 @@
 
 A walking area is a closed way tagged ``area=yes`` or a multipolygon relation, such as a
 pedestrian square, whose tags pass the network's filter. Its entrances are the network's
-nodes on its outline and the network's dead ends inside it on the area's level. Each
+nodes on its outline and the network's dead ends inside it on the area's level (for the
+end of stairs with a level range, the level of that end when the rest of the stairs
+gives it). Each
 pair of entrances gets one edge along the shortest line inside the area, which bends
 only at the area's inward corners: the corners of the outline that point into the area
 and those of its holes.
@@ -165,7 +167,12 @@ def crossing_rows(nodes, edges, areas):
 
 def _dead_end_level_positions(edges, dead_ends):
     """``{node id: position}`` of the nodes ``dead_ends``, each a node of one of
-    ``edges``, by the tags of that edge (see :func:`_level_position`)."""
+    ``edges``, by the tags of that edge (see :func:`_level_position`); for the end of
+    stairs, an escalator or a moving walkway with a level range, by the level of that end
+    when the rest of the way gives it (see :func:`pyrosm.indoor.stair_end_levels`)."""
+    from pyrosm.indoor import stair_end_levels
+
+    known = stair_end_levels(edges, dead_ends)
     u = edges["u"].to_numpy()
     v = edges["v"].to_numpy()
     rows = np.flatnonzero(np.isin(u, dead_ends) | np.isin(v, dead_ends))
@@ -177,7 +184,10 @@ def _dead_end_level_positions(edges, dead_ends):
     ):
         position = _level_position(tags)
         for node in (a, b):
-            if node in wanted:
+            if node in known:
+                level = known[node]
+                positions[node] = ([(level, level)], {int(np.sign(level))})
+            elif node in wanted:
                 positions[node] = position
     return positions
 

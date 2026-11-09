@@ -515,6 +515,34 @@ def test_walking_areas_join_dead_ends_on_their_level(end_tags, area_tags, joined
 
 
 @pytest.mark.parametrize(
+    "stair_tags, other_end_level, joined",
+    [
+        ({"level": "0;1"}, "1", False),
+        ({"level": "0;1"}, "0", True),
+        ({"level": "0;1", "incline": "up"}, None, False),
+        ({"level": "0;1", "incline": "down"}, None, True),
+        ({"level": "0;1"}, None, True),
+    ],
+)
+def test_walking_areas_join_stair_ends_on_their_level(stair_tags, other_end_level, joined):
+    """The dead end of stairs with a level range is joined to an area only on the level
+    of that end: the other end of the range from a walkway at the stairs' other end, or
+    the end that the stairs' incline gives; with neither, any level of the range."""
+    from rapidjson import dumps
+
+    from pyrosm import walking_areas
+
+    nodes, edges, areas, _ = _walking_area_frames()
+    edges.loc[0, "highway"] = "steps"  # the way from node 4, inside, to node 1
+    edges.loc[0, "tags"] = dumps(stair_tags)
+    if other_end_level is not None:
+        edges.loc[1, "tags"] = dumps({"level": other_end_level})  # a way at node 1
+    areas.loc[0, "tags"] = dumps({"level": "1"})
+    rows = walking_areas.crossing_rows(nodes, edges, areas)
+    assert ((rows["u"] == 4) | (rows["v"] == 4)).any() == joined
+
+
+@pytest.mark.parametrize(
     "network_type, kept",
     [("walking", [1, 4, 8, 9]), ("cycling", [1, 8, 9]), ("driving", [])],
 )
