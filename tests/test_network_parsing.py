@@ -977,6 +977,118 @@ def test_indoor_levels_of_edge_ends():
     ] == expected
 
 
+def test_indoor_levels_along_ways_of_several_edges():
+    """Stairs split into several edges get their levels per way: the two ends from the
+    walkways there or, for a level range, from the end node's own level, a walkway
+    joined in between (or an inner node's own level) is kept, and the other inner nodes
+    get levels in proportion to the distance along the way, whichever way an edge is
+    drawn. An end without a level takes the other end of the range from the nearest
+    inner level; ends on one level reach the other end of the range in between; a way
+    without a range keeps its outermost levels up to its ends; a way with an edge of
+    length 0 counts each edge as one. A way whose edges branch or close a ring is taken
+    edge by edge."""
+    import geopandas as gpd
+
+    from pyrosm.indoor import edge_levels, node_levels
+
+    walkway = {"highway": "corridor"}
+    rows = [
+        # Way 30, -1;0 over 10-11-12-13 (lengths 1, 1, 2), walkways at both ends
+        (30, 10, 11, 1, {"highway": "steps", "level": "-1;0"}),
+        (30, 12, 11, 1, {"highway": "steps", "level": "-1;0"}),
+        (30, 12, 13, 2, {"highway": "steps", "level": "-1;0"}),
+        (1, 1, 10, 1, {**walkway, "level": "0"}),
+        (2, 13, 2, 1, {**walkway, "level": "-1"}),
+        # Way 31, -1;0 over 20-21-22, node 20 tagged level=0, no walkways
+        (31, 20, 21, 1, {"highway": "steps", "level": "-1;0"}),
+        (31, 21, 22, 1, {"highway": "steps", "level": "-1;0"}),
+        # Way 32, -2;0 over 40-41-42 (lengths 1, 3), a walkway at -1 in between
+        (32, 40, 41, 1, {"highway": "steps", "level": "-2;0"}),
+        (32, 41, 42, 3, {"highway": "steps", "level": "-2;0"}),
+        (3, 3, 40, 1, {**walkway, "level": "0"}),
+        (4, 41, 4, 1, {**walkway, "level": "-1"}),
+        (5, 42, 5, 1, {**walkway, "level": "-2"}),
+        # Way 33 without a level tag over 50-51-52
+        (33, 50, 51, 1, {"highway": "steps"}),
+        (33, 51, 52, 1, {"highway": "steps"}),
+        (6, 6, 50, 1, {**walkway, "level": "0"}),
+        (7, 52, 7, 1, {**walkway, "level": "-1"}),
+        # Way 34 branches at 71, way 35 is a line and a ring: edge by edge
+        (34, 70, 71, 1, {"highway": "steps", "level": "-1;0"}),
+        (34, 71, 72, 1, {"highway": "steps", "level": "-1;0"}),
+        (34, 71, 73, 1, {"highway": "steps", "level": "-1;0"}),
+        (35, 80, 81, 1, {"highway": "steps", "level": "-1;0"}),
+        (35, 82, 83, 1, {"highway": "steps", "level": "-1;0"}),
+        (35, 83, 84, 1, {"highway": "steps", "level": "-1;0"}),
+        (35, 84, 82, 1, {"highway": "steps", "level": "-1;0"}),
+        (8, 8, 70, 1, {**walkway, "level": "0"}),
+        (9, 9, 80, 1, {**walkway, "level": "0"}),
+        # Way 36, -1;0 with both ends at -1; way 37 the same through node 94 (level=0)
+        (36, 90, 91, 1, {"highway": "steps", "level": "-1;0"}),
+        (36, 91, 92, 1, {"highway": "steps", "level": "-1;0"}),
+        (37, 93, 94, 1, {"highway": "steps", "level": "-1;0"}),
+        (37, 94, 95, 3, {"highway": "steps", "level": "-1;0"}),
+        (10, 111, 90, 1, {**walkway, "level": "-1"}),
+        (11, 92, 112, 1, {**walkway, "level": "-1"}),
+        (12, 113, 93, 1, {**walkway, "level": "-1"}),
+        (13, 95, 114, 1, {**walkway, "level": "-1"}),
+        # Way 38, 0;1 over 96-99, ends unknown, a walkway at 1 at node 98
+        (38, 96, 97, 1, {"highway": "steps", "level": "0;1"}),
+        (38, 97, 98, 1, {"highway": "steps", "level": "0;1"}),
+        (38, 98, 99, 1, {"highway": "steps", "level": "0;1"}),
+        (14, 98, 115, 1, {**walkway, "level": "1"}),
+        # Way 39 without a level tag over 100-103, walkways at 101 and 102 only
+        (39, 100, 101, 1, {"highway": "steps"}),
+        (39, 101, 102, 1, {"highway": "steps"}),
+        (39, 102, 103, 1, {"highway": "steps"}),
+        (15, 116, 101, 1, {**walkway, "level": "0"}),
+        (16, 102, 117, 1, {**walkway, "level": "-1"}),
+        # Way 40, -1;0 over 120-121-122 with an edge of length 0: steps of one
+        (40, 120, 121, 0, {"highway": "steps", "level": "-1;0"}),
+        (40, 121, 122, 1, {"highway": "steps", "level": "-1;0"}),
+        (17, 118, 120, 1, {**walkway, "level": "0"}),
+        (18, 122, 119, 1, {**walkway, "level": "-1"}),
+    ]
+    edges = pd.DataFrame(
+        {
+            "id": [r[0] for r in rows],
+            "u": [r[1] for r in rows],
+            "v": [r[2] for r in rows],
+            "length": [float(r[3]) for r in rows],
+        }
+    )
+    nodes = gpd.GeoDataFrame(
+        {
+            "id": [20, 21, 22, 23, 94],
+            "tags": [{"level": "0"}, '{"level": "-1;0"}', {}, None, {"level": "0"}],
+        }
+    )
+    assert node_levels(nodes) == {20: (0.0,), 94: (0.0,)}
+    u_level, v_level = edge_levels(edges, [r[4] for r in rows], node_levels(nodes))
+    got = {
+        (r[0], r[1], r[2]): (a, b)
+        for r, a, b in zip(rows, u_level, v_level)
+        if r[0] >= 30
+    }
+    nan = (np.nan, np.nan)
+    expected = {
+        (30, 10, 11): (0.0, -0.25), (30, 12, 11): (-0.5, -0.25), (30, 12, 13): (-0.5, -1.0),
+        (31, 20, 21): (0.0, -0.5), (31, 21, 22): (-0.5, -1.0),
+        (32, 40, 41): (0.0, -1.0), (32, 41, 42): (-1.0, -2.0),
+        (33, 50, 51): (0.0, -0.5), (33, 51, 52): (-0.5, -1.0),
+        (34, 70, 71): (0.0, -1.0), (34, 71, 72): nan, (34, 71, 73): nan,
+        (35, 80, 81): (0.0, -1.0), (35, 82, 83): nan, (35, 83, 84): nan, (35, 84, 82): nan,
+        (36, 90, 91): (-1.0, 0.0), (36, 91, 92): (0.0, -1.0),
+        (37, 93, 94): (-1.0, 0.0), (37, 94, 95): (0.0, -1.0),
+        (38, 96, 97): (0.0, 0.5), (38, 97, 98): (0.5, 1.0), (38, 98, 99): (1.0, 0.0),
+        (39, 100, 101): (0.0, 0.0), (39, 101, 102): (0.0, -1.0), (39, 102, 103): (-1.0, -1.0),
+        (40, 120, 121): (0.0, -0.5), (40, 121, 122): (-0.5, -1.0),
+    }
+    assert got.keys() == expected.keys()
+    for key, levels in expected.items():
+        np.testing.assert_array_equal(got[key], levels, err_msg=str(key))
+
+
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
 def test_get_network_with_walking_areas_reports_one_progress(engine, monkeypatch):
     """The network read and the read of the walking areas report one progress from 0 to

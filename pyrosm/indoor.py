@@ -1,20 +1,28 @@
 """The indoor elements of a network read with ``indoor_elements=True``.
 
 The platforms (:data:`PLATFORM_FILTER`) are edges of the network, also those that its
-type leaves out, such as ``highway=platform`` in a walking network. The platform areas and
-the indoor corridors and areas (:data:`INDOOR_AREA_FILTER`) are crossed as walking areas
-are, each on its own level, entered also through the doors on their outlines, which
-connect areas that share them. The edges get the level at each of their two ends, ``u_level`` and ``v_level``, from the
-OSM ``level`` tags (see :func:`pyrosm.levels.level_ranges`). An edge with one level has it
-at both ends. A level list or range on stairs or an escalator runs between the levels of
-the walkways at its two ends; on another walkway, such as a corridor tagged ``level=0;1``,
-the data does not say which part is on which level, and both ends stay empty. Stairs and
-an escalator without a level range (no ``level`` tag or a single level) take their ends
-from the walkways they join, when each end has one level and the two differ. An edge
-without a ``level`` tag otherwise has no level. The column ``vertical`` marks escalators,
-moving walkways and stairs; the ``length`` of an escalator is measured along its slope
-(see :func:`with_indoor_columns`), and in a graph an escalator or moving walkway runs
-only in the direction it moves (see :func:`moving_one_way`). A lift node (``highway=elevator``) where walkways on several
+type leaves out, such as ``highway=platform`` in a walking network. The platform areas
+and the indoor corridors and areas (:data:`INDOOR_AREA_FILTER`) are crossed as walking
+areas are, each on its own level, entered also through the doors on their outlines,
+which connect areas that share them. The edges get the level at each of their two ends,
+``u_level`` and ``v_level``, from the OSM ``level`` tags (see
+:func:`pyrosm.levels.level_ranges`). An edge with one level has it at both ends. A level
+list or range on stairs, an escalator or a moving walkway runs between the levels of the
+walkways at the two ends of its way or, at an end where no walkway has a level in the
+range, the end node's own ``level``; on another walkway, such as a corridor tagged
+``level=0;1``, the data does not say which part is on which level, and both ends stay
+empty. A way of several edges also keeps the level of a walkway that joins it in between
+(or of an inner node's own ``level``), an end without a level then takes the other end
+of the range from the nearest such level, a way whose two ends are on one level reaches
+the other end of its range in between, and the other inner nodes get levels in
+proportion to the distance along the way. Stairs, escalators and moving walkways without
+a level range (no ``level`` tag or a single level) take the levels of the walkways that
+join their way, when these give two different levels, and keep the outermost ones up to
+the way's ends. An edge without a ``level`` tag otherwise has no level. The column
+``vertical`` marks escalators, moving walkways and stairs; the ``length`` of an
+escalator is measured along its slope (see :func:`with_indoor_columns`), and in a graph
+an escalator or moving walkway runs only in the direction it moves (see
+:func:`moving_one_way`). A lift node (``highway=elevator``) where walkways on several
 levels meet is split into one node per level, joined by lift edges (see
 :func:`split_lifts`).
 """
@@ -79,10 +87,12 @@ def _is_vertical(tags):
     return tags.get("highway") == "steps" or _is_moving(tags)
 
 
-def edge_levels(edges, tags):
+def edge_levels(edges, tags, node_levels=None):
     """``(u_level, v_level)``: float arrays of the level at each end of ``edges`` (a
-    frame with ``u`` and ``v``), whose OSM tags are ``tags`` (a list of dicts in their
-    order), as the module docstring describes; NaN where the level is not known."""
+    frame with ``u`` and ``v``, and ``id``, ``length`` and ``walking_area`` when known),
+    whose OSM tags are ``tags`` (a list of dicts in their order), as the module docstring
+    describes; NaN where the level is not known. ``node_levels`` holds the nodes' own
+    levels (see :func:`node_levels`)."""
     n = len(edges)
     low, high = np.full(n, np.nan), np.full(n, np.nan)
     vertical = np.zeros(n, dtype=bool)
@@ -102,20 +112,138 @@ def edge_levels(edges, tags):
         {"node": np.concatenate([u[flat], v[flat]]), "level": np.tile(low[flat], 2)}
     )
     levels_at = ends.groupby("node")["level"].unique().to_dict()
-    for i in np.flatnonzero(vertical & listed):
-        ends = _span_ends(
-            _span_levels(levels_at.get(u[i], ()), low[i], high[i]),
-            _span_levels(levels_at.get(v[i], ()), low[i], high[i]),
-            low[i],
-            high[i],
-        )
-        if ends is not None:
-            u_level[i], v_level[i] = ends
-    for i in np.flatnonzero(vertical & ~listed):
-        a, b = levels_at.get(u[i], ()), levels_at.get(v[i], ())
-        if len(a) == 1 and len(b) == 1 and a[0] != b[0]:
-            u_level[i], v_level[i] = a[0], b[0]
+    node_levels = node_levels or {}
+    lengths = float_column(edges, "length")
+    for rows, nodes in _vertical_ways(edges, vertical):
+        first = rows[0]
+        if listed[first]:
+            points = _range_points(
+                nodes, low[first], high[first], levels_at, node_levels
+            )
+        else:
+            points = _joined_points(nodes, levels_at)
+        if points is None:
+            continue
+        levels = _levels_along(nodes, lengths[rows], points)
+        u_level[rows] = [levels[node] for node in u[rows]]
+        v_level[rows] = [levels[node] for node in v[rows]]
     return u_level, v_level
+
+
+def float_column(frame, col):
+    """The column ``col`` of ``frame`` as an array of floats, NaN where a value is
+    missing or not a number (all NaN without the column)."""
+    if col not in frame.columns:
+        return np.full(len(frame), np.nan)
+    return pd.to_numeric(frame[col], errors="coerce").to_numpy(dtype=float)
+
+
+def _vertical_ways(edges, vertical):
+    """The stairs, escalators and moving walkways among ``edges`` (the rows ``vertical``
+    marks) as ``(rows, nodes)``: the edges of a way in their order along it and its nodes
+    in that order, when the edges of the way form one line (see :func:`_line_order`); else
+    each edge on its own, as are the lines across areas (``walking_area`` True)."""
+    u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
+    alone = np.full(len(edges), "id" not in edges.columns)
+    if "walking_area" in edges.columns:
+        alone |= edges["walking_area"].fillna(False).to_numpy(dtype=bool)
+    ways, found = {}, []
+    for i in np.flatnonzero(vertical):
+        if alone[i]:
+            found.append(([i], [u[i], v[i]]))
+        else:
+            ways.setdefault(edges["id"].iat[i], []).append(i)
+    for rows in ways.values():
+        line = _line_order(rows, u, v)
+        found += [line] if line else [([i], [u[i], v[i]]) for i in rows]
+    return found
+
+
+def _line_order(rows, u, v):
+    """``(rows, nodes)``: the edges ``rows`` (with the end nodes ``u`` and ``v``) in their
+    order along the line they form, and its nodes in that order; None when they do not
+    form one line (a branch, a ring or a gap)."""
+    at = {}
+    for i in rows:
+        at.setdefault(u[i], []).append(i)
+        at.setdefault(v[i], []).append(i)
+    ends = [node for node, edges in at.items() if len(edges) == 1]
+    if len(ends) != 2 or len(at) != len(rows) + 1:
+        return None
+    order, nodes = [], [ends[0]]
+    while len(order) < len(rows):
+        step = [i for i in at[nodes[-1]] if i not in order]
+        if not step:
+            return None
+        order.append(step[0])
+        nodes.append(v[step[0]] if u[step[0]] == nodes[-1] else u[step[0]])
+    return order, nodes
+
+
+def _range_points(nodes, low, high, levels_at, node_levels):
+    """The known levels along a way with a level range from ``low`` to ``high`` through
+    ``nodes``, as ``{position in nodes: level}``. A node takes the levels in the range of
+    the walkways there (``levels_at``) or, without one, its own level (``node_levels``).
+    The two ends are chosen as :func:`_span_ends` chooses them; an inner node keeps a
+    single level. An end without a level takes the other end of the range from the
+    nearest inner level, and when the two ends have the same level and no inner node
+    has one, the inner nodes take the other end of the range. None when the ends are not
+    known."""
+
+    def at(node):
+        joined = _span_levels(levels_at.get(node, ()), low, high)
+        return joined or _span_levels(node_levels.get(node, ()), low, high)
+
+    inner = {
+        k: found[0] for k in range(1, len(nodes) - 1) if len(found := at(nodes[k])) == 1
+    }
+    first, last = at(nodes[0]), at(nodes[-1])
+    ends = _span_ends(first, last, low, high)
+    if first and last and ends is None:
+        other = _other_end(first[0], low, high)
+        if not inner and other is not None:
+            inner = {k: other for k in range(1, len(nodes) - 1)}
+        ends = (first[0], last[0]) if inner else None
+    elif inner and not (first and last):
+        ends = (
+            first[0] if first else _other_end(inner[min(inner)], low, high),
+            last[0] if last else _other_end(inner[max(inner)], low, high),
+        )
+    if ends is None or None in ends:
+        return None
+    return {0: ends[0], len(nodes) - 1: ends[1], **inner}
+
+
+def _joined_points(nodes, levels_at):
+    """The known levels along a way without a level range through ``nodes``, as
+    ``{position in nodes: level}``: each node where the walkways (``levels_at``) have one
+    level, when they give two different levels or more; None otherwise."""
+    points = {
+        k: found[0]
+        for k, node in enumerate(nodes)
+        if len(found := levels_at.get(node, ())) == 1
+    }
+    return points if len(set(points.values())) > 1 else None
+
+
+def _other_end(level, low, high):
+    """The other end of the range from ``low`` to ``high`` from ``level``, when ``level``
+    is one of its ends; else None."""
+    return high if level == low else low if level == high else None
+
+
+def _levels_along(nodes, lengths, points):
+    """``{node: level}`` for ``nodes``, joined by edges of ``lengths`` (each counted as 1
+    when one of them is not a finite length above 0): the levels of ``points``
+    (``{position in nodes: level}``), levels in proportion to the distance along the
+    edges between them, rounded to 0.001, and beyond the outermost points their
+    levels."""
+    if not np.all(np.isfinite(lengths) & (lengths > 0)):
+        lengths = np.ones(len(lengths))
+    distance = np.concatenate([[0.0], np.cumsum(lengths)])
+    known = sorted(points)
+    levels = np.interp(distance, distance[known], [points[k] for k in known])
+    return dict(zip(nodes, np.round(levels, 3)))
 
 
 def _span_levels(levels, low, high):
@@ -137,9 +265,9 @@ def _span_ends(at_u, at_v, low, high):
             if a != b:
                 return a, b
     if at_u and not at_v and at_u[0] in (low, high):
-        return at_u[0], high if at_u[0] == low else low
+        return at_u[0], _other_end(at_u[0], low, high)
     if at_v and not at_u and at_v[0] in (low, high):
-        return (high if at_v[0] == low else low), at_v[0]
+        return _other_end(at_v[0], low, high), at_v[0]
     return None
 
 
@@ -195,9 +323,10 @@ def moving_one_way(edges):
     return conveying == "forward", conveying == "backward"
 
 
-def with_indoor_columns(edges, escalator_slope):
+def with_indoor_columns(edges, escalator_slope, nodes=None):
     """``edges`` (the frame of a network read with ``nodes=True``) with the columns
-    ``u_level`` and ``v_level`` (see :func:`edge_levels`) and ``vertical`` (see
+    ``u_level`` and ``v_level`` (see :func:`edge_levels`, with the own levels of
+    ``nodes``, the read's nodes) and ``vertical`` (see
     :func:`edge_vertical`; none on the lines across areas, ``walking_area`` True, which
     do not move whatever the area's tags say). The ``length`` of an escalator is its
     length on the map divided by the cosine of ``escalator_slope`` (degrees), its length
@@ -205,7 +334,8 @@ def with_indoor_columns(edges, escalator_slope):
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     tags = _frame_tags(edges, _frame_tag_columns(edges))
-    u_level, v_level = edge_levels(edges, tags)
+    own = None if nodes is None else node_levels(nodes)
+    u_level, v_level = edge_levels(edges, tags, own)
     vertical = edge_vertical(tags)
     if "walking_area" in edges.columns:
         across = edges["walking_area"].fillna(False).to_numpy(dtype=bool)
@@ -338,17 +468,33 @@ def lift_copy_id(lift, rank):
     return -(int(lift) * 1000 + rank)
 
 
-def _lift_ids(nodes):
-    """The ids of the lift nodes (``highway=elevator``) among ``nodes``, by their
-    ``tags`` column (dicts, or JSON text)."""
+def _tags_by_node(nodes):
+    """``(id, tags)`` of each of ``nodes`` with tags, from their ``tags`` column (dicts,
+    or JSON text)."""
     if "tags" not in nodes.columns:
-        return set()
-    found = set()
+        return
     for node, tags in zip(nodes["id"], nodes["tags"]):
         if isinstance(tags, str):
             tags = json.loads(tags)
-        if isinstance(tags, dict) and tags.get("highway") == "elevator":
-            found.add(int(node))
+        if isinstance(tags, dict):
+            yield int(node), tags
+
+
+def _lift_ids(nodes):
+    """The ids of the lift nodes (``highway=elevator``) among ``nodes``."""
+    return {
+        node for node, tags in _tags_by_node(nodes) if tags.get("highway") == "elevator"
+    }
+
+
+def node_levels(nodes):
+    """``{id: (level,)}``: the level of each of ``nodes`` whose ``level`` tag names one
+    level."""
+    found = {}
+    for node, tags in _tags_by_node(nodes):
+        ranges = level_ranges(tags.get("level"))
+        if ranges and len(ranges) == 1 and ranges[0][0] == ranges[0][1]:
+            found[node] = (ranges[0][0],)
     return found
 
 

@@ -15,6 +15,7 @@ import pandas as pd
 import shapely
 from geopandas import GeoDataFrame
 
+from pyrosm.indoor import float_column
 from pyrosm.levels import level_ranges, tag_layer
 
 # (name in the legend, colour, line width, dash) of each kind of edge
@@ -120,14 +121,6 @@ def _edge_kind(tags, vertical, u_level, v_level, crossing):
     return kind or ("street" if flat else "levels"), u_level, v_level
 
 
-def _level_values(edges, col):
-    """The column ``col`` of ``edges`` as an array of floats, NaN where a value is
-    missing or not a number (all NaN without the column)."""
-    if col not in edges.columns:
-        return np.full(len(edges), np.nan)
-    return pd.to_numeric(edges[col], errors="coerce").to_numpy(dtype=float)
-
-
 def _line_points(line, z_u, z_v, origin, vertical=False):
     """x, y (metres from ``origin``) and z of the points of ``line``, z running from
     ``z_u`` to ``z_v`` along it; a vertical line at its first point when ``vertical``
@@ -209,7 +202,7 @@ def plot_3d(edges, nodes=None, center=None, radius=None, route=None, areas=None)
         metric = metric[metric.distance(middle) <= radius]
     traces = {kind: _Trace() for kind in _STYLES}
     tags = _frame_tags(metric, _frame_tag_columns(metric))
-    u_levels, v_levels = (_level_values(metric, col) for col in ("u_level", "v_level"))
+    u_levels, v_levels = (float_column(metric, col) for col in ("u_level", "v_level"))
     verticals = metric.get("vertical", pd.Series(None, index=metric.index)).to_numpy()
     crossings = (
         metric.get("walking_area", pd.Series(False, index=metric.index))

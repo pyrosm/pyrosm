@@ -702,17 +702,19 @@ class OSM:
             which join the nodes when an edge uses them; these edges are marked in the
             column `walking_area`. The edges get the level at each of their two ends in
             the columns `u_level` and `v_level`, from the OSM `level` tags: an edge with
-            one level has it at both ends; stairs and escalators run between the levels
-            of the walkways they join (also those tagged with no level or one level); a
-            walkway tagged with several levels, such as `level=0;1`, and an edge
-            without a `level` tag have no level (NaN). The column `vertical` is
+            one level has it at both ends; stairs, escalators and moving walkways run
+            between the levels of the walkways at the two ends of their way (also those
+            tagged with no level or one level) or, for a level range, the end node's own
+            `level`, and along a way of several edges the level changes in proportion to
+            the distance; a walkway tagged with several levels, such as `level=0;1`, and
+            an edge without a `level` tag have no level (NaN). The column `vertical` is
             `escalator` for steps that move (`conveying`), `stairs` for other steps,
-            `moving_walkway` for other ways that move and missing on other edges. A lift node (`highway=elevator`) where edges on
-            several levels meet is split into one node per level: the lowest keeps the
-            node's id, the others get negative ids derived from it, each edge ends at
-            the copy of its level, and edges of length 0 with the lift node's id,
-            `osm_type` "node" and `vertical` "lift" join the copies of neighbouring
-            levels. For the network types `walking`, `all` and `all_public` and with a
+            `moving_walkway` for other ways that move and missing on other edges. A lift
+            node (`highway=elevator`) where edges on several levels meet is split into
+            one node per level: the lowest keeps the node's id, the others get negative
+            ids derived from it, each edge ends at the copy of its level, and edges of
+            length 0 with the lift node's id, `osm_type` "node" and `vertical` "lift"
+            join the copies of neighbouring levels. For the network types `walking`, `all` and `all_public` and with a
             `custom_filter`. Requires `nodes=True`.
 
         escalator_slope : float or None (default: 30)
@@ -788,7 +790,7 @@ class OSM:
                 _warn_no_edges(custom_filter)
                 return node_gdf, edges
             node_gdf, edges = self._with_indoor_areas(node_gdf, edges, timestamp)
-            edges = with_indoor_columns(edges, escalator_slope)
+            edges = with_indoor_columns(edges, escalator_slope, node_gdf)
             result = split_lifts(node_gdf, edges)
         return result
 
