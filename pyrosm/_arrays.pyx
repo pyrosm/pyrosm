@@ -23,6 +23,9 @@ cdef get_dtype(key):
         return dtypes[key]
     return object
 
+# The element metadata of a way record, a column or nothing (never a tag)
+_METADATA = frozenset({"version", "timestamp", "changeset"})
+
 cdef convert_way_records_to_lists(ways, tags_to_separate_as_arrays):
     """
     Function to convert heterogeneous way dictionaries into a harmonized dictionary
@@ -30,12 +33,15 @@ cdef convert_way_records_to_lists(ways, tags_to_separate_as_arrays):
     as columns: a candidate key absent from every way is skipped here instead of being
     built as an all-None column and dropped downstream. Where a key is absent from a
     given way its value is None, so every column stays the same length. Keys not in
-    'tags_to_separate_as_arrays' are collected into the JSON 'tags' column.
+    'tags_to_separate_as_arrays' are collected into the JSON 'tags' column, except the
+    element's metadata (the numbers under ``version``, ``timestamp`` and ``changeset``),
+    which is left out.
     """
     cdef Py_ssize_t i, n = len(ways)
     cdef bint any_other = False
     column_keys = list(dict.fromkeys(tags_to_separate_as_arrays))
     column_set = set(column_keys)
+    left_out = _METADATA - column_set
     # One pass over the ways puts each value straight into its column's list, created
     # when the column's first value appears.
     values = {}
@@ -49,6 +55,8 @@ cdef convert_way_records_to_lists(ways, tags_to_separate_as_arrays):
                 if column is None:
                     column = values[k] = [None] * n
                 column[i] = v
+            elif k in left_out and not isinstance(v, str):
+                continue  # the element's metadata; a tag keyed like it has a text value
             else:
                 other_tags[k] = v
         if len(other_tags) > 0:

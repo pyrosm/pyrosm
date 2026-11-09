@@ -849,42 +849,6 @@ cdef Py_ssize_t _write_escaped(uint8_t* out, const uint8_t* s, Py_ssize_t n) noe
     return w
 
 
-cdef Py_ssize_t _int_length(int64_t v) noexcept nogil:
-    """The number of characters of ``v`` in decimal (with the minus sign)."""
-    cdef Py_ssize_t n = 1
-    cdef uint64_t u
-    # The magnitude as unsigned, written so that it also holds for the most negative int64
-    # (whose negation does not fit in an int64).
-    if v < 0:
-        n += 1
-        u = <uint64_t>(-(v + 1)) + 1
-    else:
-        u = <uint64_t>v
-    while u >= 10:
-        u //= 10
-        n += 1
-    return n
-
-
-cdef Py_ssize_t _write_int(uint8_t* out, int64_t v) noexcept nogil:
-    """Write ``v`` in decimal; returns the number of characters written."""
-    cdef Py_ssize_t n = _int_length(v), w = n - 1
-    cdef uint64_t u
-    if v < 0:
-        out[0] = c'-'
-        u = <uint64_t>(-(v + 1)) + 1
-    else:
-        u = <uint64_t>v
-    # The digits from the last one back.
-    while True:
-        out[w] = <uint8_t>(c'0' + u % 10)
-        u //= 10
-        w -= 1
-        if u == 0:
-            break
-    return n
-
-
 cdef Py_ssize_t _write_text(uint8_t* out, const char* text) noexcept nogil:
     """Write the NUL-terminated ``text``; returns its length."""
     cdef Py_ssize_t n = 0
@@ -905,11 +869,9 @@ cdef struct _Chunk:
     const int32_t* column              # a string's column as a key (see string_columns)
     const int32_t* out_column          # a column's position among the output columns
     const uint8_t* special             # per row: the caller fills its tag columns and JSON
-    const int64_t* version
-    const int64_t* timestamp
     const int64_t* visible
     Py_ssize_t n_out
-    bint json_version, json_timestamp, json_visible
+    bint json_visible
     const int64_t* refs_off
     const int64_t* refs
     const int64_t* node_row            # per ref of the chunk's rows in order: store row or -1
@@ -926,8 +888,7 @@ cdef struct _Chunk:
 
 cdef list _point_at_tag_arrays(_Chunk* ch, rows, pairs_off, pair_key, pair_val, str_off,
                                str_data, valid, column, out_column, Py_ssize_t n_out,
-                               special, version, timestamp, visible, bint json_version,
-                               bint json_timestamp, bint json_visible):
+                               special, visible, bint json_visible):
     """Point ``ch``'s row and tag fields at the arrays, made contiguous; returns them, for
     the caller to keep while it uses ``ch``. Raises ``ValueError`` unless the arrays fit
     together and the tags of the rows that are not special are valid UTF-8."""
@@ -942,12 +903,10 @@ cdef list _point_at_tag_arrays(_Chunk* ch, rows, pairs_off, pair_key, pair_val, 
         _contiguous(column, np.int32),
         _contiguous(out_column, np.int32),
         _contiguous(special, np.uint8),
-        _contiguous(version, np.int64),
-        _contiguous(timestamp, np.int64),
         _contiguous(visible, np.int64),
     ]
     (rows, pairs_off, pair_key, pair_val, str_off, str_data, valid, column, out_column,
-     special, version, timestamp, visible) = arrays
+     special, visible) = arrays
     _check_store(pairs_off, pair_key, pair_val, str_off, str_data, rows)
     n_strings = str_off.shape[0] - 1
     n_ways = pairs_off.shape[0] - 1
@@ -959,8 +918,8 @@ cdef list _point_at_tag_arrays(_Chunk* ch, rows, pairs_off, pair_key, pair_val, 
         raise ValueError("an output position must be below n_out")
     if special.shape[0] != rows.shape[0]:
         raise ValueError("special must have one entry per row")
-    if any(a.shape[0] != n_ways for a in (version, timestamp, visible)):
-        raise ValueError("the metadata must have one entry per way")
+    if visible.shape[0] != n_ways:
+        raise ValueError("visible must have one entry per way")
     ch.rows = _int64_ptr(rows)
     ch.n = rows.shape[0]
     ch.pairs_off = _int64_ptr(pairs_off)
@@ -971,12 +930,8 @@ cdef list _point_at_tag_arrays(_Chunk* ch, rows, pairs_off, pair_key, pair_val, 
     ch.column = <int32_t*><uintptr_t>column.ctypes.data
     ch.out_column = <int32_t*><uintptr_t>out_column.ctypes.data
     ch.special = _uint8_ptr(special)
-    ch.version = _int64_ptr(version)
-    ch.timestamp = _int64_ptr(timestamp)
     ch.visible = _int64_ptr(visible)
     ch.n_out = n_out
-    ch.json_version = json_version
-    ch.json_timestamp = json_timestamp
     ch.json_visible = json_visible
     cdef const uint8_t* ok = _uint8_ptr(valid)
     cdef Py_ssize_t i, p, w
@@ -998,24 +953,23 @@ cdef list _point_at_tag_arrays(_Chunk* ch, rows, pairs_off, pair_key, pair_val, 
 
 
 def tag_columns(rows, pairs_off, pair_key, pair_val, str_off, str_data, valid, column,
-                out_column, Py_ssize_t n_out, special, version, timestamp, visible,
-                bint json, bint json_version, bint json_timestamp, bint json_visible):
+                out_column, Py_ssize_t n_out, special, visible, bint json,
+                bint json_visible):
     """The tag columns and the JSON ``tags`` column of the ways ``rows`` of a store.
 
     ``valid`` and ``column`` give each string's validity and column as a key
     (``string_columns``), ``out_column`` each column's position among the ``n_out`` output
     tag columns (-1 when not output). The rows marked ``special`` (one entry per row) get no
     tag values or JSON here: the caller fills them in. ``json`` builds the JSON ``tags``
-    column, with the metadata the ``json_*`` flags name first (from ``version``,
-    ``timestamp`` and ``visible``, one entry per way of the store).
+    column, with ``visible`` first when ``json_visible`` (one entry per way of the
+    store).
 
     Returns a dict: ``columns`` (per output tag column ``(offsets, data, valid)``, an Arrow
     string column of the rows) and ``json`` (the same for the JSON column, or None)."""
     cdef _Chunk ch
     arrays = _point_at_tag_arrays(&ch, rows, pairs_off, pair_key, pair_val, str_off,
                                   str_data, valid, column, out_column, n_out, special,
-                                  version, timestamp, visible, json_version,
-                                  json_timestamp, json_visible)
+                                  visible, json_visible)
     kept = np.arange(ch.n, dtype=np.int64)
     return {
         "columns": _tag_columns(&ch, kept),
@@ -1093,8 +1047,8 @@ cdef tuple _json_column(const _Chunk* ch, kept):
     cdef bint too_long = False
     lengths = np.zeros(n, dtype=np.int64)
     cdef int64_t* ln = _int64_ptr(lengths)
-    # Two passes, as in ``_tag_columns``. The lengths: ``"version":`` and ``"visible":``
-    # are 10 characters and ``"timestamp":`` 12, ``true``/``false`` 4/5; a tag adds its
+    # Two passes, as in ``_tag_columns``. The lengths: ``"visible":`` is 10 characters,
+    # ``true``/``false`` 4/5; a tag adds its
     # escaped key and value with 5 characters (``"`` ``":"`` ``"``); the braces and the
     # commas between the entries add ``1 + entries``. A row without entries has no JSON.
     with nogil:
@@ -1104,12 +1058,6 @@ cdef tuple _json_column(const _Chunk* ch, kept):
             w = ch.rows[kp[i]]
             length = 0
             entries = 0
-            if ch.json_version:
-                length += 10 + _int_length(ch.version[w])
-                entries += 1
-            if ch.json_timestamp:
-                length += 12 + _int_length(ch.timestamp[w])
-                entries += 1
             if ch.json_visible:
                 length += 10 + (4 if ch.visible[w] else 5)
                 entries += 1
@@ -1153,21 +1101,7 @@ cdef tuple _json_column(const _Chunk* ch, kept):
             out[0] = c'{'
             length = 1
             comma = False
-            if ch.json_version:
-                length += _write_text(out + length, "\"version\":")
-                length += _write_int(out + length, ch.version[w])
-                comma = True
-            if ch.json_timestamp:
-                if comma:
-                    out[length] = c','
-                    length += 1
-                length += _write_text(out + length, "\"timestamp\":")
-                length += _write_int(out + length, ch.timestamp[w])
-                comma = True
             if ch.json_visible:
-                if comma:
-                    out[length] = c','
-                    length += 1
                 length += _write_text(out + length, "\"visible\":")
                 length += _write_text(out + length, "true" if ch.visible[w] else "false")
                 comma = True
@@ -1401,10 +1335,9 @@ cdef inline Py_ssize_t _wkb_size(const _Chunk* ch, Py_ssize_t i) noexcept nogil:
 
 
 def build_chunk(rows, refs_off, refs, pairs_off, pair_key, pair_val, str_off, str_data,
-                valid, column, out_column, Py_ssize_t n_out, special, version, timestamp,
-                visible, NodeLocations nodes not None, bint network, area_by_tags,
-                bint json,
-                bint json_version, bint json_timestamp, bint json_visible):
+                valid, column, out_column, Py_ssize_t n_out, special, visible,
+                NodeLocations nodes not None, bint network, area_by_tags, bint json,
+                bint json_visible):
     """Build the ways ``rows`` of a store as the columns of a result chunk.
 
     The tag arguments are those of :func:`tag_columns`. ``nodes`` holds the coordinates of
@@ -1421,8 +1354,7 @@ def build_chunk(rows, refs_off, refs, pairs_off, pair_key, pair_val, str_off, st
     cdef _Chunk ch
     arrays = _point_at_tag_arrays(&ch, rows, pairs_off, pair_key, pair_val, str_off,
                                   str_data, valid, column, out_column, n_out, special,
-                                  version, timestamp, visible, json_version,
-                                  json_timestamp, json_visible)
+                                  visible, json_visible)
     refs_off = _contiguous(refs_off, np.int64)
     refs = _contiguous(refs, np.int64)
     _check_offsets(refs_off, refs.shape[0])
