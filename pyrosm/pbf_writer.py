@@ -62,7 +62,7 @@ _FIELD_COLS = {
 # of one of these names holds the OSM tag of that name.
 _NETWORK_COLS = ("u", "v", "length", "walking_area", "u_level", "v_level")
 # The values of the column ``vertical`` that get_network(indoor_elements=True) computes.
-_VERTICAL_VALUES = {"escalator", "stairs", "lift"}
+_VERTICAL_VALUES = {"escalator", "moving_walkway", "stairs", "lift"}
 # The fields of a way record, next to its tags.
 _RECORD_FIELDS = {"id", "version", "timestamp", "visible", "nodes", "tags"}
 # Element fields the readers put into a JSON ``tags`` dict when they are not columns.

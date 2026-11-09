@@ -702,17 +702,19 @@ class OSM:
             which join the nodes when an edge uses them; these edges are marked in the
             column `walking_area`. The edges get the level at each of their two ends in
             the columns `u_level` and `v_level`, from the OSM `level` tags: an edge with
-            one level has it at both ends; stairs and escalators run between the levels
-            of the walkways they join (also those tagged with no level or one level); a
-            walkway tagged with several levels, such as `level=0;1`, and an edge
-            without a `level` tag have no level (NaN). The column `vertical` is
-            `escalator` for steps that move (`conveying`), `stairs` for other steps and
-            missing on other edges. A lift node (`highway=elevator`) where edges on
-            several levels meet is split into one node per level: the lowest keeps the
-            node's id, the others get negative ids derived from it, each edge ends at
-            the copy of its level, and edges of length 0 with the lift node's id,
-            `osm_type` "node" and `vertical` "lift" join the copies of neighbouring
-            levels. For the network types `walking`, `all` and `all_public` and with a
+            one level has it at both ends; stairs, escalators and moving walkways run
+            between the levels of the walkways at the two ends of their way (also those
+            tagged with no level or one level) or, for a level range, the end node's own
+            `level`, and along a way of several edges the level changes in proportion to
+            the distance; a walkway tagged with several levels, such as `level=0;1`, and
+            an edge without a `level` tag have no level (NaN). The column `vertical` is
+            `escalator` for steps that move (`conveying`), `stairs` for other steps,
+            `moving_walkway` for other ways that move and missing on other edges. A lift
+            node (`highway=elevator`) where edges on several levels meet is split into
+            one node per level: the lowest keeps the node's id, the others get negative
+            ids derived from it, each edge ends at the copy of its level, and edges of
+            length 0 with the lift node's id, `osm_type` "node" and `vertical` "lift"
+            join the copies of neighbouring levels. For the network types `walking`, `all` and `all_public` and with a
             `custom_filter`. Requires `nodes=True`.
 
         escalator_slope : float or None (default: 30)
@@ -788,7 +790,7 @@ class OSM:
                 _warn_no_edges(custom_filter)
                 return node_gdf, edges
             node_gdf, edges = self._with_indoor_areas(node_gdf, edges, timestamp)
-            edges = with_indoor_columns(edges, escalator_slope)
+            edges = with_indoor_columns(edges, escalator_slope, node_gdf)
             result = split_lifts(node_gdf, edges)
         return result
 
@@ -2093,8 +2095,8 @@ class OSM:
             never merged with other edges when the graph is simplified. With
             ``indoor_elements=True``, the edges carry ``u_level``, ``v_level`` and
             ``vertical`` as attributes, the lifts are split per level, and
-            simplification never merges stairs, escalators or lifts with other edges,
-            nor edges across a change of level. An escalator tagged
+            simplification never merges stairs, escalators, moving walkways or lifts
+            with other edges, nor edges across a change of level. An escalator or moving walkway tagged
             ``conveying=forward`` or ``conveying=backward`` runs only in the direction
             it moves (see :meth:`to_graph`). With ``tags_to_keep``, the tags the graph
             is built from are read too: those of its edges' directions (``oneway`` and
@@ -2274,10 +2276,10 @@ class OSM:
         is one-way and every other way two-way; ``force_bidirectional=True`` makes every
         edge two-way, and ``force_oneway=True`` keeps every edge in the direction its
         way is drawn in, e.g. downstream for rivers. In the edges of
-        ``get_network(..., indoor_elements=True)``, an escalator (``vertical``
-        "escalator") tagged ``conveying=forward`` runs only in the direction its way is
-        drawn in, and one tagged ``conveying=backward`` only against it, whatever the
-        network type; ``force_bidirectional`` and ``force_oneway`` override this.
+        ``get_network(..., indoor_elements=True)``, an escalator or moving walkway
+        (``vertical`` "escalator" or "moving_walkway") tagged ``conveying=forward`` runs
+        only in the direction its way is drawn in, and one tagged ``conveying=backward``
+        only against it, whatever the network type; ``force_bidirectional`` and ``force_oneway`` override this.
 
         The graph is topologically simplified before export: interstitial degree-2
         nodes are removed and each intersection-to-intersection chain is collapsed into

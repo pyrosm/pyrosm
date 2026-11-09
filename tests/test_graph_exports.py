@@ -1057,33 +1057,34 @@ def test_escalators_run_in_the_direction_they_move(simplify, network_type):
     """In a graph of an indoor network, an escalator tagged conveying=forward runs only in
     the direction its way is drawn in and conveying=backward only against it, also
     against a oneway tag of a directed network, and conveying=yes as the network type
-    says (here both ways), simplified or not; force_bidirectional makes them all
-    two-way."""
+    says (here both ways), simplified or not; a moving walkway runs as an escalator does;
+    force_bidirectional makes them all two-way."""
     import geopandas as gpd
     from shapely.geometry import LineString, Point
 
     from pyrosm import OSM
 
-    lon = [24.9 + x * 1e-3 for x in range(4)]
+    lon = [24.9 + x * 1e-3 for x in range(5)]
     nodes = gpd.GeoDataFrame(
-        {"id": [1, 2, 3, 4], "lon": lon, "lat": [60.2] * 4},
+        {"id": [1, 2, 3, 4, 5], "lon": lon, "lat": [60.2] * 5},
         geometry=[Point(x, 60.2) for x in lon],
         crs=4326,
     )
-    rows = [(1, 2, 0, -1, "forward"), (2, 3, -1, -2, "backward"), (3, 4, -2, -3, "yes")]
+    rows = [(1, 2, 0, -1, "forward"), (2, 3, -1, -2, "backward"), (3, 4, -2, -3, "yes"),
+            (4, 5, -3, -3, "forward")]
     edges = gpd.GeoDataFrame(
         {
-            "id": [20, 21, 22],
+            "id": [20, 21, 22, 23],
             "osm_type": "way",
-            "highway": "steps",
+            "highway": ["steps"] * 3 + ["footway"],
             "conveying": [r[4] for r in rows],
-            "oneway": ["-1", "yes", None],
+            "oneway": ["-1", "yes", None, None],
             "u": [r[0] for r in rows],
             "v": [r[1] for r in rows],
             "length": 1.0,
             "u_level": [float(r[2]) for r in rows],
             "v_level": [float(r[3]) for r in rows],
-            "vertical": "escalator",
+            "vertical": ["escalator"] * 3 + ["moving_walkway"],
         },
         geometry=[LineString([(lon[a - 1], 60.2), (lon[b - 1], 60.2)]) for a, b, *_ in rows],
         crs=4326,
@@ -1101,8 +1102,10 @@ def test_escalators_run_in_the_direction_they_move(simplify, network_type):
         )
         return sorted(graph.edges())
 
-    assert pairs() == [(1, 2), (3, 2), (3, 4), (4, 3)]
-    assert pairs(force_bidirectional=True) == [(1, 2), (2, 1), (2, 3), (3, 2), (3, 4), (4, 3)]
+    assert pairs() == [(1, 2), (3, 2), (3, 4), (4, 3), (4, 5)]
+    assert pairs(force_bidirectional=True) == [
+        (1, 2), (2, 1), (2, 3), (3, 2), (3, 4), (4, 3), (4, 5), (5, 4)
+    ]
 
 
 @pytest.mark.parametrize("engine, simplify", [("in_memory", True), ("out_of_core", False)])

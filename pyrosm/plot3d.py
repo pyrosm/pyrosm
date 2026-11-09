@@ -2,8 +2,9 @@
 ``pip install "pyrosm[3d]"``).
 
 The edges of :meth:`pyrosm.OSM.get_network` or :meth:`pyrosm.OSM.get_graph` with
-``indoor_elements=True`` are drawn at their levels: walkways, stairs, escalators, lifts,
-platforms and the lines across areas, each kind a legend entry that hides or shows it.
+``indoor_elements=True`` are drawn at their levels: walkways, stairs, escalators, moving
+walkways, lifts, platforms and the lines across areas, each kind a legend entry that hides
+or shows it.
 A walkway tagged with several levels is drawn flat at the lowest, dotted; an edge without
 a level at its layer when that is below street level (a tunnel at least one below), else
 at street level. The vertical axis counts OSM levels, not metres.
@@ -14,6 +15,7 @@ import pandas as pd
 import shapely
 from geopandas import GeoDataFrame
 
+from pyrosm.indoor import float_column
 from pyrosm.levels import level_ranges, tag_layer
 
 # (name in the legend, colour, line width, dash) of each kind of edge
@@ -22,6 +24,7 @@ _STYLES = {
     "levels": ("Walkways on other levels", "#3987e5", 3.5, "solid"),
     "multi": ("Walkways tagged with several levels", "#3987e5", 3.0, "dot"),
     "escalator": ("Escalators", "#c98500", 6.0, "solid"),
+    "moving_walkway": ("Moving walkways", "#c98500", 6.0, "dash"),
     "stairs": ("Stairs", "#199e70", 5.0, "solid"),
     "lift": ("Lifts", "#6250d6", 5.0, "dash"),
     "platform": ("Platforms", "#e87ba4", 5.0, "solid"),
@@ -99,7 +102,7 @@ def _edge_kind(tags, vertical, u_level, v_level, crossing):
     and end levels."""
     if crossing:
         kind = "crossing"
-    elif vertical in ("escalator", "stairs", "lift"):
+    elif vertical in ("escalator", "moving_walkway", "stairs", "lift"):
         kind = vertical
     elif any(tags.get(key) == "platform" for key in _PLATFORM_TAGS):
         kind = "platform"
@@ -116,14 +119,6 @@ def _edge_kind(tags, vertical, u_level, v_level, crossing):
     v_level = u_level if np.isnan(v_level) else v_level
     flat = u_level == v_level == 0
     return kind or ("street" if flat else "levels"), u_level, v_level
-
-
-def _level_values(edges, col):
-    """The column ``col`` of ``edges`` as an array of floats, NaN where a value is
-    missing or not a number (all NaN without the column)."""
-    if col not in edges.columns:
-        return np.full(len(edges), np.nan)
-    return pd.to_numeric(edges[col], errors="coerce").to_numpy(dtype=float)
 
 
 def _line_points(line, z_u, z_v, origin, vertical=False):
@@ -207,7 +202,7 @@ def plot_3d(edges, nodes=None, center=None, radius=None, route=None, areas=None)
         metric = metric[metric.distance(middle) <= radius]
     traces = {kind: _Trace() for kind in _STYLES}
     tags = _frame_tags(metric, _frame_tag_columns(metric))
-    u_levels, v_levels = (_level_values(metric, col) for col in ("u_level", "v_level"))
+    u_levels, v_levels = (float_column(metric, col) for col in ("u_level", "v_level"))
     verticals = metric.get("vertical", pd.Series(None, index=metric.index)).to_numpy()
     crossings = (
         metric.get("walking_area", pd.Series(False, index=metric.index))

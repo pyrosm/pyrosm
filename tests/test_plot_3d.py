@@ -153,6 +153,7 @@ def test_plot_3d_refuses_what_it_cannot_draw(monkeypatch):
         ({}, None, (np.nan, -1.0), True, ("crossing", -1.0, -1.0)),
         ({"railway": "platform"}, None, (0.0, 0.0), False, ("platform", 0.0, 0.0)),
         ({}, "stairs", (0.0, 1.0), False, ("stairs", 0.0, 1.0)),
+        ({}, "moving_walkway", (-4.0, -3.5), False, ("moving_walkway", -4.0, -3.5)),
     ],
 )
 def test_plot_3d_edge_kinds(tags, vertical, levels, crossing, expected):

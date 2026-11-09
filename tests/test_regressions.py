@@ -6774,3 +6774,47 @@ def test_keep_metadata_false_leaves_metadata_out_of_tags(tmp_path, engine, other
         assert [json.loads(t) for t in buildings["tags"]] == [other]
     else:
         assert "tags" not in buildings.columns
+
+
+@pytest.mark.parametrize("engine", ["out_of_core", "in_memory"])
+def test_relation_node_member_sharing_a_way_id(tmp_path, engine):
+    """A relation's node members were looked up as ways (#933): a node member with
+    the id of a standalone way took that way out of the frame and into the relation's
+    geometry, and one with the id of another relation's member way added that way."""
+    import numpy as np
+    import shapely
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    # Three squares side by side, of nodes 1-4, 5-8 and 9-12
+    lon = np.array([0.0, 0.01, 0.01, 0.0])
+    nodes = {
+        "id": np.arange(1, 13, dtype=np.int64),
+        "lon": np.concatenate([24.90 + lon, 24.92 + lon, 24.94 + lon]),
+        "lat": np.tile([60.10, 60.10, 60.11, 60.11], 3),
+        "tags": [None] * 12,
+    }
+    ways = [
+        {"id": 10, "refs": [1, 2, 3, 4, 1], "tags": {}},
+        {"id": 11, "refs": [5, 6, 7, 8, 5], "tags": {"building": "yes"}},
+        {"id": 12, "refs": [9, 10, 11, 12, 9], "tags": {}},
+    ]
+    building = {"type": "multipolygon", "building": "yes"}
+    relations = [
+        {"id": 30, "tags": building,
+         "members": [("way", 10, "outer"), ("node", 11, "entrance"), ("node", 12, "")]},
+        {"id": 31, "tags": building, "members": [("way", 12, "outer")]},
+    ]
+    path = write_pbf_from_records(
+        nodes, ways, relations, str(tmp_path / "ids.osm.pbf"), (24.89, 60.09, 24.96, 60.12)
+    )
+    buildings = OSM(path, engine=engine).get_buildings()
+    got = dict(zip(zip(buildings["osm_type"], buildings["id"]), buildings.geometry))
+    square = {w["id"]: shapely.Polygon(
+        [(nodes["lon"][r - 1], nodes["lat"][r - 1]) for r in w["refs"]]) for w in ways}
+    expected = {("way", 11): square[11], ("relation", 30): square[10],
+                ("relation", 31): square[12]}
+    assert sorted(got) == sorted(expected)
+    assert all(shapely.normalize(got[key]).equals_exact(
+        shapely.normalize(expected[key]), 1e-7) for key in expected), got

@@ -124,7 +124,7 @@ def get_directed_edges(
     rows, swapped = directed_rows(
         edges, direction, direction_suffix, both_ways, force_oneway=force_oneway
     )
-    keep, added, added_swapped = _escalator_directions(
+    keep, added, added_swapped = _moving_directions(
         edges, rows, swapped, force_bidirectional or force_oneway
     )
     flags = None
@@ -161,20 +161,20 @@ def get_directed_edges(
     return nodes, edges
 
 
-def _escalator_directions(edges, rows, swapped, forced):
+def _moving_directions(edges, rows, swapped, forced):
     """``(keep, added, added_swapped)`` for the directed edges ``(rows, swapped)`` of
-    ``edges`` (see :func:`~pyrosm.graph_export.directed_rows`): each escalator that moves
-    one way only (see :func:`pyrosm.indoor.escalator_one_way`) runs in that direction
-    alone, whatever the other rules gave it. ``keep`` masks the given directed edges (it
-    leaves out those of such escalators), and ``added`` are the rows of the escalators'
-    own directed edges, first those that move along their way, then those that move
-    against it (``added_swapped``). Nothing changes when the directions are ``forced``
-    (``force_bidirectional`` or ``force_oneway``)."""
-    from pyrosm.indoor import escalator_one_way
+    ``edges`` (see :func:`~pyrosm.graph_export.directed_rows`): each escalator or moving
+    walkway that moves one way only (see :func:`pyrosm.indoor.moving_one_way`) runs in
+    that direction alone, whatever the other rules gave it. ``keep`` masks the given
+    directed edges (it leaves out those of such edges), and ``added`` are the rows of
+    their own directed edges, first those that move along their way, then those that
+    move against it (``added_swapped``). Nothing changes when the directions are
+    ``forced`` (``force_bidirectional`` or ``force_oneway``)."""
+    from pyrosm.indoor import moving_one_way
 
     keep = np.ones(len(rows), dtype=bool)
     none = np.zeros(0, dtype=rows.dtype)
-    one_way = None if forced else escalator_one_way(edges)
+    one_way = None if forced else moving_one_way(edges)
     if one_way is None:
         return keep, none, np.zeros(0, dtype=bool)
     forward, backward = one_way
@@ -538,7 +538,7 @@ def _tables(
         rows, swapped = directed_rows(
             edges, direction, direction_suffix, both_ways, force_oneway=force_oneway
         )
-        keep, added, added_swapped = _escalator_directions(
+        keep, added, added_swapped = _moving_directions(
             edges, rows, swapped, force_bidirectional or force_oneway
         )
         rows = np.concatenate([rows[keep], added])

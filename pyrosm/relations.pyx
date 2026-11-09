@@ -190,8 +190,11 @@ cpdef list relation_records(relations, relation_ways, node_coordinates,
 
         force_linestring, make_multipolygon = relation_kind(tag)
 
-        member_ids = rel["members"][0]["member_id"]
-        member_roles = rel["members"][0]["member_role"]
+        # Only the way members are ways: a node or relation can share a way's id
+        members = rel["members"][0]
+        is_way = members["member_type"] == b"way"
+        member_ids = members["member_id"][is_way]
+        member_roles = members["member_role"][is_way]
 
         # Get ways for given relation
         member_ids, member_roles, ways = get_ways_for_relation(member_ids,
@@ -252,7 +255,7 @@ cpdef list relation_records(relations, relation_ways, node_coordinates,
         # Add the relation members. Not listed in tags_to_keep, so it is folded
         # into the JSON 'tags' column. Set after the tag loop so a stray tag
         # named 'members' cannot shadow the structural member list.
-        relation["members"] = members_to_list(rel["members"][0])
+        relation["members"] = members_to_list(members)
 
         prepared_relations.append(relation)
 

@@ -57,11 +57,13 @@ def _each_or_none(function, *arrays):
 
 
 def _members(relations, way_ids):
-    """The member ways of each relation, as ``get_ways_for_relation`` finds them: for each
-    found (relation, way row) pair in order, the relation's index and the way's row in
-    ``way_ids``; ``way_ids`` must be unique."""
+    """The member ways of each relation, as :func:`pyrosm.relations.relation_records` finds
+    them among its way members: for each found (relation, way row) pair in order, the
+    relation's index and the way's row in ``way_ids``; ``way_ids`` must be unique."""
     n = len(relations["id"])
-    member_ids = [m["member_id"] for m in relations["members"]]
+    member_ids = [
+        m["member_id"][m["member_type"] == b"way"] for m in relations["members"]
+    ]
     counts = np.array([len(m) for m in member_ids], dtype=np.int64)
     if counts.sum() == 0:
         return np.empty(0, np.int64), np.empty(0, np.int64)

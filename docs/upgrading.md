@@ -9,6 +9,12 @@ new options that leave the defaults as they were, and fixes of calls that failed
 
 ## Unreleased
 
+- **Relation members numbered like a way.** The geometry of a relation no longer takes in a
+  way whose id equals the id of one of its member nodes or member relations. With
+  `engine="in_memory"`, such a way that matches the read on its own is returned as a row of
+  its own; earlier versions left it out. On the Helsinki region and Greater London extracts,
+  the reads compared return the same rows and geometries as before, and nothing needs to
+  change in your code.
 - **Metadata in the `tags` column.** With `OSM(..., keep_metadata=False)`, the JSON `tags`
   column no longer holds the `version` and `timestamp` of ways. Code that read them from `tags`
   gets them with `keep_metadata=True`, the default, from the `version` and `timestamp` columns.
