@@ -7,12 +7,14 @@ that would enter areas on two or more levels enters, of the areas with a level, 
 those on its own levels: those of its walkways with one level, else, at an end of
 stairs, an escalator or a moving walkway with a level range, the level of that end that
 the rest of the way gives, else its own ``level`` tag, else the ``level`` tags of its
-other edges. Such an end without that level, in or on areas on several levels of its
-range, is on the other end of the range from the one level of the areas at the way's
-other end, else on the low end at the start of the way (in its drawn direction) and the
-high end at its end. Each pair of entrances gets one edge along the shortest line inside
-the area, which bends only at the area's inward corners: the corners of the outline that
-point into the area and those of its holes.
+other edges. Such a stair end enters only areas on its level, also where it touches one
+area. A stair end without that level, in or on areas on several levels of its range, is
+on the other end of the range from the one level of the areas at the way's other end,
+else on the low end at the start of the way (in its drawn direction) and the high end at
+its end, as are the two ends of stairs of one edge that both lie in areas of one level,
+an end of the range. Each pair of entrances gets one edge along the shortest line inside the area,
+which bends only at the area's inward corners: the corners of the outline that point
+into the area and those of its holes.
 """
 
 import math
@@ -125,15 +127,15 @@ def crossing_rows(nodes, edges, areas):
         _level_position(tags) for tags in _frame_tags(areas, _frame_tag_columns(areas))
     ]
     near = np.unique(node_rows)
-    positions, open_ends = _entrance_positions(
+    positions, open_ends, stair_ends = _entrance_positions(
         edges, ids[near], ids[near[dead_end[near]]], node_levels(nodes)
     )
     if open_ends:
-        positions.update(
-            _stair_end_choices(
-                edges, open_ends, ids[node_rows], area_rows, area_positions
-            )
+        chosen = _stair_end_choices(
+            edges, open_ends, ids[node_rows], area_rows, area_positions
         )
+        positions.update(chosen)
+        stair_ends |= set(chosen)
     entrances = []
     for area in np.unique(area_rows):
         candidates = node_rows[area_rows == area]
@@ -149,7 +151,7 @@ def crossing_rows(nodes, edges, areas):
                 part, ids[candidates], lon[candidates], lat[candidates], joinable
             )
             entrances.append((area, part, at))
-    off_level = _off_level_entrances(entrances, positions, area_positions)
+    off_level = _off_level_entrances(entrances, positions, area_positions, stair_ends)
     found = []
     for area, part, at in entrances:
         kept = {}
@@ -188,16 +190,18 @@ def crossing_rows(nodes, edges, areas):
 
 
 def _entrance_positions(edges, node_ids, dead_ends, own_levels):
-    """``(positions, open_ends)`` of the network nodes ``node_ids`` in or on an area.
+    """``(positions, open_ends, stair_ends)`` of the network nodes ``node_ids`` in or on
+    an area.
     ``positions`` is ``{node id: position}`` (see :func:`_level_position`) by, in this
     order: the levels of the node's walkways with one level among ``edges``; at an end
     of stairs, an escalator or a moving walkway with a level range, the level of that
     end when the rest of the way gives it (see :func:`pyrosm.indoor.stair_end_levels`);
     its ``own_levels`` (see :func:`pyrosm.indoor.node_levels`); the ``level`` tags of
     its other edges; for a dead end (one of ``dead_ends``), the side of street level of
-    its edge's ``layer``. Other nodes without levels are left out. ``open_ends`` is
-    ``{node id: (low, high)}``: the dead ends of such ways without that level, with
-    their ranges."""
+    its edge's ``layer``. Other nodes without levels are left out. ``stair_ends`` holds
+    the nodes whose position is that level of a stair end. ``open_ends`` is ``{node id:
+    (low, high)}``: the nodes of one such way without that level and without a walkway
+    with one level, with the way's range."""
     from pyrosm.indoor import is_vertical, stair_end_levels
 
     known = stair_end_levels(edges, node_ids, own_levels)
@@ -207,9 +211,10 @@ def _entrance_positions(edges, node_ids, dead_ends, own_levels):
     subset = edges.iloc[rows]
     wanted = set(np.asarray(node_ids).tolist())
     ends = set(np.asarray(dead_ends).tolist())
-    single, other, sides, open_ends = {}, {}, {}, {}
-    for a, b, tags in zip(
-        u[rows], v[rows], _frame_tags(subset, _frame_tag_columns(subset))
+    way_ids = subset["id"].to_numpy() if "id" in subset.columns else rows
+    single, other, sides, open_ends, stair_ways = {}, {}, {}, {}, {}
+    for a, b, way, tags in zip(
+        u[rows], v[rows], way_ids, _frame_tags(subset, _frame_tag_columns(subset))
     ):
         ranges, side = _level_position(tags)
         vertical = is_vertical(tags)
@@ -221,20 +226,27 @@ def _entrance_positions(edges, node_ids, dead_ends, own_levels):
             (single if on_one else other).setdefault(node, []).extend(ranges or ())
             if node in ends:
                 sides[node] = side
-                if len(levels) > 1 and vertical and node not in known:
-                    open_ends[node] = (min(levels), max(levels))
-    positions = {}
+            if len(levels) > 1 and vertical and node not in known:
+                open_ends[node] = (min(levels), max(levels))
+                stair_ways.setdefault(node, set()).add(way)
+    open_ends = {
+        node: span
+        for node, span in open_ends.items()
+        if not single.get(node) and len(stair_ways[node]) == 1
+    }
+    positions, stair_ends = {}, set()
     for node in wanted:
         own = [(level, level) for level in own_levels.get(node, ())]
         if single.get(node):
             positions[node] = _ranges_position(single[node])
         elif node in known:
             positions[node] = _single_level_position(known[node])
+            stair_ends.add(node)
         elif own or other.get(node):
             positions[node] = _ranges_position(own or other[node])
         elif node in sides:
             positions[node] = (None, sides[node])
-    return positions, open_ends
+    return positions, open_ends, stair_ends
 
 
 def _area_levels_at(node_ids, area_rows, area_positions, ranges):
@@ -255,26 +267,37 @@ def _area_levels_at(node_ids, area_rows, area_positions, ranges):
 
 def _stair_end_choices(edges, open_ends, node_ids, area_rows, area_positions):
     """``{node id: position}`` for the ``open_ends`` (see :func:`_entrance_positions`)
-    in or on areas on several levels of their range (see :func:`_area_levels_at`, with
-    the nodes ``node_ids`` in or on the areas ``area_rows``): the other end of the range
-    from the one level of the areas at the other end of the way, else the low end of the
-    range at the start of the way and the high end at its end."""
+    at an end of their way, in or on areas on several levels of their range (see
+    :func:`_area_levels_at`, with the nodes ``node_ids`` in or on the areas
+    ``area_rows``): the other end of the range from the one level of the areas at the
+    other end of the way, else the low end of the range at the start of the way and the
+    high end at its end. Also the ends of a way of one edge whose two ends lie in areas
+    of one and the same level, an end of its range: the low end at the start and the
+    high end at the end, so that only one of them is on the areas' level (a longer way
+    dips to the other level between its ends, see :func:`pyrosm.indoor.edge_levels`)."""
     from pyrosm.indoor import stair_way_ends
 
     ways = stair_way_ends(edges, list(open_ends))
-    ranges = {other: open_ends[node] for node, (other, _) in ways.items()}
+    ranges = {way[0]: open_ends[node] for node, way in ways.items()}
     ranges.update(open_ends)
     levels_at = _area_levels_at(node_ids, area_rows, area_positions, ranges)
     chosen = {}
     for node, (low, high) in open_ends.items():
-        if len(levels_at.get(node, ())) < 2 or node not in ways:
+        if node not in ways:
             continue
-        other, starts = ways[node]
-        at_other = levels_at.get(other, set())
-        if len(at_other) == 1 and next(iter(at_other)) in (low, high):
+        other, starts, inner = ways[node]
+        here, at_other = levels_at.get(node, set()), levels_at.get(other, set())
+        one_level = not inner and here and here == at_other and here <= {low, high}
+        if (
+            len(here) >= 2
+            and len(at_other) == 1
+            and next(iter(at_other)) in (low, high)
+        ):
             level = high if next(iter(at_other)) == low else low
-        else:
+        elif len(here) >= 2 or one_level:
             level = low if starts else high
+        else:
+            continue
         chosen[node] = _single_level_position(level)
     return chosen
 
@@ -321,11 +344,12 @@ def _on_same_level(a, b):
     return bool(a[1] & b[1])
 
 
-def _off_level_entrances(entrances, positions, area_positions):
+def _off_level_entrances(entrances, positions, area_positions, stair_ends):
     """``{(area, node id)}``: the areas with a level that each node enters (see
     :func:`_entrances`; ``entrances`` as ``(area, part, entrances)``) off the node's
     levels (``positions``, see :func:`_entrance_positions`), for the nodes with levels
-    that enter areas on two or more levels (``area_positions``)."""
+    that enter areas on two or more levels (``area_positions``), and for the
+    ``stair_ends``, whose level their way gives, also when they enter one area."""
     entered = {}
     for area, _, at in entrances:
         if area_positions[area][0]:
@@ -342,7 +366,7 @@ def _off_level_entrances(entrances, positions, area_positions):
             for a in areas
             for b in areas
         )
-        if several:
+        if several or node in stair_ends:
             off.update(
                 (area, node)
                 for area in areas

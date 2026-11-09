@@ -187,10 +187,10 @@ def stair_end_levels(edges, ends, own_levels=None):
 
 
 def stair_way_ends(edges, ends):
-    """``{node: (other end, starts)}`` for the nodes ``ends`` that end stairs,
+    """``{node: (other end, starts, inner)}`` for the nodes ``ends`` that end stairs,
     escalators or moving walkways with a level range in ``edges``: the node at the other
-    end of the way (see :func:`_vertical_ways`) and whether the way starts at the node,
-    in its drawn direction."""
+    end of the way (see :func:`_vertical_ways`), whether the way starts at the node, in
+    its drawn direction, and the number of nodes between its ends."""
     stairs = _range_stair_rows(edges, ends)
     if not stairs:
         return {}
@@ -201,11 +201,11 @@ def stair_way_ends(edges, ends):
     wanted = set(np.asarray(ends).tolist())
     found = {}
     for _, nodes in _vertical_ways(edges, vertical):
-        first, last = nodes[0], nodes[-1]
+        first, last, inner = nodes[0], nodes[-1], len(nodes) - 2
         if first in wanted:
-            found[first] = (last, True)
+            found[first] = (last, True, inner)
         if last in wanted:
-            found[last] = (first, False)
+            found[last] = (first, False, inner)
     return found
 
 
