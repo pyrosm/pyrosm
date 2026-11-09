@@ -751,7 +751,8 @@ def test_get_network_with_indoor_elements(walking_areas):
     2039713549 per level; both engines return the same frames: the escalators
     of ways 18378805 (level=-3;-2) and 655180399 (level=0;2) run between the levels at
     their ends; without the option the columns and platforms are not there. A read
-    whose filter keeps no other way returns the platforms."""
+    whose filter keeps no other way returns the platforms, and with walking_areas also
+    the edges across the walking areas that the filter keeps."""
     import warnings
 
     from geopandas.testing import assert_geodataframe_equal
@@ -796,6 +797,17 @@ def test_get_network_with_indoor_elements(walking_areas):
             indoor_elements=True,
         )
     assert 35744431 in set(platforms["id"]) and "u_level" in platforms.columns
+    if walking_areas:
+        # It crosses the walking areas that the filter keeps, here every multipolygon,
+        # such as Elielinaukio (relation 116162), whose outline holds platform nodes
+        _, kept = OSM(get_data("helsinki_pbf")).get_network(
+            custom_filter={"type": ["multipolygon"]},
+            nodes=True,
+            indoor_elements=True,
+            walking_areas=True,
+        )
+        across = kept[kept["walking_area"] & (kept["osm_type"] == "relation")]
+        assert 116162 in set(across["id"])
 
 
 def test_escalator_length_along_its_slope():

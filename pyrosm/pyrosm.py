@@ -783,7 +783,7 @@ class OSM:
                 walking_areas and not indoor_elements,
                 warn_empty=not indoor_elements,
             )
-            if walking_areas and indoor_elements and result[1] is not None:
+            if walking_areas and indoor_elements:
                 advance = start_step(self.progress, WALKING_AREAS)
                 walking = self._walking_area_polygons(
                     result[1],
@@ -971,7 +971,7 @@ class OSM:
     ):
         """The walking areas of a network read (see
         :func:`pyrosm.walking_areas.select_areas`), with the tag columns of its
-        ``edges``."""
+        ``edges`` (the default columns when the read has no edges)."""
         from pyrosm.pbf_writer import _FIELD_COLS, _NETWORK_COLS
         from pyrosm.walking_areas import area_filter, select_areas
 
@@ -983,11 +983,13 @@ class OSM:
             self.filepath,
             self.bounding_box,
         )
-        columns = [
-            col
-            for col in edges.columns
-            if col not in _FIELD_COLS and col not in _NETWORK_COLS
-        ]
+        columns = None
+        if edges is not None:
+            columns = [
+                col
+                for col in edges.columns
+                if col not in _FIELD_COLS and col not in _NETWORK_COLS
+            ]
         with self._progress_as(False):
             candidates = self._read_custom_criteria(
                 {key: True for key in osm_keys},
