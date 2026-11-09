@@ -695,8 +695,11 @@ class OSM:
             other edges. Such an end inside areas on both of its levels, whose level the
             way does not give, takes the other end of the range from the level of the
             areas at the way's other end, else the low end at the start of the way (in
-            its drawn direction) and the high end at its end. A pair whose line passes
-            another of these nodes gets no edge of its own.
+            its drawn direction) and the high end at its end, as do the two ends of
+            stairs of one edge that both lie in areas of one level, an end of their
+            range; a stair end whose level the stairs give joins only areas on that
+            level, also where it touches one area. A pair whose line passes another of
+            these nodes gets no edge of its own.
             These edges have the area's `id`, `osm_type` and tags, and `True` in the
             column `walking_area`, which is `False` for the other edges. Requires
             `nodes=True`.
@@ -707,9 +710,9 @@ class OSM:
             leaves them out. The platform areas and the indoor corridors and areas
             (`indoor=corridor|area`) are crossed as with `walking_areas`, each on its
             own level and, with `walking_areas=True`, together with the walking areas;
-            these areas are entered also through the doors and entrances on their
-            outlines, which join the nodes when an edge uses them; these edges are
-            marked in the column `walking_area`.
+            the platform and indoor areas, not the walking areas, are entered also
+            through the doors and entrances on their outlines, which join the nodes
+            when an edge uses them; these edges are marked in the column `walking_area`.
             The edges get the level at each of their two ends in
             the columns `u_level` and `v_level`, from the OSM `level` tags: an edge with
             one level has it at both ends; stairs, escalators and moving walkways run

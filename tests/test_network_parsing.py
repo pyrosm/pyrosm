@@ -521,16 +521,18 @@ def test_walking_areas_join_dead_ends_on_their_level(end_tags, area_tags, joined
         ({"level": "0;1"}, "0", True),
         ({"level": "0;1", "incline": "up"}, None, False),
         ({"level": "0;1", "incline": "down"}, None, True),
-        ({"level": "0;1"}, None, True),
+        ({"level": "0;1"}, None, False),
     ],
 )
 def test_walking_areas_join_stair_ends_on_their_level(stair_tags, other_end_level, joined):
     """The dead end of stairs with a level range is joined to an area only on the level
     of that end: the other end of the range from a walkway at the stairs' other end, or
-    the end that the stairs' incline gives; with neither, any level of the range."""
+    the end that the stairs' incline gives; with neither, while both ends lie in areas
+    of level 1, the stairs rise along their drawn direction, so their start is on 0."""
     from rapidjson import dumps
 
     from pyrosm import walking_areas
+    from pyrosm.indoor import stair_way_ends
 
     nodes, edges, areas, _ = _walking_area_frames()
     edges.loc[0, "highway"] = "steps"  # the way from node 4, inside, to node 1
@@ -540,6 +542,8 @@ def test_walking_areas_join_stair_ends_on_their_level(stair_tags, other_end_leve
     areas.loc[0, "tags"] = dumps({"level": "1"})
     rows = walking_areas.crossing_rows(nodes, edges, areas)
     assert ((rows["u"] == 4) | (rows["v"] == 4)).any() == joined
+    # The way starts at node 4 and ends at node 1, with no node between them
+    assert stair_way_ends(edges, [4]) == {4: (1, True, 0)}
 
 
 STEPS = {"highway": "steps", "level": "0;1"}
@@ -553,7 +557,11 @@ STEPS = {"highway": "steps", "level": "0;1"}
         (5, STEPS, None, False, False, 5, {501}),
         (5, STEPS, None, False, True, 5, {501}),
         (5, {**STEPS, "incline": "up"}, None, False, False, 5, {500}),
-        (5, {**STEPS, "level": "-1;0"}, None, True, False, 5, {500}),
+        (5, {**STEPS, "level": "-1;0"}, None, True, False, 5, set()),
+        (5, {**STEPS, "level": "-1;0"}, None, True, False, 6, {500}),
+        (0, {**STEPS, "incline": "up"}, None, False, False, 1, set()),
+        ((1, 2), STEPS, None, False, False, 3, {500}),
+        ((1, 2), STEPS, None, False, False, 1, {500}),
         (5, STEPS, None, True, False, 5, {500}),
         (5, STEPS, None, True, False, 6, {501}),
         (0, {**STEPS, "incline": "up"}, None, True, False, 1, {501}),
@@ -566,10 +574,14 @@ def test_walking_areas_join_a_node_on_one_level(
     """A node that would enter areas on two levels (area 500 on level 0, area 501 on
     level 1, either around node 5 or on the same outline) enters only those on its
     level: its walkway's, else at an end of stairs with a level range the level of that
-    end, else its own level tag. The end of such stairs in areas on both levels takes
-    the other end of the range from the one level of the areas at its other end (also
-    where a walkway goes on from there), else the low end at the start of the way and
-    the high end at its end. A node without levels enters both."""
+    end, else its own level tag. Such a stair end enters only areas on its level, also
+    when it touches one area (node 1 on the outline of area 500). The end of such stairs
+    in areas on both levels takes the other end of the range from the one level of the
+    areas at its other end (also where a walkway goes on from there), else the low end at
+    the start of the way and the high end at its end, as do the two ends of stairs that
+    both lie in areas of one level (level=-1;0 in the stacked layout), unless the stairs
+    have a node between their ends (ways 1 and 2 as one way through node 8), where they
+    dip to the other level. A node without levels enters both."""
     import geopandas as gpd
     from rapidjson import dumps
     from shapely.geometry import box
@@ -578,13 +590,15 @@ def test_walking_areas_join_a_node_on_one_level(
 
     nodes, edges, areas, lonlat = _walking_area_frames()
     nodes.loc[len(nodes)] = [30, *lonlat(0.5, 3)]  # inside area 501 in both layouts
-    edges.loc[len(edges)] = {**edges.iloc[1].to_dict(), "id": 30, "u": 30, "v": 8}
+    edges.loc[len(edges)] = {**edges.iloc[1].to_dict(), "id": 30, "u": 30, "v": 2}
     edges.loc[len(edges) - 1, "tags"] = dumps({"level": "1"})
     if continues:  # a walkway without a level from node 6, the stairs' other end
         edges.loc[len(edges)] = {**edges.iloc[1].to_dict(), "id": 31, "u": 6, "v": 3}
     nodes["tags"] = [{"level": own_level} if i == node else None for i in nodes["id"]]
-    edges.loc[way, "highway"] = way_tags.get("highway", "footway")
-    edges.loc[way, "tags"] = dumps({k: v for k, v in way_tags.items() if k != "highway"})
+    rows = list(way) if isinstance(way, tuple) else [way]
+    edges.loc[rows, "id"] = edges.loc[rows[0], "id"]
+    edges.loc[rows, "highway"] = way_tags.get("highway", "footway")
+    edges.loc[rows, "tags"] = dumps({k: v for k, v in way_tags.items() if k != "highway"})
     areas.loc[0, "tags"] = dumps({"level": "0"})
     small = box(*lonlat(-0.5, 2.6), *lonlat(0.8, 3.3))
     second = areas.assign(
@@ -595,6 +609,25 @@ def test_walking_areas_join_a_node_on_one_level(
     areas = gpd.GeoDataFrame(pd.concat([areas, second], ignore_index=True), crs=4326)
     rows = walking_areas.crossing_rows(nodes, edges, areas)
     assert set(rows.loc[(rows["u"] == node) | (rows["v"] == node), "id"]) == entered
+
+
+def test_walking_areas_leave_a_landing_of_two_stairs_open():
+    """A node where two stair ways with level ranges meet (node 8, ways tagged 0;1 and
+    1;2) takes no level from their drawn direction, whatever the order of the edges;
+    the far ends of the two ways do."""
+    from rapidjson import dumps
+
+    from pyrosm.indoor import node_levels
+    from pyrosm.walking_areas import _entrance_positions
+
+    nodes, edges, _, _ = _walking_area_frames()
+    edges.loc[[1, 2], "highway"] = "steps"
+    edges.loc[1, "tags"] = dumps({"level": "0;1"})
+    edges.loc[2, "tags"] = dumps({"level": "1;2"})
+    ids = nodes["id"].to_numpy()
+    for frame in (edges, edges.iloc[::-1]):
+        _, open_ends, _ = _entrance_positions(frame, ids, np.array([3]), node_levels(nodes))
+        assert 8 not in open_ends and {1, 3} <= set(open_ends)
 
 
 @pytest.mark.parametrize(
@@ -911,9 +944,10 @@ def test_indoor_platforms_merge():
 
 def test_indoor_area_crossings_enter_through_doors():
     """Indoor areas are crossed as walking areas are, entered also through a door on the
-    outline that is not a node of the network, which then joins the nodes; without
-    areas the edges get walking_area False; a walking area that is also an indoor area
-    is crossed once, and one that is not a polygon is not crossed."""
+    outline that is not a node of the network, which then joins the nodes; a walking
+    area is not entered through it; without areas the edges get walking_area False; a
+    walking area that is also an indoor area is crossed once, and one that is not a
+    polygon is not crossed."""
     import geopandas as gpd
     from shapely.geometry import LineString, Point
 
@@ -930,6 +964,9 @@ def test_indoor_area_crossings_enter_through_doors():
     )
     same, plain = with_indoor_crossings(nodes, edges, None, door)
     assert same is nodes and not plain["walking_area"].any()
+    walking_only, _ = with_indoor_crossings(nodes, edges, areas, door)
+    assert 99 not in set(walking_only["id"])
+    areas = areas.assign(tags='{"indoor": "area"}')
     with_door, crossed = with_indoor_crossings(nodes, edges, areas, door)
     across = crossed[crossed["walking_area"]]
     assert 99 in set(across["u"]) | set(across["v"])
