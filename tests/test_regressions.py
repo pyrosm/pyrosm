@@ -6818,3 +6818,39 @@ def test_relation_node_member_sharing_a_way_id(tmp_path, engine):
     assert sorted(got) == sorted(expected)
     assert all(shapely.normalize(got[key]).equals_exact(
         shapely.normalize(expected[key]), 1e-7) for key in expected), got
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_indoor_reads_cross_rooms_tagged_as_corridors(tmp_path, engine):
+    """A corridor mapped as indoor=room + room=corridor (way 30, level 1), as in the
+    building next to Zürich HB, is crossed like an indoor=corridor area: the two
+    footways that end at its corners get a line across it on level 1."""
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    lon = [8.5400, 8.5402, 8.5402, 8.5400, 8.5398, 8.5404]
+    lat = [47.3800, 47.3800, 47.3802, 47.3802, 47.3800, 47.3802]
+    nodes = {
+        "id": np.arange(1, 7, dtype=np.int64),
+        "lon": np.array(lon),
+        "lat": np.array(lat),
+        "tags": [None] * 6,
+    }
+    walkway = {"highway": "footway", "level": "1"}
+    ways = [
+        {"id": 30, "refs": [1, 2, 3, 4, 1],
+         "tags": {"indoor": "room", "room": "corridor", "level": "1"}},
+        {"id": 31, "refs": [5, 1], "tags": walkway},
+        {"id": 32, "refs": [3, 6], "tags": walkway},
+    ]
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "corridor.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    _, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    across = edges[edges["walking_area"] & (edges["id"] == 30)]
+    assert sorted(map(sorted, zip(across["u"], across["v"]))) == [[1, 3]]
+    assert across[["u_level", "v_level"]].values.tolist() == [[1.0, 1.0]]
