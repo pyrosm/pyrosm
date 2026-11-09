@@ -9,22 +9,23 @@ which connect areas that share them. The edges get the level at each of their tw
 :func:`pyrosm.levels.level_ranges`). An edge with one level has it at both ends. A level
 list or range on stairs, an escalator or a moving walkway runs between the levels of the
 walkways at the two ends of its way or, at an end where no walkway has a level in the
-range, the end node's own ``level``; on another walkway, such as a corridor tagged
-``level=0;1``, the data does not say which part is on which level, and both ends stay
-empty. A way of several edges also keeps the level of a walkway that joins it in between
-(or of an inner node's own ``level``), an end without a level then takes the other end
-of the range from the nearest such level, a way whose two ends are on one level reaches
-the other end of its range in between, and the other inner nodes get levels in
-proportion to the distance along the way. Stairs, escalators and moving walkways without
-a level range (no ``level`` tag or a single level) take the levels of the walkways that
-join their way, when these give two different levels, and keep the outermost ones up to
-the way's ends. An edge without a ``level`` tag otherwise has no level. The column
-``vertical`` marks escalators, moving walkways and stairs; the ``length`` of an
-escalator is measured along its slope (see :func:`with_indoor_columns`), and in a graph
-an escalator or moving walkway runs only in the direction it moves (see
-:func:`moving_one_way`). A lift node (``highway=elevator``) where walkways on several
-levels meet is split into one node per level, joined by lift edges (see
-:func:`split_lifts`).
+range, the end node's own ``level``, and where neither gives an end, the way's
+``incline`` (``up`` rises along the way's drawn direction, ``down`` falls); on another
+walkway, such as a corridor tagged ``level=0;1``, the data does not say which part is on
+which level, and both ends stay empty. A way of several edges also keeps the level of a
+walkway that joins it in between (or of an inner node's own ``level``), an end without a
+level then takes the other end of the range from the nearest such level, a way whose two
+ends are on one level reaches the other end of its range in between, and the other inner
+nodes get levels in proportion to the distance along the way. Stairs, escalators and
+moving walkways without a level range (no ``level`` tag or a single level) take the
+levels of the walkways that join their way, when these give two different levels, and
+keep the outermost ones up to the way's ends. An edge without a ``level`` tag otherwise
+has no level. The column ``vertical`` marks escalators, moving walkways and stairs; the
+``length`` of an escalator is measured along its slope (see
+:func:`with_indoor_columns`), and in a graph an escalator or moving walkway runs only in
+the direction it moves (see :func:`moving_one_way`). A lift node (``highway=elevator``)
+where walkways on several levels meet is split into one node per level, joined by lift
+edges (see :func:`split_lifts`).
 """
 
 import json
@@ -102,6 +103,7 @@ def edge_levels(edges, tags, node_levels=None):
             low[i] = min(r[0] for r in ranges)
             high[i] = max(r[1] for r in ranges)
         vertical[i] = _is_vertical(row_tags)
+    rise = np.array([_rise(row_tags) for row_tags in tags], dtype=np.int8)
     single = low == high
     listed = high > low
     u_level = np.where(single, low, np.nan)
@@ -118,7 +120,7 @@ def edge_levels(edges, tags, node_levels=None):
         first = rows[0]
         if listed[first]:
             points = _range_points(
-                nodes, low[first], high[first], levels_at, node_levels
+                nodes, low[first], high[first], levels_at, node_levels, rise[first]
             )
         else:
             points = _joined_points(nodes, levels_at)
@@ -128,6 +130,12 @@ def edge_levels(edges, tags, node_levels=None):
         u_level[rows] = [levels[node] for node in u[rows]]
         v_level[rows] = [levels[node] for node in v[rows]]
     return u_level, v_level
+
+
+def _rise(tags):
+    """1 when a way with the OSM tags ``tags`` rises along its drawn direction
+    (``incline=up``), -1 when it falls (``incline=down``), else 0."""
+    return {"up": 1, "down": -1}.get(tags.get("incline"), 0)
 
 
 def float_column(frame, col):
@@ -161,8 +169,9 @@ def _vertical_ways(edges, vertical):
 
 def _line_order(rows, u, v):
     """``(rows, nodes)``: the edges ``rows`` (with the end nodes ``u`` and ``v``) in their
-    order along the line they form, and its nodes in that order; None when they do not
-    form one line (a branch, a ring or a gap)."""
+    order along the line they form, and its nodes in that order, from the end where an
+    edge starts (its ``u``), so along the drawn direction of the way; None when they do
+    not form one line (a branch, a ring or a gap)."""
     at = {}
     for i in rows:
         at.setdefault(u[i], []).append(i)
@@ -170,6 +179,7 @@ def _line_order(rows, u, v):
     ends = [node for node, edges in at.items() if len(edges) == 1]
     if len(ends) != 2 or len(at) != len(rows) + 1:
         return None
+    ends.sort(key=lambda node: u[at[node][0]] != node)
     order, nodes = [], [ends[0]]
     while len(order) < len(rows):
         step = [i for i in at[nodes[-1]] if i not in order]
@@ -180,15 +190,17 @@ def _line_order(rows, u, v):
     return order, nodes
 
 
-def _range_points(nodes, low, high, levels_at, node_levels):
+def _range_points(nodes, low, high, levels_at, node_levels, rise=0):
     """The known levels along a way with a level range from ``low`` to ``high`` through
-    ``nodes``, as ``{position in nodes: level}``. A node takes the levels in the range of
-    the walkways there (``levels_at``) or, without one, its own level (``node_levels``).
-    The two ends are chosen as :func:`_span_ends` chooses them; an inner node keeps a
-    single level. An end without a level takes the other end of the range from the
-    nearest inner level, and when the two ends have the same level and no inner node
-    has one, the inner nodes take the other end of the range. None when the ends are not
-    known."""
+    ``nodes`` (in the way's drawn direction), as ``{position in nodes: level}``. A node
+    takes the levels in the range of the walkways there (``levels_at``) or, without one,
+    its own level (``node_levels``). The two ends are chosen as :func:`_span_ends`
+    chooses them; an inner node keeps a single level. An end without a level takes the
+    other end of the range from the nearest inner level, and when the two ends have the
+    same level and no inner node has one, the inner nodes take the other end of the
+    range. An end still without a level takes the low end of the range at the start of a
+    way that rises (``rise`` 1, see :func:`_rise`) and the high end at its end, the other
+    way round when it falls (-1). None when the ends are not known."""
 
     def at(node):
         joined = _span_levels(levels_at.get(node, ()), low, high)
@@ -209,7 +221,10 @@ def _range_points(nodes, low, high, levels_at, node_levels):
             first[0] if first else _other_end(inner[min(inner)], low, high),
             last[0] if last else _other_end(inner[max(inner)], low, high),
         )
-    if ends is None or None in ends:
+    if (ends is None or None in ends) and rise and not (first and last):
+        bottom, top = (low, high) if rise > 0 else (high, low)
+        ends = (first[0] if first else bottom, last[0] if last else top)
+    if ends is None or None in ends or (ends[0] == ends[1] and not inner):
         return None
     return {0: ends[0], len(nodes) - 1: ends[1], **inner}
 
