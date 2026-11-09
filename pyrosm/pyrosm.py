@@ -687,8 +687,16 @@ class OSM:
             at the corners where the outline or a hole turns into the area. A dead end
             is on the area's level when their `level` tags share a level or, when
             either has no `level`, when both are below, at or above street level by
-            `level`, `layer` and `tunnel` (without these tags, at street level). A
-            pair whose line passes another of these nodes gets no edge of its own.
+            `level`, `layer` and `tunnel` (without these tags, at street level). A node
+            that would be joined to areas on two or more levels is joined only to those
+            on its own levels: those of its walkways tagged with one level, else, at an
+            end of stairs, an escalator or a moving walkway with a level range, the
+            level of that end, else its own `level` tag, else the `level` tags of its
+            other edges. Such an end inside areas on both of its levels, whose level the
+            way does not give, takes the other end of the range from the level of the
+            areas at the way's other end, else the low end at the start of the way (in
+            its drawn direction) and the high end at its end. A pair whose line passes
+            another of these nodes gets no edge of its own.
             These edges have the area's `id`, `osm_type` and tags, and `True` in the
             column `walking_area`, which is `False` for the other edges. Requires
             `nodes=True`.
@@ -698,24 +706,28 @@ class OSM:
             `highway=platform` ways) are edges of the network too, also where its type
             leaves them out. The platform areas and the indoor corridors and areas
             (`indoor=corridor|area`) are crossed as with `walking_areas`, each on its
-            own level, entered also through the doors and entrances on their outlines,
-            which join the nodes when an edge uses them; these edges are marked in the
-            column `walking_area`. The edges get the level at each of their two ends in
+            own level and, with `walking_areas=True`, together with the walking areas;
+            these areas are entered also through the doors and entrances on their
+            outlines, which join the nodes when an edge uses them; these edges are
+            marked in the column `walking_area`.
+            The edges get the level at each of their two ends in
             the columns `u_level` and `v_level`, from the OSM `level` tags: an edge with
             one level has it at both ends; stairs, escalators and moving walkways run
             between the levels of the walkways at the two ends of their way (also those
             tagged with no level or one level) or, for a level range, the end node's own
-            `level`, and along a way of several edges the level changes in proportion to
-            the distance; a walkway tagged with several levels, such as `level=0;1`, and
-            an edge without a `level` tag have no level (NaN). The column `vertical` is
-            `escalator` for steps that move (`conveying`), `stairs` for other steps,
-            `moving_walkway` for other ways that move and missing on other edges. A lift
-            node (`highway=elevator`) where edges on several levels meet is split into
-            one node per level: the lowest keeps the node's id, the others get negative
-            ids derived from it, each edge ends at the copy of its level, and edges of
-            length 0 with the lift node's id, `osm_type` "node" and `vertical` "lift"
-            join the copies of neighbouring levels. For the network types `walking`, `all` and `all_public` and with a
-            `custom_filter`. Requires `nodes=True`.
+            `level`, and where neither gives an end, the way's `incline` (`up` rises
+            along its drawn direction); along a way of several edges the level changes
+            in proportion to the distance; a walkway tagged with several levels, such as
+            `level=0;1`, and an edge without a `level` tag have no level (NaN). The
+            column `vertical` is `escalator` for steps that move (`conveying`), `stairs`
+            for other steps, `moving_walkway` for other ways that move and missing on
+            other edges. A lift node (`highway=elevator`) where edges on several levels
+            meet is split into one node per level: the lowest keeps the node's id, the
+            others get negative ids derived from it, each edge ends at the copy of its
+            level, and edges of length 0 with the lift node's id, `osm_type` "node" and
+            `vertical` "lift" join the copies of neighbouring levels. For the network
+            types `walking`, `all` and `all_public` and with a `custom_filter`. Requires
+            `nodes=True`.
 
         escalator_slope : float or None (default: 30)
             With `indoor_elements=True`, the angle in degrees at which escalators climb.
@@ -757,6 +769,7 @@ class OSM:
             )
         if indoor_elements:
             check_indoor_read(network_type, custom_filter, nodes)
+        walking = None
         with self._walking_area_steps(walking_areas, timestamp):
             result = self._read_network(
                 network_type,
@@ -767,9 +780,20 @@ class OSM:
                 filter_type,
                 tags_to_keep,
                 shared_paths,
-                walking_areas,
+                walking_areas and not indoor_elements,
                 warn_empty=not indoor_elements,
             )
+            if walking_areas and indoor_elements and result[1] is not None:
+                advance = start_step(self.progress, WALKING_AREAS)
+                walking = self._walking_area_polygons(
+                    result[1],
+                    network_type,
+                    custom_filter,
+                    filter_type,
+                    shared_paths,
+                    timestamp,
+                )
+                advance(1, 1)
         if indoor_elements:
             platform_nodes, platforms = self._read_network(
                 network_type_of_read(None, PLATFORM_FILTER),
@@ -789,7 +813,9 @@ class OSM:
             if edges is None:
                 _warn_no_edges(custom_filter)
                 return node_gdf, edges
-            node_gdf, edges = self._with_indoor_areas(node_gdf, edges, timestamp)
+            node_gdf, edges = self._with_indoor_areas(
+                node_gdf, edges, timestamp, walking
+            )
             edges = with_indoor_columns(edges, escalator_slope, node_gdf)
             result = split_lifts(node_gdf, edges)
         return result
@@ -930,10 +956,25 @@ class OSM:
     ):
         """``edges`` of a network read with the edges across its walking areas and the
         column ``walking_area`` (see :func:`pyrosm.walking_areas.add_crossings`)."""
-        from pyrosm.pbf_writer import _FIELD_COLS, _NETWORK_COLS
-        from pyrosm.walking_areas import add_crossings, area_filter, select_areas
+        from pyrosm.walking_areas import add_crossings
 
         advance = start_step(self.progress, WALKING_AREAS)
+        areas = self._walking_area_polygons(
+            edges, network_type, custom_filter, filter_type, shared_paths, timestamp
+        )
+        edges = add_crossings(nodes, edges, areas)
+        advance(1, 1)
+        return edges
+
+    def _walking_area_polygons(
+        self, edges, network_type, custom_filter, filter_type, shared_paths, timestamp
+    ):
+        """The walking areas of a network read (see
+        :func:`pyrosm.walking_areas.select_areas`), with the tag columns of its
+        ``edges``."""
+        from pyrosm.pbf_writer import _FIELD_COLS, _NETWORK_COLS
+        from pyrosm.walking_areas import area_filter, select_areas
+
         osm_keys, keep, rule = area_filter(
             network_type,
             custom_filter,
@@ -961,14 +1002,12 @@ class OSM:
                 timestamp,
                 columns,
             )
-        edges = add_crossings(nodes, edges, select_areas(candidates, keep, rule))
-        advance(1, 1)
-        return edges
+        return select_areas(candidates, keep, rule)
 
-    def _with_indoor_areas(self, nodes, edges, timestamp):
+    def _with_indoor_areas(self, nodes, edges, timestamp, walking=None):
         """``nodes`` and ``edges`` of an indoor network read with the edges across its
-        indoor areas and the doors they use (see
-        :func:`pyrosm.indoor.with_indoor_crossings`)."""
+        indoor areas and its ``walking`` areas (see :meth:`_walking_area_polygons`) and
+        the doors they use (see :func:`pyrosm.indoor.with_indoor_crossings`)."""
         from pyrosm.pbf_writer import _FIELD_COLS, _NETWORK_COLS
 
         columns = [
@@ -1004,7 +1043,7 @@ class OSM:
                 None,
             )
         return with_indoor_crossings(
-            nodes, edges, indoor_areas(candidates, edges), doors
+            nodes, edges, indoor_areas(candidates, walking), doors
         )
 
     @logged()
