@@ -4,9 +4,9 @@ The platforms (:data:`PLATFORM_FILTER`) are edges of the network, also those tha
 type leaves out, such as ``highway=platform`` in a walking network. The platform areas
 and the indoor corridors and areas (:data:`INDOOR_AREA_FILTER`) are crossed as walking
 areas are, each on its own level and together with the walking areas of a read with
-``walking_areas=True``, entered also through the doors on their outlines, which connect
-areas that share them. The edges get the level at each of their two ends,
-``u_level`` and ``v_level``, from the OSM ``level`` tags (see
+``walking_areas=True``, and they are entered also through the doors on their outlines,
+which connect areas that share them; the walking areas are not. The edges get the level
+at each of their two ends, ``u_level`` and ``v_level``, from the OSM ``level`` tags (see
 :func:`pyrosm.levels.level_ranges`). An edge with one level has it at both ends. A level
 list or range on stairs, an escalator or a moving walkway runs between the levels of the
 walkways at the two ends of its way or, at an end where no walkway has a level in the
@@ -528,11 +528,13 @@ def _with_tag_columns(frame, columns):
 
 def with_indoor_crossings(nodes, edges, areas, doors):
     """The ``nodes`` and ``edges`` of a network read with the edges across the indoor and
-    walking ``areas`` (see :func:`pyrosm.walking_areas.crossing_rows`), marked True in the column
-    ``walking_area`` (False on the other edges), entered through the network's nodes and
-    the ``doors`` (a frame of nodes with ``id``, ``lon``, ``lat`` and ``tags``) on the
-    areas' outlines, without those between two nodes an edge already joins; the doors that
-    the new edges use join the nodes."""
+    walking ``areas`` (see :func:`pyrosm.walking_areas.crossing_rows`), marked True in
+    the column ``walking_area`` (False on the other edges), entered through the
+    network's nodes on the areas' outlines and, for the areas of
+    :data:`INDOOR_AREA_FILTER`, through the ``doors`` (a frame of nodes with ``id``,
+    ``lon``, ``lat`` and ``tags``) on their outlines, without those between two nodes an
+    edge already joins; the doors that the new edges use join the nodes."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
     from pyrosm.walking_areas import crossing_rows
 
     if "walking_area" not in edges.columns:
@@ -546,7 +548,11 @@ def with_indoor_crossings(nodes, edges, areas, doors):
         new_doors = new_doors[[col for col in columns if col in new_doors.columns]]
         entrances = pd.concat([entrances, new_doors], ignore_index=True)
     plain = edges[~edges["walking_area"]]
-    rows = crossing_rows(entrances, plain, areas)
+    door_areas = [
+        any(tags.get(key) in values for key, values in INDOOR_AREA_FILTER.items())
+        for tags in _frame_tags(areas, _frame_tag_columns(areas))
+    ]
+    rows = crossing_rows(entrances, plain, areas, door_areas)
     if rows is not None:
         # A line along the outline of an area that is an edge itself (a platform's ring)
         joined = set(zip(edges["u"], edges["v"])) | set(zip(edges["v"], edges["u"]))

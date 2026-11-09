@@ -104,12 +104,14 @@ def add_crossings(nodes, edges, areas):
     return result
 
 
-def crossing_rows(nodes, edges, areas):
+def crossing_rows(nodes, edges, areas, door_areas=None):
     """The edges across ``areas`` as rows with the columns of ``edges``: ``u`` and ``v``
     the entrances (among ``nodes``, with their tags in ``tags`` when known), ``length``
     in metres, the line as ``geometry``, and the area's ``id``, ``osm_type`` and tags in
     the other columns, its tags without a column of ``edges`` in the JSON ``tags``. None
-    when no area has two entrances."""
+    when no area has two entrances. A node of ``nodes`` without an edge in ``edges``, a
+    door, enters only the areas that ``door_areas`` marks (one bool per area; by default
+    every area)."""
     from pyrosm.indoor import node_levels
 
     ids = nodes["id"].to_numpy()
@@ -123,6 +125,10 @@ def crossing_rows(nodes, edges, areas):
     area_rows, node_rows = shapely.STRtree(shapely.points(lon, lat)).query(
         geometries, predicate="intersects"
     )
+    if door_areas is not None:
+        door = ~np.isin(ids, end_ids)
+        keep = ~door[node_rows] | np.asarray(door_areas, dtype=bool)[area_rows]
+        area_rows, node_rows = area_rows[keep], node_rows[keep]
     area_positions = [
         _level_position(tags) for tags in _frame_tags(areas, _frame_tag_columns(areas))
     ]

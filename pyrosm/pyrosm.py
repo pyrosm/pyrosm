@@ -710,9 +710,9 @@ class OSM:
             leaves them out. The platform areas and the indoor corridors and areas
             (`indoor=corridor|area`) are crossed as with `walking_areas`, each on its
             own level and, with `walking_areas=True`, together with the walking areas;
-            these areas are entered also through the doors and entrances on their
-            outlines, which join the nodes when an edge uses them; these edges are
-            marked in the column `walking_area`.
+            the platform and indoor areas, not the walking areas, are entered also
+            through the doors and entrances on their outlines, which join the nodes
+            when an edge uses them; these edges are marked in the column `walking_area`.
             The edges get the level at each of their two ends in
             the columns `u_level` and `v_level`, from the OSM `level` tags: an edge with
             one level has it at both ends; stairs, escalators and moving walkways run

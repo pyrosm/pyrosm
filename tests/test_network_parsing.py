@@ -944,9 +944,10 @@ def test_indoor_platforms_merge():
 
 def test_indoor_area_crossings_enter_through_doors():
     """Indoor areas are crossed as walking areas are, entered also through a door on the
-    outline that is not a node of the network, which then joins the nodes; without
-    areas the edges get walking_area False; a walking area that is also an indoor area
-    is crossed once, and one that is not a polygon is not crossed."""
+    outline that is not a node of the network, which then joins the nodes; a walking
+    area is not entered through it; without areas the edges get walking_area False; a
+    walking area that is also an indoor area is crossed once, and one that is not a
+    polygon is not crossed."""
     import geopandas as gpd
     from shapely.geometry import LineString, Point
 
@@ -963,6 +964,9 @@ def test_indoor_area_crossings_enter_through_doors():
     )
     same, plain = with_indoor_crossings(nodes, edges, None, door)
     assert same is nodes and not plain["walking_area"].any()
+    walking_only, _ = with_indoor_crossings(nodes, edges, areas, door)
+    assert 99 not in set(walking_only["id"])
+    areas = areas.assign(tags='{"indoor": "area"}')
     with_door, crossed = with_indoor_crossings(nodes, edges, areas, door)
     across = crossed[crossed["walking_area"]]
     assert 99 in set(across["u"]) | set(across["v"])
