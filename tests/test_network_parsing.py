@@ -926,7 +926,7 @@ def test_indoor_levels_of_edge_ends():
     those with no level or one level take the walkways' levels when they differ; a
     walkway tagged with several levels and an edge without one have none. Moving steps
     are escalators, other steps stairs, other ways that move moving walkways, and a line
-    across a moving area is none of them."""
+    across a moving area is none of them (a frame without such lines has none)."""
     import geopandas as gpd
     from shapely.geometry import LineString
 
@@ -971,6 +971,8 @@ def test_indoor_levels_of_edge_ends():
     )
     vertical = with_indoor_columns(across, None)["vertical"]
     assert vertical[0] == "moving_walkway" and pd.isna(vertical[1])
+    plain = with_indoor_columns(across.drop(columns="walking_area"), None)["vertical"]
+    assert plain.tolist() == ["moving_walkway"] * 2
     assert [
         (None if np.isnan(a) else a, None if np.isnan(b) else b)
         for a, b in zip(u_level, v_level)
