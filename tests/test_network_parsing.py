@@ -542,6 +542,61 @@ def test_walking_areas_join_stair_ends_on_their_level(stair_tags, other_end_leve
     assert ((rows["u"] == 4) | (rows["v"] == 4)).any() == joined
 
 
+STEPS = {"highway": "steps", "level": "0;1"}
+
+
+@pytest.mark.parametrize(
+    "way, way_tags, own_level, stacked, continues, node, entered",
+    [
+        (5, {"level": "1"}, None, False, False, 5, {501}),
+        (5, {}, "1", False, False, 5, {501}),
+        (5, STEPS, None, False, False, 5, {501}),
+        (5, STEPS, None, False, True, 5, {501}),
+        (5, {**STEPS, "incline": "up"}, None, False, False, 5, {500}),
+        (5, {**STEPS, "level": "-1;0"}, None, True, False, 5, {500}),
+        (5, STEPS, None, True, False, 5, {500}),
+        (5, STEPS, None, True, False, 6, {501}),
+        (0, {**STEPS, "incline": "up"}, None, True, False, 1, {501}),
+        (5, {}, None, True, False, 5, {500, 501}),
+    ],
+)
+def test_walking_areas_join_a_node_on_one_level(
+    way, way_tags, own_level, stacked, continues, node, entered
+):
+    """A node that would enter areas on two levels (area 500 on level 0, area 501 on
+    level 1, either around node 5 or on the same outline) enters only those on its
+    level: its walkway's, else at an end of stairs with a level range the level of that
+    end, else its own level tag. The end of such stairs in areas on both levels takes
+    the other end of the range from the one level of the areas at its other end (also
+    where a walkway goes on from there), else the low end at the start of the way and
+    the high end at its end. A node without levels enters both."""
+    import geopandas as gpd
+    from rapidjson import dumps
+    from shapely.geometry import box
+
+    from pyrosm import walking_areas
+
+    nodes, edges, areas, lonlat = _walking_area_frames()
+    nodes.loc[len(nodes)] = [30, *lonlat(0.5, 3)]  # inside area 501 in both layouts
+    edges.loc[len(edges)] = {**edges.iloc[1].to_dict(), "id": 30, "u": 30, "v": 8}
+    edges.loc[len(edges) - 1, "tags"] = dumps({"level": "1"})
+    if continues:  # a walkway without a level from node 6, the stairs' other end
+        edges.loc[len(edges)] = {**edges.iloc[1].to_dict(), "id": 31, "u": 6, "v": 3}
+    nodes["tags"] = [{"level": own_level} if i == node else None for i in nodes["id"]]
+    edges.loc[way, "highway"] = way_tags.get("highway", "footway")
+    edges.loc[way, "tags"] = dumps({k: v for k, v in way_tags.items() if k != "highway"})
+    areas.loc[0, "tags"] = dumps({"level": "0"})
+    small = box(*lonlat(-0.5, 2.6), *lonlat(0.8, 3.3))
+    second = areas.assign(
+        id=501,
+        tags=dumps({"level": "1"}),
+        geometry=[areas.geometry.iloc[0] if stacked else small],
+    )
+    areas = gpd.GeoDataFrame(pd.concat([areas, second], ignore_index=True), crs=4326)
+    rows = walking_areas.crossing_rows(nodes, edges, areas)
+    assert set(rows.loc[(rows["u"] == node) | (rows["v"] == node), "id"]) == entered
+
+
 @pytest.mark.parametrize(
     "network_type, kept",
     [("walking", [1, 4, 8, 9]), ("cycling", [1, 8, 9]), ("driving", [])],
@@ -845,8 +900,8 @@ def test_indoor_platforms_merge():
 def test_indoor_area_crossings_enter_through_doors():
     """Indoor areas are crossed as walking areas are, entered also through a door on the
     outline that is not a node of the network, which then joins the nodes; without
-    areas the edges get walking_area False; an area already crossed, or not a polygon,
-    is not crossed again."""
+    areas the edges get walking_area False; a walking area that is also an indoor area
+    is crossed once, and one that is not a polygon is not crossed."""
     import geopandas as gpd
     from shapely.geometry import LineString, Point
 
@@ -874,9 +929,13 @@ def test_indoor_area_crossings_enter_through_doors():
     assert len(with_indoor_crossings(nodes, again, areas, door)[1]) == len(again)
     inner = areas.assign(geometry=[areas.geometry.iloc[0].geoms[1].buffer(-1e-6)])
     assert not with_indoor_crossings(nodes, edges, inner, None)[1]["walking_area"].any()
-    assert indoor_areas(areas, crossed) is None and indoor_areas(None, plain) is None
+    assert len(indoor_areas(areas, areas)) == 1 and indoor_areas(None) is None
+    # A tag in the JSON of a walking area fills the column the indoor areas have for it
+    walking = areas.assign(tags='{"railway": "platform"}')
+    both = indoor_areas(areas.assign(id=501, railway="platform"), walking)
+    assert both["railway"].tolist() == ["platform", "platform"]
     lines = areas.assign(geometry=[LineString([(0, 0), (1, 1)])])
-    assert indoor_areas(lines, plain) is None
+    assert indoor_areas(lines) is None
 
 
 def test_indoor_lifts_split_per_level():

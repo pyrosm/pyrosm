@@ -2,12 +2,17 @@
 
 A walking area is a closed way tagged ``area=yes`` or a multipolygon relation, such as a
 pedestrian square, whose tags pass the network's filter. Its entrances are the network's
-nodes on its outline and the network's dead ends inside it on the area's level (for the
-end of stairs with a level range, the level of that end when the rest of the stairs
-gives it). Each
-pair of entrances gets one edge along the shortest line inside the area, which bends
-only at the area's inward corners: the corners of the outline that point into the area
-and those of its holes.
+nodes on its outline and the network's dead ends inside it on the area's level. A node
+that would enter areas on two or more levels enters, of the areas with a level, only
+those on its own levels: those of its walkways with one level, else, at an end of
+stairs, an escalator or a moving walkway with a level range, the level of that end that
+the rest of the way gives, else its own ``level`` tag, else the ``level`` tags of its
+other edges. Such an end without that level, in or on areas on several levels of its
+range, is on the other end of the range from the one level of the areas at the way's
+other end, else on the low end at the start of the way (in its drawn direction) and the
+high end at its end. Each pair of entrances gets one edge along the shortest line inside
+the area, which bends only at the area's inward corners: the corners of the outline that
+point into the area and those of its holes.
 """
 
 import math
@@ -99,9 +104,12 @@ def add_crossings(nodes, edges, areas):
 
 def crossing_rows(nodes, edges, areas):
     """The edges across ``areas`` as rows with the columns of ``edges``: ``u`` and ``v``
-    the entrances, ``length`` in metres, the line as ``geometry``, and the area's ``id``,
-    ``osm_type`` and tags in the other columns, its tags without a column of ``edges`` in
-    the JSON ``tags``. None when no area has two entrances."""
+    the entrances (among ``nodes``, with their tags in ``tags`` when known), ``length``
+    in metres, the line as ``geometry``, and the area's ``id``, ``osm_type`` and tags in
+    the other columns, its tags without a column of ``edges`` in the JSON ``tags``. None
+    when no area has two entrances."""
+    from pyrosm.indoor import node_levels
+
     ids = nodes["id"].to_numpy()
     lon = nodes["lon"].to_numpy(dtype=float)
     lat = nodes["lat"].to_numpy(dtype=float)
@@ -113,11 +121,20 @@ def crossing_rows(nodes, edges, areas):
     area_rows, node_rows = shapely.STRtree(shapely.points(lon, lat)).query(
         geometries, predicate="intersects"
     )
-    positions = _dead_end_level_positions(edges, ids[node_rows[dead_end[node_rows]]])
     area_positions = [
         _level_position(tags) for tags in _frame_tags(areas, _frame_tag_columns(areas))
     ]
-    found = []
+    near = np.unique(node_rows)
+    positions, open_ends = _entrance_positions(
+        edges, ids[near], ids[near[dead_end[near]]], node_levels(nodes)
+    )
+    if open_ends:
+        positions.update(
+            _stair_end_choices(
+                edges, open_ends, ids[node_rows], area_rows, area_positions
+            )
+        )
+    entrances = []
     for area in np.unique(area_rows):
         candidates = node_rows[area_rows == area]
         joinable = np.array(
@@ -128,15 +145,20 @@ def crossing_rows(nodes, edges, areas):
             dtype=bool,
         )
         for part in shapely.get_parts(geometries[area]):
-            entrances = _entrances(
-                part,
-                ids[candidates],
-                lon[candidates],
-                lat[candidates],
-                joinable,
+            at = _entrances(
+                part, ids[candidates], lon[candidates], lat[candidates], joinable
             )
-            for u, v, line in _part_crossings(part, entrances):
-                found.append((area, u, v, line))
+            entrances.append((area, part, at))
+    off_level = _off_level_entrances(entrances, positions, area_positions)
+    found = []
+    for area, part, at in entrances:
+        kept = {}
+        for key, (x, y, node_ids) in at.items():
+            node_ids = [node for node in node_ids if (area, node) not in off_level]
+            if node_ids:
+                kept[key] = (x, y, node_ids)
+        for u, v, line in _part_crossings(part, kept):
+            found.append((area, u, v, line))
     if not found:
         return None
 
@@ -165,31 +187,101 @@ def crossing_rows(nodes, edges, areas):
     return GeoDataFrame(crossings, geometry="geometry", crs=edges.crs)
 
 
-def _dead_end_level_positions(edges, dead_ends):
-    """``{node id: position}`` of the nodes ``dead_ends``, each a node of one of
-    ``edges``, by the tags of that edge (see :func:`_level_position`); for the end of
-    stairs, an escalator or a moving walkway with a level range, by the level of that end
-    when the rest of the way gives it (see :func:`pyrosm.indoor.stair_end_levels`)."""
-    from pyrosm.indoor import stair_end_levels
+def _entrance_positions(edges, node_ids, dead_ends, own_levels):
+    """``(positions, open_ends)`` of the network nodes ``node_ids`` in or on an area.
+    ``positions`` is ``{node id: position}`` (see :func:`_level_position`) by, in this
+    order: the levels of the node's walkways with one level among ``edges``; at an end
+    of stairs, an escalator or a moving walkway with a level range, the level of that
+    end when the rest of the way gives it (see :func:`pyrosm.indoor.stair_end_levels`);
+    its ``own_levels`` (see :func:`pyrosm.indoor.node_levels`); the ``level`` tags of
+    its other edges; for a dead end (one of ``dead_ends``), the side of street level of
+    its edge's ``layer``. Other nodes without levels are left out. ``open_ends`` is
+    ``{node id: (low, high)}``: the dead ends of such ways without that level, with
+    their ranges."""
+    from pyrosm.indoor import is_vertical, stair_end_levels
 
-    known = stair_end_levels(edges, dead_ends)
+    known = stair_end_levels(edges, node_ids, own_levels)
     u = edges["u"].to_numpy()
     v = edges["v"].to_numpy()
-    rows = np.flatnonzero(np.isin(u, dead_ends) | np.isin(v, dead_ends))
+    rows = np.flatnonzero(np.isin(u, node_ids) | np.isin(v, node_ids))
     subset = edges.iloc[rows]
-    wanted = set(dead_ends.tolist())
-    positions = {}
+    wanted = set(np.asarray(node_ids).tolist())
+    ends = set(np.asarray(dead_ends).tolist())
+    single, other, sides, open_ends = {}, {}, {}, {}
     for a, b, tags in zip(
         u[rows], v[rows], _frame_tags(subset, _frame_tag_columns(subset))
     ):
-        position = _level_position(tags)
+        ranges, side = _level_position(tags)
+        vertical = is_vertical(tags)
+        levels = {level for pair in ranges or () for level in pair}
         for node in (a, b):
-            if node in known:
-                level = known[node]
-                positions[node] = ([(level, level)], {int(np.sign(level))})
-            elif node in wanted:
-                positions[node] = position
-    return positions
+            if node not in wanted:
+                continue
+            on_one = not vertical and len(levels) == 1
+            (single if on_one else other).setdefault(node, []).extend(ranges or ())
+            if node in ends:
+                sides[node] = side
+                if len(levels) > 1 and vertical and node not in known:
+                    open_ends[node] = (min(levels), max(levels))
+    positions = {}
+    for node in wanted:
+        own = [(level, level) for level in own_levels.get(node, ())]
+        if single.get(node):
+            positions[node] = _ranges_position(single[node])
+        elif node in known:
+            positions[node] = _single_level_position(known[node])
+        elif own or other.get(node):
+            positions[node] = _ranges_position(own or other[node])
+        elif node in sides:
+            positions[node] = (None, sides[node])
+    return positions, open_ends
+
+
+def _area_levels_at(node_ids, area_rows, area_positions, ranges):
+    """``{node id: levels}``: for the nodes with level ``ranges`` (``{node id: (low,
+    high)}``), the levels within their range of the areas on one level that they lie in
+    or on (the area of each node of ``node_ids`` in ``area_rows``, at
+    ``area_positions``)."""
+    found = {}
+    for node, area in zip(node_ids, area_rows):
+        levels = area_positions[area][0]
+        if node not in ranges or not levels or len(levels) != 1:
+            continue
+        low, high = ranges[node]
+        if levels[0][0] == levels[0][1] and low <= levels[0][0] <= high:
+            found.setdefault(node, set()).add(levels[0][0])
+    return found
+
+
+def _stair_end_choices(edges, open_ends, node_ids, area_rows, area_positions):
+    """``{node id: position}`` for the ``open_ends`` (see :func:`_entrance_positions`)
+    in or on areas on several levels of their range (see :func:`_area_levels_at`, with
+    the nodes ``node_ids`` in or on the areas ``area_rows``): the other end of the range
+    from the one level of the areas at the other end of the way, else the low end of the
+    range at the start of the way and the high end at its end."""
+    from pyrosm.indoor import stair_way_ends
+
+    ways = stair_way_ends(edges, list(open_ends))
+    ranges = {other: open_ends[node] for node, (other, _) in ways.items()}
+    ranges.update(open_ends)
+    levels_at = _area_levels_at(node_ids, area_rows, area_positions, ranges)
+    chosen = {}
+    for node, (low, high) in open_ends.items():
+        if len(levels_at.get(node, ())) < 2 or node not in ways:
+            continue
+        other, starts = ways[node]
+        at_other = levels_at.get(other, set())
+        if len(at_other) == 1 and next(iter(at_other)) in (low, high):
+            level = high if next(iter(at_other)) == low else low
+        else:
+            level = low if starts else high
+        chosen[node] = _single_level_position(level)
+    return chosen
+
+
+def _single_level_position(level):
+    """The position (see :func:`_level_position`) of an element on the one ``level``."""
+    return _ranges_position([(level, level)])
 
 
 def _level_position(tags):
@@ -201,13 +293,19 @@ def _level_position(tags):
     level."""
     ranges = level_ranges(tags.get("level"))
     if ranges:
-        sides = set()
-        for low, high in ranges:
-            sides.update((int(np.sign(low)), int(np.sign(high))))
-            if low < 0 < high:
-                sides.add(0)
-        return ranges, sides
+        return _ranges_position(ranges)
     return None, {int(np.sign(tag_layer(tags)))}
+
+
+def _ranges_position(ranges):
+    """The position (see :func:`_level_position`) of an element on the level ``ranges``:
+    the ranges and the sides of street level they reach."""
+    sides = set()
+    for low, high in ranges:
+        sides.update((int(np.sign(low)), int(np.sign(high))))
+        if low < 0 < high:
+            sides.add(0)
+    return ranges, sides
 
 
 def _on_same_level(a, b):
@@ -221,6 +319,36 @@ def _on_same_level(a, b):
             for low_b, high_b in b[0]
         )
     return bool(a[1] & b[1])
+
+
+def _off_level_entrances(entrances, positions, area_positions):
+    """``{(area, node id)}``: the areas with a level that each node enters (see
+    :func:`_entrances`; ``entrances`` as ``(area, part, entrances)``) off the node's
+    levels (``positions``, see :func:`_entrance_positions`), for the nodes with levels
+    that enter areas on two or more levels (``area_positions``)."""
+    entered = {}
+    for area, _, at in entrances:
+        if area_positions[area][0]:
+            for _, _, node_ids in at.values():
+                for node in node_ids:
+                    entered.setdefault(node, set()).add(area)
+    off = set()
+    for node, areas in entered.items():
+        position = positions.get(node)
+        if not position or not position[0]:
+            continue
+        several = any(
+            not _on_same_level(area_positions[a], area_positions[b])
+            for a in areas
+            for b in areas
+        )
+        if several:
+            off.update(
+                (area, node)
+                for area in areas
+                if not _on_same_level(position, area_positions[area])
+            )
+    return off
 
 
 def _entrances(polygon, ids, lon, lat, dead_end):

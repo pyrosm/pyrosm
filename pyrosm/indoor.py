@@ -3,8 +3,9 @@
 The platforms (:data:`PLATFORM_FILTER`) are edges of the network, also those that its
 type leaves out, such as ``highway=platform`` in a walking network. The platform areas
 and the indoor corridors and areas (:data:`INDOOR_AREA_FILTER`) are crossed as walking
-areas are, each on its own level, entered also through the doors on their outlines,
-which connect areas that share them. The edges get the level at each of their two ends,
+areas are, each on its own level and together with the walking areas of a read with
+``walking_areas=True``, entered also through the doors on their outlines, which connect
+areas that share them. The edges get the level at each of their two ends,
 ``u_level`` and ``v_level``, from the OSM ``level`` tags (see
 :func:`pyrosm.levels.level_ranges`). An edge with one level has it at both ends. A level
 list or range on stairs, an escalator or a moving walkway runs between the levels of the
@@ -82,7 +83,7 @@ def _is_moving(tags):
     return tags.get("conveying") not in (None, "no")
 
 
-def _is_vertical(tags):
+def is_vertical(tags):
     """Whether an edge with the OSM tags ``tags`` is stairs, an escalator or a moving
     walkway."""
     return tags.get("highway") == "steps" or _is_moving(tags)
@@ -102,7 +103,7 @@ def edge_levels(edges, tags, node_levels=None):
         if ranges:
             low[i] = min(r[0] for r in ranges)
             high[i] = max(r[1] for r in ranges)
-        vertical[i] = _is_vertical(row_tags)
+        vertical[i] = is_vertical(row_tags)
     rise = np.array([_rise(row_tags) for row_tags in tags], dtype=np.int8)
     single = low == high
     listed = high > low
@@ -132,36 +133,48 @@ def edge_levels(edges, tags, node_levels=None):
     return u_level, v_level
 
 
-def stair_end_levels(edges, ends):
-    """``{node: level}`` for the nodes ``ends`` that end stairs, escalators or moving
-    walkways with a level range in ``edges``, where :func:`edge_levels` finds the level
-    of that end from the rest of the way: from the walkways at its other end, or from
-    its incline."""
+def _range_stair_rows(edges, ends):
+    """The rows of ``edges`` (a frame with ``id``) that are stairs, escalators or moving
+    walkways with a level range and end at one of the nodes ``ends``."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
     at_end = np.flatnonzero(np.isin(u, ends) | np.isin(v, ends))
     if "id" not in edges.columns or not len(at_end):
-        return {}
-    columns = _frame_tag_columns(edges)
+        return []
     stairs = []
-    for row, tags in zip(at_end, _frame_tags(edges.iloc[at_end], columns)):
+    for row, tags in zip(
+        at_end, _frame_tags(edges.iloc[at_end], _frame_tag_columns(edges))
+    ):
         ranges = level_ranges(tags.get("level"))
         if (
-            _is_vertical(tags)
+            is_vertical(tags)
             and ranges
             and len({r for pair in ranges for r in pair}) > 1
         ):
             stairs.append(row)
-    if not stairs:
+    return stairs
+
+
+def stair_end_levels(edges, ends, own_levels=None):
+    """``{node: level}`` for the nodes ``ends`` at an end of the way of stairs,
+    escalators or moving walkways with a level range in ``edges`` (see
+    :func:`stair_way_ends`), where :func:`edge_levels` finds the level
+    of that end from the rest of the way: from the walkways at its other end (or the
+    nodes' ``own_levels``, see :func:`node_levels`), or from its incline."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
+    wanted = stair_way_ends(edges, ends)
+    if not wanted:
         return {}
-    ways = np.isin(edges["id"].to_numpy(), edges["id"].to_numpy()[stairs])
+    u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
+    ids = edges["id"].to_numpy()
+    ways = np.isin(ids, ids[_range_stair_rows(edges, ends)])
     way_nodes = np.concatenate([u[ways], v[ways]])
     near = np.flatnonzero(np.isin(u, way_nodes) | np.isin(v, way_nodes))
     subset = edges.iloc[near]
-    u_level, v_level = edge_levels(subset, _frame_tags(subset, columns))
-    wanted = set(np.asarray(ends).tolist()) & set(
-        np.concatenate([u[stairs], v[stairs]]).tolist()
+    u_level, v_level = edge_levels(
+        subset, _frame_tags(subset, _frame_tag_columns(edges)), own_levels
     )
     found = {}
     for a, b, level_a, level_b, way in zip(
@@ -170,6 +183,29 @@ def stair_end_levels(edges, ends):
         for node, level in ((a, level_a), (b, level_b)):
             if way and node in wanted and not np.isnan(level):
                 found[node] = float(level)
+    return found
+
+
+def stair_way_ends(edges, ends):
+    """``{node: (other end, starts)}`` for the nodes ``ends`` that end stairs,
+    escalators or moving walkways with a level range in ``edges``: the node at the other
+    end of the way (see :func:`_vertical_ways`) and whether the way starts at the node,
+    in its drawn direction."""
+    stairs = _range_stair_rows(edges, ends)
+    if not stairs:
+        return {}
+    ids = edges["id"].to_numpy()
+    rows = np.flatnonzero(np.isin(ids, ids[stairs]))
+    vertical = np.zeros(len(edges), dtype=bool)
+    vertical[rows] = True
+    wanted = set(np.asarray(ends).tolist())
+    found = {}
+    for _, nodes in _vertical_ways(edges, vertical):
+        first, last = nodes[0], nodes[-1]
+        if first in wanted:
+            found[first] = (last, True)
+        if last in wanted:
+            found[last] = (first, False)
     return found
 
 
@@ -451,26 +487,51 @@ def with_platforms(nodes, edges, platform_nodes, platforms, walking_areas=False)
     return nodes, edges
 
 
-def indoor_areas(candidates, edges):
-    """The areas among ``candidates`` (a read of :data:`INDOOR_AREA_FILTER`), their
-    polygons and multipolygons, without those whose edges across are already in
-    ``edges`` (with ``walking_areas=True``); None when there are none."""
-    if candidates is None:
+def indoor_areas(candidates, walking=None):
+    """The polygons and multipolygons among ``candidates`` (a read of
+    :data:`INDOOR_AREA_FILTER`) after the ``walking`` areas of the read (see
+    :func:`pyrosm.walking_areas.select_areas`), each area once and with the tag columns
+    of both (see :func:`_with_tag_columns`); None when there are none."""
+    frames = [] if walking is None else [walking]
+    if candidates is not None:
+        polygonal = candidates.geometry.geom_type.isin(["Polygon", "MultiPolygon"])
+        areas = candidates[polygonal]
+        if walking is not None:
+            done = set(zip(walking["osm_type"], walking["id"]))
+            areas = areas[
+                [key not in done for key in zip(areas["osm_type"], areas["id"])]
+            ]
+        frames.append(areas)
+    frames = [frame for frame in frames if len(frame)]
+    if not frames:
         return None
-    areas = candidates[candidates.geometry.geom_type.isin(["Polygon", "MultiPolygon"])]
-    if "walking_area" in edges.columns:
-        crossed = edges[edges["walking_area"]]
-        done = set(zip(crossed["osm_type"], crossed["id"]))
-        areas = areas[[key not in done for key in zip(areas["osm_type"], areas["id"])]]
-    return areas.reset_index(drop=True) if len(areas) else None
+    columns = [col for frame in frames for col in frame.columns]
+    frames = [_with_tag_columns(frame, columns) for frame in frames]
+    areas = pd.concat(frames, ignore_index=True)
+    return GeoDataFrame(areas, geometry="geometry", crs=frames[0].crs)
+
+
+def _with_tag_columns(frame, columns):
+    """``frame`` with those of ``columns`` that it lacks, filled from its tags (see
+    :func:`pyrosm.pbf_writer._frame_tags`), so that a tag of the JSON ``tags`` is kept
+    where another frame has a column for it."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_key
+
+    missing = list(dict.fromkeys(col for col in columns if col not in frame.columns))
+    if not missing:
+        return frame
+    tags = _frame_tags(frame, _frame_tag_columns(frame))
+    return frame.assign(
+        **{col: [row.get(_tag_key(col)) for row in tags] for col in missing}
+    )
 
 
 def with_indoor_crossings(nodes, edges, areas, doors):
-    """The ``nodes`` and ``edges`` of a network read with the edges across the indoor
-    ``areas`` (see :func:`pyrosm.walking_areas.crossing_rows`), marked True in the column
+    """The ``nodes`` and ``edges`` of a network read with the edges across the indoor and
+    walking ``areas`` (see :func:`pyrosm.walking_areas.crossing_rows`), marked True in the column
     ``walking_area`` (False on the other edges), entered through the network's nodes and
-    the ``doors`` (a frame of nodes with ``id``, ``lon`` and ``lat``) on the areas'
-    outlines, without those between two nodes an edge already joins; the doors that
+    the ``doors`` (a frame of nodes with ``id``, ``lon``, ``lat`` and ``tags``) on the
+    areas' outlines, without those between two nodes an edge already joins; the doors that
     the new edges use join the nodes."""
     from pyrosm.walking_areas import crossing_rows
 
@@ -478,9 +539,11 @@ def with_indoor_crossings(nodes, edges, areas, doors):
         edges = edges.assign(walking_area=False)
     if areas is None:
         return nodes, edges
-    entrances = nodes[["id", "lon", "lat"]]
+    columns = [col for col in ("id", "lon", "lat", "tags") if col in nodes.columns]
+    entrances = nodes[columns]
     if doors is not None:
-        new_doors = doors[~doors["id"].isin(nodes["id"])][["id", "lon", "lat"]]
+        new_doors = doors[~doors["id"].isin(nodes["id"])]
+        new_doors = new_doors[[col for col in columns if col in new_doors.columns]]
         entrances = pd.concat([entrances, new_doors], ignore_index=True)
     plain = edges[~edges["walking_area"]]
     rows = crossing_rows(entrances, plain, areas)
