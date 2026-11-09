@@ -54,7 +54,8 @@ def test_plot_3d_draws_an_indoor_network(indoor):
     assert ends.legendgroup == line.legendgroup and ends.showlegend is False
     assert line.line.color == ends.marker.color == "#e8002d"
     assert line.line.dash == "solid" and line.line.width == 10
-    assert traces["Platforms"].line.color == "#e87ba4"
+    assert traces["Platforms"].line.color == "#199e70"
+    assert traces["Stairs"].line.color == "#444b55"
     assert traces["Escalators"].line.color == "#c98500"
     names = [trace.name for trace in figure.data]
     assert names.index("Route") > names.index("Platforms")
