@@ -11,10 +11,10 @@ the walkways at its two ends; on another walkway, such as a corridor tagged ``le
 the data does not say which part is on which level, and both ends stay empty. Stairs and
 an escalator without a level range (no ``level`` tag or a single level) take their ends
 from the walkways they join, when each end has one level and the two differ. An edge
-without a ``level`` tag otherwise has no level. The column ``vertical`` marks escalators
-and stairs; the ``length`` of an escalator is measured along its slope (see
-:func:`with_indoor_columns`), and in a graph an escalator runs only in the direction it
-moves (see :func:`escalator_one_way`). A lift node (``highway=elevator``) where walkways on several
+without a ``level`` tag otherwise has no level. The column ``vertical`` marks escalators,
+moving walkways and stairs; the ``length`` of an escalator is measured along its slope
+(see :func:`with_indoor_columns`), and in a graph an escalator or moving walkway runs
+only in the direction it moves (see :func:`moving_one_way`). A lift node (``highway=elevator``) where walkways on several
 levels meet is split into one node per level, joined by lift edges (see
 :func:`split_lifts`).
 """
@@ -44,6 +44,9 @@ PLATFORM_FILTER = {
 # areas and the indoor corridors and areas of Simple Indoor Tagging.
 INDOOR_AREA_FILTER = {"indoor": ["corridor", "area"], **PLATFORM_FILTER}
 
+# The ``vertical`` values of the edges that move, in the direction ``conveying`` gives.
+MOVING = ("escalator", "moving_walkway")
+
 # The nodes through which an indoor area is also entered: its doors and entrances.
 DOOR_FILTER = {"door": [True], "entrance": [True]}
 
@@ -65,9 +68,15 @@ def check_indoor_read(network_type, custom_filter, nodes):
         )
 
 
+def _is_moving(tags):
+    """Whether an edge with the OSM tags ``tags`` moves: ``conveying`` other than no."""
+    return tags.get("conveying") not in (None, "no")
+
+
 def _is_vertical(tags):
-    """Whether an edge with the OSM tags ``tags`` is stairs or an escalator."""
-    return tags.get("highway") == "steps" or tags.get("conveying") not in (None, "no")
+    """Whether an edge with the OSM tags ``tags`` is stairs, an escalator or a moving
+    walkway."""
+    return tags.get("highway") == "steps" or _is_moving(tags)
 
 
 def edge_levels(edges, tags):
@@ -155,30 +164,31 @@ def check_escalator_slope(escalator_slope):
 def edge_vertical(tags):
     """The vertical movement of edges with the OSM tags ``tags`` (a list of dicts):
     ``"escalator"`` for steps that move (``conveying`` other than no), ``"stairs"`` for
-    other steps, None for the rest."""
+    other steps, ``"moving_walkway"`` for other ways that move, None for the rest."""
     kinds = []
     for row_tags in tags:
         kind = None
         if row_tags.get("highway") == "steps":
-            moving = row_tags.get("conveying") not in (None, "no")
-            kind = "escalator" if moving else "stairs"
+            kind = "escalator" if _is_moving(row_tags) else "stairs"
+        elif _is_moving(row_tags):
+            kind = "moving_walkway"
         kinds.append(kind)
     return kinds
 
 
-def escalator_one_way(edges):
+def moving_one_way(edges):
     """``(forward, backward)`` by position in ``edges``: whether each edge is an escalator
-    (``vertical`` "escalator") that moves only from its ``u`` to its ``v`` node
+    or a moving walkway (:data:`MOVING`) that moves only from its ``u`` to its ``v`` node
     (``conveying=forward``, the direction the way is drawn in) or only from ``v`` to ``u``
-    (``conveying=backward``); None when ``edges`` have no escalators."""
+    (``conveying=backward``); None when ``edges`` have neither."""
     if "vertical" not in edges.columns:
         return None
-    escalator = (edges["vertical"] == "escalator").to_numpy()
-    if not escalator.any():
+    moving = edges["vertical"].isin(MOVING).to_numpy()
+    if not moving.any():
         return None
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
-    rows = np.flatnonzero(escalator)
+    rows = np.flatnonzero(moving)
     tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges))
     conveying = np.full(len(edges), None, dtype=object)
     conveying[rows] = [row_tags.get("conveying") for row_tags in tags]
@@ -188,14 +198,18 @@ def escalator_one_way(edges):
 def with_indoor_columns(edges, escalator_slope):
     """``edges`` (the frame of a network read with ``nodes=True``) with the columns
     ``u_level`` and ``v_level`` (see :func:`edge_levels`) and ``vertical`` (see
-    :func:`edge_vertical`). The ``length`` of an escalator is its length on the map
-    divided by the cosine of ``escalator_slope`` (degrees), its length along a slope of
-    that angle, in millimetres; None keeps the length on the map."""
+    :func:`edge_vertical`; none on the lines across areas, ``walking_area`` True, which
+    do not move whatever the area's tags say). The ``length`` of an escalator is its
+    length on the map divided by the cosine of ``escalator_slope`` (degrees), its length
+    along a slope of that angle, in millimetres; None keeps the length on the map."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     tags = _frame_tags(edges, _frame_tag_columns(edges))
     u_level, v_level = edge_levels(edges, tags)
     vertical = edge_vertical(tags)
+    if "walking_area" in edges.columns:
+        across = edges["walking_area"].fillna(False).to_numpy(dtype=bool)
+        vertical = [None if line else kind for kind, line in zip(vertical, across)]
     edges = edges.assign(u_level=u_level, v_level=v_level, vertical=vertical)
     if escalator_slope is not None:
         escalator = edges["vertical"] == "escalator"

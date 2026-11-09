@@ -2,8 +2,9 @@
 ``pip install "pyrosm[3d]"``).
 
 The edges of :meth:`pyrosm.OSM.get_network` or :meth:`pyrosm.OSM.get_graph` with
-``indoor_elements=True`` are drawn at their levels: walkways, stairs, escalators, lifts,
-platforms and the lines across areas, each kind a legend entry that hides or shows it.
+``indoor_elements=True`` are drawn at their levels: walkways, stairs, escalators, moving
+walkways, lifts, platforms and the lines across areas, each kind a legend entry that hides
+or shows it.
 A walkway tagged with several levels is drawn flat at the lowest, dotted; an edge without
 a level at its layer when that is below street level (a tunnel at least one below), else
 at street level. The vertical axis counts OSM levels, not metres.
@@ -22,6 +23,7 @@ _STYLES = {
     "levels": ("Walkways on other levels", "#3987e5", 3.5, "solid"),
     "multi": ("Walkways tagged with several levels", "#3987e5", 3.0, "dot"),
     "escalator": ("Escalators", "#c98500", 6.0, "solid"),
+    "moving_walkway": ("Moving walkways", "#c98500", 6.0, "dash"),
     "stairs": ("Stairs", "#199e70", 5.0, "solid"),
     "lift": ("Lifts", "#6250d6", 5.0, "dash"),
     "platform": ("Platforms", "#e87ba4", 5.0, "solid"),
@@ -99,7 +101,7 @@ def _edge_kind(tags, vertical, u_level, v_level, crossing):
     and end levels."""
     if crossing:
         kind = "crossing"
-    elif vertical in ("escalator", "stairs", "lift"):
+    elif vertical in ("escalator", "moving_walkway", "stairs", "lift"):
         kind = vertical
     elif any(tags.get(key) == "platform" for key in _PLATFORM_TAGS):
         kind = "platform"

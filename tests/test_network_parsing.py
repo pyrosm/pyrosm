@@ -925,8 +925,12 @@ def test_indoor_levels_of_edge_ends():
     unknown (none when both are, or when both ends touch only the same level), and
     those with no level or one level take the walkways' levels when they differ; a
     walkway tagged with several levels and an edge without one have none. Moving steps
-    are escalators, other steps stairs."""
-    from pyrosm.indoor import edge_levels, edge_vertical
+    are escalators, other steps stairs, other ways that move moving walkways, and a line
+    across a moving area is none of them."""
+    import geopandas as gpd
+    from shapely.geometry import LineString
+
+    from pyrosm.indoor import edge_levels, edge_vertical, with_indoor_columns
 
     rows = [
         (1, 2, {"highway": "corridor", "level": "-1"}),
@@ -951,7 +955,22 @@ def test_indoor_levels_of_edge_ends():
         {"highway": "footway", "conveying": "yes"},
         {},
     ]
-    assert edge_vertical(moving) == ["stairs", None, None]
+    assert edge_vertical(moving) == ["stairs", "moving_walkway", None]
+    across = gpd.GeoDataFrame(
+        {
+            "u": [1, 2],
+            "v": [2, 3],
+            "length": 1.0,
+            "walking_area": [False, True],
+            "indoor": [None, "area"],
+            "highway": ["footway", None],
+            "conveying": "forward",
+        },
+        geometry=[LineString([(0, 0), (1, 1)])] * 2,
+        crs=4326,
+    )
+    vertical = with_indoor_columns(across, None)["vertical"]
+    assert vertical[0] == "moving_walkway" and pd.isna(vertical[1])
     assert [
         (None if np.isnan(a) else a, None if np.isnan(b) else b)
         for a, b in zip(u_level, v_level)
