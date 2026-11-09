@@ -855,7 +855,8 @@ def test_indoor_lifts_split_per_level():
     """A lift node where edges on three levels meet becomes one node per level: the
     lowest keeps the id, each edge ends at the copy of its level (an end without a level
     stays at the lowest), and lift edges join neighbouring levels; a lift node with one
-    level (tags as JSON text) and a node that is not a lift stay as they are."""
+    level (tags as JSON text) and a node that is not a lift stay as they are. The lift
+    edges take the lift node's metadata in the edges' dtypes."""
     import geopandas as gpd
     from shapely.geometry import LineString, Point
 
@@ -863,7 +864,8 @@ def test_indoor_lifts_split_per_level():
 
     tags = [{"highway": "elevator"}, {"highway": "elevator"}, {}, {}]
     nodes = gpd.GeoDataFrame(
-        {"id": [1, 2, 3, 4], "tags": tags},
+        {"id": [1, 2, 3, 4], "tags": tags, "version": [7, 1, 1, 1],
+         "timestamp": [1600000000] * 4, "visible": [True] * 4},
         geometry=[Point(0, 0), Point(1, 0), Point(2, 0), Point(3, 0)],
         crs=4326,
     )
@@ -876,6 +878,8 @@ def test_indoor_lifts_split_per_level():
             "v": [e[1] for e in ends],
             "u_level": [e[2] for e in ends],
             "v_level": [e[2] for e in ends],
+            "version": np.array([2] * 5, dtype=np.int32),
+            "visible": True,
         },
         geometry=[LineString([(0, 0), (1, 1)])] * 5,
         crs=4326,
@@ -890,6 +894,9 @@ def test_indoor_lifts_split_per_level():
         [1, "node", 1, copy0, 0.0],
         [1, "node", copy0, copy2, 0.0],
     ]
+    assert lifts["version"].tolist() == [7, 7] and lifts["visible"].tolist() == [True] * 2
+    assert edges["version"].dtype == np.int32 and edges["visible"].dtype == bool
+    assert "timestamp" not in edges.columns
     assert sorted(nodes["id"]) == [copy2, copy0, 1, 2, 3, 4]
     assert split_lifts(nodes.drop(columns="tags"), edges)[1] is edges
     one_level = nodes.assign(tags=["{}", '{"highway": "elevator"}'] + ["{}"] * 4)

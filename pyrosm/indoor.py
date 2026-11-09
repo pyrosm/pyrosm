@@ -314,6 +314,10 @@ def with_indoor_crossings(nodes, edges, areas, doors):
 _MAX_LIFT_ID = (2**63 - 1) // 1000 - 1
 
 
+# The element metadata a lift edge takes from its lift node.
+LIFT_METADATA = ("version", "timestamp", "changeset", "visible")
+
+
 def lift_copy_id(lift, rank):
     """The id of the copy of the lift node ``lift`` at its ``rank``-th level from the
     lowest (1 or more): negative and the same on every read."""
@@ -339,10 +343,11 @@ def split_lifts(nodes, edges):
     where edges on two or more levels meet split into one node per level: the lowest
     keeps the node's id, the others get :func:`lift_copy_id`, and each edge ends at the
     copy of its level there (an end without a level stays at the lowest). Lift edges of
-    length 0 join the copies of neighbouring levels, with the lift node's id and
-    ``osm_type`` "node", ``highway`` "elevator" and ``vertical`` "lift". A copy id that
-    another node has already raises a ValueError; a lift node with a negative id (one
-    pyrosm wrote) is not split."""
+    length 0 join the copies of neighbouring levels, with the lift node's id and metadata
+    (those of :data:`LIFT_METADATA` that ``edges`` has), ``osm_type`` "node",
+    ``highway`` "elevator" and ``vertical`` "lift". A copy id that another node has
+    already raises a ValueError; a lift node with a negative id (one pyrosm wrote) is
+    not split."""
     lifts = _lift_ids(nodes)
     if not lifts:
         return nodes, edges
@@ -353,6 +358,9 @@ def split_lifts(nodes, edges):
         for i in np.flatnonzero(np.isin(ends, list(lifts)) & ~np.isnan(end_levels)):
             levels.setdefault(int(ends[i]), set()).add(float(end_levels[i]))
     at = nodes.set_index("id")
+    metadata = [
+        col for col in LIFT_METADATA if col in edges.columns and col in at.columns
+    ]
     taken = set(nodes["id"].tolist())
     copies, lift_rows = [], []
     for lift, found in sorted(levels.items()):
@@ -388,6 +396,7 @@ def split_lifts(nodes, edges):
                     "v_level": high,
                     "vertical": "lift",
                     "geometry": LineString([point, point]),
+                    **{col: row[col] for col in metadata},
                 }
             )
     if not lift_rows:
@@ -397,8 +406,11 @@ def split_lifts(nodes, edges):
         for row in lift_rows:
             row["walking_area"] = False
     attrs = dict(edges.attrs)
+    lift_edges = pd.DataFrame(lift_rows).astype(
+        {col: edges[col].dtype for col in metadata}
+    )
     edges = GeoDataFrame(
-        pd.concat([edges, pd.DataFrame(lift_rows)], ignore_index=True),
+        pd.concat([edges, lift_edges], ignore_index=True),
         geometry="geometry",
         crs=edges.crs,
     )
