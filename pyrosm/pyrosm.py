@@ -81,6 +81,7 @@ from pyrosm.indoor import (
     with_platform_filter,
     with_platforms,
     without_lift_area_ways,
+    without_lines_between_levels,
 )
 from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
@@ -720,7 +721,10 @@ class OSM:
             joins nothing else, and whose level its way gives, also enters the nearest
             platform or indoor area on that level that it lies outside of within 2.5
             metres: its edges run from the end to the closest point of the area's
-            outline and on inside the area.
+            outline and on inside the area. An edge across an area between two nodes on
+            different levels is left out, unless the area is stairs or an escalator
+            mapped as an area (`stairs` or `conveying` other than `no`, `room=stairs` or
+            `highway=steps`).
             The edges get the level at each of their two ends in
             the columns `u_level` and `v_level`, from the OSM `level` tags: an edge with
             one level has it at both ends; stairs, escalators and moving walkways run
@@ -730,8 +734,9 @@ class OSM:
             along its drawn direction); along a way of several edges the level changes
             in proportion to the distance; a line across an area tagged with several
             levels has at each end the level of the other edges there, among the area's
-            levels, or the end node's own `level`, so a line between entrances on two
-            levels has these two levels; a walkway tagged with several levels, such as
+            levels, or the end node's own `level`, so a line across stairs or an
+            escalator mapped as an area between entrances on two levels has these two
+            levels; a walkway tagged with several levels, such as
             `level=0;1`, and an edge without a `level` tag have no level (NaN). The
             column `vertical` is `escalator` for steps that move (`conveying`), `stairs`
             for other steps, `moving_walkway` for other ways that move and missing on
@@ -841,6 +846,7 @@ class OSM:
                 node_gdf, edges, timestamp, walking
             )
             edges = with_indoor_columns(edges, escalator_slope, node_gdf)
+            node_gdf, edges = without_lines_between_levels(node_gdf, edges)
             node_gdf, edges = split_lifts(node_gdf, edges)
             result = join_lift_areas(node_gdf, edges, lifts)
         return result

@@ -19,23 +19,24 @@ walkway, such as a corridor tagged ``level=0;1``, the data does not say which pa
 which level, and both ends stay empty. A line across an area with a level list or range
 takes at each end the level in the range of the other edges there or, without one, the
 end node's own ``level``; an end with none or with several stays empty, and a line
-between entrances on two levels has these two levels. A way of several edges also keeps
-the level of a walkway that joins it in between (or of an inner node's own ``level``),
-an end without a level then takes the other end of the range from the nearest such
-level, a way whose two ends are on one level reaches the other end of its range in
-between, and the other inner nodes get levels in proportion to the distance along the
-way. Stairs, escalators and moving walkways without a level range (no ``level`` tag or a
-single level) take the levels of the walkways that join their way, when these give two
-different levels, and keep the outermost ones up to the way's ends. An edge without a
-``level`` tag otherwise has no level. The column ``vertical`` marks escalators, moving
-walkways and stairs; the ``length`` of an escalator is measured along its slope (see
-:func:`with_indoor_columns`), and in a graph an escalator or moving walkway runs only in
-the direction it moves (see :func:`moving_one_way`). A lift node (``highway=elevator``)
-where walkways on several levels meet is split into one node per level, joined by lift
-edges (see :func:`split_lifts`); a lift mapped as an area (``highway=elevator`` on a
-closed way or multipolygon) is not a walkway around the lift but joins the levels at
-which the network enters it in the same way, and lift areas mapped one floor at a time
-make one lift together (see :func:`join_lift_areas`).
+between entrances on two levels has these two levels; such lines are kept only across
+stairs or an escalator mapped as an area (see :func:`without_lines_between_levels`). A
+way of several edges also keeps the level of a walkway that joins it in between (or of
+an inner node's own ``level``), an end without a level then takes the other end of the
+range from the nearest such level, a way whose two ends are on one level reaches the
+other end of its range in between, and the other inner nodes get levels in proportion to
+the distance along the way. Stairs, escalators and moving walkways without a level range
+(no ``level`` tag or a single level) take the levels of the walkways that join their
+way, when these give two different levels, and keep the outermost ones up to the way's
+ends. An edge without a ``level`` tag otherwise has no level. The column ``vertical``
+marks escalators, moving walkways and stairs; the ``length`` of an escalator is measured
+along its slope (see :func:`with_indoor_columns`), and in a graph an escalator or moving
+walkway runs only in the direction it moves (see :func:`moving_one_way`). A lift node
+(``highway=elevator``) where walkways on several levels meet is split into one node per
+level, joined by lift edges (see :func:`split_lifts`); a lift mapped as an area
+(``highway=elevator`` on a closed way or multipolygon) is not a walkway around the lift
+but joins the levels at which the network enters it in the same way, and lift areas
+mapped one floor at a time make one lift together (see :func:`join_lift_areas`).
 """
 
 import json
@@ -109,6 +110,17 @@ def is_vertical(tags):
     """Whether an edge with the OSM tags ``tags`` is stairs, an escalator or a moving
     walkway."""
     return tags.get("highway") == "steps" or _is_moving(tags)
+
+
+def _is_stair_area(tags):
+    """Whether an area with the OSM tags ``tags`` is stairs or an escalator mapped as an
+    area: stairs or an escalator by :func:`is_vertical`, ``stairs`` other than no, or
+    ``room=stairs``."""
+    return (
+        is_vertical(tags)
+        or tags.get("stairs") not in (None, "no")
+        or tags.get("room") == "stairs"
+    )
 
 
 def edge_levels(edges, tags, node_levels=None):
@@ -484,6 +496,36 @@ def with_indoor_columns(edges, escalator_slope, nodes=None):
         along = edges.loc[escalator, "length"] / math.cos(math.radians(escalator_slope))
         edges.loc[escalator, "length"] = along.round(3)
     return edges
+
+
+def without_lines_between_levels(nodes, edges):
+    """``nodes`` and ``edges`` (with ``u_level`` and ``v_level``) without the lines across
+    areas (``walking_area`` True) whose two ends are on two different levels, except
+    across stairs or an escalator mapped as an area (see :func:`_is_stair_area`), and
+    without the doors that only those lines used."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
+    u_level = edges["u_level"].to_numpy(dtype=float)
+    v_level = edges["v_level"].to_numpy(dtype=float)
+    rows = np.flatnonzero(
+        _area_lines(edges)
+        & ~np.isnan(u_level)
+        & ~np.isnan(v_level)
+        & (u_level != v_level)
+    )
+    tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges))
+    rows = rows[[not _is_stair_area(row_tags) for row_tags in tags]]
+    if not len(rows):
+        return nodes, edges
+    drop = np.zeros(len(edges), dtype=bool)
+    drop[rows] = True
+    kept = edges[~drop].reset_index(drop=True)
+    kept.attrs = dict(edges.attrs)
+    used = set(kept["u"]) | set(kept["v"])
+    doors = set(edges["u"].iloc[rows]) | set(edges["v"].iloc[rows])
+    left = nodes[~nodes["id"].isin(doors - used)].reset_index(drop=True)
+    left.attrs = dict(nodes.attrs)
+    return left, kept
 
 
 def with_platform_filter(read_filter):

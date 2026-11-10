@@ -7090,13 +7090,18 @@ def test_indoor_reads_join_stair_ends_near_an_area_on_their_level(tmp_path, engi
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize("stairs", [True, False])
 def test_indoor_reads_give_lines_across_a_multi_level_area_the_levels_of_their_ends(
-    tmp_path, engine
+    tmp_path, engine, stairs
 ):
     """An indoor area tagged level=-1;0 (way 50) is entered by a level -1 walkway at node 5,
     level 0 walkways at nodes 6 and 10, a walkway without a level through node 11 and a
     door tagged level=0 at node 12: each line across it has, at each end, the level of
-    the walkway there or the door's own level, and none at node 11."""
+    the walkway there or the door's own level, and none at node 11. Tagged stairs=yes,
+    the area joins node 5 to the level 0 entrances; otherwise only to node 11, whose
+    level is not known. A second such area (way 60), entered only by a level -1 walkway
+    at node 25 and a door tagged level=0 at node 24, then has no line, and the door is
+    left out of the nodes."""
     import math
 
     import numpy as np
@@ -7106,7 +7111,8 @@ def test_indoor_reads_give_lines_across_a_multi_level_area_the_levels_of_their_e
 
     xy = {1: (0, 0), 2: (20, 0), 3: (20, 20), 4: (0, 20), 5: (0, 10), 6: (20, 10),
           7: (10, 25), 8: (25, 10), 9: (-5, 10), 10: (10, 20), 11: (5, 0), 12: (15, 0),
-          13: (2, -5), 14: (8, -5)}
+          13: (2, -5), 14: (8, -5), 20: (30, 0), 21: (40, 0), 22: (40, 10), 23: (30, 10),
+          24: (35, 0), 25: (35, 10), 26: (35, 15)}
     ids = sorted(xy)
     per_metre = 1 / 111_195
     lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
@@ -7115,20 +7121,23 @@ def test_indoor_reads_give_lines_across_a_multi_level_area_the_levels_of_their_e
         "id": np.array(ids, dtype=np.int64),
         "lon": np.array([lon[i] for i in ids]),
         "lat": np.array([lat[i] for i in ids]),
-        "tags": [{"door": "yes", "level": "0"} if i == 12 else None for i in ids],
+        "tags": [{"door": "yes", "level": "0"} if i in (12, 24) else None for i in ids],
     }
     ways = [
         {"id": 50, "refs": [1, 11, 12, 2, 6, 3, 10, 4, 5, 1],
-         "tags": {"indoor": "area", "level": "-1;0"}},
+         "tags": {"indoor": "area", "level": "-1;0", **({"stairs": "yes"} if stairs else {})}},
         {"id": 51, "refs": [9, 5], "tags": {"highway": "footway", "level": "-1"}},
         {"id": 52, "refs": [8, 6], "tags": {"highway": "footway", "level": "0"}},
         {"id": 53, "refs": [7, 10], "tags": {"highway": "footway", "level": "0"}},
         {"id": 54, "refs": [13, 11, 14], "tags": {"highway": "footway"}},
+        {"id": 60, "refs": [20, 24, 21, 22, 25, 23, 20],
+         "tags": {"indoor": "area", "level": "-1;0", **({"stairs": "yes"} if stairs else {})}},
+        {"id": 61, "refs": [26, 25], "tags": {"highway": "footway", "level": "-1"}},
     ]
     path = write_pbf_from_records(
         nodes, ways, [], str(tmp_path / "hall.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
     )
-    _, edges = OSM(path, engine=engine).get_network(
+    found, edges = OSM(path, engine=engine).get_network(
         "walking", nodes=True, indoor_elements=True
     )
     across = edges[edges["walking_area"] & (edges["id"] == 50)]
@@ -7136,8 +7145,12 @@ def test_indoor_reads_give_lines_across_a_multi_level_area_the_levels_of_their_e
         (u, v, None if a != a else a, None if b != b else b)
         for u, v, a, b in zip(across["u"], across["v"], across["u_level"], across["v_level"])
     ]
+    between = [(5, 6, -1.0, 0.0), (5, 10, -1.0, 0.0), (5, 12, -1.0, 0.0)]
     assert rows == [
-        (5, 6, -1.0, 0.0), (5, 10, -1.0, 0.0), (5, 11, -1.0, None), (5, 12, -1.0, 0.0),
-        (6, 10, 0.0, 0.0), (6, 11, 0.0, None), (6, 12, 0.0, 0.0), (10, 11, 0.0, None),
-        (10, 12, 0.0, 0.0), (11, 12, None, 0.0),
+        *(between[:2] if stairs else []), (5, 11, -1.0, None),
+        *(between[2:] if stairs else []), (6, 10, 0.0, 0.0), (6, 11, 0.0, None),
+        (6, 12, 0.0, 0.0), (10, 11, 0.0, None), (10, 12, 0.0, 0.0), (11, 12, None, 0.0),
     ]
+    other = edges[edges["id"] == 60]
+    assert list(zip(other["u"], other["v"])) == ([(24, 25)] if stairs else [])
+    assert (24 in set(found["id"])) == stairs
