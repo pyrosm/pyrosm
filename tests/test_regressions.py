@@ -6658,8 +6658,9 @@ def test_custom_criteria_keep_the_member_ways_of_stop_areas(engine):
     stop area came back only when its member ways closed into a polygon (#911). The
     platform ways are the same with stop areas in the filter, each stop area is a row
     with a GeometryCollection of its member ways and nodes (also when it has only member
-    nodes; in a box only those inside it), and the member ways of a multipolygon (the
-    buildings inside Rautatientori) are still not rows of their own."""
+    nodes; in a box only those inside it), and the inner ways of a multipolygon that the
+    filter matches by their own tags (the buildings inside Rautatientori) are rows of
+    their own while the square keeps them as holes."""
     import shapely
 
     from pyrosm import OSM, get_data
@@ -6685,7 +6686,9 @@ def test_custom_criteria_keep_the_member_ways_of_stop_areas(engine):
         {"highway": ["pedestrian"], "building": True}, tags_as_columns=columns
     )
     assert 2919118 in set(square.loc[square["osm_type"] == "relation", "id"])
-    assert not {300626401, 464740791} & set(square.loc[square["osm_type"] == "way", "id"])
+    assert {300626401, 464740791} <= set(square.loc[square["osm_type"] == "way", "id"])
+    rautatientori = square[square["id"] == 2919118].geometry.iloc[0]
+    assert sum(len(part.interiors) for part in shapely.get_parts(rautatientori)) >= 2
     # A relation of member nodes only, one of its three nodes in the file
     cameras = osm.get_data_by_custom_criteria({"type": ["surveillance"]})
     camera = cameras[cameras["osm_type"] == "relation"].set_index("id").geometry[51578]
@@ -6974,3 +6977,57 @@ def test_indoor_reads_join_lifts_mapped_floor_by_floor(tmp_path, engine):
     )
     copy = again[again["id"] == high].iloc[0]
     assert abs(copy["lon"] - middle.x) < 1e-7 and abs(copy["lat"] - middle.y) < 1e-7
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_reads_with_relations_keep_tagged_inner_ways(tmp_path, engine):
+    """A corridor multipolygon (relation 20) with three holes: a lift tagged on its own
+    inner way (way 11) is a row of its own, as the OSM wiki tags such holes; an untagged
+    hole (way 12) is not, nor is a hole tagged as a lift too (way 14) that is the outer
+    way of a lift multipolygon (relation 22), which takes it in. The corridor keeps its
+    three holes."""
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    def ring(x0, y0, size, first):
+        corners = [(x0, y0), (x0 + size, y0), (x0 + size, y0 + size), (x0, y0 + size)]
+        return corners, [first, first + 1, first + 2, first + 3, first]
+
+    rings = [ring(0, 0, 10, 1), ring(1, 1, 1, 5), ring(4, 4, 1, 9), ring(7, 7, 1, 13)]
+    xy = [xy for corners, _ in rings for xy in corners]
+    nodes = {
+        "id": np.arange(1, len(xy) + 1, dtype=np.int64),
+        "lon": np.array([24.9 + x * 1e-4 for x, _ in xy]),
+        "lat": np.array([60.2 + y * 1e-4 for _, y in xy]),
+        "version": np.ones(len(xy), dtype=np.int64),
+        "timestamp": np.full(len(xy), 1600000000, dtype=np.int64),
+        "changeset": np.zeros(len(xy), dtype=np.int64),
+        "tags": [None] * len(xy),
+    }
+    lift = {"highway": "elevator", "indoor": "room", "level": "0"}
+    ways = [
+        {"id": way, "refs": refs, "version": 1, "timestamp": 1600000000, "tags": tags}
+        for way, (_, refs), tags in zip((10, 11, 12, 14), rings, ({}, lift, {}, lift))
+    ]
+    corridor = {"type": "multipolygon", "indoor": "corridor", "level": "0"}
+    relations = [
+        {"id": 20, "members": [("way", 10, "outer"), ("way", 11, "inner"),
+                               ("way", 12, "inner"), ("way", 14, "inner")],
+         "version": 1, "timestamp": 1600000000, "changeset": 0, "tags": corridor},
+        {"id": 22, "members": [("way", 14, "outer")], "version": 1,
+         "timestamp": 1600000000, "changeset": 0,
+         "tags": {"type": "multipolygon", **lift}},
+    ]
+    path = write_pbf_from_records(
+        nodes, ways, relations, str(tmp_path / "holes.osm.pbf"), (24.89, 60.19, 24.91, 60.21)
+    )
+    found = OSM(path, engine=engine).get_data_by_custom_criteria(
+        {"indoor": ["corridor"], "highway": ["elevator"]},
+        keep_nodes=False, keep_ways=True, keep_relations=True,
+    )
+    rows = sorted(zip(found["osm_type"], found["id"].astype(int)))
+    assert rows == [("relation", 20), ("relation", 22), ("way", 11)]
+    area = found[found["id"] == 20].geometry.iloc[0]
+    assert len(area.interiors) == 3

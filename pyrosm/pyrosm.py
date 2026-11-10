@@ -1562,7 +1562,9 @@ class OSM:
             Whether or not the relations should be kept in the resulting GeoDataFrame if they are found.
             A relation tagged ``type=multipolygon`` or ``type=boundary`` is returned
             with the area of its member ways, and those ways are not rows of their
-            own. Any other relation, such as a stop area or a route, is returned with a
+            own, except an inner way of a multipolygon whose own tags match the filter:
+            a hole tagged as a feature of its own, such as a lift in a corridor. Any
+            other relation, such as a stop area or a route, is returned with a
             GeometryCollection of its member ways (as lines) and member nodes (as
             points), and its member ways that match the filter are also rows of their
             own.
