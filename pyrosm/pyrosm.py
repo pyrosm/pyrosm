@@ -703,7 +703,9 @@ class OSM:
             stairs of one edge that both lie in areas of one level, an end of their
             range; a stair end whose level the stairs give joins only areas on that
             level, also where it touches one area. A pair whose line passes another of
-            these nodes gets no edge of its own.
+            these nodes gets no edge of its own, nor does a pair that the edges of
+            shorter pairs already join along a route at most 5 % longer, so that an area
+            with many entrances does not get an edge for every pair.
             These edges have the area's `id`, `osm_type` and tags, and `True` in the
             column `walking_area`, which is `False` for the other edges. Requires
             `nodes=True`.

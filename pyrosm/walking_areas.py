@@ -15,11 +15,14 @@ its end, as are the two ends of stairs of one edge that both lie in areas of one
 an end of the range. In an indoor read, the end of stairs or an escalator that joins
 nothing also enters the platform or indoor area on its level that it lies outside of
 within :data:`STAIR_END_REACH` metres (see :func:`crossing_rows`). Each pair of
-entrances gets one edge along the shortest line inside the area,
-which bends only at the area's inward corners: the corners of the outline that point
-into the area and those of its holes.
+entrances gets one edge along the shortest line inside the area, which bends only at the
+area's inward corners: the corners of the outline that point into the area and those of
+its holes. A pair gets no edge when the edges of shorter pairs already join it along a
+route at most :data:`MAX_ROUTE_STRETCH` times as long, so that an area with many
+entrances does not get an edge for every pair.
 """
 
+import heapq
 import math
 
 import numpy as np
@@ -36,6 +39,10 @@ from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_key
 # An area with more entrances and inward corners than this gets edges only between the
 # entrances that a straight line inside it joins.
 MAX_VISIBILITY_POINTS = 500
+
+# A line across an area is left out when the lines kept, shorter ones first, already join
+# its two entrances within this many times its length (see _part_crossings).
+MAX_ROUTE_STRETCH = 1.05
 
 # How many metres outside an area that ``door_areas`` marks (see crossing_rows), on its
 # level, the end of stairs or an escalator that joins nothing may lie and still enter it.
@@ -542,7 +549,9 @@ def _part_crossings(polygon, entrances):
     ``polygon`` (see :func:`_entrances`), the line a LineString, the shortest one inside
     the polygon. Over :data:`MAX_VISIBILITY_POINTS`, only the pairs that a straight line
     inside the polygon joins get an edge. A pair whose line passes another entrance gets
-    no edge: the edges to and from that entrance cover it."""
+    no edge: the edges to and from that entrance cover it. Nor does a pair that the edges
+    of shorter pairs already join within :data:`MAX_ROUTE_STRETCH` times its length (see
+    :func:`_spanning_pairs`)."""
     if len(entrances) < 2:
         return []
     points = np.array([(x, y) for x, y, _ in entrances.values()])
@@ -556,8 +565,10 @@ def _part_crossings(polygon, entrances):
     if count + len(corners) <= MAX_VISIBILITY_POINTS:
         if corners:
             points = np.vstack([points, corners])
-        step = _shortest_paths(points, *_visible_pairs(polygon, points), scale)
-        pairs, paths = [], []
+        step, distance = _shortest_paths(
+            points, *_visible_pairs(polygon, points), scale
+        )
+        pairs, paths, lengths = [], [], []
         for a in range(count):
             for b in range(a + 1, count):
                 if step[a, b] >= 0:
@@ -566,9 +577,12 @@ def _part_crossings(polygon, entrances):
                         path.append(step[path[-1], b])
                     pairs.append((a, b))
                     paths.append(path)
+                    lengths.append(distance[a, b])
     else:
         pairs = list(zip(*_visible_pairs(polygon, points)))
         paths = [list(pair) for pair in pairs]
+        plane = points * [scale, 1.0]
+        lengths = [float(np.hypot(*(plane[a] - plane[b]))) for a, b in pairs]
     if not pairs:
         return []
     lines = shapely.linestrings(
@@ -579,13 +593,47 @@ def _part_crossings(polygon, entrances):
         lines[:, None], shapely.points(points[:count])[None, :], _TOLERANCE
     ).sum(axis=1)
     node_ids = [ids for _, _, ids in entrances.values()]
+    kept = _spanning_pairs(pairs, lengths, passed == 2)
     return [
-        (u, v, line)
-        for (a, b), line, touched in zip(pairs, lines, passed)
-        if touched == 2
-        for u in node_ids[a]
-        for v in node_ids[b]
+        (u, v, lines[i])
+        for i in kept
+        for u in node_ids[pairs[i][0]]
+        for v in node_ids[pairs[i][1]]
     ]
+
+
+def _spanning_pairs(pairs, lengths, candidates):
+    """The indices of the ``pairs`` of entrances (``(a, b)``, the shortest line between
+    them ``lengths`` long) that get an edge, of those ``candidates`` marks, in their
+    order: taken shortest first, a pair is left out when the pairs kept before it already
+    join its two entrances within :data:`MAX_ROUTE_STRETCH` times its length."""
+    adjacent, kept = {}, []
+    for i in sorted(np.flatnonzero(candidates), key=lambda i: lengths[i]):
+        (a, b), length = pairs[i], lengths[i]
+        if not _joined_within(adjacent, a, b, MAX_ROUTE_STRETCH * length):
+            adjacent.setdefault(a, []).append((b, length))
+            adjacent.setdefault(b, []).append((a, length))
+            kept.append(i)
+    return sorted(kept)
+
+
+def _joined_within(adjacent, start, end, bound):
+    """Whether the edges ``adjacent`` (``{entrance: [(entrance, length), ...]}``) join
+    ``start`` to ``end`` along a route at most ``bound`` long."""
+    best = {start: 0.0}
+    queue = [(0.0, start)]
+    while queue:
+        distance, at = heapq.heappop(queue)
+        if at == end:
+            return True
+        if distance > best[at]:
+            continue
+        for to, length in adjacent.get(at, ()):
+            through = distance + length
+            if through <= bound and through < best.get(to, math.inf):
+                best[to] = through
+                heapq.heappush(queue, (through, to))
+    return False
 
 
 def _visible_pairs(polygon, points):
@@ -601,9 +649,10 @@ def _visible_pairs(polygon, points):
 
 def _shortest_paths(points, first, second, scale):
     """The shortest paths between ``points`` (lon/lat) over the straight lines between the
-    pairs ``first``, ``second``, measured with longitudes multiplied by ``scale``:
-    ``step[i, j]`` is the point after ``i`` on the way to ``j``, -1 where no path joins
-    them."""
+    pairs ``first``, ``second``, measured with longitudes multiplied by ``scale``, as
+    ``(step, distance)``: ``step[i, j]`` is the point after ``i`` on the way to ``j``, -1
+    where no path joins them, and ``distance[i, j]`` the path's length (infinite there).
+    """
     n = len(points)
     plane = points * [scale, 1.0]
     length = np.hypot(*(plane[first] - plane[second]).T)
@@ -616,4 +665,4 @@ def _shortest_paths(points, first, second, scale):
         shorter = through < distance * (1 - 1e-12)
         distance = np.where(shorter, through, distance)
         step = np.where(shorter, step[:, k : k + 1], step)
-    return np.where(np.isfinite(distance), step, -1)
+    return np.where(np.isfinite(distance), step, -1), distance

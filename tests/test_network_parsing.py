@@ -447,11 +447,13 @@ def test_walking_area_crossings(capped, monkeypatch):
     ways inside it, are joined in pairs along the shortest line inside the area, which
     bends at the corners of the hole; a pair whose line passes another of them, and the
     parts of a multipolygon between each other, get no edge. Over the point limit, the
-    lines bend only at other entrances, so the tips of a U get no edge."""
+    lines bend only at other entrances, so the tips of a U get no edge. Every other pair
+    gets its line here, with no detour allowed (MAX_ROUTE_STRETCH 1)."""
     from pyrosm import walking_areas
     from pyrosm.distance import Unit, haversine
 
     nodes, edges, areas, lonlat = _walking_area_frames()
+    monkeypatch.setattr(walking_areas, "MAX_ROUTE_STRETCH", 1.0)
     if capped:
         monkeypatch.setattr(walking_areas, "MAX_VISIBILITY_POINTS", 3)
     rows = walking_areas.crossing_rows(nodes, edges, areas)
@@ -479,6 +481,43 @@ def test_walking_area_crossings(capped, monkeypatch):
     assert "tags" not in without_tags.columns
     shrunk = areas.assign(geometry=[areas.geometry.iloc[0].geoms[1].buffer(-1e-6)])
     assert walking_areas.crossing_rows(nodes, edges, shrunk) is None
+
+
+@pytest.mark.parametrize("offset, direct", [(1, False), (2, True)])
+def test_walking_areas_leave_out_lines_that_shorter_ones_cover(offset, direct):
+    """A square walking area with entrances at two corners (nodes 1 and 3, 10 units
+    apart) and a dead end inside it (node 2), ``offset`` units off the middle of the line
+    between them: the line from 1 to 3 is left out when the two shorter lines through
+    node 2 are at most 5 % longer (offset 1: 2 * sqrt(26) = 10.2), and kept otherwise
+    (offset 2: 2 * sqrt(29) = 10.8)."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, Polygon
+
+    from pyrosm import walking_areas
+
+    def lonlat(x, y):
+        return x * 1e-4, y * 1e-4
+
+    points = {1: (0, 0), 2: (offset, 5), 3: (0, 10), 4: (-5, 0), 5: (-5, 10), 6: (20, 5)}
+    nodes = pd.DataFrame(
+        [(i, *lonlat(*xy)) for i, xy in points.items()], columns=["id", "lon", "lat"]
+    )
+    ends = [(1, 4), (3, 5), (2, 6)]
+    edges = gpd.GeoDataFrame(
+        {"id": range(len(ends)), "osm_type": "way", "highway": "footway", "tags": None,
+         "u": [u for u, _ in ends], "v": [v for _, v in ends], "length": 1.0},
+        geometry=[LineString([lonlat(*points[u]), lonlat(*points[v])]) for u, v in ends],
+        crs="EPSG:4326",
+    )
+    square = Polygon([lonlat(*xy) for xy in [(0, 0), (10, 0), (10, 10), (0, 10)]])
+    areas = gpd.GeoDataFrame(
+        {"id": [500], "osm_type": "way", "highway": "pedestrian", "tags": None},
+        geometry=[square],
+        crs="EPSG:4326",
+    )
+    rows = walking_areas.crossing_rows(nodes, edges, areas)
+    pairs = set(map(tuple, map(sorted, zip(rows["u"], rows["v"]))))
+    assert pairs == {(1, 2), (2, 3)} | ({(1, 3)} if direct else set())
 
 
 @pytest.mark.parametrize(
