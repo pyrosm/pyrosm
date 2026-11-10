@@ -5,6 +5,7 @@ from pyrosm.tagparser cimport explode_tag_array
 from pyrosm.filter_compiler import compile_custom_filter, CompiledFilter, rename_filter_key
 from pyrosm.way_store import NodeTags, WayStore
 from pyrosm.geometry import AREA_BY_TAGS, tags_make_area
+from pyrosm.grouping_relations import area_member_way_ids
 from pyrosm.grouping_relations import member_ids as grouping_member_ids
 from pyrosm.utils.progress import COLLECTING, start_step
 import numpy as np
@@ -201,7 +202,7 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
             if type(relation_way_ids) not in [list, np.ndarray]:
                 raise ValueError("'relation_way_ids' should be a list or an array.")
             if grouping:
-                area_way_ids = grouping_member_ids(filtered_relations, "way", False)
+                area_way_ids = area_member_way_ids(filtered_relations)
                 grouping_nodes = grouping_member_ids(filtered_relations, "node", True)
     else:
         relation_way_ids = None

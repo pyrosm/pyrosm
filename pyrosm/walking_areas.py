@@ -169,7 +169,14 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
             found.append((area, u, v, line))
     if not found:
         return None
+    return area_edge_rows(areas, found, edges)
 
+
+def area_edge_rows(areas, found, edges):
+    """The edges ``found`` in ``areas``, ``(area row, u, v, line)`` each, as rows with
+    the columns of ``edges``: ``length`` in metres, the line as ``geometry``, and the
+    area's ``id``, ``osm_type`` and tags in the other columns, its tags without a column
+    of ``edges`` in the JSON ``tags``; sorted by area and nodes."""
     area_index = np.array([f[0] for f in found])
     lines = np.array([f[3] for f in found], dtype=object)
     rows = areas.iloc[area_index].reset_index(drop=True)

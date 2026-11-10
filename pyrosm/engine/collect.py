@@ -16,7 +16,7 @@ from pyrosm.tagparser import explode_node_tag_array
 from pyrosm.data_filter import element_should_be_kept
 from pyrosm.data.countries import way_points
 from pyrosm.geometry import AREA_BY_TAGS, tags_make_area
-from pyrosm.grouping_relations import is_grouping
+from pyrosm.grouping_relations import area_member_way_ids, is_grouping
 from pyrosm.grouping_relations import member_ids as grouping_member_ids
 from pyrosm.engine.decode import (
     _is_threaded,
@@ -808,7 +808,7 @@ def _collect_layer(
         )
         if grouping_relations and relations is not None:
             member_nodes = grouping_member_ids(relations, "node", True)
-            exclude_ids = np.unique(grouping_member_ids(relations, "way", False))
+            exclude_ids = np.unique(area_member_way_ids(relations))
         else:
             exclude_ids = member_ids
         # No member way present (all outside the data/box) -> the relation can't be built,

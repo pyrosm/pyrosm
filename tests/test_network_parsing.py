@@ -978,13 +978,21 @@ def test_indoor_area_crossings_enter_through_doors():
     assert len(with_indoor_crossings(nodes, again, areas, door)[1]) == len(again)
     inner = areas.assign(geometry=[areas.geometry.iloc[0].geoms[1].buffer(-1e-6)])
     assert not with_indoor_crossings(nodes, edges, inner, None)[1]["walking_area"].any()
-    assert len(indoor_areas(areas, areas)) == 1 and indoor_areas(None) is None
+    assert len(indoor_areas(areas, areas)[0]) == 1
+    assert indoor_areas(None) == (None, None)
     # A tag in the JSON of a walking area fills the column the indoor areas have for it
     walking = areas.assign(tags='{"railway": "platform"}')
-    both = indoor_areas(areas.assign(id=501, railway="platform"), walking)
+    both, _ = indoor_areas(areas.assign(id=501, railway="platform"), walking)
     assert both["railway"].tolist() == ["platform", "platform"]
     lines = areas.assign(geometry=[LineString([(0, 0), (1, 1)])])
-    assert indoor_areas(lines) is None
+    assert indoor_areas(lines) == (None, None)
+    # A lift area (highway=elevator) is not crossed; the polygons of the lift read
+    # come back as the lifts
+    lift = areas.assign(highway="elevator")
+    assert indoor_areas(lift) == (None, None)
+    crossed, lifts = indoor_areas(areas, None, pd.concat([lift, lines]))
+    assert len(crossed) == 1 and lifts["id"].tolist() == areas["id"].tolist()
+    assert indoor_areas(None, None, lines) == (None, None)
 
 
 def test_indoor_lifts_split_per_level():
@@ -1053,6 +1061,213 @@ def test_indoor_lifts_split_per_level():
     # A lift node that pyrosm wrote (negative id) is not split
     written = taken.assign(id=[-1, 2, 3])
     assert split_lifts(written, two.replace({1: -1}))[1]["u"].tolist() == [2, -1]
+
+
+def test_lift_areas_joined_per_level(monkeypatch):
+    """A lift area that the network enters on two of its levels gets a node per level in
+    its middle, an edge to it from each entrance there (on that level, with that one
+    level as its ``level``, along a line inside the area: bent in an L-shaped lift) and
+    a lift edge between the levels; an area without a level tag takes any level, a
+    relation's nodes have their own ids, and each part of a multipolygon is a lift of
+    its own. Not joined: an area
+    entered on one listed level (an entrance on an unlisted level and a dead end without
+    a level do not count), one with a lift node split per level in it, one that pyrosm
+    wrote (negative id) and one whose node ids are taken. Without lift areas the frames
+    stay as they are; the walkways of closed lift ways go, with the nodes only they
+    used."""
+    import json
+
+    import geopandas as gpd
+    from shapely.geometry import LineString, MultiPolygon, Point, Polygon
+
+    from pyrosm.indoor import (
+        join_lift_areas,
+        lift_area_copy_id,
+        lift_copy_id,
+        without_lift_area_ways,
+    )
+
+    def at(x, y):
+        return 24.9 + x * 1e-4, 60.2 + y * 1e-4
+
+    def square(x):
+        return Polygon([at(x, 0), at(x + 1, 0), at(x + 1, 1), at(x, 1)])
+
+    # (id, osm_type, level tag, its area): A, B (a relation of two parts, without a
+    # level), C (one listed level reached), D (a split lift node in it), E (negative id),
+    # F (ids taken), G (L-shaped)
+    l_shape = Polygon([at(14, 0), at(16, 0), at(16, 0.4), at(14.4, 0.4), at(14.4, 2),
+                       at(14, 2)])
+    areas = [(7, "way", "0;1", square(0)),
+             (8, "relation", None, MultiPolygon([square(2), square(12)])),
+             (9, "way", "0;1", square(4)), (10, "way", "0;1", square(6)),
+             (-11, "way", "0;1", square(8)), (12, "way", "0;1", square(10)),
+             (13, "way", "0;1", l_shape)]
+    lifts = gpd.GeoDataFrame(
+        {"id": [a[0] for a in areas], "osm_type": [a[1] for a in areas],
+         "level": [a[2] for a in areas], "indoor": "room", "version": 3},
+        geometry=[a[3] for a in areas],
+        crs=4326,
+    )
+    # (entrance node, its place, the level of its edge): node 3 is on level 2, which A
+    # does not list, and node 4 is a dead end in A without a level
+    entrances = [(1, (0, 0), 0.0), (2, (1, 1), 1.0), (3, (1, 0), 2.0),
+                 (4, (0.5, 0.5), np.nan), (5, (2, 0), 0.0), (6, (3, 1), 2.0),
+                 (7, (4, 0), 0.0), (8, (6, 0), 0.0), (9, (7, 1), 1.0),
+                 (10, (8, 0), 0.0), (11, (9, 1), 1.0), (12, (10, 0), 0.0),
+                 (13, (11, 1), 1.0), (14, (12, 0), 0.0), (15, (13, 1), 1.0),
+                 (16, (16, 0), 0.0), (17, (14, 2), 1.0)]
+    far = [100 + e[0] for e in entrances]
+    taken = lift_area_copy_id(12, "way", 1)
+    ids = [e[0] for e in entrances] + far + [taken]
+    places = [at(*e[1]) for e in entrances] + [at(20, 20)] * (len(far) + 1)
+    nodes = gpd.GeoDataFrame(
+        {"id": ids, "lon": [p[0] for p in places], "lat": [p[1] for p in places],
+         "version": 1},
+        geometry=[Point(p) for p in places],
+        crs=4326,
+    )
+    split = (50, lift_copy_id(50, 1), 0.0, 1.0)  # a lift node split per level, in D
+    edges = gpd.GeoDataFrame(
+        {"id": [200 + e[0] for e in entrances] + [50],
+         "osm_type": ["way"] * len(entrances) + ["node"],
+         "u": far + [split[0]], "v": [e[0] for e in entrances] + [split[1]],
+         "u_level": [e[2] for e in entrances] + [split[2]],
+         "v_level": [e[2] for e in entrances] + [split[3]],
+         "vertical": [None] * len(entrances) + ["lift"],
+         "walking_area": False, "version": 1},
+        geometry=[LineString([at(20, 20), at(*e[1])]) for e in entrances]
+        + [LineString([at(6.5, 0.5), at(6.5, 0.5)])],
+        crs=4326,
+    )
+    assert join_lift_areas(nodes, edges, None) == (nodes, edges)
+    a = [lift_area_copy_id(7, "way", rank) for rank in (1, 2)]
+    b = [lift_area_copy_id(8, "relation", rank) for rank in (1, 2, 3, 4)]
+    g = [lift_area_copy_id(13, "way", rank) for rank in (1, 2)]
+    for columns in ({"level": None}, {"tags": None}, {}):
+        joined_nodes, joined = join_lift_areas(nodes, edges.assign(**columns), lifts)
+        new = joined.iloc[len(edges):]
+        lift = new[new["vertical"] == "lift"]
+        assert lift[["id", "osm_type", "u", "v", "u_level", "v_level"]].values.tolist() == [
+            [7, "way", a[0], a[1], 0.0, 1.0], [8, "relation", b[0], b[1], 0.0, 2.0],
+            [8, "relation", b[2], b[3], 0.0, 1.0], [13, "way", g[0], g[1], 0.0, 1.0],
+        ]
+        assert (lift["length"] == 0).all() and not lift["walking_area"].any()
+        into = new[new["walking_area"]]
+        assert into[["id", "u", "v", "u_level", "v_level"]].values.tolist() == [
+            [8, 5, b[0], 0.0, 0.0], [8, 6, b[1], 2.0, 2.0],
+            [8, 14, b[2], 0.0, 0.0], [8, 15, b[3], 1.0, 1.0],
+            [7, 1, a[0], 0.0, 0.0], [7, 2, a[1], 1.0, 1.0],
+            [13, 16, g[0], 0.0, 0.0], [13, 17, g[1], 1.0, 1.0],
+        ]
+        assert sorted(joined_nodes["id"].iloc[len(nodes):]) == sorted(a + b + g)
+        lines = into.geometry.iloc[-2:]
+        assert all(l_shape.buffer(1e-9).covers(line) for line in lines)
+        assert sorted(len(line.coords) for line in lines) == [2, 3]
+        if "level" in columns:
+            assert into["level"].tolist() == ["0", "2"] + ["0", "1"] * 3
+        elif "tags" in columns:
+            tags = [json.loads(t) for t in into["tags"]]
+            assert [t["level"] for t in tags] == ["0", "2"] + ["0", "1"] * 3
+            assert tags[0]["indoor"] == "room"
+    assert joined["version"].dtype == edges["version"].dtype
+    # A taken node id of one part leaves the whole multipolygon as it is
+    one_taken = gpd.GeoDataFrame(
+        pd.concat([nodes, nodes.iloc[[-1]].assign(id=b[2])], ignore_index=True), crs=4326
+    )
+    added = join_lift_areas(one_taken, edges, lifts)[1].iloc[len(edges):]
+    assert 8 not in set(added["id"]) and 7 in set(added["id"])
+    # Without a path from the visibility search, only a straight line inside counts, and
+    # the L-shaped lift is entered on one level then
+    import pyrosm.walking_areas
+
+    from pyrosm.indoor import _line_inside
+
+    monkeypatch.setattr(pyrosm.walking_areas, "_part_crossings", lambda *args: [])
+    assert _line_inside(l_shape, at(14.2, 0.2), at(14.2, 1.8)) is not None
+    assert _line_inside(l_shape, at(16, 0), at(14, 2)) is None
+    only_l = lifts[lifts["id"] == 13].reset_index(drop=True)
+    assert join_lift_areas(nodes, edges, only_l) == (nodes, edges)
+    monkeypatch.undo()
+    # The walkways of a closed lift way go with the nodes only they used
+    ring = edges.iloc[[0]].assign(id=7, u=1, v=2)
+    with_ring = gpd.GeoDataFrame(pd.concat([edges, ring], ignore_index=True), crs=4326)
+    kept_nodes, kept = without_lift_area_ways(nodes, with_ring, lifts)
+    assert 7 not in set(kept["id"]) and len(kept) == len(edges)
+    assert len(kept_nodes) == len(nodes)
+    lone = with_ring.assign(u=with_ring["u"].where(with_ring["id"] != 7, 999))
+    lone_nodes = gpd.GeoDataFrame(
+        pd.concat([nodes, nodes.iloc[[0]].assign(id=999)], ignore_index=True), crs=4326
+    )
+    assert 999 not in set(without_lift_area_ways(lone_nodes, lone, lifts)[0]["id"])
+    assert without_lift_area_ways(nodes, edges, lifts) == (nodes, edges)
+    assert without_lift_area_ways(nodes, edges, None) == (nodes, edges)
+
+
+def test_lift_areas_mapped_floor_by_floor_make_one_lift():
+    """Lift areas mapped one floor at a time make one lift: S on levels 0, 1 and 3
+    (level 2 missing), the areas slightly apart, with lift edges from the middle of one
+    floor's area to the next, each with the id of the lower area. Not joined: two lifts
+    side by side (N), areas three levels apart (G), a second area on a floor that the
+    lift has already (T, which keeps its lift from levels 0 to 1), an area without a
+    level tag and the area above it (U), an area whose only node is on its outline
+    between two corners, not an entrance, and the area above it (V), a small area in a
+    large area above it whose middle lies outside the small one (W)."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, Point, Polygon
+
+    from pyrosm.indoor import join_lift_areas, lift_area_copy_id
+
+    def at(x, y):
+        return 24.9 + x * 1e-4, 60.2 + y * 1e-4
+
+    def square(x, y=0.0, size=1.0):
+        return Polygon([at(x, y), at(x + size, y), at(x + size, y + size), at(x, y + size)])
+
+    # (id, level tag, its square's corner, the entrance at that corner on that level)
+    areas = [(20, "0", (0, 0)), (21, "1", (0.1, 0.1)), (23, "3", (0.2, 0)),
+             (30, "0", (5, 0)), (31, "1", (5.9, 0)), (40, "0", (10, 0)),
+             (43, "3", (10.1, 0.1)), (50, "0", (15, 0)), (51, "1", (15.1, 0)),
+             (52, "1", (15, 0.1)), (60, None, (20, 0)), (61, "1", (20.1, 0.1)),
+             (70, "0", (25, 0)), (71, "1", (25.1, 0.1)), (80, "0", (30, 0)),
+             (81, "1", (30.2, -3), 4.0)]
+    lifts = gpd.GeoDataFrame(
+        {"id": [a[0] for a in areas], "osm_type": "way",
+         "level": [a[1] for a in areas]},
+        geometry=[square(*a[2], *a[3:]) for a in areas],
+        crs=4326,
+    )
+    # V's node lies on its outline between two corners; the areas above U and V, and the
+    # large area of W, are entered at corners outside the area below them
+    place = {a[0]: a[2] for a in areas} | {70: (25.5, 0), 61: (21.1, 1.1),
+                                           71: (26.1, 1.1), 81: (34.2, 1)}
+    nodes = gpd.GeoDataFrame(
+        {"id": [a[0] for a in areas] + [999],
+         "lon": [at(*place[a[0]])[0] for a in areas] + [at(30, 30)[0]],
+         "lat": [at(*place[a[0]])[1] for a in areas] + [at(30, 30)[1]]},
+        geometry=[Point(at(*place[a[0]])) for a in areas] + [Point(at(30, 30))],
+        crs=4326,
+    )
+    levels = [float(a[1]) if a[1] else 0.0 for a in areas]
+    edges = gpd.GeoDataFrame(
+        {"id": range(100, 100 + len(areas)), "osm_type": "way", "u": 999,
+         "v": [a[0] for a in areas], "u_level": levels, "v_level": levels,
+         "vertical": None, "walking_area": False},
+        geometry=[LineString([at(30, 30), at(*place[a[0]])]) for a in areas],
+        crs=4326,
+    )
+    _, joined = join_lift_areas(nodes, edges, lifts)
+    lift = joined[joined["vertical"] == "lift"]
+    node = {i: lift_area_copy_id(i, "way", 1) for i in (20, 21, 23, 50, 51)}
+    assert lift[["id", "u", "v", "u_level", "v_level"]].values.tolist() == [
+        [20, node[20], node[21], 0.0, 1.0], [21, node[21], node[23], 1.0, 3.0],
+        [50, node[50], node[51], 0.0, 1.0],
+    ]
+    first = lift.geometry.iloc[0]
+    middles = [lifts.geometry.iloc[i].representative_point() for i in (0, 1)]
+    assert [Point(c) for c in first.coords] == middles
+    into = joined[joined["walking_area"]]
+    assert sorted(into["id"]) == [20, 21, 23, 50, 51]
 
 
 def test_indoor_levels_of_edge_ends():

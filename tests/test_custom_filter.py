@@ -427,9 +427,10 @@ def test_custom_filters_with_custom_keys(helsinki_region_pbf):
     # Assert on row/content counts (stable), not the column count: the latter
     # can be polluted by extra_attributes leaking into the shared config when
     # other tests run first.
-    # #911: the 5 building ways of a relation that is not a multipolygon are rows too
-    assert len(gdf) == 176747
-    assert gdf["building"].notna().sum() == 176680
+    # #911: the 5 building ways of a relation that is not a multipolygon are rows too;
+    # #965: so are the 6 buildings mapped as holes of other multipolygons
+    assert len(gdf) == 176753
+    assert gdf["building"].notna().sum() == 176686
     assert (gdf["railway"] == "station").sum() == 67
 
     # Test a more complicated query
