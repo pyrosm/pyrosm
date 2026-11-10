@@ -728,7 +728,10 @@ class OSM:
             tagged with no level or one level) or, for a level range, the end node's own
             `level`, and where neither gives an end, the way's `incline` (`up` rises
             along its drawn direction); along a way of several edges the level changes
-            in proportion to the distance; a walkway tagged with several levels, such as
+            in proportion to the distance; a line across an area tagged with several
+            levels has at each end the level of the other edges there, among the area's
+            levels, or the end node's own `level`, so a line between entrances on two
+            levels has these two levels; a walkway tagged with several levels, such as
             `level=0;1`, and an edge without a `level` tag have no level (NaN). The
             column `vertical` is `escalator` for steps that move (`conveying`), `stairs`
             for other steps, `moving_walkway` for other ways that move and missing on

@@ -16,16 +16,19 @@ walkways at the two ends of its way or, at an end where no walkway has a level i
 range, the end node's own ``level``, and where neither gives an end, the way's
 ``incline`` (``up`` rises along the way's drawn direction, ``down`` falls); on another
 walkway, such as a corridor tagged ``level=0;1``, the data does not say which part is on
-which level, and both ends stay empty. A way of several edges also keeps the level of a
-walkway that joins it in between (or of an inner node's own ``level``), an end without a
-level then takes the other end of the range from the nearest such level, a way whose two
-ends are on one level reaches the other end of its range in between, and the other inner
-nodes get levels in proportion to the distance along the way. Stairs, escalators and
-moving walkways without a level range (no ``level`` tag or a single level) take the
-levels of the walkways that join their way, when these give two different levels, and
-keep the outermost ones up to the way's ends. An edge without a ``level`` tag otherwise
-has no level. The column ``vertical`` marks escalators, moving walkways and stairs; the
-``length`` of an escalator is measured along its slope (see
+which level, and both ends stay empty. A line across an area with a level list or range
+takes at each end the level in the range of the other edges there or, without one, the
+end node's own ``level``; an end with none or with several stays empty, and a line
+between entrances on two levels has these two levels. A way of several edges also keeps
+the level of a walkway that joins it in between (or of an inner node's own ``level``),
+an end without a level then takes the other end of the range from the nearest such
+level, a way whose two ends are on one level reaches the other end of its range in
+between, and the other inner nodes get levels in proportion to the distance along the
+way. Stairs, escalators and moving walkways without a level range (no ``level`` tag or a
+single level) take the levels of the walkways that join their way, when these give two
+different levels, and keep the outermost ones up to the way's ends. An edge without a
+``level`` tag otherwise has no level. The column ``vertical`` marks escalators, moving
+walkways and stairs; the ``length`` of an escalator is measured along its slope (see
 :func:`with_indoor_columns`), and in a graph an escalator or moving walkway runs only in
 the direction it moves (see :func:`moving_one_way`). A lift node (``highway=elevator``)
 where walkways on several levels meet is split into one node per level, joined by lift
@@ -149,6 +152,17 @@ def edge_levels(edges, tags, node_levels=None):
         levels = _levels_along(nodes, lengths[rows], points)
         u_level[rows] = [levels[node] for node in u[rows]]
         v_level[rows] = [levels[node] for node in v[rows]]
+    across = np.flatnonzero(listed & ~vertical & _area_lines(edges))
+    if len(across):
+        known = pd.DataFrame({"u": u, "v": v, "u_level": u_level, "v_level": v_level})
+        end_levels_at = _levels_at_nodes(known, np.concatenate([u[across], v[across]]))
+        for ends, end_levels in ((u, u_level), (v, v_level)):
+            for i in across:
+                found = _levels_in_range(
+                    ends[i], low[i], high[i], end_levels_at, node_levels
+                )
+                if len(found) == 1:
+                    end_levels[i] = found[0]
     return u_level, v_level
 
 
@@ -248,9 +262,7 @@ def _vertical_ways(edges, vertical):
     in that order, when the edges of the way form one line (see :func:`_line_order`); else
     each edge on its own, as are the lines across areas (``walking_area`` True)."""
     u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
-    alone = np.full(len(edges), "id" not in edges.columns)
-    if "walking_area" in edges.columns:
-        alone |= edges["walking_area"].fillna(False).to_numpy(dtype=bool)
+    alone = np.full(len(edges), "id" not in edges.columns) | _area_lines(edges)
     ways, found = {}, []
     for i in np.flatnonzero(vertical):
         if alone[i]:
@@ -261,6 +273,14 @@ def _vertical_ways(edges, vertical):
         line = _line_order(rows, u, v)
         found += [line] if line else [([i], [u[i], v[i]]) for i in rows]
     return found
+
+
+def _area_lines(edges):
+    """Whether each of ``edges`` is a line across an area (``walking_area`` True); all
+    False without that column."""
+    if "walking_area" not in edges.columns:
+        return np.zeros(len(edges), dtype=bool)
+    return edges["walking_area"].fillna(False).to_numpy(dtype=bool)
 
 
 def _line_order(rows, u, v):
@@ -299,8 +319,7 @@ def _range_points(nodes, low, high, levels_at, node_levels, rise=0):
     way round when it falls (-1). None when the ends are not known."""
 
     def at(node):
-        joined = _span_levels(levels_at.get(node, ()), low, high)
-        return joined or _span_levels(node_levels.get(node, ()), low, high)
+        return _levels_in_range(node, low, high, levels_at, node_levels)
 
     inner = {
         k: found[0] for k in range(1, len(nodes) - 1) if len(found := at(nodes[k])) == 1
@@ -323,6 +342,14 @@ def _range_points(nodes, low, high, levels_at, node_levels, rise=0):
     if ends is None or None in ends or (ends[0] == ends[1] and not inner):
         return None
     return {0: ends[0], len(nodes) - 1: ends[1], **inner}
+
+
+def _levels_in_range(node, low, high, levels_at, node_levels):
+    """The levels from ``low`` to ``high`` at ``node`` (see :func:`_span_levels`): those
+    of the edges there (``levels_at``) or, without one, the node's own level
+    (``node_levels``)."""
+    joined = _span_levels(levels_at.get(node, ()), low, high)
+    return joined or _span_levels(node_levels.get(node, ()), low, high)
 
 
 def _joined_points(nodes, levels_at):
@@ -448,9 +475,9 @@ def with_indoor_columns(edges, escalator_slope, nodes=None):
     own = None if nodes is None else node_levels(nodes)
     u_level, v_level = edge_levels(edges, tags, own)
     vertical = edge_vertical(tags)
-    if "walking_area" in edges.columns:
-        across = edges["walking_area"].fillna(False).to_numpy(dtype=bool)
-        vertical = [None if line else kind for kind, line in zip(vertical, across)]
+    vertical = [
+        None if line else kind for kind, line in zip(vertical, _area_lines(edges))
+    ]
     edges = edges.assign(u_level=u_level, v_level=v_level, vertical=vertical)
     if escalator_slope is not None:
         escalator = edges["vertical"] == "escalator"
