@@ -3850,7 +3850,7 @@ def test_write_pbf_writes_lifts_split_per_level(tmp_path):
     osm = OSM(get_data("helsinki_pbf"))
     nodes, edges = osm.get_network("walking", nodes=True, indoor_elements=True)
     path = str(tmp_path / "lifts.osm.pbf")
-    with pytest.warns(Notice, match="3 copies of lift nodes as new nodes, 3 lift edges"):
+    with pytest.warns(Notice, match="3 copies of lift nodes and nodes of lift areas as new nodes, 3 lift edges"):
         osm.write_pbf([nodes, edges], path, subset_only=True)
     # Moving a lift node moves its copies
     lift = nodes[nodes["id"] == 2039713549].assign(geometry=[Point(24.95, 60.17)])

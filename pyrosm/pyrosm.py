@@ -69,15 +69,18 @@ from pyrosm.layers import get_layer_data, without_building_parts
 from pyrosm.indoor import (
     DOOR_FILTER,
     INDOOR_AREA_FILTER,
+    LIFT_AREA_FILTER,
     PLATFORM_FILTER,
     check_escalator_slope,
     check_indoor_read,
     indoor_areas,
+    join_lift_areas,
     split_lifts,
     with_indoor_crossings,
     with_indoor_columns,
     with_platform_filter,
     with_platforms,
+    without_lift_area_ways,
 )
 from pyrosm.networks import get_network_data
 from pyrosm.pois import get_poi_data
@@ -729,7 +732,15 @@ class OSM:
             meet is split into one node per level: the lowest keeps the node's id, the
             others get negative ids derived from it, each edge ends at the copy of its
             level, and edges of length 0 with the lift node's id, `osm_type` "node" and
-            `vertical` "lift" join the copies of neighbouring levels. For the network
+            `vertical` "lift" join the copies of neighbouring levels. A lift mapped as
+            an area (a closed way or multipolygon tagged `highway=elevator`, as Simple
+            Indoor Tagging maps lifts) is not a walkway around the lift: when the
+            network enters it on two or more of the levels its `level` tag lists,
+            through nodes at the corners of its outline such as its doors, each of
+            those levels gets a node with a negative id in the middle of the area, an
+            edge to it from each entrance there (marked in `walking_area`, tagged with
+            that level), and edges of length 0 with the area's id and `osm_type` and
+            `vertical` "lift" join the nodes of neighbouring levels. For the network
             types `walking`, `all` and `all_public` and with a `custom_filter`. Requires
             `nodes=True`.
 
@@ -817,11 +828,12 @@ class OSM:
             if edges is None:
                 _warn_no_edges(custom_filter)
                 return node_gdf, edges
-            node_gdf, edges = self._with_indoor_areas(
+            node_gdf, edges, lifts = self._with_indoor_areas(
                 node_gdf, edges, timestamp, walking
             )
             edges = with_indoor_columns(edges, escalator_slope, node_gdf)
-            result = split_lifts(node_gdf, edges)
+            node_gdf, edges = split_lifts(node_gdf, edges)
+            result = join_lift_areas(node_gdf, edges, lifts)
         return result
 
     @contextlib.contextmanager
@@ -1011,9 +1023,12 @@ class OSM:
         return select_areas(candidates, keep, rule)
 
     def _with_indoor_areas(self, nodes, edges, timestamp, walking=None):
-        """``nodes`` and ``edges`` of an indoor network read with the edges across its
-        indoor areas and its ``walking`` areas (see :meth:`_walking_area_polygons`) and
-        the doors they use (see :func:`pyrosm.indoor.with_indoor_crossings`)."""
+        """``(nodes, edges, lifts)`` of an indoor network read: ``nodes`` and ``edges``
+        without the walkways around its lift areas (see
+        :func:`pyrosm.indoor.without_lift_area_ways`), with the edges across its indoor
+        areas and its ``walking`` areas (see :meth:`_walking_area_polygons`) and the doors
+        they use (see :func:`pyrosm.indoor.with_indoor_crossings`), and the lift areas
+        (see :func:`pyrosm.indoor.indoor_areas`), None when there are none."""
         from pyrosm.pbf_writer import _FIELD_COLS, _NETWORK_COLS
 
         columns = [
@@ -1022,19 +1037,22 @@ class OSM:
             if col not in _FIELD_COLS and col not in _NETWORK_COLS
         ]
         with self._progress_as(False):
-            candidates = self._read_custom_criteria(
-                INDOOR_AREA_FILTER,
-                None,
-                "keep",
-                None,
-                False,
-                True,
-                True,
-                ["area"],
-                True,
-                timestamp,
-                columns,
-            )
+            candidates, lifts = [
+                self._read_custom_criteria(
+                    read_filter,
+                    None,
+                    "keep",
+                    None,
+                    False,
+                    True,
+                    True,
+                    ["area"],
+                    True,
+                    timestamp,
+                    columns,
+                )
+                for read_filter in (INDOOR_AREA_FILTER, LIFT_AREA_FILTER)
+            ]
             doors = self._read_custom_criteria(
                 DOOR_FILTER,
                 None,
@@ -1048,9 +1066,9 @@ class OSM:
                 timestamp,
                 None,
             )
-        return with_indoor_crossings(
-            nodes, edges, indoor_areas(candidates, walking), doors
-        )
+        areas, lifts = indoor_areas(candidates, walking, lifts)
+        nodes, edges = without_lift_area_ways(nodes, edges, lifts)
+        return (*with_indoor_crossings(nodes, edges, areas, doors), lifts)
 
     @logged()
     @records_read(lambda args: _require_layer_key(args["custom_filter"], "building"))
@@ -1890,8 +1908,9 @@ class OSM:
             True) are written as new ways with negative ids, each from its node ``u``
             to its node ``v`` through new nodes where its line bends, with the area's
             tags without ``area=yes`` and ``type=multipolygon``. The lifts that an
-            indoor network split per level are written so: the copies as new nodes
-            tagged ``highway=elevator`` with their level, the lift edges as new ways
+            indoor network split per level are written so: the copies of lift nodes and
+            the nodes of lift areas as new nodes tagged ``highway=elevator`` with their
+            level, the lift edges as new ways
             tagged ``highway=elevator``, and the ways at those lifts end at the copy of
             their level. A :class:`~pyrosm.exceptions.Notice` says how many of these
             elements are written. The ``walking_area`` column is not written.

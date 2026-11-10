@@ -474,19 +474,22 @@ def _area_crossing_ways(frames):
 
 
 def _lift_parts(frames):
-    """The lifts split per level in ``frames`` (see :func:`pyrosm.indoor.split_lifts`),
-    as ``(copies, lifts, repoint)``: the copies ``{node id: (lon, lat, level, lift node
-    id)}`` (the lowest level is the lift node itself), the lift edges as ``(u, corners, v, tags)``
-    with the tags ``highway=elevator`` and the two levels, and ``{(way id, lift node
-    id): copy id}`` for the ways that end at a copy."""
+    """The lifts split per level in ``frames`` (see :func:`pyrosm.indoor.split_lifts`
+    and :func:`pyrosm.indoor.join_lift_areas`), as ``(copies, lifts, repoint)``: the
+    copies ``{node id: (lon, lat, level, lift node id)}`` (the lowest level of a lift
+    node is the lift node itself; a lift area's nodes have None for the lift node), the
+    lift edges as ``(u, corners, v, tags)`` with the tags ``highway=elevator`` and the two
+    levels, and ``{(way id, lift node id): copy id}`` for the ways that end at a copy.
+    """
     copies, lifts = {}, []
     for gdf in frames:
         lift = _lift_rows(gdf)
         if not lift.any():
             continue
         rows = gdf[lift]
-        for lift, u, v, low, high, line in zip(
+        for lift, osm_type, u, v, low, high, line in zip(
             rows["id"],
+            rows["osm_type"],
             rows["u"],
             rows["v"],
             rows["u_level"],
@@ -494,10 +497,11 @@ def _lift_parts(frames):
             rows.geometry,
         ):
             x, y = line.coords[0][:2]
+            owner = int(lift) if osm_type == "node" else None
             for node, level in ((int(u), low), (int(v), high)):
-                if node == int(lift):
+                if node == owner:
                     continue
-                copy = (x, y, level, int(lift))
+                copy = (x, y, level, owner)
                 if copies.get(node, copy) != copy:
                     raise ValueError(
                         "write_pbf: the lift edges give the copy %d of a split lift "
@@ -510,7 +514,7 @@ def _lift_parts(frames):
             }
             lifts.append((int(u), [], int(v), tags))
     ends = {}  # (way id, lift node id) -> the lift's nodes the way's segments end at
-    lift_nodes = {copy[3] for copy in copies.values()}
+    lift_nodes = {copy[3] for copy in copies.values() if copy[3] is not None}
     for gdf in frames:
         if not copies or "u" not in gdf.columns or "osm_type" not in gdf.columns:
             continue
@@ -521,8 +525,8 @@ def _lift_parts(frames):
         ways = gdf[segment]
         for way, u, v in zip(ways["id"], ways["u"], ways["v"]):
             for node in (int(u), int(v)):
-                if node in copies or node in lift_nodes:
-                    lift = copies[node][3] if node in copies else node
+                lift = copies[node][3] if node in copies else node
+                if lift in lift_nodes:
                     ends.setdefault((int(way), lift), set()).add(node)
     repoint = {}
     for (way, lift), nodes in ends.items():
@@ -569,11 +573,11 @@ def _check_copy_rows(frames, copies):
 
 def _lift_rows(gdf):
     """Whether each row of ``gdf`` is a lift edge of an indoor network (see
-    :func:`pyrosm.indoor.split_lifts`): ``vertical`` "lift" and ``osm_type`` "node" in a
-    frame of :func:`_is_indoor_network`."""
+    :func:`pyrosm.indoor.split_lifts` and :func:`pyrosm.indoor.join_lift_areas`):
+    ``vertical`` "lift" in a frame of :func:`_is_indoor_network` with ``osm_type``."""
     if not _is_indoor_network(gdf) or "osm_type" not in gdf.columns:
         return np.zeros(len(gdf), dtype=bool)
-    return ((gdf["vertical"] == "lift") & (gdf["osm_type"] == "node")).to_numpy()
+    return (gdf["vertical"] == "lift").to_numpy()
 
 
 def _without_lift_rows(gdf, copies):
@@ -1596,7 +1600,8 @@ def write_geodataframe_to_pbf(
         )
     for node, (x, y, level, lift) in copies.items():
         # A copy stays where its lift node is, also when the write moves that node
-        x, y = edits.node_coords.get(lift, (x, y))
+        if lift is not None:
+            x, y = edits.node_coords.get(lift, (x, y))
         _check_lonlat(x, y, node)
         tags = {"highway": "elevator", "level": _tag_str(level)}
         edits.new_nodes.append((node, x, y, tags))
@@ -1660,9 +1665,10 @@ def write_geodataframe_to_pbf(
     lift_ids = [builder.add_way_between(*lift) for lift in lifts]
     if lift_ids:
         notice(
-            "write_pbf writes the lifts split per level: %d copies of lift nodes as "
-            "new nodes, %d lift edges as new ways tagged highway=elevator (ids %d to "
-            "%d), and the ways at those lifts end at the copy of their level."
+            "write_pbf writes the lifts split per level: %d copies of lift nodes and "
+            "nodes of lift areas as new nodes, %d lift edges as new ways tagged "
+            "highway=elevator (ids %d to %d), and the ways at those lifts end at the "
+            "copy of their level."
             % (len(copies), len(lift_ids), lift_ids[0], lift_ids[-1])
         )
     if crossing_ids:

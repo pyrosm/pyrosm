@@ -6854,3 +6854,62 @@ def test_indoor_reads_cross_rooms_tagged_as_corridors(tmp_path, engine):
     across = edges[edges["walking_area"] & (edges["id"] == 30)]
     assert sorted(map(sorted, zip(across["u"], across["v"]))) == [[1, 3]]
     assert across[["u_level", "v_level"]].values.tolist() == [[1.0, 1.0]]
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_indoor_reads_join_lift_areas_as_lifts(tmp_path, engine):
+    """A lift mapped as an area (way 40, indoor=room + highway=elevator, level=0;1)
+    between a corridor on level 0 and one on level 1, with a door to each, as Simple
+    Indoor Tagging maps lifts: an indoor read no longer takes its outline for a walkway
+    loop, and the lift joins the two floors: a node per level in its middle, a line to it
+    from each door on that level (tagged with that level), and a lift edge between them.
+    write_pbf writes these and says so, and the written file reads again."""
+    import json
+
+    import numpy as np
+
+    from pyrosm import OSM, Notice
+    from pyrosm.indoor import lift_area_copy_id
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    step = 2e-5
+    xy = {1: (0, 0), 2: (2, 0), 3: (2, 2), 4: (0, 2), 5: (1, 0), 7: (2, -2), 8: (0, -2),
+          9: (-2, -2), 10: (2, 4), 11: (0, 4), 12: (1, 2), 13: (-2, 4)}
+    ids = sorted(xy)
+    doors = {5: {"door": "yes", "level": "0"}, 12: {"door": "yes", "level": "1"}}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([8.54 + xy[i][0] * step for i in ids]),
+        "lat": np.array([47.38 + xy[i][1] * step for i in ids]),
+        "tags": [doors.get(i) for i in ids],
+    }
+    ways = [
+        {"id": 40, "refs": [1, 5, 2, 3, 12, 4, 1],
+         "tags": {"highway": "elevator", "indoor": "room", "level": "0;1"}},
+        {"id": 41, "refs": [1, 8, 7, 2, 5, 1], "tags": {"indoor": "corridor", "level": "0"}},
+        {"id": 42, "refs": [4, 12, 3, 10, 11, 4], "tags": {"indoor": "corridor", "level": "1"}},
+        {"id": 43, "refs": [9, 8], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 44, "refs": [13, 11], "tags": {"highway": "footway", "level": "1"}},
+    ]
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "lift.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    osm = OSM(path, engine=engine)
+    found, edges = osm.get_network("walking", nodes=True, indoor_elements=True)
+    low, high = lift_area_copy_id(40, "way", 1), lift_area_copy_id(40, "way", 2)
+    lift = edges[edges["id"] == 40]
+    assert lift[["u", "v", "u_level", "v_level", "walking_area", "vertical"]].values.tolist() == [
+        [5, low, 0.0, 0.0, True, None],
+        [12, high, 1.0, 1.0, True, None],
+        [low, high, 0.0, 1.0, False, "lift"],
+    ]
+    assert [json.loads(t)["level"] for t in lift["tags"].iloc[:2]] == ["0", "1"]
+    assert not {1, 2, 3, 4} & set(found["id"]) and {low, high} <= set(found["id"])
+    written = str(tmp_path / "written.osm.pbf")
+    with pytest.warns(Notice, match="2 copies of lift nodes and nodes of lift areas"):
+        osm.write_pbf([found, edges], written)
+    _, again = OSM(written, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    into = again[(again["u"].isin([5, 12])) & (again["v"].isin([low, high]))]
+    assert into[["u", "v", "u_level"]].values.tolist() == [[12, high, 1.0], [5, low, 0.0]]
