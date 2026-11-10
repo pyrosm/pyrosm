@@ -51,8 +51,13 @@ PLATFORM_FILTER = {
 }
 
 # The areas a read with indoor_elements=True crosses, each on its own level: the platform
-# areas and the indoor corridors and areas of Simple Indoor Tagging.
-INDOOR_AREA_FILTER = {"indoor": ["corridor", "area"], **PLATFORM_FILTER}
+# areas, the indoor corridors and areas of Simple Indoor Tagging, and the rooms tagged as
+# corridors (room=corridor).
+INDOOR_AREA_FILTER = {
+    "indoor": ["corridor", "area"],
+    "room": ["corridor"],
+    **PLATFORM_FILTER,
+}
 
 # The ``vertical`` values of the edges that move, in the direction ``conveying`` gives.
 MOVING = ("escalator", "moving_walkway")
