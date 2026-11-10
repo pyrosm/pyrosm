@@ -1211,7 +1211,8 @@ def test_lift_areas_mapped_floor_by_floor_make_one_lift():
     side by side (N), areas three levels apart (G), a second area on a floor that the
     lift has already (T, which keeps its lift from levels 0 to 1), an area without a
     level tag and the area above it (U), an area whose only node is on its outline
-    between two corners, not an entrance, and the area above it (V)."""
+    between two corners, not an entrance, and the area above it (V), a small area in a
+    large area above it whose middle lies outside the small one (W)."""
     import geopandas as gpd
     from shapely.geometry import LineString, Point, Polygon
 
@@ -1220,25 +1221,26 @@ def test_lift_areas_mapped_floor_by_floor_make_one_lift():
     def at(x, y):
         return 24.9 + x * 1e-4, 60.2 + y * 1e-4
 
-    def square(x, y=0.0):
-        return Polygon([at(x, y), at(x + 1, y), at(x + 1, y + 1), at(x, y + 1)])
+    def square(x, y=0.0, size=1.0):
+        return Polygon([at(x, y), at(x + size, y), at(x + size, y + size), at(x, y + size)])
 
     # (id, level tag, its square's corner, the entrance at that corner on that level)
     areas = [(20, "0", (0, 0)), (21, "1", (0.1, 0.1)), (23, "3", (0.2, 0)),
              (30, "0", (5, 0)), (31, "1", (5.9, 0)), (40, "0", (10, 0)),
              (43, "3", (10.1, 0.1)), (50, "0", (15, 0)), (51, "1", (15.1, 0)),
              (52, "1", (15, 0.1)), (60, None, (20, 0)), (61, "1", (20.1, 0.1)),
-             (70, "0", (25, 0)), (71, "1", (25.1, 0.1))]
+             (70, "0", (25, 0)), (71, "1", (25.1, 0.1)), (80, "0", (30, 0)),
+             (81, "1", (30.2, -3), 4.0)]
     lifts = gpd.GeoDataFrame(
         {"id": [a[0] for a in areas], "osm_type": "way",
          "level": [a[1] for a in areas]},
-        geometry=[square(*a[2]) for a in areas],
+        geometry=[square(*a[2], *a[3:]) for a in areas],
         crs=4326,
     )
-    # V's node lies on its outline between two corners; the areas above U and V are
-    # entered at their corners outside U and V
+    # V's node lies on its outline between two corners; the areas above U and V, and the
+    # large area of W, are entered at corners outside the area below them
     place = {a[0]: a[2] for a in areas} | {70: (25.5, 0), 61: (21.1, 1.1),
-                                           71: (26.1, 1.1)}
+                                           71: (26.1, 1.1), 81: (34.2, 1)}
     nodes = gpd.GeoDataFrame(
         {"id": [a[0] for a in areas] + [999],
          "lon": [at(*place[a[0]])[0] for a in areas] + [at(30, 30)[0]],
