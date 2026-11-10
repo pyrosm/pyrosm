@@ -1204,6 +1204,70 @@ def test_lift_areas_joined_per_level(monkeypatch):
     assert without_lift_area_ways(nodes, edges, None) == (nodes, edges)
 
 
+def test_lift_areas_mapped_floor_by_floor_make_one_lift():
+    """Lift areas mapped one floor at a time make one lift: S on levels 0, 1 and 3
+    (level 2 missing), the areas slightly apart, with lift edges from the middle of one
+    floor's area to the next, each with the id of the lower area. Not joined: two lifts
+    side by side (N), areas three levels apart (G), a second area on a floor that the
+    lift has already (T, which keeps its lift from levels 0 to 1), an area without a
+    level tag and the area above it (U), an area whose only node is on its outline
+    between two corners, not an entrance, and the area above it (V)."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, Point, Polygon
+
+    from pyrosm.indoor import join_lift_areas, lift_area_copy_id
+
+    def at(x, y):
+        return 24.9 + x * 1e-4, 60.2 + y * 1e-4
+
+    def square(x, y=0.0):
+        return Polygon([at(x, y), at(x + 1, y), at(x + 1, y + 1), at(x, y + 1)])
+
+    # (id, level tag, its square's corner, the entrance at that corner on that level)
+    areas = [(20, "0", (0, 0)), (21, "1", (0.1, 0.1)), (23, "3", (0.2, 0)),
+             (30, "0", (5, 0)), (31, "1", (5.9, 0)), (40, "0", (10, 0)),
+             (43, "3", (10.1, 0.1)), (50, "0", (15, 0)), (51, "1", (15.1, 0)),
+             (52, "1", (15, 0.1)), (60, None, (20, 0)), (61, "1", (20.1, 0.1)),
+             (70, "0", (25, 0)), (71, "1", (25.1, 0.1))]
+    lifts = gpd.GeoDataFrame(
+        {"id": [a[0] for a in areas], "osm_type": "way",
+         "level": [a[1] for a in areas]},
+        geometry=[square(*a[2]) for a in areas],
+        crs=4326,
+    )
+    # V's node lies on its outline between two corners; the areas above U and V are
+    # entered at their corners outside U and V
+    place = {a[0]: a[2] for a in areas} | {70: (25.5, 0), 61: (21.1, 1.1),
+                                           71: (26.1, 1.1)}
+    nodes = gpd.GeoDataFrame(
+        {"id": [a[0] for a in areas] + [999],
+         "lon": [at(*place[a[0]])[0] for a in areas] + [at(30, 30)[0]],
+         "lat": [at(*place[a[0]])[1] for a in areas] + [at(30, 30)[1]]},
+        geometry=[Point(at(*place[a[0]])) for a in areas] + [Point(at(30, 30))],
+        crs=4326,
+    )
+    levels = [float(a[1]) if a[1] else 0.0 for a in areas]
+    edges = gpd.GeoDataFrame(
+        {"id": range(100, 100 + len(areas)), "osm_type": "way", "u": 999,
+         "v": [a[0] for a in areas], "u_level": levels, "v_level": levels,
+         "vertical": None, "walking_area": False},
+        geometry=[LineString([at(30, 30), at(*place[a[0]])]) for a in areas],
+        crs=4326,
+    )
+    _, joined = join_lift_areas(nodes, edges, lifts)
+    lift = joined[joined["vertical"] == "lift"]
+    node = {i: lift_area_copy_id(i, "way", 1) for i in (20, 21, 23, 50, 51)}
+    assert lift[["id", "u", "v", "u_level", "v_level"]].values.tolist() == [
+        [20, node[20], node[21], 0.0, 1.0], [21, node[21], node[23], 1.0, 3.0],
+        [50, node[50], node[51], 0.0, 1.0],
+    ]
+    first = lift.geometry.iloc[0]
+    middles = [lifts.geometry.iloc[i].representative_point() for i in (0, 1)]
+    assert [Point(c) for c in first.coords] == middles
+    into = joined[joined["walking_area"]]
+    assert sorted(into["id"]) == [20, 21, 23, 50, 51]
+
+
 def test_indoor_levels_of_edge_ends():
     """An edge with one level has it at both ends; stairs and escalators with a level
     range run between the levels of the walkways at their ends, also when one end is

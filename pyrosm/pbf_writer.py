@@ -496,9 +496,13 @@ def _lift_parts(frames):
             rows["v_level"],
             rows.geometry,
         ):
-            x, y = line.coords[0][:2]
             owner = int(lift) if osm_type == "node" else None
-            for node, level in ((int(u), low), (int(v), high)):
+            # The two ends of a lift edge of a lift area mapped floor by floor may lie
+            # apart, in the middles of the areas of two floors
+            for node, level, (x, y) in (
+                (int(u), low, line.coords[0][:2]),
+                (int(v), high, line.coords[-1][:2]),
+            ):
                 if node == owner:
                     continue
                 copy = (x, y, level, owner)

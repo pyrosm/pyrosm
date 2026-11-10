@@ -740,7 +740,9 @@ class OSM:
             those levels gets a node with a negative id in the middle of the area, an
             edge to it from each entrance there (marked in `walking_area`, tagged with
             that level), and edges of length 0 with the area's id and `osm_type` and
-            `vertical` "lift" join the nodes of neighbouring levels. For the network
+            `vertical` "lift" join the nodes of neighbouring levels. Lift areas mapped
+            one floor at a time, each with the middle of the other inside it, on floors
+            at most two levels apart, make one lift. For the network
             types `walking`, `all` and `all_public` and with a `custom_filter`. Requires
             `nodes=True`.
 

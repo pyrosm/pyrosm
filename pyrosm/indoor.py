@@ -28,7 +28,8 @@ the direction it moves (see :func:`moving_one_way`). A lift node (``highway=elev
 where walkways on several levels meet is split into one node per level, joined by lift
 edges (see :func:`split_lifts`); a lift mapped as an area (``highway=elevator`` on a
 closed way or multipolygon) is not a walkway around the lift but joins the levels at
-which the network enters it in the same way (see :func:`join_lift_areas`).
+which the network enters it in the same way, and lift areas mapped one floor at a time
+make one lift together (see :func:`join_lift_areas`).
 """
 
 import json
@@ -850,18 +851,20 @@ def _line_inside(polygon, start, end):
 
 
 def join_lift_areas(nodes, edges, lifts):
-    """``nodes`` and ``edges`` (with ``u_level`` and ``v_level``) with each lift area of
-    ``lifts`` (see :func:`indoor_areas`) that the network enters on two or more of its
-    levels joined as a lift, each part of a multipolygon on its own (entrances: see
-    :func:`_lift_area_entrances`): each of those levels gets a node in the middle of the
-    part (ids: :func:`lift_area_copy_id`, ranked over the area's parts) and an edge to
-    it from each entrance there along the shortest line inside the part, with the
-    area's id, ``osm_type`` and tags and that level (``walking_area`` True, and
-    ``level`` that one level), and lift edges of length 0 join the nodes of
-    neighbouring levels, as :func:`split_lifts` joins the copies of a lift node (see
-    :func:`_lift_area_plan`). An area of which a node id is in the read already (a file
-    that :meth:`pyrosm.OSM.write_pbf` wrote) is left as it is, all its parts."""
-    from pyrosm.pbf_writer import _tag_str
+    """``nodes`` and ``edges`` (with ``u_level`` and ``v_level``) with the lifts of the
+    lift areas ``lifts`` (see :func:`indoor_areas`) that the network enters on two or
+    more levels joined (entrances: see :func:`_lift_area_entrances`): each part of a
+    multipolygon is a lift of its own, and the parts of lift areas mapped one floor at a
+    time make one lift together (see :func:`_lift_stacks`). Each level with entrances
+    gets a node in the middle of its part (ids: :func:`lift_area_copy_id`, ranked over
+    the area's parts) and an edge to it from each entrance there along the shortest line
+    inside the part, with the area's id, ``osm_type`` and tags and that level
+    (``walking_area`` True, and ``level`` that one level), and lift edges of length 0,
+    with the id, ``osm_type`` and metadata of the area of the lower level, join the
+    nodes of neighbouring levels, as :func:`split_lifts` joins the copies of a lift node
+    (see :func:`_lift_area_plan`). An area of which a node id is in the read already (a
+    file that :meth:`pyrosm.OSM.write_pbf` wrote) is left as it is, all its parts."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_str
     from pyrosm.walking_areas import area_edge_rows
 
     if lifts is None:
@@ -872,8 +875,9 @@ def join_lift_areas(nodes, edges, lifts):
     node_metadata = [
         col for col in LIFT_METADATA if col in nodes.columns and col in lifts.columns
     ]
+    tags = _frame_tags(lifts, _frame_tag_columns(lifts))
     taken = set(nodes["id"].tolist())
-    copies, lift_rows, found, level_of = [], [], [], {}
+    items = []
     for area, parts in _lift_area_entrances(lifts, nodes, edges).items():
         row = lifts.iloc[area]
         planned = _lift_area_plan(row, parts) if 0 < row["id"] <= _MAX_LIFT_ID else []
@@ -881,33 +885,42 @@ def join_lift_areas(nodes, edges, lifts):
         if len(new_ids) >= 250 or any(node in taken for node in new_ids):
             continue
         taken.update(new_ids)
-        for middle, lines, ids in planned:
-            ordered = sorted(ids)
-            for level in ordered:
-                copies.append(
-                    {"id": ids[level], "lon": middle.x, "lat": middle.y}
-                    | {"geometry": middle}
-                    | {col: row[col] for col in node_metadata}
-                )
-                level_of[ids[level]] = level
-                for node, line in lines[level]:
-                    found.append((area, node, ids[level], line))
-            for low, high in zip(ordered, ordered[1:]):
-                lift_rows.append(
-                    {
-                        "id": row["id"],
-                        "osm_type": row["osm_type"],
-                        "highway": "elevator",
-                        "u": ids[low],
-                        "v": ids[high],
-                        "length": 0.0,
-                        "u_level": low,
-                        "v_level": high,
-                        "vertical": "lift",
-                        "geometry": LineString([middle, middle]),
-                        **{col: row[col] for col in metadata},
-                    }
-                )
+        ranges = level_ranges(tags[area].get("level")) or []
+        span = (
+            (min(a for a, _ in ranges), max(b for _, b in ranges)) if ranges else None
+        )
+        items += [(area, span, *part) for part in planned]
+    copies, lift_rows, found, level_of = [], [], [], {}
+    for stack in _lift_stacks(items):
+        at = {level: item for item in stack for level in item[5]}
+        ordered = sorted(at)
+        for level in ordered:
+            area, _, part, middle, lines, ids = at[level]
+            copies.append(
+                {"id": ids[level], "lon": middle.x, "lat": middle.y}
+                | {"geometry": middle}
+                | {col: lifts.iloc[area][col] for col in node_metadata}
+            )
+            level_of[ids[level]] = level
+            for node, line in lines[level]:
+                found.append((area, node, ids[level], line))
+        for low, high in zip(ordered, ordered[1:]):
+            row = lifts.iloc[at[low][0]]
+            lift_rows.append(
+                {
+                    "id": row["id"],
+                    "osm_type": row["osm_type"],
+                    "highway": "elevator",
+                    "u": at[low][5][low],
+                    "v": at[high][5][high],
+                    "length": 0.0,
+                    "u_level": low,
+                    "v_level": high,
+                    "vertical": "lift",
+                    "geometry": LineString([at[low][3], at[high][3]]),
+                    **{col: row[col] for col in metadata},
+                }
+            )
     if not lift_rows:
         return nodes, edges
     rows = area_edge_rows(lifts, found, edges)
@@ -922,12 +935,50 @@ def join_lift_areas(nodes, edges, lifts):
     return _with_lift_rows(nodes, edges, copies, lift_rows, metadata, rows)
 
 
+def _lift_stacks(items):
+    """The lifts among the planned parts ``items`` of lift areas, ``(area row, (lowest,
+    highest) level of the area's level tag or None, part, middle, lines, ids)`` each (see
+    :func:`_lift_area_plan`), as lists of items entered on two or more levels together.
+    A part of an area with a level tag makes one lift with a part above it whose area's
+    lowest level is at most two levels above its own highest (one floor may be missing
+    between them, the lift passes it), when the middle of each part lies in the other
+    and the two have no entrance level in common; a lift area mapped one floor at a time
+    thus makes one lift, and two lifts side by side stay apart."""
+    parent = list(range(len(items)))
+    levels = [set(item[4]) for item in items]
+
+    def root(n):
+        while parent[n] != n:
+            n = parent[n] = parent[parent[n]]
+        return n
+
+    parts = shapely.STRtree([item[2] for item in items])
+    for n, (_, span, part, middle, *_) in enumerate(items):
+        if span is None:
+            continue
+        # The parts that the middle of this one lies in
+        for m in sorted(parts.query(middle, predicate="intersects")):
+            _, above, other, other_middle, *_ = items[m]
+            if above is None or not 0 < above[0] - span[1] <= 2:
+                continue
+            a, b = root(n), root(m)
+            if a == b or levels[a] & levels[b]:
+                continue
+            if part.covers(other_middle) and other.covers(middle):
+                parent[a] = b
+                levels[b] |= levels[a]
+    stacks = {}
+    for n, item in enumerate(items):
+        stacks.setdefault(root(n), []).append(item)
+    return [stack for root_, stack in stacks.items() if len(levels[root_]) >= 2]
+
+
 def _lift_area_plan(row, parts):
-    """The lifts of the lift area ``row`` entered at ``parts`` (see
-    :func:`_lift_area_entrances`), one for each part entered on two or more levels with
-    a line inside the part (see :func:`_line_inside`), as ``(middle, lines, ids)``: the
-    part's middle point, ``{level: [(entrance node, line to the middle), ...]}``, and
-    the node id of each level (:func:`lift_area_copy_id`, ranked over the parts)."""
+    """The parts of the lift area ``row`` entered at ``parts`` (see
+    :func:`_lift_area_entrances`) with a line inside the part (see :func:`_line_inside`)
+    from an entrance on at least one level, as ``(part, middle, lines, ids)``: the part,
+    its middle point, ``{level: [(entrance node, line to the middle), ...]}``, and the
+    node id of each level (:func:`lift_area_copy_id`, ranked over the parts)."""
     planned, rank = [], 0
     for part, at in parts:
         middle = part.representative_point()
@@ -937,14 +988,14 @@ def _lift_area_plan(row, parts):
                 line = _line_inside(part, (x, y), (middle.x, middle.y))
                 if line is not None:
                     lines.setdefault(level, []).append((node, line))
-        if len(lines) < 2:
+        if not lines:
             continue
         ids = {
             level: lift_area_copy_id(row["id"], row["osm_type"], rank + i)
             for i, level in enumerate(sorted(lines), 1)
         }
         rank += len(ids)
-        planned.append((middle, lines, ids))
+        planned.append((part, middle, lines, ids))
     return planned
 
 
