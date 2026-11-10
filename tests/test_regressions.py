@@ -6824,10 +6824,16 @@ def test_relation_node_member_sharing_a_way_id(tmp_path, engine):
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
-def test_indoor_reads_cross_rooms_tagged_as_corridors(tmp_path, engine):
-    """A corridor mapped as indoor=room + room=corridor (way 30, level 1), as in the
-    building next to Zürich HB, is crossed like an indoor=corridor area: the two
-    footways that end at its corners get a line across it on level 1."""
+@pytest.mark.parametrize(
+    "room, crossed",
+    [("corridor", True), ("entrance", True), ("lobby", True), ("hall", True),
+     ("waiting", True), ("office", False)],
+)
+def test_indoor_reads_cross_rooms_people_walk_through(tmp_path, engine, room, crossed):
+    """A room people walk through (way 30, indoor=room, level 1), such as a corridor
+    mapped as room=corridor in the building next to Zürich HB or a lobby, is crossed like
+    an indoor=corridor area: the two footways that end at its corners get a line across
+    it on level 1. An office is not crossed."""
     import numpy as np
 
     from pyrosm import OSM
@@ -6844,7 +6850,7 @@ def test_indoor_reads_cross_rooms_tagged_as_corridors(tmp_path, engine):
     walkway = {"highway": "footway", "level": "1"}
     ways = [
         {"id": 30, "refs": [1, 2, 3, 4, 1],
-         "tags": {"indoor": "room", "room": "corridor", "level": "1"}},
+         "tags": {"indoor": "room", "room": room, "level": "1"}},
         {"id": 31, "refs": [5, 1], "tags": walkway},
         {"id": 32, "refs": [3, 6], "tags": walkway},
     ]
@@ -6855,8 +6861,8 @@ def test_indoor_reads_cross_rooms_tagged_as_corridors(tmp_path, engine):
         "walking", nodes=True, indoor_elements=True
     )
     across = edges[edges["walking_area"] & (edges["id"] == 30)]
-    assert sorted(map(sorted, zip(across["u"], across["v"]))) == [[1, 3]]
-    assert across[["u_level", "v_level"]].values.tolist() == [[1.0, 1.0]]
+    assert sorted(map(sorted, zip(across["u"], across["v"]))) == ([[1, 3]] if crossed else [])
+    assert across[["u_level", "v_level"]].values.tolist() == ([[1.0, 1.0]] if crossed else [])
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])

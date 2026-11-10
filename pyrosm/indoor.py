@@ -63,10 +63,10 @@ PLATFORM_FILTER = {
 
 # The areas a read with indoor_elements=True crosses, each on its own level: the platform
 # areas, the indoor corridors and areas of Simple Indoor Tagging, and the rooms tagged as
-# corridors (room=corridor).
+# corridors, entrance rooms, lobbies, halls and waiting rooms.
 INDOOR_AREA_FILTER = {
     "indoor": ["corridor", "area"],
-    "room": ["corridor"],
+    "room": ["corridor", "entrance", "lobby", "hall", "waiting"],
     **PLATFORM_FILTER,
 }
 

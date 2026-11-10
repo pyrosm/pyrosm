@@ -712,7 +712,8 @@ class OSM:
             If True, the platforms (`railway=platform`, `public_transport=platform` and
             `highway=platform` ways) are edges of the network too, also where its type
             leaves them out. The platform areas and the indoor corridors and areas
-            (`indoor=corridor|area`, and rooms tagged `room=corridor`) are crossed as
+            (`indoor=corridor|area`, and rooms tagged `room=corridor`, `entrance`,
+            `lobby`, `hall` or `waiting`) are crossed as
             with `walking_areas`, each on its own level and, with `walking_areas=True`,
             together with the walking areas; the platform and indoor areas, not the
             walking areas, are entered also through the doors and entrances on their
