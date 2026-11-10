@@ -12,7 +12,10 @@ area. A stair end without that level, in or on areas on several levels of its ra
 on the other end of the range from the one level of the areas at the way's other end,
 else on the low end at the start of the way (in its drawn direction) and the high end at
 its end, as are the two ends of stairs of one edge that both lie in areas of one level,
-an end of the range. Each pair of entrances gets one edge along the shortest line inside the area,
+an end of the range. In an indoor read, the end of stairs or an escalator that joins
+nothing also enters the platform or indoor area on its level that it lies outside of
+within :data:`STAIR_END_REACH` metres (see :func:`crossing_rows`). Each pair of
+entrances gets one edge along the shortest line inside the area,
 which bends only at the area's inward corners: the corners of the outline that point
 into the area and those of its holes.
 """
@@ -27,12 +30,16 @@ from rapidjson import dumps
 
 from pyrosm.distance import calculate_line_lengths
 from pyrosm.levels import level_ranges, tag_layer
-from pyrosm.new_elements import _coordinate_key
+from pyrosm.new_elements import _coordinate_key, _query_pairs
 from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_key
 
 # An area with more entrances and inward corners than this gets edges only between the
 # entrances that a straight line inside it joins.
 MAX_VISIBILITY_POINTS = 500
+
+# How many metres outside an area that ``door_areas`` marks (see crossing_rows), on its
+# level, the end of stairs or an escalator that joins nothing may lie and still enter it.
+STAIR_END_REACH = 2.5
 
 # A line is inside an area when it lies within the area widened by this many degrees
 # (about 0.1 mm), so that rounding does not cut a line along the outline or through a
@@ -111,7 +118,11 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
     the other columns, its tags without a column of ``edges`` in the JSON ``tags``. None
     when no area has two entrances. A node of ``nodes`` without an edge in ``edges``, a
     door, enters only the areas that ``door_areas`` marks (one bool per area; by default
-    every area)."""
+    every area). The end of stairs or an escalator that is a dead end, enters no area
+    and has the level its way gives also enters the nearest area with a level that
+    ``door_areas`` marks, on that level, when it lies outside the area within
+    :data:`STAIR_END_REACH` metres: at the closest point of the area's outline, and the
+    edges from it begin at the stair end."""
     from pyrosm.indoor import node_levels
 
     ids = nodes["id"].to_numpy()
@@ -133,8 +144,12 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
         _level_position(tags) for tags in _frame_tags(areas, _frame_tag_columns(areas))
     ]
     near = np.unique(node_rows)
+    loose = np.array([], dtype=np.int64)
+    if door_areas is not None:
+        loose = _loose_stair_ends(edges, ids, dead_end)
+    wanted = np.union1d(near, loose)
     positions, open_ends, stair_ends = _entrance_positions(
-        edges, ids[near], ids[near[dead_end[near]]], node_levels(nodes)
+        edges, ids[wanted], ids[wanted[dead_end[wanted]]], node_levels(nodes)
     )
     if open_ends:
         chosen = _stair_end_choices(
@@ -158,18 +173,113 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
             )
             entrances.append((area, part, at))
     off_level = _off_level_entrances(entrances, positions, area_positions, stair_ends)
-    found = []
+    kept = {}
     for area, part, at in entrances:
-        kept = {}
+        within = {}
         for key, (x, y, node_ids) in at.items():
             node_ids = [node for node in node_ids if (area, node) not in off_level]
             if node_ids:
-                kept[key] = (x, y, node_ids)
-        for u, v, line in _part_crossings(part, kept):
-            found.append((area, u, v, line))
+                within[key] = (x, y, node_ids)
+        kept.setdefault(area, []).append((part, within))
+    reached = {}
+    if len(loose):
+        entered = {
+            node
+            for parts in kept.values()
+            for _, within in parts
+            for _, _, node_ids in within.values()
+            for node in node_ids
+        }
+        ends = [
+            row
+            for row in loose
+            if ids[row] in stair_ends and int(ids[row]) not in entered
+        ]
+        for area, k, node, end, point in _areas_within_reach(
+            geometries,
+            area_positions,
+            door_areas,
+            ids[ends],
+            lon[ends],
+            lat[ends],
+            positions,
+        ):
+            parts = kept.setdefault(
+                area, [(part, {}) for part in shapely.get_parts(geometries[area])]
+            )
+            part, within = parts[k]
+            within.setdefault(_coordinate_key(*point), (*point, []))[2].append(node)
+            parts[k] = (part, dict(sorted(within.items(), key=lambda e: min(e[1][2]))))
+            reached[area, k, node] = end
+    found = []
+    for area, parts in kept.items():
+        for k, (part, within) in enumerate(parts):
+            for u, v, line in _part_crossings(part, within):
+                start, end = reached.get((area, k, u)), reached.get((area, k, v))
+                if start or end:
+                    coords = list(line.coords)
+                    line = shapely.LineString(
+                        ([start] if start else []) + coords + ([end] if end else [])
+                    )
+                found.append((area, u, v, line))
     if not found:
         return None
     return area_edge_rows(areas, found, edges)
+
+
+def _loose_stair_ends(edges, ids, dead_end):
+    """The rows of the nodes ``ids`` that are dead ends (``dead_end``) at the end of
+    stairs or an escalator (``highway=steps``) among ``edges``."""
+    u = edges["u"].to_numpy()
+    v = edges["v"].to_numpy()
+    ends = ids[dead_end]
+    rows = np.flatnonzero(np.isin(u, ends) | np.isin(v, ends))
+    subset = edges.iloc[rows]
+    steps = [
+        node
+        for a, b, tags in zip(
+            u[rows], v[rows], _frame_tags(subset, _frame_tag_columns(subset))
+        )
+        if tags.get("highway") == "steps"
+        for node in (a, b)
+    ]
+    return np.flatnonzero(dead_end & np.isin(ids, steps))
+
+
+def _areas_within_reach(geometries, area_positions, marked, ids, lon, lat, positions):
+    """``(area, part, node id, end, point)`` for each stair end ``ids`` at ``lon``, ``lat``
+    that lies outside, within :data:`STAIR_END_REACH` metres, of a part of the areas
+    with a level among ``geometries`` that ``marked`` marks (one bool per area), on the
+    node's level (``positions`` and ``area_positions``, see :func:`_level_position`):
+    the nearest such part, the node's coordinates ``end`` and the closest ``point`` of the
+    part's outline."""
+    areas = np.flatnonzero(
+        np.asarray(marked, dtype=bool) & np.array([bool(p[0]) for p in area_positions])
+    )
+    if not len(ids) or not len(areas):
+        return []
+    rows, hits = _query_pairs(
+        shapely.STRtree(geometries[areas]), lon, lat, STAIR_END_REACH
+    )
+    nearest = {}
+    for row, area in zip(rows, areas[hits]):
+        node = int(ids[row])
+        if not _on_same_level(positions[node], area_positions[area]):
+            continue
+        scale = math.cos(math.radians(lat[row]))
+        end = (float(lon[row]), float(lat[row]))
+        for k, part in enumerate(shapely.get_parts(geometries[area])):
+            plane = shapely.transform(part, lambda xy: xy * [scale, 1.0])
+            line = shapely.shortest_line(plane, shapely.Point(end[0] * scale, end[1]))
+            x, y = line.coords[0]
+            point = (x / scale, y)
+            length = calculate_line_lengths([shapely.LineString([end, point])], 3)[0]
+            if length <= STAIR_END_REACH and length < nearest.get(node, (np.inf,))[0]:
+                nearest[node] = (length, area, k, end, point)
+    return [
+        (area, k, node, end, point)
+        for node, (_, area, k, end, point) in sorted(nearest.items())
+    ]
 
 
 def area_edge_rows(areas, found, edges):

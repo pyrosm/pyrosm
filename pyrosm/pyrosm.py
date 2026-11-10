@@ -716,7 +716,11 @@ class OSM:
             together with the walking areas; the platform and indoor areas, not the
             walking areas, are entered also through the doors and entrances on their
             outlines, which join the nodes when an edge uses them; these edges are
-            marked in the column `walking_area`.
+            marked in the column `walking_area`. The end of stairs or an escalator that
+            joins nothing else, and whose level its way gives, also enters the nearest
+            platform or indoor area on that level that it lies outside of within 2.5
+            metres: its edges run from the end to the closest point of the area's
+            outline and on inside the area.
             The edges get the level at each of their two ends in
             the columns `u_level` and `v_level`, from the OSM `level` tags: an edge with
             one level has it at both ends; stairs, escalators and moving walkways run
