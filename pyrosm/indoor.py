@@ -5,7 +5,10 @@ type leaves out, such as ``highway=platform`` in a walking network. The platform
 and the indoor corridors and areas (:data:`INDOOR_AREA_FILTER`) are crossed as walking
 areas are, each on its own level and together with the walking areas of a read with
 ``walking_areas=True``, and they are entered also through the doors on their outlines,
-which connect areas that share them; the walking areas are not. The edges get the level
+which connect areas that share them; the walking areas are not. The end of stairs or an
+escalator that joins nothing else also enters the platform or indoor area on its level
+that it lies outside of within :data:`pyrosm.walking_areas.STAIR_END_REACH` metres. The
+edges get the level
 at each of their two ends, ``u_level`` and ``v_level``, from the OSM ``level`` tags (see
 :func:`pyrosm.levels.level_ranges`). An edge with one level has it at both ends. A level
 list or range on stairs, an escalator or a moving walkway runs between the levels of the

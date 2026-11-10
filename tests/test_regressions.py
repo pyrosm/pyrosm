@@ -7031,3 +7031,59 @@ def test_reads_with_relations_keep_tagged_inner_ways(tmp_path, engine):
     assert rows == [("relation", 20), ("relation", 22), ("way", 11)]
     area = found[found["id"] == 20].geometry.iloc[0]
     assert len(area.interiors) == 3
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_indoor_reads_join_stair_ends_near_an_area_on_their_level(tmp_path, engine):
+    """Three escalators rise from the outline of a level-0 corridor (way 30) to level 1.
+    The top of way 33 lies 1 m outside the level-1 corridor (way 31) and enters it at the
+    closest point of its outline; the top of way 34 lies 2 m from the level-0 corridor
+    only, off its own level, and the top of way 35 lies 2.8 m off a corner of the level-1
+    corridor, beyond the reach: both stay dead ends."""
+    import math
+
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (10, 0), 3: (10, 10), 4: (0, 10), 5: (10, 5), 6: (5, 10),
+          7: (10, 2), 8: (0, 5), 9: (-5, 5), 11: (20, 0), 12: (30, 0), 13: (30, 10),
+          14: (20, 10), 15: (30, 8), 16: (35, 8), 17: (19, 5), 18: (5, 12), 19: (32, -2)}
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [None] * len(ids),
+    }
+    escalator = {"highway": "steps", "conveying": "forward", "incline": "up",
+                 "level": "0;1"}
+    ways = [
+        {"id": 30, "refs": [1, 2, 7, 5, 3, 6, 4, 8, 1],
+         "tags": {"indoor": "corridor", "level": "0"}},
+        {"id": 31, "refs": [11, 12, 15, 13, 14, 11],
+         "tags": {"indoor": "corridor", "level": "1"}},
+        {"id": 32, "refs": [9, 8], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 36, "refs": [16, 15], "tags": {"highway": "footway", "level": "1"}},
+        {"id": 33, "refs": [5, 17], "tags": escalator},
+        {"id": 34, "refs": [6, 18], "tags": escalator},
+        {"id": 35, "refs": [7, 19], "tags": escalator},
+    ]
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "stairs.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    _, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    across = edges[edges["walking_area"] & (edges["id"] == 31)]
+    assert list(zip(across["u"], across["v"])) == [(15, 17)]
+    line = across.geometry.iloc[0]
+    expected = [(lon[15], lat[15]), (lon[11], lat[17]), (lon[17], lat[17])]
+    assert np.allclose(line.coords, expected, atol=1e-9)
+    assert across["length"].iloc[0] == pytest.approx(1 + math.hypot(10, 3), abs=0.05)
+    loose = edges["walking_area"] & (edges["u"].isin([18, 19]) | edges["v"].isin([18, 19]))
+    assert not loose.any()
