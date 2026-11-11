@@ -1112,8 +1112,9 @@ def test_escalators_run_in_the_direction_they_move(simplify, network_type):
 def test_get_graph_with_indoor_elements(engine, simplify):
     """get_graph(indoor_elements=True) carries the levels and vertical marks, keeps the
     escalator of way 18378805 as an edge of its own, and joins the levels of lift node
-    2039713549 by lift edges of length 0 in both directions, each with the levels of
-    its own direction, simplified or not."""
+    2039713549 by lift edges in both directions, each with the levels of its own
+    direction and the length of 4 m per level plus 1 m (no escalator or stairs climb
+    between its levels), simplified or not."""
     from pyrosm import OSM
 
     graph = OSM(get_data("helsinki_pbf"), engine=engine).get_graph(
@@ -1133,7 +1134,8 @@ def test_get_graph_with_indoor_elements(engine, simplify):
         for u, v, d in graph.edges(data=True)
         if d.get("vertical") == "lift" and 2039713549 in (u, v)
     }
+    # No escalator or stairs climb from -2 to 0: 4 m per level plus 1 m
     assert lift == {
-        (2039713549, -2039713549001, 0.0, -2.0, 0.0),
-        (-2039713549001, 2039713549, 0.0, 0.0, -2.0),
+        (2039713549, -2039713549001, 9.0, -2.0, 0.0),
+        (-2039713549001, 2039713549, 9.0, 0.0, -2.0),
     }

@@ -665,7 +665,7 @@ def test_walking_areas_leave_a_landing_of_two_stairs_open():
     edges.loc[2, "tags"] = dumps({"level": "1;2"})
     ids = nodes["id"].to_numpy()
     for frame in (edges, edges.iloc[::-1]):
-        _, open_ends, _ = _entrance_positions(frame, ids, np.array([3]), node_levels(nodes))
+        _, open_ends, *_ = _entrance_positions(frame, ids, np.array([3]), node_levels(nodes))
         assert 8 not in open_ends and {1, 3} <= set(open_ends)
 
 
@@ -1245,8 +1245,9 @@ def test_lift_areas_joined_per_level(monkeypatch):
 
 def test_lift_areas_mapped_floor_by_floor_make_one_lift():
     """Lift areas mapped one floor at a time make one lift: S on levels 0, 1 and 3
-    (level 2 missing), the areas slightly apart, with lift edges from the middle of one
-    floor's area to the next, each with the id of the lower area. Not joined: two lifts
+    (level 2 missing) and F on levels 0 to 4, the areas slightly apart, with lift edges
+    from the middle of one floor's area to the next, each with the id of the lower area.
+    Not joined: two lifts
     side by side (N), areas three levels apart (G), a second area on a floor that the
     lift has already (T, which keeps its lift from levels 0 to 1), an area without a
     level tag and the area above it (U), an area whose only node is on its outline
@@ -1269,7 +1270,8 @@ def test_lift_areas_mapped_floor_by_floor_make_one_lift():
              (43, "3", (10.1, 0.1)), (50, "0", (15, 0)), (51, "1", (15.1, 0)),
              (52, "1", (15, 0.1)), (60, None, (20, 0)), (61, "1", (20.1, 0.1)),
              (70, "0", (25, 0)), (71, "1", (25.1, 0.1)), (80, "0", (30, 0)),
-             (81, "1", (30.2, -3), 4.0)]
+             (81, "1", (30.2, -3), 4.0), (90, "0", (40, 0)), (91, "1", (40.1, 0.1)),
+             (92, "2", (40, 0)), (93, "3", (40.1, 0.1)), (94, "4", (40, 0))]
     lifts = gpd.GeoDataFrame(
         {"id": [a[0] for a in areas], "osm_type": "way",
          "level": [a[1] for a in areas]},
@@ -1297,16 +1299,18 @@ def test_lift_areas_mapped_floor_by_floor_make_one_lift():
     )
     _, joined = join_lift_areas(nodes, edges, lifts)
     lift = joined[joined["vertical"] == "lift"]
-    node = {i: lift_area_copy_id(i, "way", 1) for i in (20, 21, 23, 50, 51)}
+    ids = (20, 21, 23, 50, 51, *range(90, 95))
+    node = {i: lift_area_copy_id(i, "way", 1) for i in ids}
     assert lift[["id", "u", "v", "u_level", "v_level"]].values.tolist() == [
         [20, node[20], node[21], 0.0, 1.0], [21, node[21], node[23], 1.0, 3.0],
         [50, node[50], node[51], 0.0, 1.0],
+        *([i, node[i], node[i + 1], i - 90.0, i - 89.0] for i in range(90, 94)),
     ]
     first = lift.geometry.iloc[0]
     middles = [lifts.geometry.iloc[i].representative_point() for i in (0, 1)]
     assert [Point(c) for c in first.coords] == middles
     into = joined[joined["walking_area"]]
-    assert sorted(into["id"]) == [20, 21, 23, 50, 51]
+    assert sorted(into["id"]) == [20, 21, 23, 50, 51, *range(90, 95)]
 
 
 def test_indoor_levels_of_edge_ends():

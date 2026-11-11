@@ -14,12 +14,13 @@ else on the low end at the start of the way (in its drawn direction) and the hig
 its end, as are the two ends of stairs of one edge that both lie in areas of one level,
 an end of the range. In an indoor read, the end of stairs or an escalator that joins
 nothing also enters the platform or indoor area on its level that it lies outside of
-within :data:`STAIR_END_REACH` metres (see :func:`crossing_rows`). Each pair of
-entrances gets one edge along the shortest line inside the area, which bends only at the
-area's inward corners: the corners of the outline that point into the area and those of
-its holes. A pair gets no edge when the edges of shorter pairs already join it along a
-route at most :data:`MAX_ROUTE_STRETCH` times as long, so that an area with many
-entrances does not get an edge for every pair.
+within :data:`STAIR_END_REACH` metres, and a lift node enters, from inside, the platform
+and indoor areas on the levels of its own ``level`` tag that its walkways do not reach
+(see :func:`crossing_rows`). Each pair of entrances gets one edge along the shortest
+line inside the area, which bends only at the area's inward corners: the corners of the
+outline that point into the area and those of its holes. A pair gets no edge when the
+edges of shorter pairs already join it along a route at most :data:`MAX_ROUTE_STRETCH`
+times as long, so that an area with many entrances does not get an edge for every pair.
 """
 
 import heapq
@@ -129,7 +130,9 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
     and has the level its way gives also enters the nearest area with a level that
     ``door_areas`` marks, on that level, when it lies outside the area within
     :data:`STAIR_END_REACH` metres: at the closest point of the area's outline, and the
-    edges from it begin at the stair end."""
+    edges from it begin at the stair end. A lift node also enters, from inside, the areas
+    of one level that ``door_areas`` marks on the levels of its own ``level`` tag that
+    its walkways do not reach (see :func:`_lift_entrances`)."""
     from pyrosm.indoor import node_levels
 
     ids = nodes["id"].to_numpy()
@@ -155,7 +158,7 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
     if door_areas is not None:
         loose = _loose_stair_ends(edges, ids, dead_end)
     wanted = np.union1d(near, loose)
-    positions, open_ends, stair_ends = _entrance_positions(
+    positions, open_ends, stair_ends, walked = _entrance_positions(
         edges, ids[wanted], ids[wanted[dead_end[wanted]]], node_levels(nodes)
     )
     if open_ends:
@@ -164,12 +167,24 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
         )
         positions.update(chosen)
         stair_ends |= set(chosen)
+    lifts = _lift_entrances(
+        nodes, walked, node_rows, area_rows, area_positions, door_areas, geometries
+    )
+    if door_areas is not None:
+        # A lift node on no edge enters an area only as a lift
+        lone = np.isin(ids[node_rows], _lone_lifts(nodes, end_ids))
+        lifted = [
+            (area, node) in lifts for area, node in zip(area_rows, ids[node_rows])
+        ]
+        keep = ~lone | np.array(lifted, dtype=bool)
+        area_rows, node_rows = area_rows[keep], node_rows[keep]
     entrances = []
     for area in np.unique(area_rows):
         candidates = node_rows[area_rows == area]
         joinable = np.array(
             [
-                bool(end) and _on_same_level(positions[i], area_positions[area])
+                (bool(end) and _on_same_level(positions[i], area_positions[area]))
+                or (area, i) in lifts
                 for i, end in zip(ids[candidates], dead_end[candidates])
             ],
             dtype=bool,
@@ -180,6 +195,7 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
             )
             entrances.append((area, part, at))
     off_level = _off_level_entrances(entrances, positions, area_positions, stair_ends)
+    off_level -= lifts
     kept = {}
     for area, part, at in entrances:
         within = {}
@@ -232,6 +248,78 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
     if not found:
         return None
     return area_edge_rows(areas, found, edges)
+
+
+def _lift_entrances(
+    nodes, walked, node_rows, area_rows, area_positions, door_areas, geometries
+):
+    """``{(area, node id)}``: the areas that ``door_areas`` marks (none without it) that
+    a lift node enters on a level of its own ``level`` tag that none of its walkways with
+    one level is on (``walked``, see :func:`_entrance_positions`). A lift node is tagged
+    ``highway=elevator`` and its ``level`` tag names two or more levels; it enters an
+    area of one level (``area_positions``, ``geometries``) among its levels that it lies
+    inside or at a corner of (see :func:`_inside_or_at_corner`; ``node_rows`` and
+    ``area_rows`` pair the rows of ``nodes`` with the areas they touch), when the levels
+    it then reaches, those of its walkways among its levels and those of these areas,
+    are two or more."""
+    from pyrosm.indoor import _tags_by_node
+
+    if door_areas is None:
+        return set()
+    lifts = {}
+    for node, tags in _tags_by_node(nodes):
+        ranges = level_ranges(tags.get("level"))
+        if tags.get("highway") == "elevator" and ranges:
+            if len({level for pair in ranges for level in pair}) > 1:
+                lifts[node] = ranges
+    if not lifts:
+        return set()
+    ids = nodes["id"].to_numpy()
+    lon = nodes["lon"].to_numpy(dtype=float)
+    lat = nodes["lat"].to_numpy(dtype=float)
+    marked = np.asarray(door_areas, dtype=bool)
+    entered = {}
+    for area, row in zip(area_rows, node_rows):
+        node = int(ids[row])
+        area_ranges = area_positions[area][0]
+        if node not in lifts or not marked[area] or not area_ranges:
+            continue
+        if len(area_ranges) != 1 or area_ranges[0][0] != area_ranges[0][1]:
+            continue
+        level = area_ranges[0][0]
+        if level in walked.get(node, ()) or not _in_ranges(level, lifts[node]):
+            continue
+        if _inside_or_at_corner(geometries[area], lon[row], lat[row]):
+            entered.setdefault(node, []).append((area, level))
+    found = set()
+    for node, at in entered.items():
+        own = {
+            level for level in walked.get(node, ()) if _in_ranges(level, lifts[node])
+        }
+        if len(own | {level for _, level in at}) > 1:
+            found.update((area, node) for area, _ in at)
+    return found
+
+
+def _lone_lifts(nodes, end_ids):
+    """The ids of the lift nodes among ``nodes`` (tagged ``highway=elevator``, without a
+    ``door`` or ``entrance`` tag) that are on none of the edges whose ends are
+    ``end_ids``."""
+    from pyrosm.indoor import _tags_by_node
+
+    return [
+        node
+        for node, tags in _tags_by_node(nodes)
+        if tags.get("highway") == "elevator"
+        and tags.get("door") is None
+        and tags.get("entrance") is None
+        and node not in end_ids
+    ]
+
+
+def _in_ranges(level, ranges):
+    """Whether ``level`` lies in one of the level ``ranges``, ``(low, high)`` each."""
+    return any(low <= level <= high for low, high in ranges)
 
 
 def _loose_stair_ends(edges, ids, dead_end):
@@ -320,8 +408,8 @@ def area_edge_rows(areas, found, edges):
 
 
 def _entrance_positions(edges, node_ids, dead_ends, own_levels):
-    """``(positions, open_ends, stair_ends)`` of the network nodes ``node_ids`` in or on
-    an area.
+    """``(positions, open_ends, stair_ends, walked)`` of the network nodes ``node_ids`` in
+    or on an area.
     ``positions`` is ``{node id: position}`` (see :func:`_level_position`) by, in this
     order: the levels of the node's walkways with one level among ``edges``; at an end
     of stairs, an escalator or a moving walkway with a level range, the level of that
@@ -331,7 +419,8 @@ def _entrance_positions(edges, node_ids, dead_ends, own_levels):
     its edge's ``layer``. Other nodes without levels are left out. ``stair_ends`` holds
     the nodes whose position is that level of a stair end. ``open_ends`` is ``{node id:
     (low, high)}``: the nodes of one such way without that level and without a walkway
-    with one level, with the way's range."""
+    with one level, with the way's range. ``walked`` is ``{node id: {level, ...}}``, the
+    levels of the node's walkways with one level."""
     from pyrosm.indoor import is_vertical, stair_end_levels
 
     known = stair_end_levels(edges, node_ids, own_levels)
@@ -376,7 +465,8 @@ def _entrance_positions(edges, node_ids, dead_ends, own_levels):
             positions[node] = _ranges_position(own or other[node])
         elif node in sides:
             positions[node] = (None, sides[node])
-    return positions, open_ends, stair_ends
+    walked = {node: {low for low, _ in ranges} for node, ranges in single.items()}
+    return positions, open_ends, stair_ends, walked
 
 
 def _area_levels_at(node_ids, area_rows, area_positions, ranges):
@@ -505,14 +595,29 @@ def _off_level_entrances(entrances, positions, area_positions, stair_ends):
     return off
 
 
+def _vertex_keys(polygon):
+    """The coordinate keys (see :func:`pyrosm.new_elements._coordinate_key`) of the
+    vertices of the outline and the holes of ``polygon``."""
+    return {_coordinate_key(x, y) for ring in _oriented_rings(polygon) for x, y in ring}
+
+
+def _inside_or_at_corner(geometry, x, y):
+    """Whether the point ``x``, ``y`` lies inside ``geometry`` (a polygon or
+    multipolygon) or at a vertex of the outline or a hole of one of its parts, where
+    :func:`_entrances` takes a node as an entrance."""
+    point = shapely.Point(x, y)
+    return any(
+        part.contains_properly(point) or _coordinate_key(x, y) in _vertex_keys(part)
+        for part in shapely.get_parts(geometry)
+    )
+
+
 def _entrances(polygon, ids, lon, lat, dead_end):
     """The entrances of ``polygon`` among the network nodes ``ids`` at ``lon``, ``lat``:
     ``{coordinate key: (x, y, [node ids])}`` of the nodes at a vertex of its outline or of
     a hole, and of the dead ends (``dead_end``, nodes of one edge) inside it, in the
     order of their first node id."""
-    vertices = {
-        _coordinate_key(x, y) for ring in _oriented_rings(polygon) for x, y in ring
-    }
+    vertices = _vertex_keys(polygon)
     inside = shapely.contains_properly(polygon, shapely.points(lon, lat)) & dead_end
     entrances = {}
     for row in np.argsort(ids, kind="stable"):

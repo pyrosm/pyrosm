@@ -8,35 +8,43 @@ areas are, each on its own level and together with the walking areas of a read w
 which connect areas that share them; the walking areas are not. The end of stairs or an
 escalator that joins nothing else also enters the platform or indoor area on its level
 that it lies outside of within :data:`pyrosm.walking_areas.STAIR_END_REACH` metres. The
-edges get the level
-at each of their two ends, ``u_level`` and ``v_level``, from the OSM ``level`` tags (see
-:func:`pyrosm.levels.level_ranges`). An edge with one level has it at both ends. A level
-list or range on stairs, an escalator or a moving walkway runs between the levels of the
-walkways at the two ends of its way or, at an end where no walkway has a level in the
-range, the end node's own ``level``, and where neither gives an end, the way's
-``incline`` (``up`` rises along the way's drawn direction, ``down`` falls); on another
-walkway, such as a corridor tagged ``level=0;1``, the data does not say which part is on
-which level, and both ends stay empty. A line across an area with a level list or range
-takes at each end the level in the range of the other edges there or, without one, the
-end node's own ``level``; an end with none or with several stays empty, and a line
-between entrances on two levels has these two levels; such lines are kept only across
-stairs or an escalator mapped as an area (see :func:`without_lines_between_levels`). A
-way of several edges also keeps the level of a walkway that joins it in between (or of
-an inner node's own ``level``), an end without a level then takes the other end of the
-range from the nearest such level, a way whose two ends are on one level reaches the
-other end of its range in between, and the other inner nodes get levels in proportion to
-the distance along the way. Stairs, escalators and moving walkways without a level range
-(no ``level`` tag or a single level) take the levels of the walkways that join their
-way, when these give two different levels, and keep the outermost ones up to the way's
-ends. An edge without a ``level`` tag otherwise has no level. The column ``vertical``
-marks escalators, moving walkways and stairs; the ``length`` of an escalator is measured
-along its slope (see :func:`with_indoor_columns`), and in a graph an escalator or moving
+edges get the level at each of their two ends, ``u_level`` and ``v_level``, from the OSM
+``level`` tags (see :func:`pyrosm.levels.level_ranges`). An edge with one level has it
+at both ends. A level list or range on stairs, an escalator or a moving walkway runs
+between the levels of the walkways at the two ends of its way or, at an end where no
+walkway has a level in the range, the end node's own ``level``, and where neither gives
+an end, the way's ``incline`` (``up`` rises along the way's drawn direction, ``down``
+falls); on another walkway, such as a corridor tagged ``level=0;1``, the data does not
+say which part is on which level, and both ends stay empty. A line across an area with a
+level list or range takes at each end the level in the range of the other edges there
+or, without one, the end node's own ``level``; an end with none or with several stays
+empty, and a line between entrances on two levels has these two levels; such lines are
+kept only across stairs or an escalator mapped as an area (see
+:func:`without_lines_between_levels`). A way of several edges also keeps the level of a
+walkway that joins it in between (or of an inner node's own ``level``), an end without a
+level then takes the other end of the range from the nearest such level, a way whose two
+ends are on one level reaches the other end of its range in between, and the other inner
+nodes get levels in proportion to the distance along the way. Stairs, escalators and
+moving walkways without a level range (no ``level`` tag or a single level) take the
+levels of the walkways that join their way, when these give two different levels, and
+keep the outermost ones up to the way's ends. A platform without a ``level`` tag, its
+way and the lines across its area, takes the level that the other edges give at its
+nodes, when the platforms joined to it through shared nodes meet exactly one level. An
+edge without a ``level`` tag otherwise has no level. The column ``vertical`` marks
+escalators, moving walkways and stairs; the ``length`` of an escalator is measured along
+its slope (see :func:`with_indoor_columns`), and in a graph an escalator or moving
 walkway runs only in the direction it moves (see :func:`moving_one_way`). A lift node
 (``highway=elevator``) where walkways on several levels meet is split into one node per
-level, joined by lift edges (see :func:`split_lifts`); a lift mapped as an area
-(``highway=elevator`` on a closed way or multipolygon) is not a walkway around the lift
-but joins the levels at which the network enters it in the same way, and lift areas
-mapped one floor at a time make one lift together (see :func:`join_lift_areas`).
+level, joined by lift edges (see :func:`split_lifts`), whose length is that of an
+escalator or stairs between their levels plus 1 m (see :func:`with_lift_lengths`); a
+lift node whose own ``level`` tag names levels that its walkways do not reach also
+enters, from inside, the platform and indoor areas of one level on those levels that it
+lies in, when it then reaches two or more levels (see
+:func:`pyrosm.walking_areas.crossing_rows`), and gets lift edges to them; a lift mapped
+as an area (``highway=elevator`` on a closed way or multipolygon) is not a walkway
+around the lift but joins the levels at which the network enters it in the same way, and
+lift areas mapped one floor at a time make one lift together (see
+:func:`join_lift_areas`).
 """
 
 import json
@@ -47,6 +55,7 @@ import numpy as np
 import pandas as pd
 import shapely
 from geopandas import GeoDataFrame
+from rapidjson import dumps
 from shapely.geometry import LineString
 
 from pyrosm.levels import level_ranges
@@ -80,8 +89,10 @@ LIFT_AREA_FILTER = {"highway": ["elevator"]}
 # The ``vertical`` values of the edges that move, in the direction ``conveying`` gives.
 MOVING = ("escalator", "moving_walkway")
 
-# The nodes through which an indoor area is also entered: its doors and entrances.
-DOOR_FILTER = {"door": [True], "entrance": [True]}
+# The nodes through which an indoor area is also entered: its doors and entrances, and
+# the lift nodes, which enter it on the levels of their own level tag that their ways do
+# not reach (see pyrosm.walking_areas.crossing_rows).
+ENTRANCE_FILTER = {"door": [True], "entrance": [True], "highway": ["elevator"]}
 
 
 def check_indoor_read(network_type, custom_filter, nodes):
@@ -175,7 +186,48 @@ def edge_levels(edges, tags, node_levels=None):
                 )
                 if len(found) == 1:
                     end_levels[i] = found[0]
+    platforms = np.isnan(low) & np.array([_is_platform(t) for t in tags], dtype=bool)
+    if platforms.any():
+        _fill_platform_levels(u, v, u_level, v_level, platforms)
     return u_level, v_level
+
+
+def _is_platform(tags):
+    """Whether an edge with the OSM tags ``tags`` is a platform (:data:`PLATFORM_FILTER`)."""
+    return any(tags.get(key) in values for key, values in PLATFORM_FILTER.items())
+
+
+def _fill_platform_levels(u, v, u_level, v_level, platforms):
+    """Set ``u_level`` and ``v_level`` (arrays of the edges with the end nodes ``u`` and
+    ``v``) in place on the edges that ``platforms`` marks, platforms without a level: the
+    platforms joined to each other through shared nodes take the level that the other
+    edges give at their nodes, when these give exactly one level."""
+    rows = np.flatnonzero(platforms)
+    parent = {node: node for node in np.concatenate([u[rows], v[rows]]).tolist()}
+    for i in rows:
+        a, b = _root(parent, u[i]), _root(parent, v[i])
+        if a != b:
+            parent[a] = b
+    found = {}
+    for ends, end_levels in ((u, u_level), (v, v_level)):
+        for i in np.flatnonzero(~platforms & ~np.isnan(end_levels)):
+            if ends[i] in parent:
+                found.setdefault(_root(parent, ends[i]), set()).add(
+                    float(end_levels[i])
+                )
+    for i in rows:
+        levels = found.get(_root(parent, u[i]), ())
+        if len(levels) == 1:
+            u_level[i] = v_level[i] = next(iter(levels))
+
+
+def _root(parent, node):
+    """The root of ``node`` in the union-find forest ``parent`` (a dict or list of each
+    node's parent, a root its own), halving the path to it on the way."""
+    while parent[node] != node:
+        parent[node] = parent[parent[node]]
+        node = parent[node]
+    return node
 
 
 def _range_stair_rows(edges, ends):
@@ -654,8 +706,10 @@ def with_indoor_crossings(nodes, edges, areas, doors):
     the column ``walking_area`` (False on the other edges), entered through the
     network's nodes on the areas' outlines and, for the areas of
     :data:`INDOOR_AREA_FILTER`, through the ``doors`` (a frame of nodes with ``id``,
-    ``lon``, ``lat`` and ``tags``) on their outlines, without those between two nodes an
-    edge already joins; the doors that the new edges use join the nodes."""
+    ``lon``, ``lat`` and tags, a read of :data:`ENTRANCE_FILTER`) on their outlines and
+    the lift nodes among them (see :func:`pyrosm.walking_areas.crossing_rows`), without
+    those between two nodes an edge already joins; the doors and lift nodes that the new
+    edges use join the nodes, with all their tags in ``tags``."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
     from pyrosm.walking_areas import crossing_rows
 
@@ -666,6 +720,9 @@ def with_indoor_crossings(nodes, edges, areas, doors):
     columns = [col for col in ("id", "lon", "lat", "tags") if col in nodes.columns]
     entrances = nodes[columns]
     if doors is not None:
+        doors = doors.assign(
+            tags=[dumps(t) for t in _frame_tags(doors, _frame_tag_columns(doors))]
+        )
         new_doors = doors[~doors["id"].isin(nodes["id"])]
         new_doors = new_doors[[col for col in columns if col in new_doors.columns]]
         entrances = pd.concat([entrances, new_doors], ignore_index=True)
@@ -833,6 +890,102 @@ def _with_lift_rows(nodes, edges, copies, lift_rows, metadata, rows=None):
         crs=nodes.crs,
     )
     return nodes, edges
+
+
+# How many metres longer a lift edge is than the escalator or stairs whose length it
+# takes (see with_lift_lengths), so that a route by length takes the escalator.
+LIFT_EXTRA_LENGTH = 1.0
+
+# The height of one level in metres, for a lift edge between levels that no escalator or
+# stairs join (see with_lift_lengths): a rough storey height.
+LEVEL_HEIGHT = 4.0
+
+
+def with_lift_lengths(edges):
+    """``edges`` (with ``vertical``, ``u_level``, ``v_level`` and ``length``) with the
+    ``length`` of each lift edge (``vertical`` "lift"): the length of a climb between its
+    two levels along escalators among ``edges`` (see :func:`_climb_length`), plus
+    :data:`LIFT_EXTRA_LENGTH`; without one, along escalators and stairs; else
+    :data:`LEVEL_HEIGHT` for each level between them, plus :data:`LIFT_EXTRA_LENGTH`."""
+    lifts = np.flatnonzero((edges["vertical"] == "lift").to_numpy())
+    if not len(lifts):
+        return edges
+    escalators = _ways_between_levels(edges, "escalator")
+    both = dict(escalators)
+    for pair, ways in _ways_between_levels(edges, "stairs").items():
+        both[pair] = both.get(pair, []) + ways
+    u_level = edges["u_level"].to_numpy(dtype=float)
+    v_level = edges["v_level"].to_numpy(dtype=float)
+    lengths = edges["length"].to_numpy(dtype=float).copy()
+    for i in lifts:
+        low, high = sorted((u_level[i], v_level[i]))
+        point = shapely.get_point(edges.geometry.iloc[i], 0)
+        length = _climb_length(escalators, low, high, point)
+        if length is None:
+            length = _climb_length(both, low, high, point)
+        if length is None:
+            length = LEVEL_HEIGHT * (high - low)
+        lengths[i] = round(length + LIFT_EXTRA_LENGTH, 3)
+    attrs = dict(edges.attrs)
+    edges = edges.assign(length=lengths)
+    edges.attrs = attrs
+    return edges
+
+
+def _climb_length(ways, low, high, point):
+    """The length of a climb from level ``low`` to ``high`` along ``ways`` (``{(low,
+    high): [(geometry, length), ...]}``, see :func:`_ways_between_levels`): that of the
+    way nearest to ``point`` (lon/lat) between the two levels, else of the shortest
+    chain of ways between levels from ``low`` up to ``high``, each the nearest of the
+    ways between its two levels; None when no chain reaches ``high``."""
+    scale = math.cos(math.radians(point.y))
+
+    def nearest(found):
+        return min(found, key=lambda way: _scaled_distance(way[0], point, scale))[1]
+
+    if ways.get((low, high)):
+        return nearest(ways[(low, high)])
+    steps = [
+        (a, b, nearest(found))
+        for (a, b), found in ways.items()
+        if low <= a and b <= high
+    ]
+    # Every step climbs, so taking the steps from the lowest level up finds the
+    # shortest chain
+    best = {low: 0.0}
+    for a, b, step in sorted(steps):
+        if a in best and best[a] + step < best.get(b, math.inf):
+            best[b] = best[a] + step
+    return best.get(high)
+
+
+def _ways_between_levels(edges, kind):
+    """``{(low, high): [(geometry, length), ...]}``: the ways among ``edges`` whose
+    ``vertical`` is ``kind`` (lines across areas aside), by the lowest and highest level
+    of their edges when these differ, each with the geometry and the summed ``length``
+    of its edges."""
+    rows = edges[(edges["vertical"] == kind).to_numpy() & ~_area_lines(edges)]
+    found = {}
+    for _, way in rows.groupby(["osm_type", "id"] if "osm_type" in rows else "id"):
+        levels = np.concatenate(
+            [way["u_level"].to_numpy(dtype=float), way["v_level"].to_numpy(dtype=float)]
+        )
+        levels = levels[~np.isnan(levels)]
+        if len(levels) and levels.min() < levels.max():
+            found.setdefault((levels.min(), levels.max()), []).append(
+                (shapely.union_all(way.geometry.to_numpy()), way["length"].sum())
+            )
+    return found
+
+
+def _scaled_distance(geometry, point, scale):
+    """The distance between ``geometry`` and ``point`` (lon/lat) with the longitudes
+    multiplied by ``scale``, the cosine of the latitude, so that it orders distances as
+    metres would."""
+    return shapely.distance(
+        shapely.transform(geometry, lambda xy: xy * [scale, 1.0]),
+        shapely.Point(point.x * scale, point.y),
+    )
 
 
 def lift_area_copy_id(area, osm_type, rank):
@@ -1018,12 +1171,6 @@ def _lift_stacks(items):
     thus makes one lift, and two lifts side by side stay apart."""
     parent = list(range(len(items)))
     levels = [set(item[4]) for item in items]
-
-    def root(n):
-        while parent[n] != n:
-            n = parent[n] = parent[parent[n]]
-        return n
-
     parts = shapely.STRtree([item[2] for item in items])
     for n, (_, span, part, middle, *_) in enumerate(items):
         if span is None:
@@ -1033,7 +1180,7 @@ def _lift_stacks(items):
             _, above, other, other_middle, *_ = items[m]
             if above is None or not 0 < above[0] - span[1] <= 2:
                 continue
-            a, b = root(n), root(m)
+            a, b = _root(parent, n), _root(parent, m)
             if a == b or levels[a] & levels[b]:
                 continue
             if part.covers(other_middle) and other.covers(middle):
@@ -1041,7 +1188,7 @@ def _lift_stacks(items):
                 levels[b] |= levels[a]
     stacks = {}
     for n, item in enumerate(items):
-        stacks.setdefault(root(n), []).append(item)
+        stacks.setdefault(_root(parent, n), []).append(item)
     return [stack for root_, stack in stacks.items() if len(levels[root_]) >= 2]
 
 

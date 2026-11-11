@@ -67,7 +67,7 @@ from shapely.geometry import (
 from pyrosm.boundary import get_boundary_data
 from pyrosm.layers import get_layer_data, without_building_parts
 from pyrosm.indoor import (
-    DOOR_FILTER,
+    ENTRANCE_FILTER,
     INDOOR_AREA_FILTER,
     LIFT_AREA_FILTER,
     PLATFORM_FILTER,
@@ -78,6 +78,7 @@ from pyrosm.indoor import (
     split_lifts,
     with_indoor_crossings,
     with_indoor_columns,
+    with_lift_lengths,
     with_platform_filter,
     with_platforms,
     without_lift_area_ways,
@@ -739,25 +740,38 @@ class OSM:
             levels has at each end the level of the other edges there, among the area's
             levels, or the end node's own `level`, so a line across stairs or an
             escalator mapped as an area between entrances on two levels has these two
-            levels; a walkway tagged with several levels, such as
-            `level=0;1`, and an edge without a `level` tag have no level (NaN). The
+            levels; a platform without a `level` tag has the level that the other edges
+            at its nodes have, when the platforms joined to it meet exactly one level,
+            as an underground platform tagged only with `layer` does where its
+            escalators arrive; a walkway tagged with several levels, such as
+            `level=0;1`, and another edge without a `level` tag have no level (NaN). The
             column `vertical` is `escalator` for steps that move (`conveying`), `stairs`
             for other steps, `moving_walkway` for other ways that move and missing on
             other edges. A lift node (`highway=elevator`) where edges on several levels
             meet is split into one node per level: the lowest keeps the node's id, the
             others get negative ids derived from it, each edge ends at the copy of its
-            level, and edges of length 0 with the lift node's id, `osm_type` "node" and
-            `vertical` "lift" join the copies of neighbouring levels. A lift mapped as
+            level, and lift edges with the lift node's id, `osm_type` "node" and
+            `vertical` "lift" join the copies of neighbouring levels. A lift node whose
+            own `level` tag, such as `level=0;1`, names levels that its edges do not
+            reach, also one on no edge, enters the platform and indoor areas of one
+            level on those levels that it lies in, from inside, when it then reaches
+            two or more levels, and is split on their levels too. A lift mapped as
             an area (a closed way or multipolygon tagged `highway=elevator`, as Simple
             Indoor Tagging maps lifts) is not a walkway around the lift: when the
             network enters it on two or more of the levels its `level` tag lists,
             through nodes at the corners of its outline such as its doors, each of
             those levels gets a node with a negative id in the middle of the area, an
             edge to it from each entrance there (marked in `walking_area`, tagged with
-            that level), and edges of length 0 with the area's id and `osm_type` and
+            that level), and lift edges with the area's id and `osm_type` and
             `vertical` "lift" join the nodes of neighbouring levels. Lift areas mapped
             one floor at a time, each with the middle of the other inside it, on floors
-            at most two levels apart, make one lift. For the network
+            at most two levels apart, make one lift. A lift edge has the `length` of a
+            climb between its two levels along escalators, plus 1 metre, so that a route
+            by length takes the escalators: the nearest escalator in the read whose way
+            runs between the two levels, else the shortest chain of escalators between
+            levels in between, each the nearest one between its two levels; without
+            escalators, the same with stairs too; else 4 metres for each level between
+            them, a rough storey height, plus 1 metre. For the network
             types `walking`, `all` and `all_public` and with a `custom_filter`. Requires
             `nodes=True`.
 
@@ -769,7 +783,9 @@ class OSM:
             1.155 times the length on the map. 30 degrees is the most that the
             escalator standards EN 115-1 and ASME A17.1 allow; EN 115-1 allows 35
             degrees for small rises. `None` keeps the length on the map. The length of
-            stairs is their length on the map, and lift edges have length 0.
+            stairs is their length on the map; a lift edge takes the length of an
+            escalator or stairs between its levels plus 1 metre (see
+            `indoor_elements`).
 
         Returns
         -------
@@ -851,7 +867,8 @@ class OSM:
             edges = with_indoor_columns(edges, escalator_slope, node_gdf)
             node_gdf, edges = without_lines_between_levels(node_gdf, edges)
             node_gdf, edges = split_lifts(node_gdf, edges)
-            result = join_lift_areas(node_gdf, edges, lifts)
+            node_gdf, edges = join_lift_areas(node_gdf, edges, lifts)
+            result = node_gdf, with_lift_lengths(edges)
         return result
 
     @contextlib.contextmanager
@@ -1072,7 +1089,7 @@ class OSM:
                 for read_filter in (INDOOR_AREA_FILTER, LIFT_AREA_FILTER)
             ]
             doors = self._read_custom_criteria(
-                DOOR_FILTER,
+                ENTRANCE_FILTER,
                 None,
                 "keep",
                 None,
