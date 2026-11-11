@@ -8,29 +8,31 @@ areas are, each on its own level and together with the walking areas of a read w
 which connect areas that share them; the walking areas are not. The end of stairs or an
 escalator that joins nothing else also enters the platform or indoor area on its level
 that it lies outside of within :data:`pyrosm.walking_areas.STAIR_END_REACH` metres. The
-edges get the level
-at each of their two ends, ``u_level`` and ``v_level``, from the OSM ``level`` tags (see
-:func:`pyrosm.levels.level_ranges`). An edge with one level has it at both ends. A level
-list or range on stairs, an escalator or a moving walkway runs between the levels of the
-walkways at the two ends of its way or, at an end where no walkway has a level in the
-range, the end node's own ``level``, and where neither gives an end, the way's
-``incline`` (``up`` rises along the way's drawn direction, ``down`` falls); on another
-walkway, such as a corridor tagged ``level=0;1``, the data does not say which part is on
-which level, and both ends stay empty. A line across an area with a level list or range
-takes at each end the level in the range of the other edges there or, without one, the
-end node's own ``level``; an end with none or with several stays empty, and a line
-between entrances on two levels has these two levels; such lines are kept only across
-stairs or an escalator mapped as an area (see :func:`without_lines_between_levels`). A
-way of several edges also keeps the level of a walkway that joins it in between (or of
-an inner node's own ``level``), an end without a level then takes the other end of the
-range from the nearest such level, a way whose two ends are on one level reaches the
-other end of its range in between, and the other inner nodes get levels in proportion to
-the distance along the way. Stairs, escalators and moving walkways without a level range
-(no ``level`` tag or a single level) take the levels of the walkways that join their
-way, when these give two different levels, and keep the outermost ones up to the way's
-ends. An edge without a ``level`` tag otherwise has no level. The column ``vertical``
-marks escalators, moving walkways and stairs; the ``length`` of an escalator is measured
-along its slope (see :func:`with_indoor_columns`), and in a graph an escalator or moving
+edges get the level at each of their two ends, ``u_level`` and ``v_level``, from the OSM
+``level`` tags (see :func:`pyrosm.levels.level_ranges`). An edge with one level has it
+at both ends. A level list or range on stairs, an escalator or a moving walkway runs
+between the levels of the walkways at the two ends of its way or, at an end where no
+walkway has a level in the range, the end node's own ``level``, and where neither gives
+an end, the way's ``incline`` (``up`` rises along the way's drawn direction, ``down``
+falls); on another walkway, such as a corridor tagged ``level=0;1``, the data does not
+say which part is on which level, and both ends stay empty. A line across an area with a
+level list or range takes at each end the level in the range of the other edges there
+or, without one, the end node's own ``level``; an end with none or with several stays
+empty, and a line between entrances on two levels has these two levels; such lines are
+kept only across stairs or an escalator mapped as an area (see
+:func:`without_lines_between_levels`). A way of several edges also keeps the level of a
+walkway that joins it in between (or of an inner node's own ``level``), an end without a
+level then takes the other end of the range from the nearest such level, a way whose two
+ends are on one level reaches the other end of its range in between, and the other inner
+nodes get levels in proportion to the distance along the way. Stairs, escalators and
+moving walkways without a level range (no ``level`` tag or a single level) take the
+levels of the walkways that join their way, when these give two different levels, and
+keep the outermost ones up to the way's ends. A platform without a ``level`` tag, its
+way and the lines across its area, takes the level that the other edges give at its
+nodes, when the platforms joined to it through shared nodes meet exactly one level. An
+edge without a ``level`` tag otherwise has no level. The column ``vertical`` marks
+escalators, moving walkways and stairs; the ``length`` of an escalator is measured along
+its slope (see :func:`with_indoor_columns`), and in a graph an escalator or moving
 walkway runs only in the direction it moves (see :func:`moving_one_way`). A lift node
 (``highway=elevator``) where walkways on several levels meet is split into one node per
 level, joined by lift edges (see :func:`split_lifts`); a lift mapped as an area
@@ -175,7 +177,48 @@ def edge_levels(edges, tags, node_levels=None):
                 )
                 if len(found) == 1:
                     end_levels[i] = found[0]
+    platforms = np.isnan(low) & np.array([_is_platform(t) for t in tags], dtype=bool)
+    if platforms.any():
+        _fill_platform_levels(u, v, u_level, v_level, platforms)
     return u_level, v_level
+
+
+def _is_platform(tags):
+    """Whether an edge with the OSM tags ``tags`` is a platform (:data:`PLATFORM_FILTER`)."""
+    return any(tags.get(key) in values for key, values in PLATFORM_FILTER.items())
+
+
+def _fill_platform_levels(u, v, u_level, v_level, platforms):
+    """Set ``u_level`` and ``v_level`` (arrays of the edges with the end nodes ``u`` and
+    ``v``) in place on the edges that ``platforms`` marks, platforms without a level: the
+    platforms joined to each other through shared nodes take the level that the other
+    edges give at their nodes, when these give exactly one level."""
+    rows = np.flatnonzero(platforms)
+    parent = {node: node for node in np.concatenate([u[rows], v[rows]]).tolist()}
+    for i in rows:
+        a, b = _root(parent, u[i]), _root(parent, v[i])
+        if a != b:
+            parent[a] = b
+    found = {}
+    for ends, end_levels in ((u, u_level), (v, v_level)):
+        for i in np.flatnonzero(~platforms & ~np.isnan(end_levels)):
+            if ends[i] in parent:
+                found.setdefault(_root(parent, ends[i]), set()).add(
+                    float(end_levels[i])
+                )
+    for i in rows:
+        levels = found.get(_root(parent, u[i]), ())
+        if len(levels) == 1:
+            u_level[i] = v_level[i] = next(iter(levels))
+
+
+def _root(parent, node):
+    """The root of ``node`` in the union-find forest ``parent`` (a dict or list of each
+    node's parent, a root its own), halving the path to it on the way."""
+    while parent[node] != node:
+        parent[node] = parent[parent[node]]
+        node = parent[node]
+    return node
 
 
 def _range_stair_rows(edges, ends):

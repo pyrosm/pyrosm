@@ -739,8 +739,11 @@ class OSM:
             levels has at each end the level of the other edges there, among the area's
             levels, or the end node's own `level`, so a line across stairs or an
             escalator mapped as an area between entrances on two levels has these two
-            levels; a walkway tagged with several levels, such as
-            `level=0;1`, and an edge without a `level` tag have no level (NaN). The
+            levels; a platform without a `level` tag has the level that the other edges
+            at its nodes have, when the platforms joined to it meet exactly one level,
+            as an underground platform tagged only with `layer` does where its
+            escalators arrive; a walkway tagged with several levels, such as
+            `level=0;1`, and another edge without a `level` tag have no level (NaN). The
             column `vertical` is `escalator` for steps that move (`conveying`), `stairs`
             for other steps, `moving_walkway` for other ways that move and missing on
             other edges. A lift node (`highway=elevator`) where edges on several levels

@@ -7160,3 +7160,55 @@ def test_indoor_reads_give_lines_across_a_multi_level_area_the_levels_of_their_e
     other = edges[edges["id"] == 60]
     assert list(zip(other["u"], other["v"])) == ([(24, 25)] if stairs else [])
     assert (24 in set(found["id"])) == stairs
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize("street_level", [False, True])
+def test_indoor_reads_give_platforms_without_a_level_the_level_joined_to_them(
+    tmp_path, engine, street_level
+):
+    """Two platforms without a level tag (ways 70 and 71, joined at node 3) are reached by
+    a level -3 walkway at node 1: both take level -3. A level 0 walkway at node 4 as well
+    leaves both without a level, as does a platform that nothing with a level joins (way
+    72)."""
+    import math
+
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (10, 0), 3: (20, 0), 4: (30, 0), 5: (0, -10), 6: (30, -10),
+          7: (0, 20), 8: (10, 20)}
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [None] * len(ids),
+    }
+    platform = {"railway": "platform", "layer": "-3"}
+    ways = [
+        {"id": 70, "refs": [1, 2, 3], "tags": platform},
+        {"id": 71, "refs": [3, 4], "tags": platform},
+        {"id": 72, "refs": [7, 8], "tags": platform},
+        {"id": 73, "refs": [5, 1], "tags": {"highway": "footway", "level": "-3"}},
+    ]
+    if street_level:
+        ways.append({"id": 74, "refs": [6, 4], "tags": {"highway": "footway", "level": "0"}})
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "station.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    _, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    platforms = edges[edges["id"].isin([70, 71, 72])].sort_values(["id", "u"])
+    level = None if street_level else -3.0
+    expected = [(70, level), (70, level), (71, level), (72, None)]
+    assert [
+        (i, None if a != a else a, None if b != b else b)
+        for i, a, b in zip(platforms["id"], platforms["u_level"], platforms["v_level"])
+    ] == [(i, lv, lv) for i, lv in expected]
