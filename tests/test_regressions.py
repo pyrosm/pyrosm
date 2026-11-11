@@ -7615,3 +7615,68 @@ def test_indoor_reads_split_doors_that_repeat_on_other_levels(
             OSM(clashing, engine=engine).get_network(
                 "walking", nodes=True, indoor_elements=True
             )
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
+    "area_level, node_walkway, lifts_expected, joined",
+    [
+        ("0;1", False, {("way", 40)}, {(31, 32)}),
+        ("5;6", False, {("way", 40), ("node", 30)}, {(31, 32), (33, 34)}),
+        ("0;1;5", True, {("way", 40), ("node", 30)}, {(31, 32), (31, 33)}),
+    ],
+)
+def test_indoor_reads_leave_a_lift_node_inside_a_lift_area_to_the_area(
+    tmp_path, engine, area_level, node_walkway, lifts_expected, joined
+):
+    """A lift node (node 30, level=0;1) ends a level-0 walkway inside a lift area (way
+    40) whose corners walkways reach on levels 0, 1, 5 and 6; a level-1 hall (way 41)
+    over the lift holds the node too. A lift area on levels 0;1 joins the two levels,
+    and the lift node does not enter the hall as a lift, which would split it and leave
+    the area out. A lift area on levels 5;6 is another lift: the lift node enters the
+    hall and joins levels 0 and 1, and the area joins levels 5 and 6. With a level-1
+    walkway to the lift node too, its walkways split it, and a lift area on levels
+    0;1;5 stays, as it joins level 5 too."""
+    import math
+
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (20, 0), 3: (20, 10), 4: (0, 10), 21: (8, 4), 22: (12, 4),
+          23: (12, 6), 24: (8, 6), 30: (10, 5), 31: (-5, 4), 32: (25, 6),
+          33: (12, -5), 34: (8, 15), 35: (12, 15), 36: (8, -5), 37: (10, 8)}
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [{"highway": "elevator", "level": "0;1"} if i == 30 else None for i in ids],
+    }
+    ways = [
+        {"id": 40, "refs": [21, 22, 23, 24, 21],
+         "tags": {"indoor": "room", "highway": "elevator", "level": area_level}},
+        {"id": 41, "refs": [1, 2, 3, 4, 1], "tags": {"indoor": "area", "level": "1"}},
+        {"id": 50, "refs": [31, 21, 30], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 51, "refs": [32, 23], "tags": {"highway": "footway", "level": "1"}},
+        {"id": 52, "refs": [33, 22, 35], "tags": {"highway": "footway", "level": "5"}},
+        {"id": 53, "refs": [34, 24, 36], "tags": {"highway": "footway", "level": "6"}},
+    ]
+    if node_walkway:
+        ways.append(
+            {"id": 54, "refs": [37, 30], "tags": {"highway": "footway", "level": "1"}}
+        )
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "lift.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    _, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    lifts = edges[edges["vertical"] == "lift"]
+    assert set(zip(lifts["osm_type"], lifts["id"])) == lifts_expected
+    for pair in [(31, 32), (33, 34), (31, 33)]:
+        assert _nodes_joined(edges, *pair) == (pair in joined)

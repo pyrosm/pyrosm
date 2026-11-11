@@ -763,10 +763,12 @@ class OSM:
             own `level` tag, such as `level=0;1`, names levels that its edges do not
             reach, also one on no edge, enters the platform and indoor areas of one
             level on those levels that it lies in, from inside, when it then reaches
-            two or more levels, and is split on their levels too. A lift mapped as
-            an area (a closed way or multipolygon tagged `highway=elevator`, as Simple
-            Indoor Tagging maps lifts) is not a walkway around the lift: when the
-            network enters it on two or more of the levels its `level` tag lists,
+            two or more levels, and is split on their levels too, unless it lies
+            inside a lift area on one of its levels, which joins that lift's floors.
+            A lift mapped as an area (a closed way or multipolygon tagged
+            `highway=elevator`, as Simple Indoor Tagging maps lifts) is not a walkway
+            around the lift: when the network enters it on two or more of the levels
+            its `level` tag lists,
             through nodes at the corners of its outline such as its doors, each of
             those levels gets a node with a negative id in the middle of the area, an
             edge to it from each entrance there (marked in `walking_area`, tagged with
@@ -1138,7 +1140,7 @@ class OSM:
             }
         areas, lifts = self._drop_node_lists(areas), self._drop_node_lists(lifts)
         nodes, edges = without_lift_area_ways(nodes, edges, lifts)
-        nodes, edges = with_indoor_crossings(nodes, edges, areas, doors, borders)
+        nodes, edges = with_indoor_crossings(nodes, edges, areas, doors, borders, lifts)
         return nodes, edges, lifts, levels
 
     @logged()

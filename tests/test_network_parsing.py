@@ -1336,7 +1336,9 @@ def test_lift_areas_mapped_floor_by_floor_make_one_lift():
     lift has already (T, which keeps its lift from levels 0 to 1), an area without a
     level tag and the area above it (U), an area whose only node is on its outline
     between two corners, not an entrance, and the area above it (V), a small area in a
-    large area above it whose middle lies outside the small one (W)."""
+    large area above it whose middle lies outside the small one (W), and a lift (K, on
+    levels 0 and 1) with a lift node split on its levels inside it. A lift node split
+    on levels 0 and 1 inside F leaves F joined, as F reaches more levels."""
     import geopandas as gpd
     from shapely.geometry import LineString, Point, Polygon
 
@@ -1355,7 +1357,8 @@ def test_lift_areas_mapped_floor_by_floor_make_one_lift():
              (52, "1", (15, 0.1)), (60, None, (20, 0)), (61, "1", (20.1, 0.1)),
              (70, "0", (25, 0)), (71, "1", (25.1, 0.1)), (80, "0", (30, 0)),
              (81, "1", (30.2, -3), 4.0), (90, "0", (40, 0)), (91, "1", (40.1, 0.1)),
-             (92, "2", (40, 0)), (93, "3", (40.1, 0.1)), (94, "4", (40, 0))]
+             (92, "2", (40, 0)), (93, "3", (40.1, 0.1)), (94, "4", (40, 0)),
+             (100, "0", (50, 0)), (101, "1", (50.1, 0.1))]
     lifts = gpd.GeoDataFrame(
         {"id": [a[0] for a in areas], "osm_type": "way",
          "level": [a[1] for a in areas]},
@@ -1381,8 +1384,16 @@ def test_lift_areas_mapped_floor_by_floor_make_one_lift():
         geometry=[LineString([at(30, 30), at(*place[a[0]])]) for a in areas],
         crs=4326,
     )
+    # Lift edges of lift nodes split per level, inside F and inside K
+    split = gpd.GeoDataFrame(
+        {"id": [7, 8], "osm_type": "node", "u": [7, 8], "v": [-7001, -8001],
+         "u_level": 0.0, "v_level": 1.0, "vertical": "lift", "walking_area": False},
+        geometry=[LineString([at(x, 0.5), at(x, 0.5)]) for x in (40.5, 50.5)],
+        crs=4326,
+    )
+    edges = pd.concat([edges, split], ignore_index=True)
     _, joined = join_lift_areas(nodes, edges, lifts)
-    lift = joined[joined["vertical"] == "lift"]
+    lift = joined[(joined["vertical"] == "lift") & (joined["osm_type"] == "way")]
     ids = (20, 21, 23, 50, 51, *range(90, 95))
     node = {i: lift_area_copy_id(i, "way", 1) for i in ids}
     assert lift[["id", "u", "v", "u_level", "v_level"]].values.tolist() == [

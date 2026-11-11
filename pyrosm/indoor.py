@@ -43,10 +43,11 @@ edges (see :func:`split_lifts`), whose length is that of an escalator or stairs 
 their levels plus 1 m (see :func:`with_lift_lengths`); a lift node whose own ``level``
 tag names levels that its walkways do not reach also enters, from inside, the platform
 and indoor areas of one level on those levels that it lies in, when it then reaches two
-or more levels (see :func:`pyrosm.walking_areas.crossing_rows`), and gets lift edges to
-them; a lift mapped as an area (``highway=elevator`` on a closed way or multipolygon) is
-not a walkway around the lift but joins the levels at which the network enters it in the
-same way, and lift areas mapped one floor at a time make one lift together (see
+or more levels, unless it lies inside a lift area on one of its levels (see
+:func:`pyrosm.walking_areas.crossing_rows`), and gets lift edges to them; a lift mapped
+as an area (``highway=elevator`` on a closed way or multipolygon) is not a walkway
+around the lift but joins the levels at which the network enters it in the same way, and
+lift areas mapped one floor at a time make one lift together (see
 :func:`join_lift_areas`). A door tagged ``repeat_on`` is a door on each of its levels, a
 copy per level (see :func:`door_copies`).
 """
@@ -836,7 +837,7 @@ def _with_tag_columns(frame, columns):
     )
 
 
-def with_indoor_crossings(nodes, edges, areas, doors, borders=None):
+def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
     """The ``nodes`` and ``edges`` of a network read with the edges across the indoor and
     walking ``areas`` (see :func:`pyrosm.walking_areas.crossing_rows`), marked True in
     the column ``walking_area`` (False on the other edges), entered through the
@@ -848,7 +849,8 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None):
     that a node has already raises a ValueError), and
     through the ``borders``, the nodes where open indoor spaces meet (see
     :func:`border_entrances`), into those spaces only unless the node is already one of
-    the network's, without those between two nodes an edge already joins;
+    the network's, without those between two nodes an edge already joins (a lift node
+    inside one of the lift areas ``lifts`` is left to that area);
     the doors and lift nodes that the new edges use join the nodes, with all their tags
     in ``tags``, and so do the border nodes, without tags."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
@@ -902,7 +904,7 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None):
     if borders is not None:
         new = borders[~borders["id"].isin(nodes["id"])]
         only = dict(zip(new["id"], new["spaces"]))
-    rows = crossing_rows(entrances, plain, areas, door_areas, only, repeated)
+    rows = crossing_rows(entrances, plain, areas, door_areas, only, repeated, lifts)
     if rows is not None:
         # A line along the outline of an area that is an edge itself (a platform's ring)
         joined = set(zip(edges["u"], edges["v"])) | set(zip(edges["v"], edges["u"]))
@@ -1243,8 +1245,7 @@ def _lift_area_entrances(lifts, nodes, edges):
     that the network's edges have there. The entrances are the network's nodes at a
     corner of the part's outline and its dead ends inside the part (see
     :func:`pyrosm.walking_areas._entrances`); a level counts when the area's ``level``
-    tag lists it, or any level when the area has none. An area with a lift node split
-    per level in it (see :func:`split_lifts`) has none: that lift joins its floors."""
+    tag lists it, or any level when the area has none."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
     from pyrosm.walking_areas import _entrances
 
@@ -1261,15 +1262,9 @@ def _lift_area_entrances(lifts, nodes, edges):
         return_counts=True,
     )
     dead_end = np.isin(ids, ends[counts == 1])
-    split = edges[(edges["vertical"] == "lift") & (edges["osm_type"] == "node")]
-    split_points = shapely.points(
-        np.array([line.coords[0][:2] for line in split.geometry]).reshape(-1, 2)
-    )
     tags = _frame_tags(lifts, _frame_tag_columns(lifts))
     found = {}
     for area in np.unique(area_rows):
-        if len(split_points) and shapely.covers(geometries[area], split_points).any():
-            continue
         ranges = level_ranges(tags[area].get("level"))
         rows = node_rows[area_rows == area]
         parts = []
@@ -1315,8 +1310,10 @@ def join_lift_areas(nodes, edges, lifts):
     (``walking_area`` True, and ``level`` that one level), and lift edges of length 0,
     with the id, ``osm_type`` and metadata of the area of the lower level, join the
     nodes of neighbouring levels, as :func:`split_lifts` joins the copies of a lift node
-    (see :func:`_lift_area_plan`). An area of which a node id is in the read already (a
-    file that :meth:`pyrosm.OSM.write_pbf` wrote) is left as it is, all its parts."""
+    (see :func:`_lift_area_plan`). A lift whose levels a lift node split per level
+    inside it joins already, all of them, is left out (see :func:`_joined_by_lift_node`).
+    An area of which a node id is in the read already (a file that
+    :meth:`pyrosm.OSM.write_pbf` wrote) is left as it is, all its parts."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_str
     from pyrosm.walking_areas import area_edge_rows
 
@@ -1343,9 +1340,12 @@ def join_lift_areas(nodes, edges, lifts):
             (min(a for a, _ in ranges), max(b for _, b in ranges)) if ranges else None
         )
         items += [(area, span, *part) for part in planned]
+    split = edges[(edges["vertical"] == "lift") & (edges["osm_type"] == "node")]
     copies, lift_rows, found, level_of = [], [], [], {}
     for stack in _lift_stacks(items):
         at = {level: item for item in stack for level in item[5]}
+        if _joined_by_lift_node([item[2] for item in stack], set(at), split):
+            continue
         ordered = sorted(at)
         for level in ordered:
             area, _, part, middle, lines, ids = at[level]
@@ -1386,6 +1386,26 @@ def join_lift_areas(nodes, edges, lifts):
             _with_level_tag(tags, level) for tags, level in zip(rows["tags"], levels)
         ]
     return _with_lift_rows(nodes, edges, copies, lift_rows, metadata, rows)
+
+
+def _joined_by_lift_node(parts, levels, lift_edges):
+    """Whether one lift node split per level (see :func:`split_lifts`; its lift edges
+    among ``lift_edges``, with ``u_level`` and ``v_level``) lies in one of ``parts`` and
+    is on every one of ``levels``."""
+    if lift_edges.empty:
+        return False
+    points = shapely.points([line.coords[0][:2] for line in lift_edges.geometry])
+    inside = np.zeros(len(points), dtype=bool)
+    for part in parts:
+        inside |= shapely.covers(part, points)
+    on = {}
+    for node, low, high in zip(
+        lift_edges["id"].to_numpy()[inside],
+        lift_edges["u_level"].to_numpy(dtype=float)[inside],
+        lift_edges["v_level"].to_numpy(dtype=float)[inside],
+    ):
+        on.setdefault(node, set()).update((low, high))
+    return any(levels <= node_levels for node_levels in on.values())
 
 
 def _lift_stacks(items):
