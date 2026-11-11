@@ -2,8 +2,9 @@
 
 The platforms (:data:`PLATFORM_FILTER`) are edges of the network, also those that its
 type leaves out, such as ``highway=platform`` in a walking network. The platform areas
-and the indoor corridors and areas (:data:`INDOOR_AREA_FILTER`) are crossed as walking
-areas are, each on its own level and together with the walking areas of a read with
+and the indoor corridors and areas, also stairs and escalators mapped as rooms
+(:data:`INDOOR_AREA_FILTER`, :func:`is_indoor_area`), are crossed as walking areas are,
+each on its own level and together with the walking areas of a read with
 ``walking_areas=True``, and they are entered also through the doors on their outlines,
 which connect areas that share them; the walking areas are not. Corridors, indoor areas
 and platform areas that share outline nodes on a common level, which Simple Indoor
@@ -73,11 +74,13 @@ PLATFORM_FILTER = {
 }
 
 # The areas a read with indoor_elements=True crosses, each on its own level: the platform
-# areas, the indoor corridors and areas of Simple Indoor Tagging, and the rooms tagged as
-# corridors, entrance rooms, lobbies, halls and waiting rooms.
+# areas, the indoor corridors and areas of Simple Indoor Tagging, the rooms tagged as
+# corridors, entrance rooms, lobbies, halls and waiting rooms, and stairs and escalators
+# mapped as rooms (see is_indoor_area, which the elements read with this filter pass).
 INDOOR_AREA_FILTER = {
     "indoor": ["corridor", "area"],
-    "room": ["corridor", "entrance", "lobby", "hall", "waiting"],
+    "room": ["corridor", "entrance", "lobby", "hall", "waiting", "stairs"],
+    "stairs": [True],
     **PLATFORM_FILTER,
 }
 
@@ -127,6 +130,20 @@ def is_vertical(tags):
     """Whether an edge with the OSM tags ``tags`` is stairs, an escalator or a moving
     walkway."""
     return tags.get("highway") == "steps" or _is_moving(tags)
+
+
+def is_indoor_area(tags):
+    """Whether an area with the OSM tags ``tags`` is one that indoor reads cross: a
+    platform, an ``indoor=corridor`` or ``indoor=area``, a room tagged as a walkway
+    (``room=corridor``, ``entrance``, ``lobby``, ``hall``, ``waiting`` or ``stairs``), or
+    stairs or an escalator mapped as a room (``indoor=room`` with ``stairs`` other than
+    no), as Simple Indoor Tagging maps staircases."""
+    return (
+        _is_platform(tags)
+        or tags.get("indoor") in ("corridor", "area")
+        or tags.get("room") in INDOOR_AREA_FILTER["room"]
+        or (tags.get("indoor") == "room" and tags.get("stairs") not in (None, "no"))
+    )
 
 
 def _is_stair_area(tags):
@@ -637,7 +654,8 @@ def with_platforms(nodes, edges, platform_nodes, platforms, walking_areas=False)
 def indoor_areas(candidates, walking=None, lifts=None):
     """The areas of a read with ``indoor_elements=True`` as ``(areas, lifts)``: the
     polygons and multipolygons among ``candidates`` (a read of
-    :data:`INDOOR_AREA_FILTER`) after the ``walking`` areas of the read (see
+    :data:`INDOOR_AREA_FILTER`) that indoor reads cross (see :func:`is_indoor_area`)
+    after the ``walking`` areas of the read (see
     :func:`pyrosm.walking_areas.select_areas`), each area once and with the tag columns
     of both (see :func:`_with_tag_columns`) and the ``nodes`` lists of ``candidates``
     when it has them, without the lift areas
@@ -652,7 +670,11 @@ def indoor_areas(candidates, walking=None, lifts=None):
     frames = [] if walking is None else [walking]
     if candidates is not None:
         polygonal = candidates.geometry.geom_type.isin(["Polygon", "MultiPolygon"])
-        areas = candidates[polygonal]
+        crossed = [
+            is_indoor_area(tags)
+            for tags in _frame_tags(candidates, _frame_tag_columns(candidates))
+        ]
+        areas = candidates[polygonal.to_numpy() & np.array(crossed, dtype=bool)]
         if walking is not None:
             keys = list(zip(areas["osm_type"], areas["id"]))
             if "nodes" in areas.columns:
@@ -848,8 +870,7 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None):
         entrances = pd.concat([entrances, new], ignore_index=True)
     plain = edges[~edges["walking_area"]]
     door_areas = [
-        any(tags.get(key) in values for key, values in INDOOR_AREA_FILTER.items())
-        for tags in _frame_tags(areas, _frame_tag_columns(areas))
+        is_indoor_area(tags) for tags in _frame_tags(areas, _frame_tag_columns(areas))
     ]
     only = None
     if borders is not None:

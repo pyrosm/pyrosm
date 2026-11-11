@@ -7363,6 +7363,20 @@ def test_indoor_reads_give_lift_edges_the_length_of_an_escalator_plus_a_metre(
     )
 
 
+def _nodes_joined(edges, a, b):
+    """Whether the edges ``edges`` (``u`` and ``v``) join the nodes ``a`` and ``b``."""
+    parent = {}
+
+    def root(node):
+        while parent.setdefault(node, node) != node:
+            node = parent[node]
+        return node
+
+    for u, v in zip(edges["u"], edges["v"]):
+        parent[root(u)] = root(v)
+    return root(a) == root(b)
+
+
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
 @pytest.mark.parametrize(
     "neighbour, variant, joined",
@@ -7435,16 +7449,7 @@ def test_indoor_reads_join_open_spaces_where_they_meet(
         "walking", nodes=True, indoor_elements=True,
         walking_areas=variant == "walking area",
     )
-    parent = {}
-
-    def root(node):
-        while parent.setdefault(node, node) != node:
-            node = parent[node]
-        return node
-
-    for u, v in zip(edges["u"], edges["v"]):
-        parent[root(u)] = root(v)
-    assert (root(7) == root(8)) == joined
+    assert _nodes_joined(edges, 7, 8) == joined
     across = edges[edges["walking_area"]]
     at_border = across["u"].isin([2, 3]) | across["v"].isin([2, 3])
     if joined:
@@ -7452,3 +7457,54 @@ def test_indoor_reads_join_open_spaces_where_they_meet(
         assert {2, 3} <= set(found["id"])
     lobby = across[across["id"] == 42]
     assert not (lobby["u"].isin([2, 3]) | lobby["v"].isin([2, 3])).any()
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
+    "room, joined",
+    [({"stairs": "yes"}, True), ({"room": "stairs"}, True), ({}, False)],
+)
+def test_indoor_reads_cross_stairs_mapped_as_rooms(tmp_path, engine, room, joined):
+    """A staircase mapped as a room (way 41, indoor=room with stairs=yes or room=stairs,
+    level=0;1), as Simple Indoor Tagging maps it, is entered through its door on level 0
+    (node 5), from a level-0 corridor, and its door on level 1 (node 6), to a level-1
+    corridor: the line across it joins the two levels. A plain room on both levels does
+    not."""
+    import math
+
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (10, 0), 3: (10, 10), 4: (0, 10), 5: (10, 5), 6: (20, 5),
+          7: (20, 0), 8: (20, 10), 10: (30, 0), 11: (30, 10), 12: (-5, 0), 13: (35, 10)}
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    doors = {5: {"door": "yes", "level": "0"}, 6: {"door": "yes", "level": "1"}}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [doors.get(i) for i in ids],
+    }
+    ways = [
+        {"id": 40, "refs": [1, 2, 5, 3, 4, 1], "tags": {"indoor": "corridor", "level": "0"}},
+        {"id": 41, "refs": [2, 7, 6, 8, 3, 5, 2],
+         "tags": {"indoor": "room", "level": "0;1", **room}},
+        {"id": 42, "refs": [7, 10, 11, 8, 6, 7], "tags": {"indoor": "corridor", "level": "1"}},
+        {"id": 50, "refs": [12, 1], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 51, "refs": [13, 11], "tags": {"highway": "footway", "level": "1"}},
+    ]
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "stairs.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    _, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    assert _nodes_joined(edges, 12, 13) == joined
+    stairs = edges[edges["walking_area"] & (edges["id"] == 41)]
+    expected = [(5, 6, 0.0, 1.0)] if joined else []
+    assert list(zip(stairs["u"], stairs["v"], stairs["u_level"], stairs["v_level"])) == expected
