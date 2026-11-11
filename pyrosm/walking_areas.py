@@ -46,7 +46,8 @@ MAX_VISIBILITY_POINTS = 500
 MAX_ROUTE_STRETCH = 1.05
 
 # How many metres outside an area that ``door_areas`` marks (see crossing_rows), on its
-# level, the end of stairs or an escalator that joins nothing may lie and still enter it.
+# level, the end of stairs or an escalator that joins nothing else, or only its own stairs or
+# escalator area, may lie and still enter it.
 STAIR_END_REACH = 2.5
 
 # A line is inside an area when it lies within the area widened by this many degrees
@@ -127,13 +128,14 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
     when no area has two entrances. A node of ``nodes`` without an edge in ``edges``, a
     door, enters only the areas that ``door_areas`` marks (one bool per area; by default
     every area). The end of stairs or an escalator that is a dead end, enters no area
-    and has the level its way gives also enters the nearest area with a level that
-    ``door_areas`` marks, on that level, when it lies outside the area within
+    but stairs or an escalator mapped as an area, such as its own, and has the level its
+    way gives also enters the nearest area with a level that ``door_areas`` marks, on
+    that level, when it lies outside the area within
     :data:`STAIR_END_REACH` metres: at the closest point of the area's outline, and the
     edges from it begin at the stair end. A lift node also enters, from inside, the areas
     of one level that ``door_areas`` marks on the levels of its own ``level`` tag that
     its walkways do not reach (see :func:`_lift_entrances`)."""
-    from pyrosm.indoor import node_levels
+    from pyrosm.indoor import _is_stair_area, node_levels
 
     ids = nodes["id"].to_numpy()
     lon = nodes["lon"].to_numpy(dtype=float)
@@ -150,9 +152,8 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
         door = ~np.isin(ids, end_ids)
         keep = ~door[node_rows] | np.asarray(door_areas, dtype=bool)[area_rows]
         area_rows, node_rows = area_rows[keep], node_rows[keep]
-    area_positions = [
-        _level_position(tags) for tags in _frame_tags(areas, _frame_tag_columns(areas))
-    ]
+    area_tags = _frame_tags(areas, _frame_tag_columns(areas))
+    area_positions = [_level_position(tags) for tags in area_tags]
     near = np.unique(node_rows)
     loose = np.array([], dtype=np.int64)
     if door_areas is not None:
@@ -206,9 +207,11 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
         kept.setdefault(area, []).append((part, within))
     reached = {}
     if len(loose):
+        # A stair end in its own stairs or escalator area still reaches the area next to it
         entered = {
             node
-            for parts in kept.values()
+            for area, parts in kept.items()
+            if not _is_stair_area(area_tags[area])
             for _, within in parts
             for _, _, node_ids in within.values()
             for node in node_ids
@@ -364,6 +367,8 @@ def _areas_within_reach(geometries, area_positions, marked, ids, lon, lat, posit
         scale = math.cos(math.radians(lat[row]))
         end = (float(lon[row]), float(lat[row]))
         for k, part in enumerate(shapely.get_parts(geometries[area])):
+            if part.covers(shapely.Point(end)):
+                continue
             plane = shapely.transform(part, lambda xy: xy * [scale, 1.0])
             line = shapely.shortest_line(plane, shapely.Point(end[0] * scale, end[1]))
             x, y = line.coords[0]
