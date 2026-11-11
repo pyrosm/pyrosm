@@ -35,13 +35,15 @@ escalators, moving walkways and stairs; the ``length`` of an escalator is measur
 its slope (see :func:`with_indoor_columns`), and in a graph an escalator or moving
 walkway runs only in the direction it moves (see :func:`moving_one_way`). A lift node
 (``highway=elevator``) where walkways on several levels meet is split into one node per
-level, joined by lift edges (see :func:`split_lifts`); a lift node whose own ``level``
-tag names levels that its walkways do not reach also enters, from inside, the platform
-and indoor areas of one level on those levels that it lies in, when it then reaches two
-or more levels (see :func:`pyrosm.walking_areas.crossing_rows`), and gets lift edges to
-them; a lift mapped as an area (``highway=elevator`` on a closed way or multipolygon) is
-not a walkway around the lift but joins the levels at which the network enters it in the
-same way, and lift areas mapped one floor at a time make one lift together (see
+level, joined by lift edges (see :func:`split_lifts`), whose length is that of an
+escalator or stairs between their levels plus 1 m (see :func:`with_lift_lengths`); a
+lift node whose own ``level`` tag names levels that its walkways do not reach also
+enters, from inside, the platform and indoor areas of one level on those levels that it
+lies in, when it then reaches two or more levels (see
+:func:`pyrosm.walking_areas.crossing_rows`), and gets lift edges to them; a lift mapped
+as an area (``highway=elevator`` on a closed way or multipolygon) is not a walkway
+around the lift but joins the levels at which the network enters it in the same way, and
+lift areas mapped one floor at a time make one lift together (see
 :func:`join_lift_areas`).
 """
 
@@ -888,6 +890,102 @@ def _with_lift_rows(nodes, edges, copies, lift_rows, metadata, rows=None):
         crs=nodes.crs,
     )
     return nodes, edges
+
+
+# How many metres longer a lift edge is than the escalator or stairs whose length it
+# takes (see with_lift_lengths), so that a route by length takes the escalator.
+LIFT_EXTRA_LENGTH = 1.0
+
+# The height of one level in metres, for a lift edge between levels that no escalator or
+# stairs join (see with_lift_lengths): a rough storey height.
+LEVEL_HEIGHT = 4.0
+
+
+def with_lift_lengths(edges):
+    """``edges`` (with ``vertical``, ``u_level``, ``v_level`` and ``length``) with the
+    ``length`` of each lift edge (``vertical`` "lift"): the length of a climb between its
+    two levels along escalators among ``edges`` (see :func:`_climb_length`), plus
+    :data:`LIFT_EXTRA_LENGTH`; without one, along escalators and stairs; else
+    :data:`LEVEL_HEIGHT` for each level between them, plus :data:`LIFT_EXTRA_LENGTH`."""
+    lifts = np.flatnonzero((edges["vertical"] == "lift").to_numpy())
+    if not len(lifts):
+        return edges
+    escalators = _ways_between_levels(edges, "escalator")
+    both = dict(escalators)
+    for pair, ways in _ways_between_levels(edges, "stairs").items():
+        both[pair] = both.get(pair, []) + ways
+    u_level = edges["u_level"].to_numpy(dtype=float)
+    v_level = edges["v_level"].to_numpy(dtype=float)
+    lengths = edges["length"].to_numpy(dtype=float).copy()
+    for i in lifts:
+        low, high = sorted((u_level[i], v_level[i]))
+        point = shapely.get_point(edges.geometry.iloc[i], 0)
+        length = _climb_length(escalators, low, high, point)
+        if length is None:
+            length = _climb_length(both, low, high, point)
+        if length is None:
+            length = LEVEL_HEIGHT * (high - low)
+        lengths[i] = round(length + LIFT_EXTRA_LENGTH, 3)
+    attrs = dict(edges.attrs)
+    edges = edges.assign(length=lengths)
+    edges.attrs = attrs
+    return edges
+
+
+def _climb_length(ways, low, high, point):
+    """The length of a climb from level ``low`` to ``high`` along ``ways`` (``{(low,
+    high): [(geometry, length), ...]}``, see :func:`_ways_between_levels`): that of the
+    way nearest to ``point`` (lon/lat) between the two levels, else of the shortest
+    chain of ways between levels from ``low`` up to ``high``, each the nearest of the
+    ways between its two levels; None when no chain reaches ``high``."""
+    scale = math.cos(math.radians(point.y))
+
+    def nearest(found):
+        return min(found, key=lambda way: _scaled_distance(way[0], point, scale))[1]
+
+    if ways.get((low, high)):
+        return nearest(ways[(low, high)])
+    steps = [
+        (a, b, nearest(found))
+        for (a, b), found in ways.items()
+        if low <= a and b <= high
+    ]
+    # Every step climbs, so taking the steps from the lowest level up finds the
+    # shortest chain
+    best = {low: 0.0}
+    for a, b, step in sorted(steps):
+        if a in best and best[a] + step < best.get(b, math.inf):
+            best[b] = best[a] + step
+    return best.get(high)
+
+
+def _ways_between_levels(edges, kind):
+    """``{(low, high): [(geometry, length), ...]}``: the ways among ``edges`` whose
+    ``vertical`` is ``kind`` (lines across areas aside), by the lowest and highest level
+    of their edges when these differ, each with the geometry and the summed ``length``
+    of its edges."""
+    rows = edges[(edges["vertical"] == kind).to_numpy() & ~_area_lines(edges)]
+    found = {}
+    for _, way in rows.groupby(["osm_type", "id"] if "osm_type" in rows else "id"):
+        levels = np.concatenate(
+            [way["u_level"].to_numpy(dtype=float), way["v_level"].to_numpy(dtype=float)]
+        )
+        levels = levels[~np.isnan(levels)]
+        if len(levels) and levels.min() < levels.max():
+            found.setdefault((levels.min(), levels.max()), []).append(
+                (shapely.union_all(way.geometry.to_numpy()), way["length"].sum())
+            )
+    return found
+
+
+def _scaled_distance(geometry, point, scale):
+    """The distance between ``geometry`` and ``point`` (lon/lat) with the longitudes
+    multiplied by ``scale``, the cosine of the latitude, so that it orders distances as
+    metres would."""
+    return shapely.distance(
+        shapely.transform(geometry, lambda xy: xy * [scale, 1.0]),
+        shapely.Point(point.x * scale, point.y),
+    )
 
 
 def lift_area_copy_id(area, osm_type, rank):
