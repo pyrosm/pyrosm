@@ -6,7 +6,9 @@ ways, and those ways are not returned as rows of their own, except the inner way
 multipolygon whose own tags match the filter: a hole tagged as a feature of its own, such
 as a lift in a corridor (see :func:`area_member_way_ids`). Any other relation groups its
 members: its row holds a GeometryCollection of the members, and a member way whose own
-tags match the filter is also returned as a row of its own.
+tags match the filter is also returned as a row of its own. The layer reads, such as
+:meth:`pyrosm.OSM.get_buildings`, take every relation as an area: there, only the inner
+ways of multipolygons whose own tags match are rows of their own.
 """
 
 import numpy as np
@@ -43,16 +45,17 @@ def member_ids(relations, kind, grouping):
     return np.concatenate(found) if found else np.empty(0, np.int64)
 
 
-def area_member_way_ids(relations):
+def area_member_way_ids(relations, grouping=True):
     """The ids of the member ways that the ``relations`` (a dict of arrays with ``tags``
     and ``members``) that form areas take in, so that they are not rows of their own: all
     their member ways but the inner ways of multipolygons, holes such as a lift in a
-    corridor that are rows of their own when their tags match the filter. A way that is
-    also an outer way of another of the relations stays taken in. An int64 array
-    (unsorted, possibly repeated)."""
+    corridor that are rows of their own when their tags match the filter. Without
+    ``grouping`` (a layer read), every relation forms an area. A way that is also an
+    outer way of another of the relations stays taken in. An int64 array (unsorted,
+    possibly repeated)."""
     found = []
     for tags, members in zip(relations["tags"], relations["members"]):
-        if is_grouping(tags):
+        if grouping and is_grouping(tags):
             continue
         ways = np.array(
             [_member_kind(t) == "way" for t in members["member_type"]], dtype=bool

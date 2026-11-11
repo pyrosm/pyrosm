@@ -109,7 +109,9 @@ def test_reading_all_boundaries(helsinki_region_pbf):
     osm = OSM(helsinki_region_pbf, engine="in_memory")
     gdf = osm.get_boundaries(boundary_type="all")
 
-    assert len(gdf) == 712  # +13: multi-ring boundaries now assemble correctly (#21)
+    # +13: multi-ring boundaries now assemble correctly (#21); +22: protected areas
+    # mapped as holes of other protected areas are rows of their own (#983)
+    assert len(gdf) == 734
     for col in REQUIRED_COLUMNS:
         assert col in gdf.columns
 

@@ -93,8 +93,10 @@ cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, da
     ``(way_arrays, relation_arrays)``, each ``None`` when empty. The standalone ways also
     carry, under ``AREA_BY_TAGS``, whether their tags make them areas when closed. From a
     WayStore, only the ways the key check of filter_osm_records can keep are built. With
-    ``area_way_ids`` (the member ways of the relations that form areas), a member way of
-    another relation that passes the filter is also a standalone way."""
+    ``area_way_ids`` (the member ways that the relations take in, see
+    :func:`pyrosm.grouping_relations.area_member_way_ids`), another member way that passes
+    the filter, of a relation that groups its members or an inner way of a multipolygon,
+    is also a standalone way."""
     # A way record holds its tag keyed "id" as "id_tag", and "id" is the way's id.
     data_filter, osm_keys = rename_filter_key(data_filter, osm_keys, "id", "id_tag")
     if isinstance(way_records, WayStore):
@@ -128,7 +130,7 @@ cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, da
         candidates = ways
         ways, relation_ways = separate_relation_ways(candidates, relation_way_ids)
         if area_way_ids is not None:
-            ways = _with_grouping_members(candidates, relation_way_ids, relation_ways,
+            ways = _with_matching_members(candidates, relation_way_ids, relation_ways,
                                           area_way_ids, data_filter, osm_keys,
                                           filter_type, keep_all)
         relation_ways = relation_ways + extra_relation_ways
@@ -148,11 +150,11 @@ cdef get_way_arrays(way_records, relation_way_ids, osm_keys, tags_as_columns, da
 
     return way_arrays, relation_arrays
 
-cdef list _with_grouping_members(ways, relation_way_ids, relation_ways, area_way_ids,
+cdef list _with_matching_members(ways, relation_way_ids, relation_ways, area_way_ids,
                                  data_filter, osm_keys, filter_type, bint keep_all):
     """The standalone ways among ``ways`` (in their order): those not in
-    ``relation_way_ids``, and the member ways (``relation_ways``) of the relations that
-    group their members (not in ``area_way_ids``) that pass the filter, as copies."""
+    ``relation_way_ids``, and the member ways (``relation_ways``) that no relation takes
+    in (not in ``area_way_ids``) that pass the filter, as copies."""
     area = set(np.asarray(area_way_ids).tolist())
     members = set(np.asarray(relation_way_ids).tolist())
     candidates = [way for way in relation_ways if way["id"] not in area]
@@ -201,8 +203,8 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
 
             if type(relation_way_ids) not in [list, np.ndarray]:
                 raise ValueError("'relation_way_ids' should be a list or an array.")
+            area_way_ids = area_member_way_ids(filtered_relations, grouping)
             if grouping:
-                area_way_ids = area_member_way_ids(filtered_relations)
                 grouping_nodes = grouping_member_ids(filtered_relations, "node", True)
     else:
         relation_way_ids = None

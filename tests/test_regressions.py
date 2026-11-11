@@ -6986,12 +6986,13 @@ def test_indoor_reads_join_lifts_mapped_floor_by_floor(tmp_path, engine):
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
-def test_reads_with_relations_keep_tagged_inner_ways(tmp_path, engine):
+@pytest.mark.parametrize("layer", [False, True])
+def test_reads_with_relations_keep_tagged_inner_ways(tmp_path, engine, layer):
     """A corridor multipolygon (relation 20) with three holes: a lift tagged on its own
     inner way (way 11) is a row of its own, as the OSM wiki tags such holes; an untagged
     hole (way 12) is not, nor is a hole tagged as a lift too (way 14) that is the outer
     way of a lift multipolygon (relation 22), which takes it in. The corridor keeps its
-    three holes."""
+    three holes. With ``layer``, the same for a wood with lakes read by get_natural."""
     import numpy as np
 
     from pyrosm import OSM
@@ -7013,11 +7014,14 @@ def test_reads_with_relations_keep_tagged_inner_ways(tmp_path, engine):
         "tags": [None] * len(xy),
     }
     lift = {"highway": "elevator", "indoor": "room", "level": "0"}
+    corridor = {"indoor": "corridor", "level": "0"}
+    if layer:
+        lift, corridor = {"natural": "water"}, {"natural": "wood"}
     ways = [
         {"id": way, "refs": refs, "version": 1, "timestamp": 1600000000, "tags": tags}
         for way, (_, refs), tags in zip((10, 11, 12, 14), rings, ({}, lift, {}, lift))
     ]
-    corridor = {"type": "multipolygon", "indoor": "corridor", "level": "0"}
+    corridor = {"type": "multipolygon", **corridor}
     relations = [
         {"id": 20, "members": [("way", 10, "outer"), ("way", 11, "inner"),
                                ("way", 12, "inner"), ("way", 14, "inner")],
@@ -7029,7 +7033,8 @@ def test_reads_with_relations_keep_tagged_inner_ways(tmp_path, engine):
     path = write_pbf_from_records(
         nodes, ways, relations, str(tmp_path / "holes.osm.pbf"), (24.89, 60.19, 24.91, 60.21)
     )
-    found = OSM(path, engine=engine).get_data_by_custom_criteria(
+    osm = OSM(path, engine=engine)
+    found = osm.get_natural() if layer else osm.get_data_by_custom_criteria(
         {"indoor": ["corridor"], "highway": ["elevator"]},
         keep_nodes=False, keep_ways=True, keep_relations=True,
     )

@@ -775,10 +775,12 @@ def _collect_layer(
     grouping_relations=False,
 ):
     """Shared collection for both output modes: node features, standalone ways, relations,
-    their member ways and the node coordinates the ways/relations reference. With
-    ``grouping_relations``, only the member ways of the relations that form areas are left
-    out of the standalone ways, and a relation that groups its members is kept with only
-    member nodes present (see :mod:`pyrosm.grouping_relations`). ``filter_spec``
+    their member ways and the node coordinates the ways/relations reference. The member
+    ways that the relations take in are left out of the standalone ways (see
+    :func:`pyrosm.grouping_relations.area_member_way_ids`; a matching inner way of a
+    multipolygon stays): with ``grouping_relations`` only those of the relations that form
+    areas, and a relation that groups its members is kept with only member nodes present
+    (see :mod:`pyrosm.grouping_relations`). ``filter_spec``
     is ``(osm_keys, data_filter, filter_type)``; the spilled key-presence candidates are
     refined here by pyrosm's exact value filter. ``keep_ways`` / ``keep_relations`` drop
     those element kinds from the output (``get_data_by_custom_criteria``). With a
@@ -806,11 +808,12 @@ def _collect_layer(
             if relations is not None
             else None
         )
-        if grouping_relations and relations is not None:
-            member_nodes = grouping_member_ids(relations, "node", True)
-            exclude_ids = np.unique(area_member_way_ids(relations))
-        else:
+        if relations is None:
             exclude_ids = member_ids
+        else:
+            exclude_ids = np.unique(area_member_way_ids(relations, grouping_relations))
+            if grouping_relations:
+                member_nodes = grouping_member_ids(relations, "node", True)
         # No member way present (all outside the data/box) -> the relation can't be built,
         # unless it groups member nodes.
         if relation_ways is None and not (
