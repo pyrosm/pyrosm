@@ -727,9 +727,10 @@ class OSM:
             outlines, which join the nodes when an edge uses them; these edges are
             marked in the column `walking_area`. Corridors (`indoor=corridor`), indoor
             areas (`indoor=area`, also stairs mapped as one) and platform areas that
-            share outline nodes on a common level join through those nodes, as Simple
-            Indoor Tagging maps them without walls, unless an `indoor=wall` way runs
-            through a node. The end of stairs or an escalator that
+            share outline nodes on a common level join through those nodes, also
+            when one is mapped as a multipolygon, as Simple Indoor Tagging maps them
+            without walls, unless an `indoor=wall` way runs through a node. The end of
+            stairs or an escalator that
             joins nothing else, and whose level its way gives, also enters the nearest
             platform or indoor area on that level that it lies outside of within 2.5
             metres: its edges run from the end to the closest point of the area's
@@ -1130,7 +1131,7 @@ class OSM:
                 None,
             )
         areas, lifts = indoor_areas(candidates, walking, lifts)
-        borders = border_entrances(areas, walls)
+        borders = border_entrances(areas, walls, (nodes, doors))
         levels = {}
         if borders is not None:
             known = borders["level"].notna()

@@ -7390,6 +7390,7 @@ def _nodes_joined(edges, a, b):
         ({"indoor": "area", "level": "1"}, None, False),
         ({"indoor": "room", "level": "0"}, None, False),
         ({"indoor": "area", "stairs": "yes", "level": "0;1"}, None, True),
+        ({"indoor": "area", "level": "0"}, "multipolygon", True),
     ],
 )
 def test_indoor_reads_join_open_spaces_where_they_meet(
@@ -7405,7 +7406,9 @@ def test_indoor_reads_join_open_spaces_where_they_meet(
     42) that shares node 3 is not entered through it. A corridor on levels 0 and 1 and an
     area on 1 and 2 meet on level 1: the lines from the walkways on levels 0 and 2 to the
     shared nodes would join two levels across spaces that are not stairs, and are left
-    out."""
+    out. A neighbour mapped as a multipolygon (relation 60) joins at the vertices it
+    shares with the corridor, whose nodes the corridor's node list tells once a walkway
+    node on it (node 4) gives the direction the corridor is drawn in."""
     import math
 
     import numpy as np
@@ -7414,7 +7417,7 @@ def test_indoor_reads_join_open_spaces_where_they_meet(
     from pyrosm.pbf_export import write_pbf_from_records
 
     xy = {1: (0, 0), 2: (10, 0), 3: (10, 10), 4: (0, 10), 5: (20, 0), 6: (20, 10),
-          7: (-5, 0), 8: (25, 10)}
+          7: (-5, 0), 8: (25, 10), 9: (-5, 10)}
     ids = sorted(xy)
     per_metre = 1 / 111_195
     lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
@@ -7442,8 +7445,15 @@ def test_indoor_reads_join_open_spaces_where_they_meet(
     if variant == "lobby":
         ways.append({"id": 42, "refs": [3, 6, 4, 3],
                      "tags": {"indoor": "room", "room": "lobby", "level": "0"}})
+    relations = []
+    if variant == "multipolygon":
+        ways[1]["tags"] = {}
+        ways.append({"id": 53, "refs": [9, 4], "tags": {"highway": "footway", "level": "0"}})
+        relations.append({"id": 60, "members": [("way", 41, "outer")],
+                          "tags": {"type": "multipolygon", **neighbour}})
     path = write_pbf_from_records(
-        nodes, ways, [], str(tmp_path / "spaces.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+        nodes, ways, relations, str(tmp_path / "spaces.osm.pbf"),
+        (8.539, 47.379, 8.541, 47.381),
     )
     found, edges = OSM(path, engine=engine).get_network(
         "walking", nodes=True, indoor_elements=True,
@@ -7453,7 +7463,8 @@ def test_indoor_reads_join_open_spaces_where_they_meet(
     across = edges[edges["walking_area"]]
     at_border = across["u"].isin([2, 3]) | across["v"].isin([2, 3])
     if joined:
-        assert set(across.loc[at_border, "id"]) == {40, 41}
+        neighbour_id = 60 if variant == "multipolygon" else 41
+        assert set(across.loc[at_border, "id"]) == {40, neighbour_id}
         assert {2, 3} <= set(found["id"])
     lobby = across[across["id"] == 42]
     assert not (lobby["u"].isin([2, 3]) | lobby["v"].isin([2, 3])).any()
