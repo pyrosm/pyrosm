@@ -703,7 +703,9 @@ class OSM:
             stairs of one edge that both lie in areas of one level, an end of their
             range; a stair end whose level the stairs give joins only areas on that
             level, also where it touches one area. A pair whose line passes another of
-            these nodes gets no edge of its own.
+            these nodes gets no edge of its own, nor does a pair that the edges of
+            shorter pairs already join along a route at most 5 % longer, so that an area
+            with many entrances does not get an edge for every pair.
             These edges have the area's `id`, `osm_type` and tags, and `True` in the
             column `walking_area`, which is `False` for the other edges. Requires
             `nodes=True`.
@@ -712,7 +714,8 @@ class OSM:
             If True, the platforms (`railway=platform`, `public_transport=platform` and
             `highway=platform` ways) are edges of the network too, also where its type
             leaves them out. The platform areas and the indoor corridors and areas
-            (`indoor=corridor|area`, and rooms tagged `room=corridor`) are crossed as
+            (`indoor=corridor|area`, and rooms tagged `room=corridor`, `entrance`,
+            `lobby`, `hall` or `waiting`) are crossed as
             with `walking_areas`, each on its own level and, with `walking_areas=True`,
             together with the walking areas; the platform and indoor areas, not the
             walking areas, are entered also through the doors and entrances on their
