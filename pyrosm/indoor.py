@@ -1061,12 +1061,6 @@ def _lift_stacks(items):
     thus makes one lift, and two lifts side by side stay apart."""
     parent = list(range(len(items)))
     levels = [set(item[4]) for item in items]
-
-    def root(n):
-        while parent[n] != n:
-            n = parent[n] = parent[parent[n]]
-        return n
-
     parts = shapely.STRtree([item[2] for item in items])
     for n, (_, span, part, middle, *_) in enumerate(items):
         if span is None:
@@ -1076,7 +1070,7 @@ def _lift_stacks(items):
             _, above, other, other_middle, *_ = items[m]
             if above is None or not 0 < above[0] - span[1] <= 2:
                 continue
-            a, b = root(n), root(m)
+            a, b = _root(parent, n), _root(parent, m)
             if a == b or levels[a] & levels[b]:
                 continue
             if part.covers(other_middle) and other.covers(middle):
@@ -1084,7 +1078,7 @@ def _lift_stacks(items):
                 levels[b] |= levels[a]
     stacks = {}
     for n, item in enumerate(items):
-        stacks.setdefault(root(n), []).append(item)
+        stacks.setdefault(_root(parent, n), []).append(item)
     return [stack for root_, stack in stacks.items() if len(levels[root_]) >= 2]
 
 
