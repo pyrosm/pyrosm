@@ -1043,7 +1043,7 @@ def test_indoor_lifts_split_per_level():
     import geopandas as gpd
     from shapely.geometry import LineString, Point
 
-    from pyrosm.indoor import lift_copy_id, split_lifts
+    from pyrosm.indoor import node_copy_id, split_lifts
 
     tags = [{"highway": "elevator"}, {"highway": "elevator"}, {}, {}]
     nodes = gpd.GeoDataFrame(
@@ -1068,7 +1068,7 @@ def test_indoor_lifts_split_per_level():
         crs=4326,
     )
     nodes, edges = split_lifts(nodes, edges)
-    copy0, copy2 = lift_copy_id(1, 1), lift_copy_id(1, 2)
+    copy0, copy2 = node_copy_id(1, 1), node_copy_id(1, 2)
     assert edges.loc[:4, ["u", "v"]].values.tolist() == [
         [3, 1], [copy0, 4], [4, copy2], [1, 3], [2, 3]
     ]
@@ -1122,7 +1122,7 @@ def test_lift_areas_joined_per_level(monkeypatch):
     from pyrosm.indoor import (
         join_lift_areas,
         lift_area_copy_id,
-        lift_copy_id,
+        node_copy_id,
         without_lift_area_ways,
     )
 
@@ -1166,7 +1166,7 @@ def test_lift_areas_joined_per_level(monkeypatch):
         geometry=[Point(p) for p in places],
         crs=4326,
     )
-    split = (50, lift_copy_id(50, 1), 0.0, 1.0)  # a lift node split per level, in D
+    split = (50, node_copy_id(50, 1), 0.0, 1.0)  # a lift node split per level, in D
     edges = gpd.GeoDataFrame(
         {"id": [200 + e[0] for e in entrances] + [50],
          "osm_type": ["way"] * len(entrances) + ["node"],
@@ -1243,6 +1243,90 @@ def test_lift_areas_joined_per_level(monkeypatch):
     assert without_lift_area_ways(nodes, edges, None) == (nodes, edges)
 
 
+def test_door_copies():
+    """A door with repeat_on becomes one row per level, its own level keeping its id; a
+    door that is a lift node, a range of more than 100 levels and a door whose id the
+    copy ids do not fit (negative or too large) stay as they are."""
+    import json
+
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    from pyrosm.indoor import _MAX_LIFT_ID, door_copies, node_copy_id
+
+    tags = [{"door": "yes", "level": "1", "repeat_on": "0;2-3"},
+            {"highway": "elevator", "level": "0", "repeat_on": "1"},
+            {"door": "yes", "level": "0", "repeat_on": "1-1000"},
+            {"door": "yes", "level": "0"},
+            {"door": "yes", "level": "0", "repeat_on": "1"},
+            {"door": "yes", "level": "0", "repeat_on": "1"}]
+    doors = gpd.GeoDataFrame(
+        {"id": [1, 2, 3, 4, -5, _MAX_LIFT_ID + 1], "tags": [json.dumps(t) for t in tags]},
+        geometry=[Point(0, 0)] * 6, crs=4326,
+    )
+    found = door_copies(doors)
+    rows = [(i, json.loads(t)) for i, t in zip(found["id"], found["tags"])]
+    copies = [node_copy_id(1, rank) for rank in (1, 2, 3)]
+    assert [(i, t["level"], "repeat_on" in t) for i, t in rows] == [
+        (1, "1", False), (copies[0], "0", False), (copies[1], "2", False),
+        (copies[2], "3", False), (2, "0", True), (3, "0", True), (4, "0", False),
+        (-5, "0", True), (_MAX_LIFT_ID + 1, "0", True),
+    ]
+
+
+def test_border_entrances():
+    """The nodes two open spaces share on a common level are border entrances at their
+    own places, also when a way is drawn clockwise (pyrosm turns its outline), with that
+    level, or without a level when they share several, also for a very wide level range;
+    an area whose node list does not match its outline and a wall without a node list (a
+    relation) are left out."""
+    import json
+
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import MultiPolygon, Polygon
+
+    from pyrosm.indoor import border_entrances
+
+    square = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    right = Polygon([(1, 0), (2, 0), (2, 1), (1, 1)])
+    # Way 2 is drawn clockwise, 11-12-15-14: its outline runs the other way
+    areas = gpd.GeoDataFrame(
+        {"id": [1, 2, 3], "osm_type": "way", "indoor": ["corridor", "area", "area"],
+         "level": ["0;1", "0;1", "0"],
+         "nodes": [[10, 11, 12, 13, 10], [11, 12, 15, 14, 11], [11, 14, 10]]},
+        geometry=[square, right, right], crs=4326,
+    )
+    walls = gpd.GeoDataFrame(
+        {"id": [5], "osm_type": "relation", "indoor": ["wall"], "nodes": [float("nan")]},
+        geometry=[square.exterior], crs=4326,
+    )
+    found = border_entrances(areas, walls).sort_values("id")
+    assert found["id"].tolist() == [11, 12]
+    assert list(zip(found["lon"], found["lat"])) == [(1, 0), (1, 1)]
+    assert found["tags"].isna().all()
+    wide = border_entrances(areas.assign(level=["0", "0-1000000000", "0"]), None)
+    assert [json.loads(t)["level"] for t in wide["tags"]] == ["0", "0"]
+    one_level = border_entrances(areas.assign(level=["0", "0", "0"]), None)
+    assert [json.loads(t)["level"] for t in one_level["tags"]] == ["0", "0"]
+    assert border_entrances(areas.drop(columns="nodes"), None) is None
+    assert border_entrances(areas.assign(level=["0", "1", "1"]), None) is None
+    # A third space on level 2 at node 11 leaves it out; a multipolygon way is skipped
+    upper = areas.iloc[[0]].assign(id=4, level="2", nodes=[[11, 16, 17, 11]])
+    upper = upper.set_geometry([Polygon([(1, 0), (1, 2), (0, 2)])])
+    piece = areas.iloc[[1]].assign(id=6).set_geometry(
+        [MultiPolygon([right, Polygon([(5, 5), (6, 5), (6, 6)])])]
+    )
+    three = border_entrances(pd.concat([areas.iloc[:2], upper, piece]), None)
+    assert three["id"].tolist() == [12]
+    assert three["spaces"].iloc[0] == {("way", 1), ("way", 2)}
+    # A node listed twice in one way is not a border of two spaces
+    twice = areas.iloc[[0]].assign(nodes=[[10, 11, 11, 12, 13, 10]]).set_geometry(
+        [Polygon([(0, 0), (1, 0), (1, 0), (1, 1), (0, 1)])]
+    )
+    assert border_entrances(twice, None) is None
+
+
 def test_lift_areas_mapped_floor_by_floor_make_one_lift():
     """Lift areas mapped one floor at a time make one lift: S on levels 0, 1 and 3
     (level 2 missing) and F on levels 0 to 4, the areas slightly apart, with lift edges
@@ -1252,7 +1336,9 @@ def test_lift_areas_mapped_floor_by_floor_make_one_lift():
     lift has already (T, which keeps its lift from levels 0 to 1), an area without a
     level tag and the area above it (U), an area whose only node is on its outline
     between two corners, not an entrance, and the area above it (V), a small area in a
-    large area above it whose middle lies outside the small one (W)."""
+    large area above it whose middle lies outside the small one (W), and a lift (K, on
+    levels 0 and 1) with a lift node split on its levels inside it. A lift node split
+    on levels 0 and 1 inside F leaves F joined, as F reaches more levels."""
     import geopandas as gpd
     from shapely.geometry import LineString, Point, Polygon
 
@@ -1271,7 +1357,8 @@ def test_lift_areas_mapped_floor_by_floor_make_one_lift():
              (52, "1", (15, 0.1)), (60, None, (20, 0)), (61, "1", (20.1, 0.1)),
              (70, "0", (25, 0)), (71, "1", (25.1, 0.1)), (80, "0", (30, 0)),
              (81, "1", (30.2, -3), 4.0), (90, "0", (40, 0)), (91, "1", (40.1, 0.1)),
-             (92, "2", (40, 0)), (93, "3", (40.1, 0.1)), (94, "4", (40, 0))]
+             (92, "2", (40, 0)), (93, "3", (40.1, 0.1)), (94, "4", (40, 0)),
+             (100, "0", (50, 0)), (101, "1", (50.1, 0.1))]
     lifts = gpd.GeoDataFrame(
         {"id": [a[0] for a in areas], "osm_type": "way",
          "level": [a[1] for a in areas]},
@@ -1297,8 +1384,16 @@ def test_lift_areas_mapped_floor_by_floor_make_one_lift():
         geometry=[LineString([at(30, 30), at(*place[a[0]])]) for a in areas],
         crs=4326,
     )
+    # Lift edges of lift nodes split per level, inside F and inside K
+    split = gpd.GeoDataFrame(
+        {"id": [7, 8], "osm_type": "node", "u": [7, 8], "v": [-7001, -8001],
+         "u_level": 0.0, "v_level": 1.0, "vertical": "lift", "walking_area": False},
+        geometry=[LineString([at(x, 0.5), at(x, 0.5)]) for x in (40.5, 50.5)],
+        crs=4326,
+    )
+    edges = pd.concat([edges, split], ignore_index=True)
     _, joined = join_lift_areas(nodes, edges, lifts)
-    lift = joined[joined["vertical"] == "lift"]
+    lift = joined[(joined["vertical"] == "lift") & (joined["osm_type"] == "way")]
     ids = (20, 21, 23, 50, 51, *range(90, 95))
     node = {i: lift_area_copy_id(i, "way", 1) for i in ids}
     assert lift[["id", "u", "v", "u_level", "v_level"]].values.tolist() == [

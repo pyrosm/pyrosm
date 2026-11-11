@@ -120,7 +120,9 @@ def add_crossings(nodes, edges, areas):
     return result
 
 
-def crossing_rows(nodes, edges, areas, door_areas=None):
+def crossing_rows(
+    nodes, edges, areas, door_areas=None, only=None, strict=(), lift_areas=None
+):
     """The edges across ``areas`` as rows with the columns of ``edges``: ``u`` and ``v``
     the entrances (among ``nodes``, with their tags in ``tags`` when known), ``length``
     in metres, the line as ``geometry``, and the area's ``id``, ``osm_type`` and tags in
@@ -134,7 +136,12 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
     :data:`STAIR_END_REACH` metres: at the closest point of the area's outline, and the
     edges from it begin at the stair end. A lift node also enters, from inside, the areas
     of one level that ``door_areas`` marks on the levels of its own ``level`` tag that
-    its walkways do not reach (see :func:`_lift_entrances`)."""
+    its walkways do not reach (see :func:`_lift_entrances`). A node in ``only``, a dict
+    of node id to the ``(osm_type, id)`` of areas, enters only those areas, and a node in
+    ``strict`` only the areas on its own level. A lift node inside one of the
+    ``lift_areas`` (a frame of lift areas with their tags) on a level of both is left
+    to that area (see :func:`pyrosm.indoor.join_lift_areas`) and does not enter other
+    areas as a lift."""
     from pyrosm.indoor import _is_stair_area, node_levels
 
     ids = nodes["id"].to_numpy()
@@ -151,6 +158,13 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
     if door_areas is not None:
         door = ~np.isin(ids, end_ids)
         keep = ~door[node_rows] | np.asarray(door_areas, dtype=bool)[area_rows]
+        area_rows, node_rows = area_rows[keep], node_rows[keep]
+    if only:
+        keys = list(zip(areas["osm_type"], areas["id"]))
+        keep = [
+            ids[n] not in only or keys[a] in only[ids[n]]
+            for a, n in zip(area_rows, node_rows)
+        ]
         area_rows, node_rows = area_rows[keep], node_rows[keep]
     area_tags = _frame_tags(areas, _frame_tag_columns(areas))
     area_positions = [_level_position(tags) for tags in area_tags]
@@ -169,7 +183,14 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
         positions.update(chosen)
         stair_ends |= set(chosen)
     lifts = _lift_entrances(
-        nodes, walked, node_rows, area_rows, area_positions, door_areas, geometries
+        nodes,
+        walked,
+        node_rows,
+        area_rows,
+        area_positions,
+        door_areas,
+        geometries,
+        lift_areas,
     )
     if door_areas is not None:
         # A lift node on no edge enters an area only as a lift
@@ -197,6 +218,17 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
             entrances.append((area, part, at))
     off_level = _off_level_entrances(entrances, positions, area_positions, stair_ends)
     off_level -= lifts
+    if len(strict):
+        off_level |= {
+            (area, node)
+            for area, _, at in entrances
+            for _, _, node_ids in at.values()
+            for node in node_ids
+            if node in strict
+            and not _on_same_level(
+                positions.get(node, (None, set())), area_positions[area]
+            )
+        }
     kept = {}
     for area, part, at in entrances:
         within = {}
@@ -254,7 +286,14 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
 
 
 def _lift_entrances(
-    nodes, walked, node_rows, area_rows, area_positions, door_areas, geometries
+    nodes,
+    walked,
+    node_rows,
+    area_rows,
+    area_positions,
+    door_areas,
+    geometries,
+    lift_areas=None,
 ):
     """``{(area, node id)}``: the areas that ``door_areas`` marks (none without it) that
     a lift node enters on a level of its own ``level`` tag that none of its walkways with
@@ -264,7 +303,9 @@ def _lift_entrances(
     inside or at a corner of (see :func:`_inside_or_at_corner`; ``node_rows`` and
     ``area_rows`` pair the rows of ``nodes`` with the areas they touch), when the levels
     it then reaches, those of its walkways among its levels and those of these areas,
-    are two or more."""
+    are two or more. A lift node inside one of the ``lift_areas`` (a frame of lift areas
+    with their tags) enters none when they share a level, or the area has no ``level``
+    tag: the lift area joins the floors of that lift."""
     from pyrosm.indoor import _tags_by_node
 
     if door_areas is None:
@@ -275,11 +316,27 @@ def _lift_entrances(
         if tags.get("highway") == "elevator" and ranges:
             if len({level for pair in ranges for level in pair}) > 1:
                 lifts[node] = ranges
-    if not lifts:
-        return set()
     ids = nodes["id"].to_numpy()
     lon = nodes["lon"].to_numpy(dtype=float)
     lat = nodes["lat"].to_numpy(dtype=float)
+    if lifts and lift_areas is not None and len(lift_areas):
+        area_ranges = [
+            level_ranges(tags.get("level"))
+            for tags in _frame_tags(lift_areas, _frame_tag_columns(lift_areas))
+        ]
+        rows = np.flatnonzero(np.isin(ids, list(lifts)))
+        inside, covering = shapely.STRtree(lift_areas.geometry.to_numpy()).query(
+            shapely.points(lon[rows], lat[rows]), predicate="covered_by"
+        )
+        for row, area in zip(rows[inside], covering):
+            node = int(ids[row])
+            ranges = area_ranges[area]
+            if node in lifts and (
+                not ranges or _on_same_level((lifts[node], ()), (ranges, ()))
+            ):
+                del lifts[node]
+    if not lifts:
+        return set()
     marked = np.asarray(door_areas, dtype=bool)
     entered = {}
     for area, row in zip(area_rows, node_rows):

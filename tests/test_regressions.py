@@ -7361,3 +7361,322 @@ def test_indoor_reads_give_lift_edges_the_length_of_an_escalator_plus_a_metre(
         {1: length[10] + 1, 20: length[25] + 1, 30: 9.0,
          60: length[12] + length[13] + 1}, abs=1e-3
     )
+
+
+def _nodes_joined(edges, a, b):
+    """Whether the edges ``edges`` (``u`` and ``v``) join the nodes ``a`` and ``b``."""
+    parent = {}
+
+    def root(node):
+        while parent.setdefault(node, node) != node:
+            node = parent[node]
+        return node
+
+    for u, v in zip(edges["u"], edges["v"]):
+        parent[root(u)] = root(v)
+    return root(a) == root(b)
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
+    "neighbour, variant, joined",
+    [
+        ({"indoor": "area", "level": "0"}, None, True),
+        ({"indoor": "area", "level": "0"}, "door", True),
+        ({"indoor": "area", "level": "0"}, "walking area", True),
+        ({"indoor": "area", "level": "0"}, "lobby", True),
+        ({"indoor": "area", "level": "1;2"}, "two levels", False),
+        ({"indoor": "area", "level": "0"}, "wall", False),
+        ({"indoor": "area", "level": "1"}, None, False),
+        ({"indoor": "room", "level": "0"}, None, False),
+        ({"indoor": "area", "stairs": "yes", "level": "0;1"}, None, True),
+    ],
+)
+def test_indoor_reads_join_open_spaces_where_they_meet(
+    tmp_path, engine, neighbour, variant, joined
+):
+    """A level-0 corridor (way 40) and a neighbouring space (way 41) share the outline
+    nodes 2 and 3, and a walkway enters each at a far corner. Simple Indoor Tagging maps
+    corridors and areas without walls, so the two join through the shared nodes when the
+    neighbour is a corridor or area on a common level, also stairs mapped as an area, but
+    not along an indoor=wall way, from another level or into a room, which has walls. A
+    door at a shared node (``door=no``, an opening) joins them too, and so does a corridor
+    that is also a walking area in a read with walking_areas=True. A lobby (a room, way
+    42) that shares node 3 is not entered through it. A corridor on levels 0 and 1 and an
+    area on 1 and 2 meet on level 1: the lines from the walkways on levels 0 and 2 to the
+    shared nodes would join two levels across spaces that are not stairs, and are left
+    out."""
+    import math
+
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (10, 0), 3: (10, 10), 4: (0, 10), 5: (20, 0), 6: (20, 10),
+          7: (-5, 0), 8: (25, 10)}
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [{"door": "no"} if i == 2 and variant == "door" else None for i in ids],
+    }
+    level = neighbour["level"].split(";")[-1]
+    corridor = {"indoor": "corridor", "level": "0"}
+    if variant == "walking area":
+        corridor.update(highway="pedestrian", area="yes")
+    if variant == "two levels":
+        corridor["level"] = "0;1"
+    ways = [
+        {"id": 40, "refs": [1, 2, 3, 4, 1], "tags": corridor},
+        {"id": 41, "refs": [2, 5, 6, 3, 2], "tags": neighbour},
+        {"id": 50, "refs": [7, 1], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 51, "refs": [8, 6], "tags": {"highway": "footway", "level": level}},
+    ]
+    if variant == "wall":
+        ways.append({"id": 52, "refs": [2, 3], "tags": {"indoor": "wall", "level": "0"}})
+    if variant == "lobby":
+        ways.append({"id": 42, "refs": [3, 6, 4, 3],
+                     "tags": {"indoor": "room", "room": "lobby", "level": "0"}})
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "spaces.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    found, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True,
+        walking_areas=variant == "walking area",
+    )
+    assert _nodes_joined(edges, 7, 8) == joined
+    across = edges[edges["walking_area"]]
+    at_border = across["u"].isin([2, 3]) | across["v"].isin([2, 3])
+    if joined:
+        assert set(across.loc[at_border, "id"]) == {40, 41}
+        assert {2, 3} <= set(found["id"])
+    lobby = across[across["id"] == 42]
+    assert not (lobby["u"].isin([2, 3]) | lobby["v"].isin([2, 3])).any()
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
+    "room, joined",
+    [({"stairs": "yes"}, True), ({"room": "stairs"}, True), ({}, False)],
+)
+def test_indoor_reads_cross_stairs_mapped_as_rooms(tmp_path, engine, room, joined):
+    """A staircase mapped as a room (way 41, indoor=room with stairs=yes or room=stairs,
+    level=0;1), as Simple Indoor Tagging maps it, is entered through its door on level 0
+    (node 5), from a level-0 corridor, and its door on level 1 (node 6), to a level-1
+    corridor: the line across it joins the two levels. A plain room on both levels does
+    not."""
+    import math
+
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (10, 0), 3: (10, 10), 4: (0, 10), 5: (10, 5), 6: (20, 5),
+          7: (20, 0), 8: (20, 10), 10: (30, 0), 11: (30, 10), 12: (-5, 0), 13: (35, 10)}
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    doors = {5: {"door": "yes", "level": "0"}, 6: {"door": "yes", "level": "1"}}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [doors.get(i) for i in ids],
+    }
+    ways = [
+        {"id": 40, "refs": [1, 2, 5, 3, 4, 1], "tags": {"indoor": "corridor", "level": "0"}},
+        {"id": 41, "refs": [2, 7, 6, 8, 3, 5, 2],
+         "tags": {"indoor": "room", "level": "0;1", **room}},
+        {"id": 42, "refs": [7, 10, 11, 8, 6, 7], "tags": {"indoor": "corridor", "level": "1"}},
+        {"id": 50, "refs": [12, 1], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 51, "refs": [13, 11], "tags": {"highway": "footway", "level": "1"}},
+    ]
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "stairs.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    _, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    assert _nodes_joined(edges, 12, 13) == joined
+    stairs = edges[edges["walking_area"] & (edges["id"] == 41)]
+    expected = [(5, 6, 0.0, 1.0)] if joined else []
+    assert list(zip(stairs["u"], stairs["v"], stairs["u_level"], stairs["v_level"])) == expected
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize("repeat_on, on_walkway", [(True, False), (False, False), (True, True)])
+def test_indoor_reads_split_doors_that_repeat_on_other_levels(
+    tmp_path, engine, repeat_on, on_walkway
+):
+    """A lift area on levels 0 and 1 (way 40) has one door, node 9, tagged level=0 and
+    repeat_on=1, as Simple Indoor Tagging maps the doors of a lift; the door is on the
+    outlines of a level-0 corridor (way 41) and a level-1 corridor (way 42) above it.
+    The door gets a copy for level 1, and the lift joins the walkways of both corridors;
+    the door node itself joins level 0 only, also when it ends a walkway without a level
+    and its level tag lists both levels. Without repeat_on nothing joins level 1. Without
+    the level-1 corridor the copy for level 1 does not enter the level-0 corridor. A copy
+    id that a node, another door or a node where two spaces meet has raises a ValueError."""
+    import math
+
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.indoor import node_copy_id
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (10, 0), 3: (10, 4), 4: (0, 4), 9: (10, 2), 11: (0, 0),
+          12: (10, 0), 13: (10, 4), 14: (0, 4), 21: (14, 1), 22: (14, 3), 31: (-5, 4),
+          32: (-5, 5), 33: (10, -5)}
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    door = {"door": "yes", "level": "0;1" if on_walkway else "0",
+            **({"repeat_on": "1"} if repeat_on else {})}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [door if i == 9 else None for i in ids],
+    }
+    ways = [
+        {"id": 40, "refs": [9, 21, 22, 9],
+         "tags": {"indoor": "room", "highway": "elevator", "level": "0;1"}},
+        {"id": 41, "refs": [1, 2, 9, 3, 4, 1], "tags": {"indoor": "corridor", "level": "0"}},
+        {"id": 42, "refs": [11, 12, 9, 13, 14, 11],
+         "tags": {"indoor": "corridor", "level": "1"}},
+        {"id": 50, "refs": [31, 4], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 51, "refs": [32, 14], "tags": {"highway": "footway", "level": "1"}},
+    ]
+    if on_walkway:
+        ways.append({"id": 52, "refs": [33, 9], "tags": {"highway": "footway"}})
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "lift.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    found, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    assert _nodes_joined(edges, 31, 32) == repeat_on
+    assert (edges["vertical"] == "lift").any() == repeat_on
+    at_door = edges[((edges["u"] == 9) | (edges["v"] == 9)) & edges["walking_area"]]
+    assert set(at_door["u_level"]) | set(at_door["v_level"]) == {0.0}
+    assert (node_copy_id(9, 1) in set(found["id"])) == repeat_on
+    if not repeat_on or on_walkway:
+        return
+    lower = [way for way in ways if way["id"] != 42]
+    path = write_pbf_from_records(
+        nodes, lower, [], str(tmp_path / "lower.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    found, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    assert node_copy_id(9, 1) not in set(edges["u"]) | set(edges["v"])
+    # A node, another door, or a node where two spaces meet that has the copy's id
+    taken = node_copy_id(9, 1)
+    for tags in (None, {"door": "yes", "level": "1"}, "border"):
+        border = tags == "border"
+        # In the border case the node is at (5, 0) on the corridor's lower edge, shared
+        # with an area below it (nodes -1 and -2 at (10, -3) and (5, -3))
+        place = {"x": [5, 10, 5], "y": [0, -3, -3]} if border else {"x": [10] * 3,
+                                                                     "y": [-5] * 3}
+        east = per_metre / math.cos(math.radians(47.38))
+        extra = {
+            "id": np.append(nodes["id"], [taken, -1, -2]),
+            "lon": np.append(nodes["lon"], [8.54 + x * east for x in place["x"]]),
+            "lat": np.append(nodes["lat"], [47.38 + y * per_metre for y in place["y"]]),
+            "tags": np.asarray(nodes["tags"] + [None if border else tags, None, None],
+                               dtype=object),
+        }
+        order = np.argsort(extra["id"])
+        extra = {key: value[order] for key, value in extra.items()}
+        extra["tags"] = list(extra["tags"])
+        if border:
+            more = [w for w in ways if w["id"] != 41] + [
+                {"id": 41, "refs": [1, int(taken), 2, 9, 3, 4, 1],
+                 "tags": {"indoor": "corridor", "level": "0"}},
+                {"id": 43, "refs": [int(taken), 2, -1, -2, int(taken)],
+                 "tags": {"indoor": "area", "level": "0"}},
+            ]
+        else:
+            more = ways + [{"id": 53, "refs": [33, int(taken)],
+                            "tags": {"highway": "footway"}}]
+        clashing = write_pbf_from_records(
+            extra, more, [], str(tmp_path / "clash.osm.pbf"),
+            (8.539, 47.379, 8.541, 47.381),
+        )
+        with pytest.raises(ValueError, match="repeat_on"):
+            OSM(clashing, engine=engine).get_network(
+                "walking", nodes=True, indoor_elements=True
+            )
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
+    "area_level, node_walkway, lifts_expected, joined",
+    [
+        ("0;1", False, {("way", 40)}, {(31, 32)}),
+        ("5;6", False, {("way", 40), ("node", 30)}, {(31, 32), (33, 34)}),
+        ("0;1;5", True, {("way", 40), ("node", 30)}, {(31, 32), (31, 33)}),
+    ],
+)
+def test_indoor_reads_leave_a_lift_node_inside_a_lift_area_to_the_area(
+    tmp_path, engine, area_level, node_walkway, lifts_expected, joined
+):
+    """A lift node (node 30, level=0;1) ends a level-0 walkway inside a lift area (way
+    40) whose corners walkways reach on levels 0, 1, 5 and 6; a level-1 hall (way 41)
+    over the lift holds the node too. A lift area on levels 0;1 joins the two levels,
+    and the lift node does not enter the hall as a lift, which would split it and leave
+    the area out. A lift area on levels 5;6 is another lift: the lift node enters the
+    hall and joins levels 0 and 1, and the area joins levels 5 and 6. With a level-1
+    walkway to the lift node too, its walkways split it, and a lift area on levels
+    0;1;5 stays, as it joins level 5 too."""
+    import math
+
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (20, 0), 3: (20, 10), 4: (0, 10), 21: (8, 4), 22: (12, 4),
+          23: (12, 6), 24: (8, 6), 30: (10, 5), 31: (-5, 4), 32: (25, 6),
+          33: (12, -5), 34: (8, 15), 35: (12, 15), 36: (8, -5), 37: (10, 8)}
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [{"highway": "elevator", "level": "0;1"} if i == 30 else None for i in ids],
+    }
+    ways = [
+        {"id": 40, "refs": [21, 22, 23, 24, 21],
+         "tags": {"indoor": "room", "highway": "elevator", "level": area_level}},
+        {"id": 41, "refs": [1, 2, 3, 4, 1], "tags": {"indoor": "area", "level": "1"}},
+        {"id": 50, "refs": [31, 21, 30], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 51, "refs": [32, 23], "tags": {"highway": "footway", "level": "1"}},
+        {"id": 52, "refs": [33, 22, 35], "tags": {"highway": "footway", "level": "5"}},
+        {"id": 53, "refs": [34, 24, 36], "tags": {"highway": "footway", "level": "6"}},
+    ]
+    if node_walkway:
+        ways.append(
+            {"id": 54, "refs": [37, 30], "tags": {"highway": "footway", "level": "1"}}
+        )
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "lift.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    _, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    lifts = edges[edges["vertical"] == "lift"]
+    assert set(zip(lifts["osm_type"], lifts["id"])) == lifts_expected
+    for pair in [(31, 32), (33, 34), (31, 33)]:
+        assert _nodes_joined(edges, *pair) == (pair in joined)
