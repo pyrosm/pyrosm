@@ -9,6 +9,15 @@ new options that leave the defaults as they were, and fixes of calls that failed
 
 ## Unreleased
 
+- **Tagged holes of multipolygons.** `get_data_by_custom_criteria(..., keep_relations=True)`
+  and the layer reads `get_buildings`, `get_landuse`, `get_natural`, `get_pois` and
+  `get_boundaries` return an inner way of a multipolygon as a row of its own when the way's own
+  tags match the filter of the read or the layer, such as a lake inside a wood. The
+  multipolygon keeps the hole. Earlier versions left out every member way of a multipolygon
+  they returned. On the BBBike extract of Helsinki, `get_natural()` returns 1,521 more ways,
+  `get_landuse()` 134 more and `get_buildings()` 8 more. On the Helsinki region extract that
+  pyrosm's tests use, `get_boundaries(boundary_type="all")` returns 22 more. Nothing needs to
+  change in your code.
 - **Relation members numbered like a way.** The geometry of a relation no longer takes in a
   way whose id equals the id of one of its member nodes or member relations. With
   `engine="in_memory"`, such a way that matches the read on its own is returned as a row of
