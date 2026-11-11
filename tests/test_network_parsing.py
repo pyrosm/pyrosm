@@ -1243,6 +1243,59 @@ def test_lift_areas_joined_per_level(monkeypatch):
     assert without_lift_area_ways(nodes, edges, None) == (nodes, edges)
 
 
+def test_border_entrances():
+    """The nodes two open spaces share on a common level are border entrances at their
+    own places, also when a way is drawn clockwise (pyrosm turns its outline), with that
+    level, or without a level when they share several, also for a very wide level range;
+    an area whose node list does not match its outline and a wall without a node list (a
+    relation) are left out."""
+    import json
+
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import MultiPolygon, Polygon
+
+    from pyrosm.indoor import border_entrances
+
+    square = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    right = Polygon([(1, 0), (2, 0), (2, 1), (1, 1)])
+    # Way 2 is drawn clockwise, 11-12-15-14: its outline runs the other way
+    areas = gpd.GeoDataFrame(
+        {"id": [1, 2, 3], "osm_type": "way", "indoor": ["corridor", "area", "area"],
+         "level": ["0;1", "0;1", "0"],
+         "nodes": [[10, 11, 12, 13, 10], [11, 12, 15, 14, 11], [11, 14, 10]]},
+        geometry=[square, right, right], crs=4326,
+    )
+    walls = gpd.GeoDataFrame(
+        {"id": [5], "osm_type": "relation", "indoor": ["wall"], "nodes": [float("nan")]},
+        geometry=[square.exterior], crs=4326,
+    )
+    found = border_entrances(areas, walls).sort_values("id")
+    assert found["id"].tolist() == [11, 12]
+    assert list(zip(found["lon"], found["lat"])) == [(1, 0), (1, 1)]
+    assert found["tags"].isna().all()
+    wide = border_entrances(areas.assign(level=["0", "0-1000000000", "0"]), None)
+    assert [json.loads(t)["level"] for t in wide["tags"]] == ["0", "0"]
+    one_level = border_entrances(areas.assign(level=["0", "0", "0"]), None)
+    assert [json.loads(t)["level"] for t in one_level["tags"]] == ["0", "0"]
+    assert border_entrances(areas.drop(columns="nodes"), None) is None
+    assert border_entrances(areas.assign(level=["0", "1", "1"]), None) is None
+    # A third space on level 2 at node 11 leaves it out; a multipolygon way is skipped
+    upper = areas.iloc[[0]].assign(id=4, level="2", nodes=[[11, 16, 17, 11]])
+    upper = upper.set_geometry([Polygon([(1, 0), (1, 2), (0, 2)])])
+    piece = areas.iloc[[1]].assign(id=6).set_geometry(
+        [MultiPolygon([right, Polygon([(5, 5), (6, 5), (6, 6)])])]
+    )
+    three = border_entrances(pd.concat([areas.iloc[:2], upper, piece]), None)
+    assert three["id"].tolist() == [12]
+    assert three["spaces"].iloc[0] == {("way", 1), ("way", 2)}
+    # A node listed twice in one way is not a border of two spaces
+    twice = areas.iloc[[0]].assign(nodes=[[10, 11, 11, 12, 13, 10]]).set_geometry(
+        [Polygon([(0, 0), (1, 0), (1, 0), (1, 1), (0, 1)])]
+    )
+    assert border_entrances(twice, None) is None
+
+
 def test_lift_areas_mapped_floor_by_floor_make_one_lift():
     """Lift areas mapped one floor at a time make one lift: S on levels 0, 1 and 3
     (level 2 missing) and F on levels 0 to 4, the areas slightly apart, with lift edges

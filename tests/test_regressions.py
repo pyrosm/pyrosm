@@ -7361,3 +7361,94 @@ def test_indoor_reads_give_lift_edges_the_length_of_an_escalator_plus_a_metre(
         {1: length[10] + 1, 20: length[25] + 1, 30: 9.0,
          60: length[12] + length[13] + 1}, abs=1e-3
     )
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
+    "neighbour, variant, joined",
+    [
+        ({"indoor": "area", "level": "0"}, None, True),
+        ({"indoor": "area", "level": "0"}, "door", True),
+        ({"indoor": "area", "level": "0"}, "walking area", True),
+        ({"indoor": "area", "level": "0"}, "lobby", True),
+        ({"indoor": "area", "level": "1;2"}, "two levels", False),
+        ({"indoor": "area", "level": "0"}, "wall", False),
+        ({"indoor": "area", "level": "1"}, None, False),
+        ({"indoor": "room", "level": "0"}, None, False),
+        ({"indoor": "area", "stairs": "yes", "level": "0;1"}, None, True),
+    ],
+)
+def test_indoor_reads_join_open_spaces_where_they_meet(
+    tmp_path, engine, neighbour, variant, joined
+):
+    """A level-0 corridor (way 40) and a neighbouring space (way 41) share the outline
+    nodes 2 and 3, and a walkway enters each at a far corner. Simple Indoor Tagging maps
+    corridors and areas without walls, so the two join through the shared nodes when the
+    neighbour is a corridor or area on a common level, also stairs mapped as an area, but
+    not along an indoor=wall way, from another level or into a room, which has walls. A
+    door at a shared node (``door=no``, an opening) joins them too, and so does a corridor
+    that is also a walking area in a read with walking_areas=True. A lobby (a room, way
+    42) that shares node 3 is not entered through it. A corridor on levels 0 and 1 and an
+    area on 1 and 2 meet on level 1: the lines from the walkways on levels 0 and 2 to the
+    shared nodes would join two levels across spaces that are not stairs, and are left
+    out."""
+    import math
+
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (10, 0), 3: (10, 10), 4: (0, 10), 5: (20, 0), 6: (20, 10),
+          7: (-5, 0), 8: (25, 10)}
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [{"door": "no"} if i == 2 and variant == "door" else None for i in ids],
+    }
+    level = neighbour["level"].split(";")[-1]
+    corridor = {"indoor": "corridor", "level": "0"}
+    if variant == "walking area":
+        corridor.update(highway="pedestrian", area="yes")
+    if variant == "two levels":
+        corridor["level"] = "0;1"
+    ways = [
+        {"id": 40, "refs": [1, 2, 3, 4, 1], "tags": corridor},
+        {"id": 41, "refs": [2, 5, 6, 3, 2], "tags": neighbour},
+        {"id": 50, "refs": [7, 1], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 51, "refs": [8, 6], "tags": {"highway": "footway", "level": level}},
+    ]
+    if variant == "wall":
+        ways.append({"id": 52, "refs": [2, 3], "tags": {"indoor": "wall", "level": "0"}})
+    if variant == "lobby":
+        ways.append({"id": 42, "refs": [3, 6, 4, 3],
+                     "tags": {"indoor": "room", "room": "lobby", "level": "0"}})
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "spaces.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    found, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True,
+        walking_areas=variant == "walking area",
+    )
+    parent = {}
+
+    def root(node):
+        while parent.setdefault(node, node) != node:
+            node = parent[node]
+        return node
+
+    for u, v in zip(edges["u"], edges["v"]):
+        parent[root(u)] = root(v)
+    assert (root(7) == root(8)) == joined
+    across = edges[edges["walking_area"]]
+    at_border = across["u"].isin([2, 3]) | across["v"].isin([2, 3])
+    if joined:
+        assert set(across.loc[at_border, "id"]) == {40, 41}
+        assert {2, 3} <= set(found["id"])
+    lobby = across[across["id"] == 42]
+    assert not (lobby["u"].isin([2, 3]) | lobby["v"].isin([2, 3])).any()

@@ -5,45 +5,47 @@ type leaves out, such as ``highway=platform`` in a walking network. The platform
 and the indoor corridors and areas (:data:`INDOOR_AREA_FILTER`) are crossed as walking
 areas are, each on its own level and together with the walking areas of a read with
 ``walking_areas=True``, and they are entered also through the doors on their outlines,
-which connect areas that share them; the walking areas are not. The end of stairs or an
-escalator that joins nothing else also enters the platform or indoor area on its level
-that it lies outside of within :data:`pyrosm.walking_areas.STAIR_END_REACH` metres. The
-edges get the level at each of their two ends, ``u_level`` and ``v_level``, from the OSM
-``level`` tags (see :func:`pyrosm.levels.level_ranges`). An edge with one level has it
-at both ends. A level list or range on stairs, an escalator or a moving walkway runs
-between the levels of the walkways at the two ends of its way or, at an end where no
-walkway has a level in the range, the end node's own ``level``, and where neither gives
-an end, the way's ``incline`` (``up`` rises along the way's drawn direction, ``down``
-falls); on another walkway, such as a corridor tagged ``level=0;1``, the data does not
-say which part is on which level, and both ends stay empty. A line across an area with a
-level list or range takes at each end the level in the range of the other edges there
-or, without one, the end node's own ``level``; an end with none or with several stays
-empty, and a line between entrances on two levels has these two levels; such lines are
-kept only across stairs or an escalator mapped as an area (see
-:func:`without_lines_between_levels`). A way of several edges also keeps the level of a
-walkway that joins it in between (or of an inner node's own ``level``), an end without a
-level then takes the other end of the range from the nearest such level, a way whose two
-ends are on one level reaches the other end of its range in between, and the other inner
-nodes get levels in proportion to the distance along the way. Stairs, escalators and
-moving walkways without a level range (no ``level`` tag or a single level) take the
-levels of the walkways that join their way, when these give two different levels, and
-keep the outermost ones up to the way's ends. A platform without a ``level`` tag, its
-way and the lines across its area, takes the level that the other edges give at its
-nodes, when the platforms joined to it through shared nodes meet exactly one level. An
-edge without a ``level`` tag otherwise has no level. The column ``vertical`` marks
-escalators, moving walkways and stairs; the ``length`` of an escalator is measured along
-its slope (see :func:`with_indoor_columns`), and in a graph an escalator or moving
-walkway runs only in the direction it moves (see :func:`moving_one_way`). A lift node
-(``highway=elevator``) where walkways on several levels meet is split into one node per
-level, joined by lift edges (see :func:`split_lifts`), whose length is that of an
-escalator or stairs between their levels plus 1 m (see :func:`with_lift_lengths`); a
-lift node whose own ``level`` tag names levels that its walkways do not reach also
-enters, from inside, the platform and indoor areas of one level on those levels that it
-lies in, when it then reaches two or more levels (see
-:func:`pyrosm.walking_areas.crossing_rows`), and gets lift edges to them; a lift mapped
-as an area (``highway=elevator`` on a closed way or multipolygon) is not a walkway
-around the lift but joins the levels at which the network enters it in the same way, and
-lift areas mapped one floor at a time make one lift together (see
+which connect areas that share them; the walking areas are not. Corridors, indoor areas
+and platform areas that share outline nodes on a common level, which Simple Indoor
+Tagging maps without walls, are entered through those nodes too (see
+:func:`border_entrances`). The end of stairs or an escalator that joins nothing else
+also enters the platform or indoor area on its level that it lies outside of within
+:data:`pyrosm.walking_areas.STAIR_END_REACH` metres. The edges get the level at each of
+their two ends, ``u_level`` and ``v_level``, from the OSM ``level`` tags (see
+:func:`pyrosm.levels.level_ranges`). An edge with one level has it at both ends. A level
+list or range on stairs, an escalator or a moving walkway runs between the levels of the
+walkways at the two ends of its way or, at an end where no walkway has a level in the
+range, the end node's own ``level``, and where neither gives an end, the way's
+``incline`` (``up`` rises along the way's drawn direction, ``down`` falls); on another
+walkway, such as a corridor tagged ``level=0;1``, the data does not say which part is on
+which level, and both ends stay empty. A line across an area with a level list or range
+takes at each end the level in the range of the other edges there or, without one, the
+end node's own ``level``; an end with none or with several stays empty, and a line
+between entrances on two levels has these two levels; such lines are kept only across
+stairs or an escalator mapped as an area (see :func:`without_lines_between_levels`). A
+way of several edges also keeps the level of a walkway that joins it in between (or of
+an inner node's own ``level``), an end without a level then takes the other end of the
+range from the nearest such level, a way whose two ends are on one level reaches the
+other end of its range in between, and the other inner nodes get levels in proportion to
+the distance along the way. Stairs, escalators and moving walkways without a level range
+(no ``level`` tag or a single level) take the levels of the walkways that join their
+way, when these give two different levels, and keep the outermost ones up to the way's
+ends. A platform without a ``level`` tag, its way and the lines across its area, takes
+the level that the other edges give at its nodes, when the platforms joined to it
+through shared nodes meet exactly one level. An edge without a ``level`` tag otherwise
+has no level. The column ``vertical`` marks escalators, moving walkways and stairs; the
+``length`` of an escalator is measured along its slope (see
+:func:`with_indoor_columns`), and in a graph an escalator or moving walkway runs only in
+the direction it moves (see :func:`moving_one_way`). A lift node (``highway=elevator``)
+where walkways on several levels meet is split into one node per level, joined by lift
+edges (see :func:`split_lifts`), whose length is that of an escalator or stairs between
+their levels plus 1 m (see :func:`with_lift_lengths`); a lift node whose own ``level``
+tag names levels that its walkways do not reach also enters, from inside, the platform
+and indoor areas of one level on those levels that it lies in, when it then reaches two
+or more levels (see :func:`pyrosm.walking_areas.crossing_rows`), and gets lift edges to
+them; a lift mapped as an area (``highway=elevator`` on a closed way or multipolygon) is
+not a walkway around the lift but joins the levels at which the network enters it in the
+same way, and lift areas mapped one floor at a time make one lift together (see
 :func:`join_lift_areas`).
 """
 
@@ -85,6 +87,10 @@ INDOOR_AREA_FILTER = {
 # often a hole in the multipolygon of the corridor around it, and a read with that
 # relation leaves its member ways out.
 LIFT_AREA_FILTER = {"highway": ["elevator"]}
+
+# The walls mapped as ways (Simple Indoor Tagging): where one shares a node with two open
+# indoor spaces, they do not join there (see border_entrances).
+WALL_FILTER = {"indoor": ["wall"]}
 
 # The ``vertical`` values of the edges that move, in the direction ``conveying`` gives.
 MOVING = ("escalator", "moving_walkway")
@@ -525,10 +531,11 @@ def moving_one_way(edges):
     return conveying == "forward", conveying == "backward"
 
 
-def with_indoor_columns(edges, escalator_slope, nodes=None):
+def with_indoor_columns(edges, escalator_slope, nodes=None, levels=None):
     """``edges`` (the frame of a network read with ``nodes=True``) with the columns
     ``u_level`` and ``v_level`` (see :func:`edge_levels`, with the own levels of
-    ``nodes``, the read's nodes) and ``vertical`` (see
+    ``nodes``, the read's nodes, and for the nodes without one the ``levels``, ``{id:
+    (level,)}``, such as those of border entrances) and ``vertical`` (see
     :func:`edge_vertical`; none on the lines across areas, ``walking_area`` True, which
     do not move whatever the area's tags say). The ``length`` of an escalator is its
     length on the map divided by the cosine of ``escalator_slope`` (degrees), its length
@@ -536,7 +543,7 @@ def with_indoor_columns(edges, escalator_slope, nodes=None):
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     tags = _frame_tags(edges, _frame_tag_columns(edges))
-    own = None if nodes is None else node_levels(nodes)
+    own = {**(levels or {}), **({} if nodes is None else node_levels(nodes))}
     u_level, v_level = edge_levels(edges, tags, own)
     vertical = edge_vertical(tags)
     vertical = [
@@ -632,7 +639,8 @@ def indoor_areas(candidates, walking=None, lifts=None):
     polygons and multipolygons among ``candidates`` (a read of
     :data:`INDOOR_AREA_FILTER`) after the ``walking`` areas of the read (see
     :func:`pyrosm.walking_areas.select_areas`), each area once and with the tag columns
-    of both (see :func:`_with_tag_columns`), without the lift areas
+    of both (see :func:`_with_tag_columns`) and the ``nodes`` lists of ``candidates``
+    when it has them, without the lift areas
     (``highway=elevator``), which are not crossed; and the polygons and multipolygons
     among ``lifts`` (a read of :data:`LIFT_AREA_FILTER`, see :func:`join_lift_areas`).
     None for either when there are none."""
@@ -646,10 +654,18 @@ def indoor_areas(candidates, walking=None, lifts=None):
         polygonal = candidates.geometry.geom_type.isin(["Polygon", "MultiPolygon"])
         areas = candidates[polygonal]
         if walking is not None:
+            keys = list(zip(areas["osm_type"], areas["id"]))
+            if "nodes" in areas.columns:
+                rings = dict(zip(keys, areas["nodes"]))
+                walking = walking.assign(
+                    nodes=[
+                        rings.get(key)
+                        for key in zip(walking["osm_type"], walking["id"])
+                    ]
+                )
+                frames = [walking]
             done = set(zip(walking["osm_type"], walking["id"]))
-            areas = areas[
-                [key not in done for key in zip(areas["osm_type"], areas["id"])]
-            ]
+            areas = areas[[key not in done for key in keys]]
         frames.append(areas)
     frames = [frame for frame in frames if len(frame)]
     if not frames:
@@ -667,6 +683,103 @@ def indoor_areas(candidates, walking=None, lifts=None):
     )
     areas = areas[~lift]
     return (areas if len(areas) else None), lifts
+
+
+# The indoor spaces that Simple Indoor Tagging maps without walls; neighbouring ones on a
+# level join where their outlines share nodes (see border_entrances), as platform areas do.
+OPEN_INDOOR = ("corridor", "area")
+
+
+def border_entrances(areas, walls=None):
+    """The nodes that the outlines of two open indoor spaces among ``areas`` share on a
+    common level, as a frame with ``id``, ``lon``, ``lat``, ``level`` (that level when
+    there is one, else NaN), ``tags`` (JSON with that ``level``), ``spaces`` (the
+    ``(osm_type, id)`` of those spaces, the only areas the node enters) and ``geometry``;
+    None when there are none. Open spaces are the
+    areas mapped as ways with polygon outlines (and ``nodes`` lists) that are platforms or
+    tagged ``indoor=corridor`` or ``indoor=area``, which have no walls: people pass
+    between two of them where they meet. A node is left out when the open spaces it is on
+    have no level in common, when it is on an ``indoor=wall`` way among ``walls`` (with
+    ``nodes`` lists), or when the outlines do not tell its place (see
+    :func:`_ring_places`)."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_str
+
+    if areas is None or "nodes" not in areas.columns:
+        return None
+    found = {}
+    for row, tags in zip(
+        areas.itertuples(index=False), _frame_tags(areas, _frame_tag_columns(areas))
+    ):
+        open_space = tags.get("indoor") in OPEN_INDOOR or _is_platform(tags)
+        if row.osm_type != "way" or not open_space or tags.get("indoor") == "room":
+            continue
+        if row.geometry.geom_type != "Polygon":
+            continue
+        ring = row.nodes if isinstance(row.nodes, (list, np.ndarray)) else []
+        coords = shapely.get_coordinates(row.geometry.exterior)
+        if len(ring) != len(coords):
+            continue
+        ranges = level_ranges(tags.get("level")) or []
+        key = (row.osm_type, row.id)
+        for node, places in _ring_places(ring, coords):
+            spaces = found.setdefault(int(node), {})
+            if key in spaces:
+                places = places & spaces[key][0]
+            spaces[key] = (places, ranges)
+    walled = set()
+    if walls is not None and "nodes" in walls.columns:
+        for ring in walls["nodes"]:
+            if isinstance(ring, (list, np.ndarray)):
+                walled.update(int(node) for node in ring)
+    rows = []
+    for node, by_space in found.items():
+        if len(by_space) < 2 or node in walled:
+            continue
+        spaces = list(by_space.values())
+        places = set.intersection(*(places for places, _ in spaces))
+        common = spaces[0][1]
+        for _, ranges in spaces[1:]:
+            common = [
+                (max(la, lb), min(ha, hb))
+                for la, ha in common
+                for lb, hb in ranges
+                if max(la, lb) <= min(ha, hb)
+            ]
+        if len(places) != 1 or not common:
+            continue
+        (x, y), (low, high) = places.pop(), common[0]
+        one = len(set(common)) == 1 and low == high
+        rows.append(
+            {
+                "id": node,
+                "lon": x,
+                "lat": y,
+                "level": low if one else np.nan,
+                "spaces": set(by_space),
+            }
+        )
+    if not rows:
+        return None
+    frame = pd.DataFrame(rows)
+    frame["tags"] = [
+        None if level != level else dumps({"level": _tag_str(level)})
+        for level in frame["level"]
+    ]
+    return GeoDataFrame(
+        frame,
+        geometry=shapely.points(frame["lon"], frame["lat"]),
+        crs=areas.crs,
+    )
+
+
+def _ring_places(ring, coords):
+    """``(node, places)`` for each node of the closed way ``ring`` (its node ids) whose
+    polygon outline has the coordinates ``coords``: the two places the node can have, as
+    pyrosm turns outlines counter-clockwise (the reverse of a way drawn clockwise), the
+    one at its position in the way and the one at the mirrored position."""
+    last = len(ring) - 1
+    for i, node in enumerate(ring[:-1]):
+        yield node, {tuple(coords[i]), tuple(coords[(last - i) % last])}
 
 
 def without_lift_area_ways(nodes, edges, lifts):
@@ -700,16 +813,19 @@ def _with_tag_columns(frame, columns):
     )
 
 
-def with_indoor_crossings(nodes, edges, areas, doors):
+def with_indoor_crossings(nodes, edges, areas, doors, borders=None):
     """The ``nodes`` and ``edges`` of a network read with the edges across the indoor and
     walking ``areas`` (see :func:`pyrosm.walking_areas.crossing_rows`), marked True in
     the column ``walking_area`` (False on the other edges), entered through the
     network's nodes on the areas' outlines and, for the areas of
     :data:`INDOOR_AREA_FILTER`, through the ``doors`` (a frame of nodes with ``id``,
     ``lon``, ``lat`` and tags, a read of :data:`ENTRANCE_FILTER`) on their outlines and
-    the lift nodes among them (see :func:`pyrosm.walking_areas.crossing_rows`), without
-    those between two nodes an edge already joins; the doors and lift nodes that the new
-    edges use join the nodes, with all their tags in ``tags``."""
+    the lift nodes among them (see :func:`pyrosm.walking_areas.crossing_rows`), and
+    through the ``borders``, the nodes where open indoor spaces meet (see
+    :func:`border_entrances`), into those spaces only unless the node is already one of
+    the network's, without those between two nodes an edge already joins;
+    the doors and lift nodes that the new edges use join the nodes, with all their tags
+    in ``tags``, and so do the border nodes, without tags."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
     from pyrosm.walking_areas import crossing_rows
 
@@ -723,15 +839,23 @@ def with_indoor_crossings(nodes, edges, areas, doors):
         doors = doors.assign(
             tags=[dumps(t) for t in _frame_tags(doors, _frame_tag_columns(doors))]
         )
-        new_doors = doors[~doors["id"].isin(nodes["id"])]
-        new_doors = new_doors[[col for col in columns if col in new_doors.columns]]
-        entrances = pd.concat([entrances, new_doors], ignore_index=True)
+    if borders is not None and doors is not None:
+        borders = borders[~borders["id"].isin(doors["id"])]
+    added = [frame for frame in (doors, borders) if frame is not None]
+    for frame in added:
+        new = frame[~frame["id"].isin(nodes["id"])]
+        new = new[[col for col in columns if col in new.columns]]
+        entrances = pd.concat([entrances, new], ignore_index=True)
     plain = edges[~edges["walking_area"]]
     door_areas = [
         any(tags.get(key) in values for key, values in INDOOR_AREA_FILTER.items())
         for tags in _frame_tags(areas, _frame_tag_columns(areas))
     ]
-    rows = crossing_rows(entrances, plain, areas, door_areas)
+    only = None
+    if borders is not None:
+        new = borders[~borders["id"].isin(nodes["id"])]
+        only = dict(zip(new["id"], new["spaces"]))
+    rows = crossing_rows(entrances, plain, areas, door_areas, only)
     if rows is not None:
         # A line along the outline of an area that is an edge itself (a platform's ring)
         joined = set(zip(edges["u"], edges["v"])) | set(zip(edges["v"], edges["u"]))
@@ -744,13 +868,15 @@ def with_indoor_crossings(nodes, edges, areas, doors):
         pd.concat([edges, rows], ignore_index=True), geometry="geometry", crs=edges.crs
     )
     edges.attrs = attrs
-    if doors is not None:
-        used = set(rows["u"]) | set(rows["v"])
-        added = doors[doors["id"].isin(used) & ~doors["id"].isin(nodes["id"])]
-        if len(added):
-            added = added[[col for col in nodes.columns if col in added.columns]]
+    if borders is not None:
+        added[-1] = borders.drop(columns=["spaces", "level"]).assign(tags=None)
+    used = set(rows["u"]) | set(rows["v"])
+    for frame in added:
+        new = frame[frame["id"].isin(used) & ~frame["id"].isin(nodes["id"])]
+        if len(new):
+            new = new[[col for col in nodes.columns if col in new.columns]]
             nodes = GeoDataFrame(
-                pd.concat([nodes, added], ignore_index=True),
+                pd.concat([nodes, new], ignore_index=True),
                 geometry="geometry",
                 crs=nodes.crs,
             )

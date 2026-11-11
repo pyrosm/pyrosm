@@ -71,6 +71,8 @@ from pyrosm.indoor import (
     INDOOR_AREA_FILTER,
     LIFT_AREA_FILTER,
     PLATFORM_FILTER,
+    WALL_FILTER,
+    border_entrances,
     check_escalator_slope,
     check_indoor_read,
     indoor_areas,
@@ -721,7 +723,11 @@ class OSM:
             together with the walking areas; the platform and indoor areas, not the
             walking areas, are entered also through the doors and entrances on their
             outlines, which join the nodes when an edge uses them; these edges are
-            marked in the column `walking_area`. The end of stairs or an escalator that
+            marked in the column `walking_area`. Corridors (`indoor=corridor`), indoor
+            areas (`indoor=area`, also stairs mapped as one) and platform areas that
+            share outline nodes on a common level join through those nodes, as Simple
+            Indoor Tagging maps them without walls, unless an `indoor=wall` way runs
+            through a node. The end of stairs or an escalator that
             joins nothing else, and whose level its way gives, also enters the nearest
             platform or indoor area on that level that it lies outside of within 2.5
             metres: its edges run from the end to the closest point of the area's
@@ -861,10 +867,10 @@ class OSM:
             if edges is None:
                 _warn_no_edges(custom_filter)
                 return node_gdf, edges
-            node_gdf, edges, lifts = self._with_indoor_areas(
+            node_gdf, edges, lifts, border_levels = self._with_indoor_areas(
                 node_gdf, edges, timestamp, walking
             )
-            edges = with_indoor_columns(edges, escalator_slope, node_gdf)
+            edges = with_indoor_columns(edges, escalator_slope, node_gdf, border_levels)
             node_gdf, edges = without_lines_between_levels(node_gdf, edges)
             node_gdf, edges = split_lifts(node_gdf, edges)
             node_gdf, edges = join_lift_areas(node_gdf, edges, lifts)
@@ -1058,12 +1064,14 @@ class OSM:
         return select_areas(candidates, keep, rule)
 
     def _with_indoor_areas(self, nodes, edges, timestamp, walking=None):
-        """``(nodes, edges, lifts)`` of an indoor network read: ``nodes`` and ``edges``
-        without the walkways around its lift areas (see
+        """``(nodes, edges, lifts, levels)`` of an indoor network read: ``nodes`` and
+        ``edges`` without the walkways around its lift areas (see
         :func:`pyrosm.indoor.without_lift_area_ways`), with the edges across its indoor
         areas and its ``walking`` areas (see :meth:`_walking_area_polygons`) and the doors
-        they use (see :func:`pyrosm.indoor.with_indoor_crossings`), and the lift areas
-        (see :func:`pyrosm.indoor.indoor_areas`), None when there are none."""
+        they use (see :func:`pyrosm.indoor.with_indoor_crossings`); the lift areas (see
+        :func:`pyrosm.indoor.indoor_areas`), None when there are none; and the levels of
+        the nodes where open indoor spaces meet and are entered (see
+        :func:`pyrosm.indoor.border_entrances`), ``{id: (level,)}``."""
         from pyrosm.pbf_writer import _FIELD_COLS, _NETWORK_COLS
 
         columns = [
@@ -1071,7 +1079,7 @@ class OSM:
             for col in edges.columns
             if col not in _FIELD_COLS and col not in _NETWORK_COLS
         ]
-        with self._progress_as(False):
+        with self._progress_as(False), self._with_attribute("keep_node_info", True):
             candidates, lifts = [
                 self._read_custom_criteria(
                     read_filter,
@@ -1088,6 +1096,19 @@ class OSM:
                 )
                 for read_filter in (INDOOR_AREA_FILTER, LIFT_AREA_FILTER)
             ]
+            walls = self._read_custom_criteria(
+                WALL_FILTER,
+                None,
+                "keep",
+                None,
+                False,
+                True,
+                False,
+                None,
+                True,
+                timestamp,
+                None,
+            )
             doors = self._read_custom_criteria(
                 ENTRANCE_FILTER,
                 None,
@@ -1102,8 +1123,18 @@ class OSM:
                 None,
             )
         areas, lifts = indoor_areas(candidates, walking, lifts)
+        borders = border_entrances(areas, walls)
+        levels = {}
+        if borders is not None:
+            known = borders["level"].notna()
+            levels = {
+                int(node): (float(level),)
+                for node, level in zip(borders["id"][known], borders["level"][known])
+            }
+        areas, lifts = self._drop_node_lists(areas), self._drop_node_lists(lifts)
         nodes, edges = without_lift_area_ways(nodes, edges, lifts)
-        return (*with_indoor_crossings(nodes, edges, areas, doors), lifts)
+        nodes, edges = with_indoor_crossings(nodes, edges, areas, doors, borders)
+        return nodes, edges, lifts, levels
 
     @logged()
     @records_read(lambda args: _require_layer_key(args["custom_filter"], "building"))
@@ -2327,15 +2358,19 @@ class OSM:
             shares[WALKING_AREAS] = sum(shares.values())
         return shares
 
-    @contextlib.contextmanager
     def _progress_as(self, progress):
         """Use ``progress`` as the ``progress`` of this object inside the block."""
-        kept = self.progress
-        self.progress = progress
+        return self._with_attribute("progress", progress)
+
+    @contextlib.contextmanager
+    def _with_attribute(self, name, value):
+        """Set the attribute ``name`` of this object to ``value`` inside the block."""
+        kept = getattr(self, name)
+        setattr(self, name, value)
         try:
             yield
         finally:
-            self.progress = kept
+            setattr(self, name, kept)
 
     @staticmethod
     @logged("graph_type", "network_type", "simplify", count=False)

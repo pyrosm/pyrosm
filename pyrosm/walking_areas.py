@@ -120,7 +120,7 @@ def add_crossings(nodes, edges, areas):
     return result
 
 
-def crossing_rows(nodes, edges, areas, door_areas=None):
+def crossing_rows(nodes, edges, areas, door_areas=None, only=None):
     """The edges across ``areas`` as rows with the columns of ``edges``: ``u`` and ``v``
     the entrances (among ``nodes``, with their tags in ``tags`` when known), ``length``
     in metres, the line as ``geometry``, and the area's ``id``, ``osm_type`` and tags in
@@ -134,7 +134,8 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
     :data:`STAIR_END_REACH` metres: at the closest point of the area's outline, and the
     edges from it begin at the stair end. A lift node also enters, from inside, the areas
     of one level that ``door_areas`` marks on the levels of its own ``level`` tag that
-    its walkways do not reach (see :func:`_lift_entrances`)."""
+    its walkways do not reach (see :func:`_lift_entrances`). A node in ``only``, a dict
+    of node id to the ``(osm_type, id)`` of areas, enters only those areas."""
     from pyrosm.indoor import _is_stair_area, node_levels
 
     ids = nodes["id"].to_numpy()
@@ -151,6 +152,13 @@ def crossing_rows(nodes, edges, areas, door_areas=None):
     if door_areas is not None:
         door = ~np.isin(ids, end_ids)
         keep = ~door[node_rows] | np.asarray(door_areas, dtype=bool)[area_rows]
+        area_rows, node_rows = area_rows[keep], node_rows[keep]
+    if only:
+        keys = list(zip(areas["osm_type"], areas["id"]))
+        keep = [
+            ids[n] not in only or keys[a] in only[ids[n]]
+            for a, n in zip(area_rows, node_rows)
+        ]
         area_rows, node_rows = area_rows[keep], node_rows[keep]
     area_tags = _frame_tags(areas, _frame_tag_columns(areas))
     area_positions = [_level_position(tags) for tags in area_tags]
