@@ -7045,10 +7045,14 @@ def test_reads_with_relations_keep_tagged_inner_ways(tmp_path, engine, layer):
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
-def test_indoor_reads_join_stair_ends_near_an_area_on_their_level(tmp_path, engine):
+@pytest.mark.parametrize("escalator_area", [False, True])
+def test_indoor_reads_join_stair_ends_near_an_area_on_their_level(
+    tmp_path, engine, escalator_area
+):
     """Three escalators rise from the outline of a level-0 corridor (way 30) to level 1.
     The top of way 33 lies 1 m outside the level-1 corridor (way 31) and enters it at the
-    closest point of its outline; the top of way 34 lies 2 m from the level-0 corridor
+    closest point of its outline, also when the escalator is mapped as an area too (way
+    37), with the top inside it; the top of way 34 lies 2 m from the level-0 corridor
     only, off its own level, and the top of way 35 lies 2.8 m off a corner of the level-1
     corridor, beyond the reach: both stay dead ends."""
     import math
@@ -7060,7 +7064,8 @@ def test_indoor_reads_join_stair_ends_near_an_area_on_their_level(tmp_path, engi
 
     xy = {1: (0, 0), 2: (10, 0), 3: (10, 10), 4: (0, 10), 5: (10, 5), 6: (5, 10),
           7: (10, 2), 8: (0, 5), 9: (-5, 5), 11: (20, 0), 12: (30, 0), 13: (30, 10),
-          14: (20, 10), 15: (30, 8), 16: (35, 8), 17: (19, 5), 18: (5, 12), 19: (32, -2)}
+          14: (20, 10), 15: (30, 8), 16: (35, 8), 17: (19, 5), 18: (5, 12), 19: (32, -2),
+          20: (10.5, 4), 21: (19.5, 4), 22: (19.5, 6), 23: (10.5, 6)}
     ids = sorted(xy)
     per_metre = 1 / 111_195
     lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
@@ -7084,6 +7089,10 @@ def test_indoor_reads_join_stair_ends_near_an_area_on_their_level(tmp_path, engi
         {"id": 34, "refs": [6, 18], "tags": escalator},
         {"id": 35, "refs": [7, 19], "tags": escalator},
     ]
+    if escalator_area:
+        ways.append({"id": 37, "refs": [20, 21, 22, 23, 20],
+                     "tags": {"indoor": "area", "conveying": "yes", "stairs": "yes",
+                              "level": "0;1"}})
     path = write_pbf_from_records(
         nodes, ways, [], str(tmp_path / "stairs.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
     )
