@@ -665,7 +665,7 @@ def test_walking_areas_leave_a_landing_of_two_stairs_open():
     edges.loc[2, "tags"] = dumps({"level": "1;2"})
     ids = nodes["id"].to_numpy()
     for frame in (edges, edges.iloc[::-1]):
-        _, open_ends, _ = _entrance_positions(frame, ids, np.array([3]), node_levels(nodes))
+        _, open_ends, *_ = _entrance_positions(frame, ids, np.array([3]), node_levels(nodes))
         assert 8 not in open_ends and {1, 3} <= set(open_ends)
 
 

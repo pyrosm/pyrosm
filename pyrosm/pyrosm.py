@@ -67,7 +67,7 @@ from shapely.geometry import (
 from pyrosm.boundary import get_boundary_data
 from pyrosm.layers import get_layer_data, without_building_parts
 from pyrosm.indoor import (
-    DOOR_FILTER,
+    ENTRANCE_FILTER,
     INDOOR_AREA_FILTER,
     LIFT_AREA_FILTER,
     PLATFORM_FILTER,
@@ -750,7 +750,11 @@ class OSM:
             meet is split into one node per level: the lowest keeps the node's id, the
             others get negative ids derived from it, each edge ends at the copy of its
             level, and edges of length 0 with the lift node's id, `osm_type` "node" and
-            `vertical` "lift" join the copies of neighbouring levels. A lift mapped as
+            `vertical` "lift" join the copies of neighbouring levels. A lift node whose
+            own `level` tag, such as `level=0;1`, names levels that its edges do not
+            reach, also one on no edge, enters the platform and indoor areas of one
+            level on those levels that it lies in, from inside, when it then reaches
+            two or more levels, and is split on their levels too. A lift mapped as
             an area (a closed way or multipolygon tagged `highway=elevator`, as Simple
             Indoor Tagging maps lifts) is not a walkway around the lift: when the
             network enters it on two or more of the levels its `level` tag lists,
@@ -1075,7 +1079,7 @@ class OSM:
                 for read_filter in (INDOOR_AREA_FILTER, LIFT_AREA_FILTER)
             ]
             doors = self._read_custom_criteria(
-                DOOR_FILTER,
+                ENTRANCE_FILTER,
                 None,
                 "keep",
                 None,

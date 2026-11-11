@@ -35,10 +35,14 @@ escalators, moving walkways and stairs; the ``length`` of an escalator is measur
 its slope (see :func:`with_indoor_columns`), and in a graph an escalator or moving
 walkway runs only in the direction it moves (see :func:`moving_one_way`). A lift node
 (``highway=elevator``) where walkways on several levels meet is split into one node per
-level, joined by lift edges (see :func:`split_lifts`); a lift mapped as an area
-(``highway=elevator`` on a closed way or multipolygon) is not a walkway around the lift
-but joins the levels at which the network enters it in the same way, and lift areas
-mapped one floor at a time make one lift together (see :func:`join_lift_areas`).
+level, joined by lift edges (see :func:`split_lifts`); a lift node whose own ``level``
+tag names levels that its walkways do not reach also enters, from inside, the platform
+and indoor areas of one level on those levels that it lies in, when it then reaches two
+or more levels (see :func:`pyrosm.walking_areas.crossing_rows`), and gets lift edges to
+them; a lift mapped as an area (``highway=elevator`` on a closed way or multipolygon) is
+not a walkway around the lift but joins the levels at which the network enters it in the
+same way, and lift areas mapped one floor at a time make one lift together (see
+:func:`join_lift_areas`).
 """
 
 import json
@@ -49,6 +53,7 @@ import numpy as np
 import pandas as pd
 import shapely
 from geopandas import GeoDataFrame
+from rapidjson import dumps
 from shapely.geometry import LineString
 
 from pyrosm.levels import level_ranges
@@ -82,8 +87,10 @@ LIFT_AREA_FILTER = {"highway": ["elevator"]}
 # The ``vertical`` values of the edges that move, in the direction ``conveying`` gives.
 MOVING = ("escalator", "moving_walkway")
 
-# The nodes through which an indoor area is also entered: its doors and entrances.
-DOOR_FILTER = {"door": [True], "entrance": [True]}
+# The nodes through which an indoor area is also entered: its doors and entrances, and
+# the lift nodes, which enter it on the levels of their own level tag that their ways do
+# not reach (see pyrosm.walking_areas.crossing_rows).
+ENTRANCE_FILTER = {"door": [True], "entrance": [True], "highway": ["elevator"]}
 
 
 def check_indoor_read(network_type, custom_filter, nodes):
@@ -697,8 +704,10 @@ def with_indoor_crossings(nodes, edges, areas, doors):
     the column ``walking_area`` (False on the other edges), entered through the
     network's nodes on the areas' outlines and, for the areas of
     :data:`INDOOR_AREA_FILTER`, through the ``doors`` (a frame of nodes with ``id``,
-    ``lon``, ``lat`` and ``tags``) on their outlines, without those between two nodes an
-    edge already joins; the doors that the new edges use join the nodes."""
+    ``lon``, ``lat`` and tags, a read of :data:`ENTRANCE_FILTER`) on their outlines and
+    the lift nodes among them (see :func:`pyrosm.walking_areas.crossing_rows`), without
+    those between two nodes an edge already joins; the doors and lift nodes that the new
+    edges use join the nodes, with all their tags in ``tags``."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
     from pyrosm.walking_areas import crossing_rows
 
@@ -709,6 +718,9 @@ def with_indoor_crossings(nodes, edges, areas, doors):
     columns = [col for col in ("id", "lon", "lat", "tags") if col in nodes.columns]
     entrances = nodes[columns]
     if doors is not None:
+        doors = doors.assign(
+            tags=[dumps(t) for t in _frame_tags(doors, _frame_tag_columns(doors))]
+        )
         new_doors = doors[~doors["id"].isin(nodes["id"])]
         new_doors = new_doors[[col for col in columns if col in new_doors.columns]]
         entrances = pd.concat([entrances, new_doors], ignore_index=True)

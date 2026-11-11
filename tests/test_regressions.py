@@ -7217,3 +7217,69 @@ def test_indoor_reads_give_platforms_without_a_level_the_level_joined_to_them(
         (i, None if a != a else a, None if b != b else b)
         for i, a, b in zip(platforms["id"], platforms["u_level"], platforms["v_level"])
     ] == [(i, lv, lv) for i, lv in expected]
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_indoor_reads_join_lift_nodes_on_the_levels_of_their_own_level_tag(
+    tmp_path, engine
+):
+    """Lift nodes tagged level=0;1 inside a level 0 corridor (way 40) that lies inside a
+    level 1 corridor (way 41): node 10, on a level 1 walkway only, and node 11, on no
+    way, enter the corridors on the levels their walkways do not reach and get lift
+    edges between levels 0 and 1. Node 12, in a level 0 corridor (way 42) and an area
+    tagged level=0;1 (way 43), on walkways without a level and with a level range, would
+    reach one of its levels: no line across an area runs to it. Node 33, a lift on no
+    way at a corner of the level 0 corridor, would reach one level too and stays out, as
+    does node 14, a lift on no way on the level 0 corridor's outline between two corners
+    and inside the level 1 corridor."""
+    import math
+
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (20, 0), 3: (20, 20), 4: (0, 20), 5: (1, 1), 6: (19, 1),
+          7: (19, 19), 8: (1, 19), 10: (5, 10), 11: (15, 10), 12: (35, 5), 14: (10, 1),
+          20: (-5, 1),
+          21: (25, 0), 30: (30, 0), 31: (40, 0), 32: (40, 10), 33: (30, 10), 34: (30, -5),
+          35: (45, 5), 36: (35, 15), 37: (29, -1), 38: (41, -1), 39: (41, 11), 40: (29, 11)}
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    lift = {"highway": "elevator", "level": "0;1"}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [lift if i in (10, 11, 12, 14, 33) else None for i in ids],
+    }
+    ways = [
+        {"id": 40, "refs": [5, 6, 7, 8, 5], "tags": {"indoor": "corridor", "level": "0"}},
+        {"id": 41, "refs": [1, 2, 3, 4, 1], "tags": {"indoor": "corridor", "level": "1"}},
+        {"id": 42, "refs": [30, 31, 32, 33, 30],
+         "tags": {"indoor": "corridor", "level": "0"}},
+        {"id": 43, "refs": [37, 38, 39, 40, 37],
+         "tags": {"indoor": "area", "level": "0;1"}},
+        {"id": 50, "refs": [10, 1], "tags": {"highway": "footway", "level": "1"}},
+        {"id": 51, "refs": [20, 5], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 52, "refs": [21, 2], "tags": {"highway": "footway", "level": "1"}},
+        {"id": 53, "refs": [34, 30], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 54, "refs": [12, 35], "tags": {"highway": "footway"}},
+        {"id": 55, "refs": [12, 36], "tags": {"highway": "footway", "level": "0-1"}},
+    ]
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "lifts.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    found, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    lifts = edges[edges["vertical"] == "lift"]
+    assert sorted(zip(lifts["id"], lifts["u_level"], lifts["v_level"])) == [
+        (10, 0.0, 1.0), (11, 0.0, 1.0)
+    ]
+    across = edges[edges["walking_area"]]
+    assert not (across["u"].isin([12, 33]) | across["v"].isin([12, 33])).any()
+    assert not {14, 33} & set(found["id"])
+    assert '"highway":"elevator"' in found.set_index("id").loc[11, "tags"]
