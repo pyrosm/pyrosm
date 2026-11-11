@@ -8,8 +8,8 @@ each on its own level and together with the walking areas of a read with
 ``walking_areas=True``, and they are entered also through the doors on their outlines,
 which connect areas that share them; the walking areas are not. Corridors, indoor areas
 and platform areas that share outline nodes on a common level, which Simple Indoor
-Tagging maps without walls, are entered through those nodes too (see
-:func:`border_entrances`). The end of stairs or an escalator that joins nothing else
+Tagging maps without walls, are entered through those nodes too, also when one is mapped
+as a multipolygon (see :func:`border_entrances`). The end of stairs or an escalator that joins nothing else
 also enters the platform or indoor area on its level that it lies outside of within
 :data:`pyrosm.walking_areas.STAIR_END_REACH` metres. The edges get the level at each of
 their two ends, ``u_level`` and ``v_level``, from the OSM ``level`` tags (see
@@ -714,64 +714,73 @@ def indoor_areas(candidates, walking=None, lifts=None):
 OPEN_INDOOR = ("corridor", "area")
 
 
-def border_entrances(areas, walls=None):
+def border_entrances(areas, walls=None, anchors=()):
     """The nodes that the outlines of two open indoor spaces among ``areas`` share on a
     common level, as a frame with ``id``, ``lon``, ``lat``, ``level`` (that level when
     there is one, else NaN), ``tags`` (JSON with that ``level``), ``spaces`` (the
     ``(osm_type, id)`` of those spaces, the only areas the node enters) and ``geometry``;
-    None when there are none. Open spaces are the
-    areas mapped as ways with polygon outlines (and ``nodes`` lists) that are platforms or
-    tagged ``indoor=corridor`` or ``indoor=area``, which have no walls: people pass
-    between two of them where they meet. A node is left out when the open spaces it is on
-    have no level in common, when it is on an ``indoor=wall`` way among ``walls`` (with
-    ``nodes`` lists), or when the outlines do not tell its place (see
-    :func:`_ring_places`)."""
+    None when there are none. Open spaces are the polygons and multipolygons among
+    ``areas`` that are platforms or tagged ``indoor=corridor`` or ``indoor=area``, which
+    have no walls: people pass between two of them where they meet. Spaces meet at the
+    vertices their outlines and holes share, and the node there is the one whose place
+    the reads tell (see :func:`_node_places`, with the ``anchors`` and ``walls``). A
+    vertex is left out when the open spaces at it have no level in common, when its node
+    is on an ``indoor=wall`` way among ``walls`` (with ``nodes`` lists), or when no
+    single node has its place."""
+    from pyrosm.new_elements import _coordinate_key
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_str
+    from pyrosm.walking_areas import _vertex_keys
 
-    if areas is None or "nodes" not in areas.columns:
+    if areas is None:
         return None
-    found = {}
+    spaces = []
     for row, tags in zip(
         areas.itertuples(index=False), _frame_tags(areas, _frame_tag_columns(areas))
     ):
         open_space = tags.get("indoor") in OPEN_INDOOR or _is_platform(tags)
-        if row.osm_type != "way" or not open_space or tags.get("indoor") == "room":
+        if not open_space or tags.get("indoor") == "room":
             continue
-        if row.geometry.geom_type != "Polygon":
+        if row.geometry is None or row.geometry.geom_type not in (
+            "Polygon",
+            "MultiPolygon",
+        ):
             continue
-        ring = row.nodes if isinstance(row.nodes, (list, np.ndarray)) else []
-        coords = shapely.get_coordinates(row.geometry.exterior)
-        if len(ring) != len(coords):
-            continue
-        ranges = level_ranges(tags.get("level")) or []
-        key = (row.osm_type, row.id)
-        for node, places in _ring_places(ring, coords):
-            spaces = found.setdefault(int(node), {})
-            if key in spaces:
-                places = places & spaces[key][0]
-            spaces[key] = (places, ranges)
-    walled = set()
-    if walls is not None and "nodes" in walls.columns:
-        for ring in walls["nodes"]:
-            if isinstance(ring, (list, np.ndarray)):
-                walled.update(int(node) for node in ring)
+        ring = getattr(row, "nodes", None)
+        spaces.append(
+            (
+                (row.osm_type, row.id),
+                row.geometry,
+                level_ranges(tags.get("level")) or [],
+                ring if isinstance(ring, (list, np.ndarray)) else None,
+            )
+        )
+    places, walled = _node_places(spaces, walls, anchors)
+    node_at = {}
+    for node, (x, y) in places.items():
+        key = _coordinate_key(x, y)
+        node_at[key] = None if node_at.get(key, node) != node else node
+    meeting = {}
+    for key, geometry, ranges, _ in spaces:
+        for part in shapely.get_parts(geometry):
+            for vertex in _vertex_keys(part):
+                meeting.setdefault(vertex, {})[key] = ranges
     rows = []
-    for node, by_space in found.items():
-        if len(by_space) < 2 or node in walled:
+    for vertex, by_space in meeting.items():
+        node = node_at.get(vertex)
+        if len(by_space) < 2 or node is None or node in walled:
             continue
-        spaces = list(by_space.values())
-        places = set.intersection(*(places for places, _ in spaces))
-        common = spaces[0][1]
-        for _, ranges in spaces[1:]:
+        levels = list(by_space.values())
+        common = levels[0]
+        for ranges in levels[1:]:
             common = [
                 (max(la, lb), min(ha, hb))
                 for la, ha in common
                 for lb, hb in ranges
                 if max(la, lb) <= min(ha, hb)
             ]
-        if len(places) != 1 or not common:
+        if not common:
             continue
-        (x, y), (low, high) = places.pop(), common[0]
+        (x, y), (low, high) = places[node], common[0]
         one = len(set(common)) == 1 and low == high
         rows.append(
             {
@@ -796,14 +805,107 @@ def border_entrances(areas, walls=None):
     )
 
 
+def _node_places(spaces, walls, anchors):
+    """``(places, walled)``: ``{node id: (x, y)}``, the places of nodes that the reads
+    tell, and the ids of the nodes of the ``indoor=wall`` ways ``walls`` (with ``nodes``
+    lists). A node of the ``anchors`` (frames with ``id``, ``lon`` and ``lat``, such as
+    the network's nodes) and of the walls (lines whose coordinates follow their node
+    lists) has its place. The node lists of the ways among ``spaces`` (``(key,
+    geometry, ranges, node list or None)`` each, see :func:`border_entrances`) tell a
+    place in two ways: pyrosm turns polygon outlines counter-clockwise, so a node can be
+    at either of two places (see :func:`_ring_places`), and the places that all the ways
+    with the node allow, when only one, is its place; a way with a node whose place is
+    known at just one of its two places is drawn in that direction, which gives the
+    place of each of its nodes. A way whose node list does not match its outline tells
+    nothing, and a node with places that disagree has none."""
+    from pyrosm.new_elements import _coordinate_key
+
+    places, conflicts, walled = {}, set(), set()
+
+    def place(node, xy):
+        node = int(node)
+        if node in places and _coordinate_key(*places[node]) != _coordinate_key(*xy):
+            conflicts.add(node)
+        places.setdefault(node, (float(xy[0]), float(xy[1])))
+
+    for frame in anchors:
+        if frame is not None and len(frame):
+            for node, x, y in zip(frame["id"], frame["lon"], frame["lat"]):
+                place(node, (x, y))
+    if walls is not None and "nodes" in walls.columns:
+        for ring, line in zip(walls["nodes"], walls.geometry):
+            if not isinstance(ring, (list, np.ndarray)):
+                continue
+            walled.update(int(node) for node in ring)
+            if line is not None and line.geom_type == "LineString":
+                coords = shapely.get_coordinates(line)
+                if len(coords) == len(ring):
+                    for node, xy in zip(ring, coords):
+                        place(node, xy)
+    ways, allowed = [], {}
+    for key, geometry, _, ring in spaces:
+        if ring is None or key[0] != "way" or geometry.geom_type != "Polygon":
+            continue
+        coords = shapely.get_coordinates(geometry.exterior)
+        if len(ring) != len(coords):
+            continue
+        candidates = list(_ring_places(ring, coords))
+        ways.append(candidates)
+        for node, pair in candidates:
+            both = set(pair)
+            mine = allowed.setdefault(int(node), {}).get(key, both)
+            allowed[int(node)][key] = mine & both
+    for node, by_way in allowed.items():
+        common = set.intersection(*by_way.values())
+        if len(common) == 1:
+            place(node, next(iter(common)))
+    oriented = [False] * len(ways)
+    changed = True
+    while changed:
+        changed = False
+        for n, candidates in enumerate(ways):
+            if oriented[n]:
+                continue
+            side = _drawn_direction(candidates, places, conflicts)
+            if side is None:
+                continue
+            oriented[n] = changed = True
+            for node, pair in candidates:
+                place(node, side(pair))
+    return {n: xy for n, xy in places.items() if n not in conflicts}, walled
+
+
+def _drawn_direction(candidates, places, conflicts):
+    """For a way's nodes with their two places (see :func:`_ring_places`), a function
+    that picks each node's place (the one at its position, or the mirrored one) when a
+    node with a known place among ``places`` (not in ``conflicts``) is at just one of
+    its two places; None when no node tells."""
+    from pyrosm.new_elements import _coordinate_key
+
+    for node, (at, mirrored) in candidates:
+        node = int(node)
+        if node not in places or node in conflicts:
+            continue
+        known = _coordinate_key(*places[node])
+        at, mirrored = _coordinate_key(*at), _coordinate_key(*mirrored)
+        if at == mirrored:
+            continue
+        if known == at:
+            return lambda pair: pair[0]
+        if known == mirrored:
+            return lambda pair: pair[1]
+    return None
+
+
 def _ring_places(ring, coords):
-    """``(node, places)`` for each node of the closed way ``ring`` (its node ids) whose
-    polygon outline has the coordinates ``coords``: the two places the node can have, as
-    pyrosm turns outlines counter-clockwise (the reverse of a way drawn clockwise), the
-    one at its position in the way and the one at the mirrored position."""
+    """``(node, (at, mirrored))`` for each node of the closed way ``ring`` (its node ids)
+    whose polygon outline has the coordinates ``coords``: the two places the node can
+    have, as pyrosm turns outlines counter-clockwise (the reverse of a way drawn
+    clockwise), the one at its position in the way and the one at the mirrored
+    position."""
     last = len(ring) - 1
     for i, node in enumerate(ring[:-1]):
-        yield node, {tuple(coords[i]), tuple(coords[(last - i) % last])}
+        yield node, (tuple(coords[i]), tuple(coords[(last - i) % last]))
 
 
 def without_lift_area_ways(nodes, edges, lifts):

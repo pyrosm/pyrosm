@@ -1277,14 +1277,18 @@ def test_door_copies():
 def test_border_entrances():
     """The nodes two open spaces share on a common level are border entrances at their
     own places, also when a way is drawn clockwise (pyrosm turns its outline), with that
-    level, or without a level when they share several, also for a very wide level range;
-    an area whose node list does not match its outline and a wall without a node list (a
-    relation) are left out."""
+    level, or without a level when they share several, also for a very wide level range.
+    A multipolygon meets the others at the vertices it shares with them, where the node
+    lists of ways, and the nodes with known places (``anchors``, walls), tell the node.
+    Left out: a vertex whose node no way tells, a node whose places disagree or that a
+    wall runs through, a node listed twice in one way, a third space on another level at
+    the node, and an area that is not a polygon; a wall whose node list does not match
+    its line tells no places."""
     import json
 
     import geopandas as gpd
     import pandas as pd
-    from shapely.geometry import MultiPolygon, Polygon
+    from shapely.geometry import LineString, MultiPolygon, Polygon
 
     from pyrosm.indoor import border_entrances
 
@@ -1292,39 +1296,61 @@ def test_border_entrances():
     right = Polygon([(1, 0), (2, 0), (2, 1), (1, 1)])
     # Way 2 is drawn clockwise, 11-12-15-14: its outline runs the other way
     areas = gpd.GeoDataFrame(
-        {"id": [1, 2, 3], "osm_type": "way", "indoor": ["corridor", "area", "area"],
-         "level": ["0;1", "0;1", "0"],
-         "nodes": [[10, 11, 12, 13, 10], [11, 12, 15, 14, 11], [11, 14, 10]]},
-        geometry=[square, right, right], crs=4326,
+        {"id": [1, 2], "osm_type": "way", "indoor": ["corridor", "area"],
+         "level": ["0;1", "0;1"], "nodes": [[10, 11, 12, 13, 10], [11, 12, 15, 14, 11]]},
+        geometry=[square, right], crs=4326,
     )
-    walls = gpd.GeoDataFrame(
-        {"id": [5], "osm_type": "relation", "indoor": ["wall"], "nodes": [float("nan")]},
-        geometry=[square.exterior], crs=4326,
-    )
-    found = border_entrances(areas, walls).sort_values("id")
+    found = border_entrances(areas).sort_values("id")
     assert found["id"].tolist() == [11, 12]
     assert list(zip(found["lon"], found["lat"])) == [(1, 0), (1, 1)]
     assert found["tags"].isna().all()
-    wide = border_entrances(areas.assign(level=["0", "0-1000000000", "0"]), None)
+    wide = border_entrances(areas.assign(level=["0", "0-1000000000"]))
     assert [json.loads(t)["level"] for t in wide["tags"]] == ["0", "0"]
-    one_level = border_entrances(areas.assign(level=["0", "0", "0"]), None)
-    assert [json.loads(t)["level"] for t in one_level["tags"]] == ["0", "0"]
-    assert border_entrances(areas.drop(columns="nodes"), None) is None
-    assert border_entrances(areas.assign(level=["0", "1", "1"]), None) is None
-    # A third space on level 2 at node 11 leaves it out; a multipolygon way is skipped
+    assert border_entrances(areas.assign(level=["0", "1"])) is None
+    assert border_entrances(areas.drop(columns="nodes")) is None
+    # A third space on level 2 at node 11 leaves it out; a multipolygon on the right
+    # half meets both ways at node 12
     upper = areas.iloc[[0]].assign(id=4, level="2", nodes=[[11, 16, 17, 11]])
     upper = upper.set_geometry([Polygon([(1, 0), (1, 2), (0, 2)])])
-    piece = areas.iloc[[1]].assign(id=6).set_geometry(
-        [MultiPolygon([right, Polygon([(5, 5), (6, 5), (6, 6)])])]
+    piece = areas.iloc[[1]].assign(id=6, osm_type="relation", nodes=None)
+    piece = piece.set_geometry([MultiPolygon([right, Polygon([(5, 5), (6, 5), (6, 6)])])])
+    line = areas.iloc[[0]].assign(id=3).set_geometry([square.exterior])
+    three = border_entrances(pd.concat([areas, upper, piece, line]))
+    assert sorted(three["id"]) == [12, 14, 15]
+    assert three.set_index("id").loc[12, "spaces"] == {
+        ("way", 1), ("way", 2), ("relation", 6)
+    }
+    # Way 8 is drawn clockwise and meets relation 7 at nodes 21 and 22. The outline tells
+    # node 22, at the middle of the way's list; node 21 has two places until the network
+    # node 23, or a wall through it, tells the direction the way is drawn in
+    way = gpd.GeoDataFrame(
+        {"id": [8, 7], "osm_type": ["way", "relation"], "indoor": "corridor",
+         "level": "0", "nodes": [[20, 23, 22, 21, 20], None]},
+        geometry=[Polygon([(10, 0), (11, 0), (11, 1), (10, 1)]),
+                  Polygon([(11, 0), (12, 0), (12, 1), (11, 1)])],
+        crs=4326,
     )
-    three = border_entrances(pd.concat([areas.iloc[:2], upper, piece]), None)
-    assert three["id"].tolist() == [12]
-    assert three["spaces"].iloc[0] == {("way", 1), ("way", 2)}
+    assert border_entrances(way)["id"].tolist() == [22]
+    anchor = pd.DataFrame({"id": [23], "lon": [10.0], "lat": [1.0]})
+    assert sorted(border_entrances(way, anchors=[anchor])["id"]) == [21, 22]
+    walls = gpd.GeoDataFrame(
+        {"id": [5, 6, 9, 10], "osm_type": ["relation", "way", "way", "way"],
+         "indoor": "wall", "nodes": [None, [10, 11, 12, 13, 10], [23, 99], [21, 98, 97]]},
+        geometry=[square.exterior, square, LineString([(10, 1), (9, 1)]),
+                  LineString([(0, 5), (1, 5)])],
+        crs=4326,
+    )
+    assert sorted(border_entrances(way, walls)["id"]) == [22]
+    assert sorted(border_entrances(way, walls.iloc[:3])["id"]) == [21, 22]
+    wrong = pd.DataFrame({"id": [22, 23], "lon": [10.0, 5.0], "lat": [1.0, 5.0]})
+    assert border_entrances(way, anchors=[wrong]) is None
+    mismatched = way.assign(nodes=[[20, 23, 22, 20], None])
+    assert border_entrances(mismatched) is None
     # A node listed twice in one way is not a border of two spaces
     twice = areas.iloc[[0]].assign(nodes=[[10, 11, 11, 12, 13, 10]]).set_geometry(
         [Polygon([(0, 0), (1, 0), (1, 0), (1, 1), (0, 1)])]
     )
-    assert border_entrances(twice, None) is None
+    assert border_entrances(twice) is None
 
 
 def test_lift_areas_mapped_floor_by_floor_make_one_lift():
