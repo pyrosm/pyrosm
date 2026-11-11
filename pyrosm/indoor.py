@@ -47,7 +47,8 @@ or more levels (see :func:`pyrosm.walking_areas.crossing_rows`), and gets lift e
 them; a lift mapped as an area (``highway=elevator`` on a closed way or multipolygon) is
 not a walkway around the lift but joins the levels at which the network enters it in the
 same way, and lift areas mapped one floor at a time make one lift together (see
-:func:`join_lift_areas`).
+:func:`join_lift_areas`). A door tagged ``repeat_on`` is a door on each of its levels, a
+copy per level (see :func:`door_copies`).
 """
 
 import json
@@ -842,7 +843,9 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None):
     network's nodes on the areas' outlines and, for the areas of
     :data:`INDOOR_AREA_FILTER`, through the ``doors`` (a frame of nodes with ``id``,
     ``lon``, ``lat`` and tags, a read of :data:`ENTRANCE_FILTER`) on their outlines and
-    the lift nodes among them (see :func:`pyrosm.walking_areas.crossing_rows`), and
+    the lift nodes among them (see :func:`pyrosm.walking_areas.crossing_rows`), a door
+    tagged ``repeat_on`` once on each of its levels (see :func:`door_copies`; a copy id
+    that a node has already raises a ValueError), and
     through the ``borders``, the nodes where open indoor spaces meet (see
     :func:`border_entrances`), into those spaces only unless the node is already one of
     the network's, without those between two nodes an edge already joins;
@@ -857,13 +860,36 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None):
         return nodes, edges
     columns = [col for col in ("id", "lon", "lat", "tags") if col in nodes.columns]
     entrances = nodes[columns]
+    repeated = set()
     if doors is not None:
         doors = doors.assign(
             tags=[dumps(t) for t in _frame_tags(doors, _frame_tag_columns(doors))]
         )
+        copied = door_copies(doors)
+        twice = set(copied["id"][copied["id"].duplicated()])
+        new = set(copied["id"]) - set(doors["id"])
+        taken = set(nodes["id"]) | (set() if borders is None else set(borders["id"]))
+        clash = sorted(twice | (new & taken))
+        if clash:
+            raise ValueError(
+                "Doors tagged repeat_on cannot be copied per level: the ids of their "
+                "copies, %s, are taken." % clash[:3]
+            )
+        # The doors copied per level, and their copies, enter areas on their level only
+        repeated = new | {door for door in doors["id"] if node_copy_id(door, 1) in new}
+        doors = copied
     if borders is not None and doors is not None:
         borders = borders[~borders["id"].isin(doors["id"])]
     added = [frame for frame in (doors, borders) if frame is not None]
+    if doors is not None and "tags" in entrances.columns:
+        # A door of the network enters areas with its tags as a door, on its own level
+        door_tags = dict(zip(doors["id"], doors["tags"]))
+        entrances = entrances.assign(
+            tags=[
+                door_tags.get(i, tags)
+                for i, tags in zip(entrances["id"], entrances["tags"])
+            ]
+        )
     for frame in added:
         new = frame[~frame["id"].isin(nodes["id"])]
         new = new[[col for col in columns if col in new.columns]]
@@ -876,7 +902,7 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None):
     if borders is not None:
         new = borders[~borders["id"].isin(nodes["id"])]
         only = dict(zip(new["id"], new["spaces"]))
-    rows = crossing_rows(entrances, plain, areas, door_areas, only)
+    rows = crossing_rows(entrances, plain, areas, door_areas, only, repeated)
     if rows is not None:
         # A line along the outline of an area that is an edge itself (a platform's ring)
         joined = set(zip(edges["u"], edges["v"])) | set(zip(edges["v"], edges["u"]))
@@ -904,7 +930,7 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None):
     return nodes, edges
 
 
-# The largest lift node id whose copies' ids (see lift_copy_id) fit in a signed 64-bit
+# The largest lift node id whose copies' ids (see node_copy_id) fit in a signed 64-bit
 # integer.
 _MAX_LIFT_ID = (2**63 - 1) // 1000 - 1
 
@@ -913,10 +939,65 @@ _MAX_LIFT_ID = (2**63 - 1) // 1000 - 1
 LIFT_METADATA = ("version", "timestamp", "changeset", "visible")
 
 
-def lift_copy_id(lift, rank):
-    """The id of the copy of the lift node ``lift`` at its ``rank``-th level from the
-    lowest (1 to 499): negative and the same on every read."""
-    return -(int(lift) * 1000 + rank)
+def node_copy_id(node, rank):
+    """The id of the copy of ``node``, a lift node or a door on several levels (see
+    :func:`door_copies`), at its ``rank``-th level from the lowest (1 to 499): negative
+    and the same on every read."""
+    return -(int(node) * 1000 + rank)
+
+
+def door_copies(doors):
+    """``doors`` (a frame of nodes with ``id`` and ``tags``, JSON with all their tags)
+    with each door tagged ``repeat_on`` as one row per level, as Simple Indoor Tagging
+    maps a door that repeats on other floors, such as the door of a lift: the door's
+    ``level`` keeps its id, the other levels get :func:`node_copy_id`, ranked from the
+    lowest, and each row's ``tags`` have its one ``level`` and no ``repeat_on``. Left as
+    they are: a door that is also a lift node (``highway=elevator``, split per level by
+    :func:`split_lifts`), a door whose id is not a positive one the copy ids fit, and a
+    door on more than :data:`MAX_REPEATED_LEVELS` levels or with a range spanning more.
+    """
+    from pyrosm.pbf_writer import _tag_str
+
+    rows = []
+    for _, row in doors.iterrows():
+        tags = json.loads(row["tags"]) if isinstance(row["tags"], str) else {}
+        own = level_ranges(tags.get("level")) or []
+        levels = _whole_levels(own + (level_ranges(tags.get("repeat_on")) or []))
+        copied = (
+            tags.get("repeat_on")
+            and tags.get("highway") != "elevator"
+            and 0 < row["id"] <= _MAX_LIFT_ID
+            and 1 < len(levels) <= MAX_REPEATED_LEVELS
+        )
+        if not copied:
+            rows.append(row)
+            continue
+        home = own[0][0] if own else min(levels)
+        others = [level for level in levels if level != home]
+        for rank, level in [(0, home)] + list(enumerate(others, 1)):
+            copy = {k: v for k, v in tags.items() if k != "repeat_on"}
+            copy["level"] = _tag_str(level)
+            node = row["id"] if rank == 0 else node_copy_id(row["id"], rank)
+            rows.append(row.copy())
+            rows[-1]["id"], rows[-1]["tags"] = node, dumps(copy)
+    return GeoDataFrame(rows, geometry="geometry", crs=doors.crs).reset_index(drop=True)
+
+
+# A door's repeat_on is read as further levels only when its levels span at most this
+# many (see door_copies).
+MAX_REPEATED_LEVELS = 100
+
+
+def _whole_levels(ranges):
+    """The levels of the level ``ranges``, ``(low, high)`` each: the ends of each range
+    and the whole levels between them; none when a range spans more than
+    :data:`MAX_REPEATED_LEVELS` levels."""
+    if any(high - low > MAX_REPEATED_LEVELS for low, high in ranges):
+        return []
+    found = set()
+    for low, high in ranges:
+        found |= {low, high} | set(range(math.ceil(low), math.floor(high) + 1))
+    return sorted(float(level) for level in found)
 
 
 def _tags_by_node(nodes):
@@ -952,7 +1033,7 @@ def node_levels(nodes):
 def split_lifts(nodes, edges):
     """``nodes`` and ``edges`` (with ``u_level`` and ``v_level``) with each lift node
     where edges on two or more levels meet split into one node per level: the lowest
-    keeps the node's id, the others get :func:`lift_copy_id`, and each edge ends at the
+    keeps the node's id, the others get :func:`node_copy_id`, and each edge ends at the
     copy of its level there (an end without a level stays at the lowest). Lift edges of
     length 0 join the copies of neighbouring levels, with the lift node's id and metadata
     (those of :data:`LIFT_METADATA` that ``edges`` has), ``osm_type`` "node",
@@ -975,7 +1056,7 @@ def split_lifts(nodes, edges):
         if len(found) < 2 or not 0 < lift <= _MAX_LIFT_ID:
             continue
         ordered = sorted(found)
-        ids = {level: lift_copy_id(lift, rank) for rank, level in enumerate(ordered)}
+        ids = {level: node_copy_id(lift, rank) for rank, level in enumerate(ordered)}
         ids[ordered[0]] = lift
         clash = [node for node in list(ids.values())[1:] if node in taken]
         if clash or len(ordered) >= 500:
@@ -1139,7 +1220,7 @@ def lift_area_copy_id(area, osm_type, rank):
     """The id of the node of the lift area ``area`` (the id of a way, or of a relation
     when ``osm_type`` is "relation") at its ``rank``-th level from the lowest (1 to
     249): negative, the same on every read, and apart from the copies of lift nodes
-    (see :func:`lift_copy_id`, ranks below 500)."""
+    (see :func:`node_copy_id`, ranks below 500)."""
     return -(int(area) * 1000 + (750 if osm_type == "relation" else 500) + rank)
 
 

@@ -773,7 +773,10 @@ class OSM:
             that level), and lift edges with the area's id and `osm_type` and
             `vertical` "lift" join the nodes of neighbouring levels. Lift areas mapped
             one floor at a time, each with the middle of the other inside it, on floors
-            at most two levels apart, make one lift. A lift edge has the `length` of a
+            at most two levels apart, make one lift. A door tagged `repeat_on`, such as
+            the one door of a lift on all its floors, is a door on each of those levels:
+            its own `level` keeps its id and the other levels get copies with negative
+            ids, each entering the areas of its level. A lift edge has the `length` of a
             climb between its two levels along escalators, plus 1 metre, so that a route
             by length takes the escalators: the nearest escalator in the read whose way
             runs between the two levels, else the shortest chain of escalators between

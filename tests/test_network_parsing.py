@@ -1043,7 +1043,7 @@ def test_indoor_lifts_split_per_level():
     import geopandas as gpd
     from shapely.geometry import LineString, Point
 
-    from pyrosm.indoor import lift_copy_id, split_lifts
+    from pyrosm.indoor import node_copy_id, split_lifts
 
     tags = [{"highway": "elevator"}, {"highway": "elevator"}, {}, {}]
     nodes = gpd.GeoDataFrame(
@@ -1068,7 +1068,7 @@ def test_indoor_lifts_split_per_level():
         crs=4326,
     )
     nodes, edges = split_lifts(nodes, edges)
-    copy0, copy2 = lift_copy_id(1, 1), lift_copy_id(1, 2)
+    copy0, copy2 = node_copy_id(1, 1), node_copy_id(1, 2)
     assert edges.loc[:4, ["u", "v"]].values.tolist() == [
         [3, 1], [copy0, 4], [4, copy2], [1, 3], [2, 3]
     ]
@@ -1122,7 +1122,7 @@ def test_lift_areas_joined_per_level(monkeypatch):
     from pyrosm.indoor import (
         join_lift_areas,
         lift_area_copy_id,
-        lift_copy_id,
+        node_copy_id,
         without_lift_area_ways,
     )
 
@@ -1166,7 +1166,7 @@ def test_lift_areas_joined_per_level(monkeypatch):
         geometry=[Point(p) for p in places],
         crs=4326,
     )
-    split = (50, lift_copy_id(50, 1), 0.0, 1.0)  # a lift node split per level, in D
+    split = (50, node_copy_id(50, 1), 0.0, 1.0)  # a lift node split per level, in D
     edges = gpd.GeoDataFrame(
         {"id": [200 + e[0] for e in entrances] + [50],
          "osm_type": ["way"] * len(entrances) + ["node"],
@@ -1241,6 +1241,37 @@ def test_lift_areas_joined_per_level(monkeypatch):
     assert 999 not in set(without_lift_area_ways(lone_nodes, lone, lifts)[0]["id"])
     assert without_lift_area_ways(nodes, edges, lifts) == (nodes, edges)
     assert without_lift_area_ways(nodes, edges, None) == (nodes, edges)
+
+
+def test_door_copies():
+    """A door with repeat_on becomes one row per level, its own level keeping its id; a
+    door that is a lift node, a range of more than 100 levels and a door whose id the
+    copy ids do not fit (negative or too large) stay as they are."""
+    import json
+
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    from pyrosm.indoor import _MAX_LIFT_ID, door_copies, node_copy_id
+
+    tags = [{"door": "yes", "level": "1", "repeat_on": "0;2-3"},
+            {"highway": "elevator", "level": "0", "repeat_on": "1"},
+            {"door": "yes", "level": "0", "repeat_on": "1-1000"},
+            {"door": "yes", "level": "0"},
+            {"door": "yes", "level": "0", "repeat_on": "1"},
+            {"door": "yes", "level": "0", "repeat_on": "1"}]
+    doors = gpd.GeoDataFrame(
+        {"id": [1, 2, 3, 4, -5, _MAX_LIFT_ID + 1], "tags": [json.dumps(t) for t in tags]},
+        geometry=[Point(0, 0)] * 6, crs=4326,
+    )
+    found = door_copies(doors)
+    rows = [(i, json.loads(t)) for i, t in zip(found["id"], found["tags"])]
+    copies = [node_copy_id(1, rank) for rank in (1, 2, 3)]
+    assert [(i, t["level"], "repeat_on" in t) for i, t in rows] == [
+        (1, "1", False), (copies[0], "0", False), (copies[1], "2", False),
+        (copies[2], "3", False), (2, "0", True), (3, "0", True), (4, "0", False),
+        (-5, "0", True), (_MAX_LIFT_ID + 1, "0", True),
+    ]
 
 
 def test_border_entrances():
