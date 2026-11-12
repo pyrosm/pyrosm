@@ -7472,6 +7472,65 @@ def test_indoor_reads_join_open_spaces_where_they_meet(
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
 @pytest.mark.parametrize(
+    "doors, wall, joined",
+    [(False, None, True), (True, None, False), (False, "1", False), (False, "5", True)],
+)
+def test_indoor_reads_join_stairs_to_both_floors_at_shared_nodes(
+    tmp_path, engine, doors, wall, joined
+):
+    """Stairs mapped as an area on levels 1 and 2 (way 40) share the nodes 2 and 3 with
+    a corridor of level 1 (way 41) and with a corridor of level 2 drawn over it (way 42),
+    and a walkway enters each corridor at a far corner. The three spaces have no level
+    in common at nodes 2 and 3, so each node joins the stairs and the lower corridor on
+    level 1, and a copy of it with a negative id the stairs and the upper corridor on
+    level 2: the walkways join through the stairs. A door at the shared nodes enters
+    the areas on its own level only and gets no copy. An indoor=wall way through the
+    shared nodes keeps the spaces on its level apart there, but not those of another
+    level."""
+    import math
+
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.indoor import node_copy_id
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (10, 0), 3: (10, 10), 4: (0, 10), 5: (20, 0), 6: (20, 10),
+          7: (25, -5), 8: (25, 15), 9: (30, 10), 10: (35, -5)}
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    door = {"door": "no", "level": "1"}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [door if doors and i in (2, 3) else None for i in ids],
+    }
+    ways = [
+        {"id": 40, "refs": [1, 2, 3, 4, 1],
+         "tags": {"indoor": "area", "stairs": "yes", "level": "1;2"}},
+        {"id": 41, "refs": [2, 5, 6, 3, 2], "tags": {"indoor": "corridor", "level": "1"}},
+        {"id": 42, "refs": [2, 7, 8, 3, 2], "tags": {"indoor": "corridor", "level": "2"}},
+        {"id": 50, "refs": [9, 6], "tags": {"highway": "footway", "level": "1"}},
+        {"id": 51, "refs": [10, 7], "tags": {"highway": "footway", "level": "2"}},
+    ]
+    if wall:
+        ways.append({"id": 52, "refs": [2, 3], "tags": {"indoor": "wall", "level": wall}})
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "stairs.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    found, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    assert _nodes_joined(edges, 9, 10) == joined
+    copies = {node_copy_id(2, 1), node_copy_id(3, 1)}
+    assert (copies <= set(found["id"])) == joined
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
     "room, joined",
     [({"stairs": "yes"}, True), ({"room": "stairs"}, True), ({}, False)],
 )

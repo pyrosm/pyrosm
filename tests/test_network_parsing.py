@@ -1280,17 +1280,20 @@ def test_border_entrances():
     level, or without a level when they share several, also for a very wide level range.
     A multipolygon meets the others at the vertices it shares with them, where the node
     lists of ways, and the nodes with known places (``anchors``, walls), tell the node.
-    Left out: a vertex whose node no way tells, a node whose places disagree or that a
-    wall runs through, a node listed twice in one way, a third space on another level at
-    the node, and an area that is not a polygon; a wall whose node list does not match
-    its line tells no places."""
+    Where the spaces at a node have no level in common, each group on a common level
+    joins, the lowest through the node and the others through copies of it; a wall
+    through the node keeps the spaces on its levels apart. Left out: a vertex whose node
+    no way tells, a node whose places disagree, a node listed twice in one way, a space
+    on a level no other space at the node has, and an area that is not a polygon; a wall
+    whose node list does not match its line tells no places. A door or lift node, or a
+    copy id that a node has already, gets no copy."""
     import json
 
     import geopandas as gpd
     import pandas as pd
     from shapely.geometry import LineString, MultiPolygon, Polygon
 
-    from pyrosm.indoor import border_entrances
+    from pyrosm.indoor import border_entrances, without_clashing_copies
 
     square = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
     right = Polygon([(1, 0), (2, 0), (2, 1), (1, 1)])
@@ -1308,18 +1311,61 @@ def test_border_entrances():
     assert [json.loads(t)["level"] for t in wide["tags"]] == ["0", "0"]
     assert border_entrances(areas.assign(level=["0", "1"])) is None
     assert border_entrances(areas.drop(columns="nodes")) is None
-    # A third space on level 2 at node 11 leaves it out; a multipolygon on the right
-    # half meets both ways at node 12
+    # A third space on level 2 at node 11 does not join there; a multipolygon on the
+    # right half meets both ways at nodes 11 and 12
     upper = areas.iloc[[0]].assign(id=4, level="2", nodes=[[11, 16, 17, 11]])
     upper = upper.set_geometry([Polygon([(1, 0), (1, 2), (0, 2)])])
     piece = areas.iloc[[1]].assign(id=6, osm_type="relation", nodes=None)
     piece = piece.set_geometry([MultiPolygon([right, Polygon([(5, 5), (6, 5), (6, 6)])])])
     line = areas.iloc[[0]].assign(id=3).set_geometry([square.exterior])
-    three = border_entrances(pd.concat([areas, upper, piece, line]))
-    assert sorted(three["id"]) == [12, 14, 15]
-    assert three.set_index("id").loc[12, "spaces"] == {
+    three = border_entrances(pd.concat([areas, upper, piece, line])).set_index("id")
+    assert sorted(three.index) == [11, 12, 14, 15]
+    assert three.loc[11, "spaces"] == three.loc[12, "spaces"] == {
         ("way", 1), ("way", 2), ("relation", 6)
     }
+    # Stairs on levels 1 and 2 (way 1) meet the floor of level 1 (way 2) and the floor
+    # of level 2 above it (way 3) at nodes 11 and 12: the node joins the stairs and the
+    # lower floor on level 1, a copy of it the stairs and the upper floor on level 2.
+    # Negative node ids (a file pyrosm wrote) get no copies
+    stacked = pd.concat([areas, areas.iloc[[1]].assign(id=3)]).assign(
+        level=["1;2", "1", "2"]
+    )
+    split = border_entrances(stacked).sort_values("id")
+    assert split["id"].tolist() == [-12001, -11001, 11, 12]
+    assert split["node"].tolist() == [12, 11, 11, 12]
+    assert split["level"].tolist() == [2, 2, 1, 1]
+    assert split.set_index("id").loc[-11001, "spaces"] == {("way", 1), ("way", 3)}
+    negative = stacked.assign(nodes=[[-n for n in ring] for ring in stacked["nodes"]])
+    assert sorted(border_entrances(negative)["id"]) == [-12, -11]
+    # A wall keeps the spaces on its levels apart: one on level 1 through node 11 leaves
+    # the upper group, which takes the node's id; one on level 5 through node 12 leaves
+    # both groups; one without a level tag through node 12 leaves none
+    stacked_walls = gpd.GeoDataFrame(
+        {"id": [21, 22], "osm_type": "way", "indoor": "wall", "level": ["1", "5"],
+         "nodes": [[11, 98], [12, 97]]},
+        geometry=[LineString([(1, 0), (1, -1)]), LineString([(1, 1), (1, 2)])],
+        crs=4326,
+    )
+    walled = border_entrances(stacked, stacked_walls).set_index("id")
+    assert sorted(walled.index) == [-12001, 11, 12]
+    assert walled.loc[11, "level"] == 2
+    assert walled.loc[11, "spaces"] == {("way", 1), ("way", 3)}
+    untagged = stacked_walls.assign(level=["1", None])
+    assert sorted(border_entrances(stacked, untagged)["id"]) == [11]
+    # No copies of a door or lift node, nor with the id of a node of the network
+    doors = pd.DataFrame({"id": [12], "tags": [None]})
+    network = pd.DataFrame({"id": [-11001], "tags": [None]})
+    kept = without_clashing_copies(split, network, doors)
+    assert sorted(kept["id"]) == [11, 12]
+    lift = pd.DataFrame({"id": [11], "tags": ['{"highway": "elevator"}']})
+    assert sorted(without_clashing_copies(split, lift, None)["id"]) == [-12001, 11, 12]
+    assert without_clashing_copies(None, network, doors) is None
+    # A border node of a file pyrosm wrote, with the id of the copy of node 11
+    own = split[split["id"] == -11001].assign(node=-11001)
+    kept = without_clashing_copies(pd.concat([split, own]), network.iloc[:0], None)
+    assert sorted(zip(kept["id"], kept["node"])) == [
+        (-12001, 12), (-11001, -11001), (11, 11), (12, 12)
+    ]
     # Way 8 is drawn clockwise and meets relation 7 at nodes 21 and 22. The outline tells
     # node 22, at the middle of the way's list; node 21 has two places until the network
     # node 23, or a wall through it, tells the direction the way is drawn in

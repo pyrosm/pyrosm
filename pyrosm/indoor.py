@@ -9,8 +9,11 @@ each on its own level and together with the walking areas of a read with
 which connect areas that share them; the walking areas are not. Corridors, indoor areas
 and platform areas that share outline nodes on a common level, which Simple Indoor
 Tagging maps without walls, are entered through those nodes too, also when one is mapped
-as a multipolygon (see :func:`border_entrances`). The end of stairs or an escalator that joins nothing else
-also enters the platform or indoor area on its level that it lies outside of within
+as a multipolygon; where the spaces at a node have no level in common, such as stairs on
+levels 1 and 2 drawn with the nodes of both floors, each level's spaces join through a
+copy of the node of their own (see :func:`border_entrances`). The end of stairs or an
+escalator that joins nothing else also enters the platform or indoor area on its level
+that it lies outside of within
 :data:`pyrosm.walking_areas.STAIR_END_REACH` metres. The edges get the level at each of
 their two ends, ``u_level`` and ``v_level``, from the OSM ``level`` tags (see
 :func:`pyrosm.levels.level_ranges`). An edge with one level has it at both ends. A level
@@ -716,17 +719,21 @@ OPEN_INDOOR = ("corridor", "area")
 
 def border_entrances(areas, walls=None, anchors=()):
     """The nodes that the outlines of two open indoor spaces among ``areas`` share on a
-    common level, as a frame with ``id``, ``lon``, ``lat``, ``level`` (that level when
-    there is one, else NaN), ``tags`` (JSON with that ``level``), ``spaces`` (the
+    common level, as a frame with ``id``, ``node``, ``lon``, ``lat``, ``level`` (that
+    level when there is one, else NaN), ``tags`` (JSON with that ``level``), ``spaces`` (the
     ``(osm_type, id)`` of those spaces, the only areas the node enters) and ``geometry``;
     None when there are none. Open spaces are the polygons and multipolygons among
     ``areas`` that are platforms or tagged ``indoor=corridor`` or ``indoor=area``, which
     have no walls: people pass between two of them where they meet. Spaces meet at the
     vertices their outlines and holes share, and the node there is the one whose place
-    the reads tell (see :func:`_node_places`, with the ``anchors`` and ``walls``). A
-    vertex is left out when the open spaces at it have no level in common, when its node
-    is on an ``indoor=wall`` way among ``walls`` (with ``nodes`` lists), or when no
-    single node has its place."""
+    the reads tell (see :func:`_node_places`, with the ``anchors`` and ``walls``). Where
+    the spaces at a vertex have no level in common, each group of them on a common
+    level joins there (see :func:`_level_groups`): the lowest group through the node,
+    each other group through a copy of it on its level (:func:`node_copy_id`), and the
+    frame's ``node`` holds the node each row is or copies. An ``indoor=wall`` way among
+    ``walls`` (with ``nodes`` lists) through the node keeps the spaces on its levels
+    apart there (all of them when it has no ``level`` tag). A vertex is left out when no
+    two spaces at it share a level or when no single node has its place."""
     from pyrosm.new_elements import _coordinate_key
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_str
     from pyrosm.walking_areas import _vertex_keys
@@ -767,30 +774,27 @@ def border_entrances(areas, walls=None, anchors=()):
     rows = []
     for vertex, by_space in meeting.items():
         node = node_at.get(vertex)
-        if len(by_space) < 2 or node is None or node in walled:
+        if len(by_space) < 2 or node is None:
             continue
-        levels = list(by_space.values())
-        common = levels[0]
-        for ranges in levels[1:]:
-            common = [
-                (max(la, lb), min(ha, hb))
-                for la, ha in common
-                for lb, hb in ranges
-                if max(la, lb) <= min(ha, hb)
-            ]
-        if not common:
-            continue
-        (x, y), (low, high) = places[node], common[0]
-        one = len(set(common)) == 1 and low == high
-        rows.append(
-            {
-                "id": node,
-                "lon": x,
-                "lat": y,
-                "level": low if one else np.nan,
-                "spaces": set(by_space),
-            }
-        )
+        x, y = places[node]
+        groups = [
+            (spaces_on, level)
+            for spaces_on, level in _level_groups(by_space)
+            if not _walled_on(walled.get(node, ()), [by_space[k] for k in spaces_on])
+        ]
+        for rank, (spaces_on, level) in enumerate(groups):
+            if rank and not (0 < node <= _MAX_LIFT_ID and rank < MAX_REPEATED_LEVELS):
+                break
+            rows.append(
+                {
+                    "id": node_copy_id(node, rank) if rank else node,
+                    "node": node,
+                    "lon": x,
+                    "lat": y,
+                    "level": level,
+                    "spaces": spaces_on,
+                }
+            )
     if not rows:
         return None
     frame = pd.DataFrame(rows)
@@ -805,10 +809,90 @@ def border_entrances(areas, walls=None, anchors=()):
     )
 
 
+def without_clashing_copies(borders, nodes, doors):
+    """The ``borders`` (see :func:`border_entrances`) without the copies of the nodes
+    that are doors or lift nodes among ``doors`` and ``nodes`` (frames with ``id`` and
+    tags), whose copies per level :func:`door_copies` and :func:`split_lifts` make with
+    the same ids, and without the copies whose id a node of ``nodes`` or ``doors``, or
+    another border node, has already."""
+    if borders is None:
+        return None
+    doors_ids = set() if doors is None else set(doors["id"])
+    copy = (borders["id"] != borders["node"]).to_numpy()
+    taken = set(nodes["id"]) | doors_ids | set(borders["id"][~copy])
+    clash = borders["node"].isin(_lift_ids(nodes) | doors_ids) | borders["id"].isin(
+        taken
+    )
+    kept = borders[~copy | ~clash.to_numpy()]
+    return kept if len(kept) else None
+
+
+def _walled_on(wall_levels, range_lists):
+    """Whether a wall with one of the ``wall_levels`` (level ranges each, None for a wall
+    without a ``level`` tag, which stands on every level) stands on a level that all the
+    ``range_lists`` cover, where the spaces with those levels would join."""
+    common = _common_ranges(range_lists)
+    return any(
+        ranges is None
+        or any(max(la, lb) <= min(ha, hb) for la, ha in ranges for lb, hb in common)
+        for ranges in wall_levels
+    )
+
+
+def _level_groups(by_space):
+    """The spaces that meet at a vertex, ``{(osm_type, id): level ranges}``, as
+    ``[(spaces, level), ...]``, the groups that join there: all of them when they have a
+    level in common, else, from the lowest level up, each largest group of two or more
+    that shares a level (a staircase on levels 1 and 2 meets the floor of level 1 below
+    and that of level 2 above at the same nodes). ``level`` is the one level a group
+    has in common, NaN when it has several."""
+    common = _common_ranges(by_space.values())
+    if common:
+        return [(set(by_space), _one_level(common))]
+    ends = sorted(
+        {end for ranges in by_space.values() for pair in ranges for end in pair}
+    )
+    groups = []
+    for level in ends:
+        group = {
+            key
+            for key, ranges in by_space.items()
+            if any(low <= level <= high for low, high in ranges)
+        }
+        if len(group) > 1 and group not in groups:
+            groups.append(group)
+    largest = [group for group in groups if not any(group < other for other in groups)]
+    return [
+        (group, _one_level(_common_ranges(by_space[key] for key in group)))
+        for group in largest
+    ]
+
+
+def _common_ranges(range_lists):
+    """The level ranges, ``(low, high)`` each, that all the ``range_lists`` cover."""
+    lists = list(range_lists)
+    common = list(lists[0]) if lists else []
+    for ranges in lists[1:]:
+        common = [
+            (max(la, lb), min(ha, hb))
+            for la, ha in common
+            for lb, hb in ranges
+            if max(la, lb) <= min(ha, hb)
+        ]
+    return common
+
+
+def _one_level(ranges):
+    """The one level of the level ``ranges``, NaN when they cover several."""
+    (low, high), *_ = ranges
+    return low if len(set(ranges)) == 1 and low == high else np.nan
+
+
 def _node_places(spaces, walls, anchors):
     """``(places, walled)``: ``{node id: (x, y)}``, the places of nodes that the reads
-    tell, and the ids of the nodes of the ``indoor=wall`` ways ``walls`` (with ``nodes``
-    lists). A node of the ``anchors`` (frames with ``id``, ``lon`` and ``lat``, such as
+    tell, and ``{node id: [level ranges, ...]}``, the levels of the ``indoor=wall`` ways
+    ``walls`` (with ``nodes`` lists) through each node, None for a wall without a
+    ``level`` tag. A node of the ``anchors`` (frames with ``id``, ``lon`` and ``lat``, such as
     the network's nodes) and of the walls (lines whose coordinates follow their node
     lists) has its place. The node lists of the ways among ``spaces`` (``(key,
     geometry, ranges, node list or None)`` each, see :func:`border_entrances`) tell a
@@ -819,8 +903,9 @@ def _node_places(spaces, walls, anchors):
     place of each of its nodes. A way whose node list does not match its outline tells
     nothing, and a node with places that disagree has none."""
     from pyrosm.new_elements import _coordinate_key
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
-    places, conflicts, walled = {}, set(), set()
+    places, conflicts, walled = {}, set(), {}
 
     def place(node, xy):
         node = int(node)
@@ -833,10 +918,13 @@ def _node_places(spaces, walls, anchors):
             for node, x, y in zip(frame["id"], frame["lon"], frame["lat"]):
                 place(node, (x, y))
     if walls is not None and "nodes" in walls.columns:
-        for ring, line in zip(walls["nodes"], walls.geometry):
+        wall_tags = _frame_tags(walls, _frame_tag_columns(walls))
+        for ring, line, tags in zip(walls["nodes"], walls.geometry, wall_tags):
             if not isinstance(ring, (list, np.ndarray)):
                 continue
-            walled.update(int(node) for node in ring)
+            ranges = level_ranges(tags.get("level"))
+            for node in ring:
+                walled.setdefault(int(node), []).append(ranges)
             if line is not None and line.geom_type == "LineString":
                 coords = shapely.get_coordinates(line)
                 if len(coords) == len(ring):
