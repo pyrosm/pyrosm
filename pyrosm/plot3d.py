@@ -121,6 +121,26 @@ def _edge_kind(tags, vertical, u_level, v_level, crossing):
     return kind or ("street" if flat else "levels"), u_level, v_level
 
 
+def _edge_kinds(edges):
+    """``(row, tags, kind, z at u, z at v)`` of each of ``edges`` (see
+    :func:`_edge_kind`), the row a named tuple of the frame."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
+    tags = _frame_tags(edges, _frame_tag_columns(edges))
+    u_levels, v_levels = (float_column(edges, col) for col in ("u_level", "v_level"))
+    verticals = edges.get("vertical", pd.Series(None, index=edges.index)).to_numpy()
+    crossings = (
+        edges.get("walking_area", pd.Series(False, index=edges.index))
+        .fillna(False)
+        .to_numpy(dtype=bool)
+    )
+    for i, (row_tags, row) in enumerate(zip(tags, edges.itertuples())):
+        kind, z_u, z_v = _edge_kind(
+            row_tags, verticals[i], u_levels[i], v_levels[i], crossings[i]
+        )
+        yield row, row_tags, kind, z_u, z_v
+
+
 def _line_points(line, z_u, z_v, origin, vertical=False):
     """x, y (metres from ``origin``) and z of the points of ``line``, z running from
     ``z_u`` to ``z_v`` along it; a vertical line at its first point when ``vertical``
@@ -165,11 +185,12 @@ def plot_3d(edges, nodes=None, center=None, radius=None, route=None, areas=None)
         The middle of the view; by default the middle of the edges.
     radius : float (optional)
         Draw only the edges and areas that reach within this many metres (at least 0)
-        of ``center``, and the entrances within it.
+        of ``center``, and the entrances within it; the ``route`` is drawn in full.
     route : list of node ids (optional)
         A path through the network, such as a shortest path of a networkx graph, drawn
-        as a wide red line along the edges between its nodes (``u`` and ``v``), with
-        markers at its two ends; a click on "Route" in the legend hides it.
+        as a wide red line along the edges between its nodes (``u`` and ``v``), also
+        beyond ``radius``, with markers at its two ends; a click on "Route" in the
+        legend hides it.
     areas : GeoDataFrame (optional)
         Polygons, such as platform areas or squares, drawn as outlines at their
         ``level`` (street level without one); lines are drawn as they are.
@@ -180,8 +201,6 @@ def plot_3d(edges, nodes=None, center=None, radius=None, route=None, areas=None)
         Show it in a notebook with ``fig.show()``, in a browser window with
         ``fig.show(renderer="browser")``, or save it with ``fig.write_html(path)``.
     """
-    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
-
     go = _plotly()
     if radius is not None and not radius >= 0:
         raise ValueError("radius must be at least 0 metres, not %r." % (radius,))
@@ -198,25 +217,16 @@ def plot_3d(edges, nodes=None, center=None, radius=None, route=None, areas=None)
         point = center if hasattr(center, "x") else shapely.Point(*center)
         middle = GeoDataFrame(geometry=[point], crs=4326).to_crs(crs).geometry[0]
     origin = (middle.x, middle.y)
+    on_route = metric.iloc[:0]
+    if route is not None and "u" in metric.columns and "v" in metric.columns:
+        steps = set(zip(route[:-1], route[1:]))
+        steps |= {(b, a) for a, b in steps}
+        on_route = metric[[pair in steps for pair in zip(metric["u"], metric["v"])]]
     if radius is not None:
         metric = metric[metric.distance(middle) <= radius]
     traces = {kind: _Trace() for kind in _STYLES}
-    tags = _frame_tags(metric, _frame_tag_columns(metric))
-    u_levels, v_levels = (float_column(metric, col) for col in ("u_level", "v_level"))
-    verticals = metric.get("vertical", pd.Series(None, index=metric.index)).to_numpy()
-    crossings = (
-        metric.get("walking_area", pd.Series(False, index=metric.index))
-        .fillna(False)
-        .to_numpy(dtype=bool)
-    )
-    ends = {}
-    has_ends = "u" in metric.columns and "v" in metric.columns
-    for i, (row_tags, row) in enumerate(zip(tags, metric.itertuples())):
-        kind, z_u, z_v = _edge_kind(
-            row_tags, verticals[i], u_levels[i], v_levels[i], crossings[i]
-        )
-        lift = kind == "lift"
-        x, y, z = _line_points(row.geometry, z_u, z_v, origin, vertical=lift)
+    for row, row_tags, kind, z_u, z_v in _edge_kinds(metric):
+        x, y, z = _line_points(row.geometry, z_u, z_v, origin, vertical=kind == "lift")
         text = "%s %s · %s<br>level %s" % (
             getattr(row, "osm_type", "way"),
             getattr(row, "id", ""),
@@ -224,8 +234,10 @@ def plot_3d(edges, nodes=None, center=None, radius=None, route=None, areas=None)
             row_tags.get("level", "not tagged"),
         )
         traces[kind].add(x, y, z, text)
-        if has_ends:
-            ends[(row.u, row.v)] = (row.geometry, z_u, z_v, lift)
+    ends = {
+        (row.u, row.v): (row.geometry, z_u, z_v, kind == "lift")
+        for row, _, kind, z_u, z_v in _edge_kinds(on_route)
+    }
     figure = go.Figure()
     if areas is not None:
         _add_area_outlines(traces["area"], areas.to_crs(crs), middle, radius)

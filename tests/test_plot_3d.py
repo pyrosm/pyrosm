@@ -92,7 +92,7 @@ def test_plot_3d_draws_a_graph_made_by_hand():
     """A networkx graph with line geometries: the two directions of an edge are drawn
     once, a parallel edge of another way too; no entrances without node coordinates or
     entrance nodes; with radius 0 what touches the center is drawn, an entrance there
-    too."""
+    too, and a route in full, also along an edge beyond the radius (nodes 2 to 3)."""
     import networkx as nx
     from shapely.geometry import LineString
 
@@ -113,6 +113,12 @@ def test_plot_3d_draws_a_graph_made_by_hand():
     nx.set_node_attributes(graph, {1: "subway_entrance"}, "railway")
     traces = _traces(plot_3d(graph, center=(24.94, 60.17), radius=0))
     assert list(traces) == kinds + ["Station entrances"]
+    graph.add_edge(2, 3, geometry=LineString([(24.941, 60.17), (24.95, 60.17)]), id=12)
+    nx.set_node_attributes(graph, {3: 24.95}, "x")
+    nx.set_node_attributes(graph, {3: 60.17}, "y")
+    traces = _traces(plot_3d(graph, center=(24.94, 60.17), radius=0, route=[1, 2, 3]))
+    assert max(x for x in traces["Walkways at street level"].x if x is not None) < 100
+    assert max(x for x in traces["Route"].x if x is not None) > 500
 
 
 def test_plot_3d_refuses_what_it_cannot_draw(monkeypatch):
