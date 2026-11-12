@@ -34,13 +34,15 @@ def _assemble_chunk(
     keep_node_info=False,
     way_columns=None,
     grouping_relations=False,
+    member_nodes=False,
 ):
     """Build one GeoDataFrame from node, way and/or relation elements using pyrosm's own
     tag + geometry pipeline (full columns, missing-node handling, polygon/linestring
     typing, ring assembly, dropna, orientation, the ``bounding_box`` spatial filter), so the
     result matches the in-memory reader exactly. The ways' ``nodes`` column is kept only
     with ``keep_node_info``; ``way_columns`` are passed to :func:`_ways_arrays`;
-    ``grouping_relations`` is passed to :func:`pyrosm.frames.prepare_geodataframe`."""
+    ``grouping_relations`` and ``member_nodes`` are passed to
+    :func:`pyrosm.frames.prepare_geodataframe`."""
     from pyrosm.frames import prepare_geodataframe
 
     ways = (
@@ -61,6 +63,7 @@ def _assemble_chunk(
         keep_metadata=keep_metadata,
         complete_relations=complete_relations,
         grouping_relations=grouping_relations,
+        member_nodes=member_nodes,
     )
     if not keep_node_info and gdf is not None and "nodes" in gdf.columns:
         gdf = gdf.drop(columns=["nodes"])

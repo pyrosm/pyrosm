@@ -1705,9 +1705,12 @@ class OSM:
         keep_other_tags,
         timestamp,
         tags_to_keep,
+        member_nodes=False,
     ):
         """The frame of :meth:`get_data_by_custom_criteria`, or None when nothing
-        matches, without the warning of an empty result."""
+        matches, without the warning of an empty result; with ``member_nodes``, the
+        relations have the column ``member_nodes``, the nodes of their member ways with
+        their coordinates (see :func:`pyrosm.engine.relation_geometry.member_nodes`)."""
         # custom_filter=None means "return everything": keep every tagged element
         # with no key/value filtering (issue #113). There is nothing to keep or exclude
         # by value then, so filter_type is ignored; it is pinned to a valid no-op so a
@@ -1743,6 +1746,7 @@ class OSM:
                 extra_attributes=extra_attributes,
                 keep_other_tags=keep_other_tags,
                 tags_to_keep=tags_to_keep,
+                member_nodes=member_nodes,
             )
             return gdf
 
@@ -1793,6 +1797,7 @@ class OSM:
                 complete_relations=self.complete_relations,
                 keep_all=keep_all,
                 steps=steps,
+                member_nodes=member_nodes,
             )
 
         return self._drop_node_lists(gdf)

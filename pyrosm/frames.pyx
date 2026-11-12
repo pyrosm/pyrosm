@@ -116,30 +116,40 @@ cpdef prepare_node_gdf(nodes):
     return node_gdf
 
 cpdef prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns, bint keep_metadata=True,
-                           bint grouping_relations=False, member_box=None):
+                           bint grouping_relations=False, member_box=None,
+                           bint member_nodes=False):
     """The GeoDataFrame of the ``relations`` (``osm_type`` "relation"), built from their
     member ways ``relation_ways`` and the nodes in ``node_coordinates``, with the tags
     ``tags_as_columns`` as columns; with ``grouping_relations``, the relations that group
     their members have a GeometryCollection of them (member nodes only inside
-    ``member_box``, when given). An empty GeoDataFrame when no relation is built."""
+    ``member_box``, when given); with ``member_nodes``, a column ``member_nodes`` holds
+    the nodes of each relation's member ways with their coordinates (see
+    :func:`pyrosm.engine.relation_geometry.member_nodes`). An empty GeoDataFrame when no
+    relation is built."""
     if relations is not None:
-        relations = prepare_relations(relations, relation_ways,
-                                      node_coordinates,
-                                      tags_as_columns,
-                                      keep_metadata,
-                                      grouping_relations,
-                                      member_box)
+        records = prepare_relations(relations, relation_ways,
+                                    node_coordinates,
+                                    tags_as_columns,
+                                    keep_metadata,
+                                    grouping_relations,
+                                    member_box)
 
         # prepare_relations returns an empty GeoDataFrame when no relation could
         # be assembled into a geometry (e.g. every boundary relation is incomplete
         # and was dropped). It then has no geometry column, so building a
         # GeoDataFrame(..., crs=...) from it would raise -- return empty instead.
-        if "geometry" not in relations:
+        if "geometry" not in records:
             relation_gdf = gpd.GeoDataFrame()
         else:
-            relation_gdf = gpd.GeoDataFrame(relations, crs="epsg:4326").assign(
+            relation_gdf = gpd.GeoDataFrame(records, crs="epsg:4326").assign(
                 osm_type="relation"
             )
+            if member_nodes:
+                from pyrosm.engine.relation_geometry import member_nodes as node_places
+
+                relation_gdf["member_nodes"] = node_places(
+                    relations, relation_ways, node_coordinates, relation_gdf["id"]
+                )
 
     else:
         relation_gdf = gpd.GeoDataFrame()
@@ -174,11 +184,13 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
                            bint keep_metadata=True,
                            bint complete_relations=False,
                            steps=None,
-                           bint grouping_relations=False):
+                           bint grouping_relations=False,
+                           bint member_nodes=False):
     """The GeoDataFrame of the nodes, ways and relations of a read (a network's edges,
     and with them its nodes, with ``parse_network``), the relations that group their
     members with a GeometryCollection of them with ``grouping_relations`` (see
-    :mod:`pyrosm.grouping_relations`), built in the steps
+    :mod:`pyrosm.grouping_relations`), the relations with the column ``member_nodes``
+    with ``member_nodes`` (see :func:`prepare_relation_gdf`), built in the steps
     :data:`~pyrosm.utils.progress.BUILDING_WAYS` and
     :data:`~pyrosm.utils.progress.BUILDING_RELATIONS` (a network's
     :data:`~pyrosm.utils.progress.BUILDING_EDGES`) of ``steps`` (or None)."""
@@ -213,7 +225,7 @@ cpdef prepare_geodataframe(nodes, node_coordinates, ways,
     if bounding_box is not None and not complete_relations:
         member_box = box(*bounding_box) if isinstance(bounding_box, list) else bounding_box
     relation_gdf = prepare_relation_gdf(node_coordinates, relations, relation_ways, tags_as_columns, keep_metadata,
-                                        grouping_relations, member_box)
+                                        grouping_relations, member_box, member_nodes)
 
     # When not parsing the network,
     # nodes should be kept as part of the main output

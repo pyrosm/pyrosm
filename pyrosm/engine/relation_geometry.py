@@ -13,6 +13,7 @@ checks run on the calling thread (``shapely.is_valid`` changes the warning filte
 
 import numpy as np
 import shapely
+from rapidjson import dumps
 from shapely import GEOSException
 
 from pyrosm._arrays import _offsets_from_lengths
@@ -85,6 +86,36 @@ def _members(relations, way_ids):
     # Each relation's ways in the order of their rows (np.sort of the found rows).
     order = np.lexsort((rows, owner))
     return owner[order], rows[order]
+
+
+def member_nodes(relations, relation_ways, node_coordinates, ids):
+    """For each of the relation ``ids`` among ``relations``, the nodes of its member ways
+    among ``relation_ways`` (those :func:`relation_records` builds its geometry from) that
+    have coordinates in ``node_coordinates``, as JSON ``[[node id, lon, lat], ...]`` in
+    node id order; None for a relation with no such node."""
+    if relation_ways is None:
+        return [None] * len(ids)
+    owner, rows = _members(relations, relation_ways["id"])
+    refs = [np.asarray(relation_ways["nodes"][r], dtype=np.int64) for r in rows]
+    nodes = np.concatenate([np.empty(0, np.int64), *refs])
+    node_owner = np.repeat(owner, [len(r) for r in refs])
+    idx, lon, lat = node_coordinates.gather(nodes)
+    kept = np.flatnonzero(valid_coordinates(idx, lon, lat))
+    # Each relation's distinct nodes, sorted by relation and node id.
+    pairs = np.column_stack([node_owner[kept], nodes[kept]])
+    kept = kept[np.unique(pairs, axis=0, return_index=True)[1]]
+    node_owner, nodes, lon, lat = node_owner[kept], nodes[kept], lon[kept], lat[kept]
+    found = [None] * len(relations["id"])
+    starts = np.flatnonzero(np.diff(node_owner, prepend=-1))
+    for start, end in zip(starts, np.r_[starts[1:], len(nodes)]):
+        found[node_owner[start]] = dumps(
+            [
+                [int(node), float(x), float(y)]
+                for node, x, y in zip(nodes[start:end], lon[start:end], lat[start:end])
+            ]
+        )
+    index = {int(relation): n for n, relation in enumerate(relations["id"])}
+    return [found[index[int(relation)]] for relation in ids]
 
 
 def _member_lines(owner, rows, relation_ways, node_coordinates):
