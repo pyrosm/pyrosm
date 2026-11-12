@@ -96,8 +96,8 @@ INDOOR_AREA_FILTER = {
 # relation leaves its member ways out.
 LIFT_AREA_FILTER = {"highway": ["elevator"]}
 
-# The walls mapped as ways (Simple Indoor Tagging): where one shares a node with two open
-# indoor spaces, they do not join there (see border_entrances).
+# The walls mapped as ways (Simple Indoor Tagging): where one runs along the side two open
+# indoor spaces share at a node, they do not join there (see border_entrances).
 WALL_FILTER = {"indoor": ["wall"]}
 
 # The ``vertical`` values of the edges that move, in the direction ``conveying`` gives.
@@ -732,11 +732,13 @@ def border_entrances(areas, walls=None, anchors=()):
     each other group through a copy of it on its level (:func:`node_copy_id`), and the
     frame's ``node`` holds the node each row is or copies. An ``indoor=wall`` way among
     ``walls`` (with ``nodes`` lists) through the node keeps the spaces on its levels
-    apart there (all of them when it has no ``level`` tag). A vertex is left out when no
-    two spaces at it share a level or when no single node has its place."""
+    apart there (all of them when it has no ``level`` tag) where it runs along the
+    sides of the outlines they share at the node, or anywhere through the node where
+    they share no side (see :func:`_walls_keep_apart`); a wall that only ends at the
+    node, beside an opening, does not. A vertex is left out when no two spaces at it
+    share a level or when no single node has its place."""
     from pyrosm.new_elements import _coordinate_key
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_str
-    from pyrosm.walking_areas import _vertex_keys
 
     if areas is None:
         return None
@@ -766,11 +768,11 @@ def border_entrances(areas, walls=None, anchors=()):
     for node, (x, y) in places.items():
         key = _coordinate_key(x, y)
         node_at[key] = None if node_at.get(key, node) != node else node
-    meeting = {}
+    meeting, sides = {}, {}
     for key, geometry, ranges, _ in spaces:
-        for part in shapely.get_parts(geometry):
-            for vertex in _vertex_keys(part):
-                meeting.setdefault(vertex, {})[key] = ranges
+        for vertex, next_to in _outline_sides(geometry).items():
+            meeting.setdefault(vertex, {})[key] = ranges
+            sides.setdefault(vertex, {})[key] = next_to
     rows = []
     for vertex, by_space in meeting.items():
         node = node_at.get(vertex)
@@ -780,7 +782,12 @@ def border_entrances(areas, walls=None, anchors=()):
         groups = [
             (spaces_on, level)
             for spaces_on, level in _level_groups(by_space)
-            if not _walled_on(walled.get(node, ()), [by_space[k] for k in spaces_on])
+            if not _walls_keep_apart(
+                walled.get(node, ()),
+                [by_space[k] for k in spaces_on],
+                (x, y),
+                _shared_sides((x, y), [sides[vertex][k] for k in spaces_on]),
+            )
         ]
         for rank, (spaces_on, level) in enumerate(groups):
             if rank and not (0 < node <= _MAX_LIFT_ID and rank < MAX_REPEATED_LEVELS):
@@ -811,32 +818,106 @@ def border_entrances(areas, walls=None, anchors=()):
 
 def without_clashing_copies(borders, nodes, doors):
     """The ``borders`` (see :func:`border_entrances`) without the copies of the nodes
-    that are doors or lift nodes among ``doors`` and ``nodes`` (frames with ``id`` and
-    tags), whose copies per level :func:`door_copies` and :func:`split_lifts` make with
-    the same ids, and without the copies whose id a node of ``nodes`` or ``doors``, or
-    another border node, has already."""
+    that are doors tagged ``repeat_on`` or lift nodes among ``doors`` and ``nodes``
+    (frames with ``id`` and tags), whose copies per level :func:`door_copies` and
+    :func:`split_lifts` make with the same ids, and without the copies whose id a node
+    of ``nodes`` or ``doors``, or another border node, has already."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
     if borders is None:
         return None
-    doors_ids = set() if doors is None else set(doors["id"])
+    doors_ids, split = set(), _lift_ids(nodes)
+    if doors is not None:
+        doors_ids = set(doors["id"])
+        split |= {
+            int(door)
+            for door, tags in zip(
+                doors["id"], _frame_tags(doors, _frame_tag_columns(doors))
+            )
+            if tags.get("highway") == "elevator" or tags.get("repeat_on")
+        }
     copy = (borders["id"] != borders["node"]).to_numpy()
     taken = set(nodes["id"]) | doors_ids | set(borders["id"][~copy])
-    clash = borders["node"].isin(_lift_ids(nodes) | doors_ids) | borders["id"].isin(
-        taken
-    )
+    clash = borders["node"].isin(split) | borders["id"].isin(taken)
     kept = borders[~copy | ~clash.to_numpy()]
     return kept if len(kept) else None
 
 
-def _walled_on(wall_levels, range_lists):
-    """Whether a wall with one of the ``wall_levels`` (level ranges each, None for a wall
-    without a ``level`` tag, which stands on every level) stands on a level that all the
-    ``range_lists`` cover, where the spaces with those levels would join."""
+def _walls_keep_apart(walls, range_lists, at, shared):
+    """Whether the ``indoor=wall`` ways ``walls`` through a node at ``at`` keep apart the
+    spaces with the level ``range_lists`` that meet there and whose outlines share the
+    sides from ``at`` towards the vertices ``shared`` (see :func:`_shared_sides`).
+    ``walls`` holds ``(level ranges, vertices)`` per wall (see :func:`_node_places`):
+    None as ranges for a wall without a ``level`` tag, which stands on every level, and
+    as vertices when the wall's vertices next to the node are not known. A wall on a
+    level that all the spaces cover keeps them apart when the spaces share no side
+    (they touch only at the node) or its vertices are not known; otherwise the walls
+    keep them apart when each shared side has a wall along it."""
     common = _common_ranges(range_lists)
-    return any(
-        ranges is None
+    on_level = [
+        next_to
+        for ranges, next_to in walls
+        if ranges is None
         or any(max(la, lb) <= min(ha, hb) for la, ha in ranges for lb, hb in common)
-        for ranges in wall_levels
+    ]
+    if not on_level:
+        return False
+    if not shared or any(next_to is None for next_to in on_level):
+        return True
+    along = [xy for next_to in on_level for xy in next_to]
+    return all(any(_same_direction(at, side, xy) for xy in along) for side in shared)
+
+
+def _shared_sides(at, sides):
+    """The vertices next to ``at`` that mark the sides two or more outlines share there:
+    of ``sides``, the vertices next to ``at`` along each space's outline, those in whose
+    direction (see :func:`_same_direction`) the outline of a later space goes too."""
+    sides = list(sides)
+    return [
+        xy
+        for n, mine in enumerate(sides)
+        for xy in mine
+        if any(
+            _same_direction(at, xy, other)
+            for theirs in sides[n + 1 :]
+            for other in theirs
+        )
+    ]
+
+
+def _same_direction(at, a, b):
+    """Whether the points ``a`` and ``b`` lie in the same direction from ``at``: the
+    sine of the angle between the two directions is at most :data:`_SAME_DIRECTION`."""
+    ax, ay = a[0] - at[0], a[1] - at[1]
+    bx, by = b[0] - at[0], b[1] - at[1]
+    length = math.hypot(ax, ay) * math.hypot(bx, by)
+    return (
+        length > 0
+        and ax * bx + ay * by > 0
+        and abs(ax * by - ay * bx) <= _SAME_DIRECTION * length
     )
+
+
+# Two sides from a node go in the same direction (see _same_direction) when the sine of
+# the angle between them is at most this (about three degrees).
+_SAME_DIRECTION = 0.05
+
+
+def _outline_sides(geometry):
+    """``{coordinate key: [(x, y), ...]}``: for each vertex of the outlines and holes of
+    ``geometry`` (a polygon or multipolygon), the vertices next to it along them."""
+    from pyrosm.new_elements import _coordinate_key
+    from pyrosm.walking_areas import _oriented_rings
+
+    sides = {}
+    for part in shapely.get_parts(geometry):
+        for ring in _oriented_rings(part):
+            before, after = np.roll(ring, 1, axis=0), np.roll(ring, -1, axis=0)
+            for here, *next_to in zip(ring, before, after):
+                sides.setdefault(_coordinate_key(*here), []).extend(
+                    (float(x), float(y)) for x, y in next_to
+                )
+    return sides
 
 
 def _level_groups(by_space):
@@ -890,9 +971,10 @@ def _one_level(ranges):
 
 def _node_places(spaces, walls, anchors):
     """``(places, walled)``: ``{node id: (x, y)}``, the places of nodes that the reads
-    tell, and ``{node id: [level ranges, ...]}``, the levels of the ``indoor=wall`` ways
-    ``walls`` (with ``nodes`` lists) through each node, None for a wall without a
-    ``level`` tag. A node of the ``anchors`` (frames with ``id``, ``lon`` and ``lat``, such as
+    tell, and ``{node id: [(level ranges, vertices), ...]}``, for each ``indoor=wall``
+    way among ``walls`` (with ``nodes`` lists) through a node, its levels (None without
+    a ``level`` tag) and its vertices next to the node (None when its coordinates do not
+    follow its node list). A node of the ``anchors`` (frames with ``id``, ``lon`` and ``lat``, such as
     the network's nodes) and of the walls (lines whose coordinates follow their node
     lists) has its place. The node lists of the ways among ``spaces`` (``(key,
     geometry, ranges, node list or None)`` each, see :func:`border_entrances`) tell a
@@ -923,13 +1005,21 @@ def _node_places(spaces, walls, anchors):
             if not isinstance(ring, (list, np.ndarray)):
                 continue
             ranges = level_ranges(tags.get("level"))
-            for node in ring:
-                walled.setdefault(int(node), []).append(ranges)
+            coords = None
             if line is not None and line.geom_type == "LineString":
                 coords = shapely.get_coordinates(line)
-                if len(coords) == len(ring):
-                    for node, xy in zip(ring, coords):
-                        place(node, xy)
+                if len(coords) != len(ring):
+                    coords = None
+            for n, node in enumerate(ring):
+                next_to = None
+                if coords is not None:
+                    place(node, coords[n])
+                    next_to = [
+                        (float(coords[i][0]), float(coords[i][1]))
+                        for i in (n - 1, n + 1)
+                        if 0 <= i < len(coords)
+                    ]
+                walled.setdefault(int(node), []).append((ranges, next_to))
     ways, allowed = [], {}
     for key, geometry, _, ring in spaces:
         if ring is None or key[0] != "way" or geometry.geom_type != "Polygon":
