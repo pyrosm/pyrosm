@@ -123,7 +123,8 @@ html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "")
 llms_txt_summary = (
     "pyrosm reads OpenStreetMap PBF files into GeoPandas GeoDataFrames and downloads "
     "OpenStreetMap extracts from Geofabrik, BBBike and Movisda. Before writing code that "
-    "downloads data or geocodes places, read and follow the Rules for AI coding agents "
+    "downloads data, geocodes places or routes in an indoor network, read and follow the "
+    "Rules for AI coding agents "
     "(%sai_agents.html). The Download responsibly page (%sdownload_responsibly.html) "
     "explains why the rules are needed and shows examples of how to follow them."
     % (html_baseurl, html_baseurl)

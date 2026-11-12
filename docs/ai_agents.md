@@ -52,3 +52,9 @@ can use <a href="llms.txt">llms.txt</a> as an index to this documentation.
    GitHub, for example as a release asset, and let the pipeline fetch it from there. If a
    pipeline must download an extract, cache the download folder between runs. Never write a test
    or a job that downloads an extract on every run.
+10. For indoor networks (`indoor_elements=True`), check that the start and the end of a route lie
+    in one connected part of the network before you report the route. Parts stay apart where the
+    OpenStreetMap data has no link between them: tell the user about such a gap instead of adding
+    edges to join the parts. The `length` of a lift edge is an estimate, not a measured distance;
+    give lifts and escalators times of their own when you compute travel times, as the
+    [Indoor passages and platforms](indoor_networks.ipynb) page shows.
