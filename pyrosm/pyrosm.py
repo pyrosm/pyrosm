@@ -74,6 +74,7 @@ from pyrosm.indoor import (
     WALL_FILTER,
     border_entrances,
     without_clashing_copies,
+    without_member_nodes,
     check_escalator_slope,
     check_indoor_read,
     indoor_areas,
@@ -1107,6 +1108,7 @@ class OSM:
                     True,
                     timestamp,
                     columns,
+                    member_nodes=read_filter is INDOOR_AREA_FILTER,
                 )
                 for read_filter in (INDOOR_AREA_FILTER, LIFT_AREA_FILTER)
             ]
@@ -1136,9 +1138,10 @@ class OSM:
                 timestamp,
                 None,
             )
+        candidates, corners = without_member_nodes(candidates)
         areas, lifts = indoor_areas(candidates, walking, lifts)
         borders = without_clashing_copies(
-            border_entrances(areas, walls, (nodes, doors)), nodes, doors
+            border_entrances(areas, walls, (nodes, doors, corners)), nodes, doors
         )
         levels = {}
         if borders is not None:
