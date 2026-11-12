@@ -7548,15 +7548,24 @@ def test_indoor_reads_join_stairs_to_both_floors_at_shared_nodes(
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
 @pytest.mark.parametrize(
-    "room, joined",
-    [({"stairs": "yes"}, True), ({"room": "stairs"}, True), ({}, False)],
+    "room, steps, joined",
+    [
+        ({"stairs": "yes"}, False, True),
+        ({"stairs": "yes"}, True, True),
+        ({"room": "stairs"}, False, True),
+        ({}, False, False),
+    ],
 )
-def test_indoor_reads_cross_stairs_mapped_as_rooms(tmp_path, engine, room, joined):
+def test_indoor_reads_cross_stairs_mapped_as_rooms(
+    tmp_path, engine, room, steps, joined
+):
     """A staircase mapped as a room (way 41, indoor=room with stairs=yes or room=stairs,
     level=0;1), as Simple Indoor Tagging maps it, is entered through its door on level 0
     (node 5), from a level-0 corridor, and its door on level 1 (node 6), to a level-1
-    corridor: the line across it joins the two levels. A plain room on both levels does
-    not."""
+    corridor: the line across it joins the two levels. Where the steps are also mapped as
+    a way inside the room (way 43, from level 0 to 1), the way joins them: lines run from
+    each door to the end of the steps on its level, none between the levels. A plain room
+    on both levels joins nothing."""
     import math
 
     import numpy as np
@@ -7565,7 +7574,8 @@ def test_indoor_reads_cross_stairs_mapped_as_rooms(tmp_path, engine, room, joine
     from pyrosm.pbf_export import write_pbf_from_records
 
     xy = {1: (0, 0), 2: (10, 0), 3: (10, 10), 4: (0, 10), 5: (10, 5), 6: (20, 5),
-          7: (20, 0), 8: (20, 10), 10: (30, 0), 11: (30, 10), 12: (-5, 0), 13: (35, 10)}
+          7: (20, 0), 8: (20, 10), 10: (30, 0), 11: (30, 10), 12: (-5, 0), 13: (35, 10),
+          14: (12, 2), 15: (18, 2)}
     ids = sorted(xy)
     per_metre = 1 / 111_195
     lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
@@ -7585,6 +7595,11 @@ def test_indoor_reads_cross_stairs_mapped_as_rooms(tmp_path, engine, room, joine
         {"id": 50, "refs": [12, 1], "tags": {"highway": "footway", "level": "0"}},
         {"id": 51, "refs": [13, 11], "tags": {"highway": "footway", "level": "1"}},
     ]
+    if steps:
+        ways.append(
+            {"id": 43, "refs": [14, 15],
+             "tags": {"highway": "steps", "level": "0;1", "incline": "up"}}
+        )
     path = write_pbf_from_records(
         nodes, ways, [], str(tmp_path / "stairs.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
     )
@@ -7594,6 +7609,8 @@ def test_indoor_reads_cross_stairs_mapped_as_rooms(tmp_path, engine, room, joine
     assert _nodes_joined(edges, 12, 13) == joined
     stairs = edges[edges["walking_area"] & (edges["id"] == 41)]
     expected = [(5, 6, 0.0, 1.0)] if joined else []
+    if steps:
+        expected = [(5, 14, 0.0, 0.0), (6, 15, 1.0, 1.0)]
     assert list(zip(stairs["u"], stairs["v"], stairs["u_level"], stairs["v_level"])) == expected
 
 
