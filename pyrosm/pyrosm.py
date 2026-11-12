@@ -706,7 +706,7 @@ class OSM:
             areas at the way's other end, else the low end at the start of the way (in
             its drawn direction) and the high end at its end, as do the two ends of
             stairs of one edge that both lie in areas of one level, an end of their
-            range; a stair end whose level the stairs give joins only areas on that
+            range; a stair end whose level the stairs give joins only areas on its own
             level, also where it touches one area. A pair whose line passes another of
             these nodes gets no edge of its own, nor does a pair that the edges of
             shorter pairs already join along a route at most 5 % longer, so that an area

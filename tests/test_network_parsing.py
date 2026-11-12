@@ -589,32 +589,34 @@ STEPS = {"highway": "steps", "level": "0;1"}
 
 
 @pytest.mark.parametrize(
-    "way, way_tags, own_level, stacked, continues, node, entered",
+    "way, way_tags, own_level, stacked, continues, node, entered, walkway",
     [
-        (5, {"level": "1"}, None, False, False, 5, {501}),
-        (5, {}, "1", False, False, 5, {501}),
-        (5, STEPS, None, False, False, 5, {501}),
-        (5, STEPS, None, False, True, 5, {501}),
-        (5, {**STEPS, "incline": "up"}, None, False, False, 5, {500}),
-        (5, {**STEPS, "level": "-1;0"}, None, True, False, 5, set()),
-        (5, {**STEPS, "level": "-1;0"}, None, True, False, 6, {500}),
-        (0, {**STEPS, "incline": "up"}, None, False, False, 1, set()),
-        ((1, 2), STEPS, None, False, False, 3, {500}),
-        ((1, 2), STEPS, None, False, False, 1, {500}),
-        (5, STEPS, None, True, False, 5, {500}),
-        (5, STEPS, None, True, False, 6, {501}),
-        (0, {**STEPS, "incline": "up"}, None, True, False, 1, {501}),
-        (5, {}, None, True, False, 5, {500, 501}),
+        (5, {"level": "1"}, None, False, False, 5, {501}, None),
+        (5, {}, "1", False, False, 5, {501}, None),
+        (5, STEPS, None, False, False, 5, {501}, None),
+        (5, STEPS, None, False, True, 5, {501}, None),
+        (5, {**STEPS, "incline": "up"}, None, False, False, 5, {500}, None),
+        (5, {**STEPS, "level": "-1;0"}, None, True, False, 5, set(), None),
+        (5, {**STEPS, "level": "-1;0"}, None, True, False, 6, {500}, None),
+        (0, {**STEPS, "incline": "up"}, None, False, False, 1, set(), None),
+        (0, {**STEPS, "incline": "up"}, None, False, False, 1, set(), "1"),
+        ((1, 2), STEPS, None, False, False, 3, {500}, None),
+        ((1, 2), STEPS, None, False, False, 1, {500}, None),
+        (5, STEPS, None, True, False, 5, {500}, None),
+        (5, STEPS, None, True, False, 6, {501}, None),
+        (0, {**STEPS, "incline": "up"}, None, True, False, 1, {501}, None),
+        (5, {}, None, True, False, 5, {500, 501}, None),
     ],
 )
 def test_walking_areas_join_a_node_on_one_level(
-    way, way_tags, own_level, stacked, continues, node, entered
+    way, way_tags, own_level, stacked, continues, node, entered, walkway
 ):
     """A node that would enter areas on two levels (area 500 on level 0, area 501 on
     level 1, either around node 5 or on the same outline) enters only those on its
     level: its walkway's, else at an end of stairs with a level range the level of that
     end, else its own level tag. Such a stair end enters only areas on its level, also
-    when it touches one area (node 1 on the outline of area 500). The end of such stairs
+    when it touches one area (node 1 on the outline of area 500), and also when a walkway
+    there (way 1, tagged with the end's level) gives its level. The end of such stairs
     in areas on both levels takes the other end of the range from the one level of the
     areas at its other end (also where a walkway goes on from there), else the low end at
     the start of the way and the high end at its end, as do the two ends of stairs that
@@ -634,6 +636,8 @@ def test_walking_areas_join_a_node_on_one_level(
     if continues:  # a walkway without a level from node 6, the stairs' other end
         edges.loc[len(edges)] = {**edges.iloc[1].to_dict(), "id": 31, "u": 6, "v": 3}
     nodes["tags"] = [{"level": own_level} if i == node else None for i in nodes["id"]]
+    if walkway is not None:  # the way from node 8 to node 1
+        edges.loc[1, "tags"] = dumps({"level": walkway})
     rows = list(way) if isinstance(way, tuple) else [way]
     edges.loc[rows, "id"] = edges.loc[rows[0], "id"]
     edges.loc[rows, "highway"] = way_tags.get("highway", "footway")

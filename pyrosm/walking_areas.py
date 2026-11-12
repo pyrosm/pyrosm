@@ -506,7 +506,8 @@ def _entrance_positions(edges, node_ids, dead_ends, own_levels):
     its ``own_levels`` (see :func:`pyrosm.indoor.node_levels`); the ``level`` tags of
     its other edges; for a dead end (one of ``dead_ends``), the side of street level of
     its edge's ``layer``. Other nodes without levels are left out. ``stair_ends`` holds
-    the nodes whose position is that level of a stair end. ``open_ends`` is ``{node id:
+    the nodes at an end of such a way whose level the rest of the way gives, also when
+    a walkway gives their position. ``open_ends`` is ``{node id:
     (low, high)}``: the nodes of one such way without that level and without a walkway
     with one level, with the way's range. ``walked`` is ``{node id: {level, ...}}``, the
     levels of the node's walkways with one level."""
@@ -545,11 +546,12 @@ def _entrance_positions(edges, node_ids, dead_ends, own_levels):
     positions, stair_ends = {}, set()
     for node in wanted:
         own = [(level, level) for level in own_levels.get(node, ())]
+        if node in known:
+            stair_ends.add(node)
         if single.get(node):
             positions[node] = _ranges_position(single[node])
         elif node in known:
             positions[node] = _single_level_position(known[node])
-            stair_ends.add(node)
         elif own or other.get(node):
             positions[node] = _ranges_position(own or other[node])
         elif node in sides:
