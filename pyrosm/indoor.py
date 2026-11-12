@@ -43,7 +43,7 @@ has no level. The column ``vertical`` marks escalators, moving walkways and stai
 the direction it moves (see :func:`moving_one_way`). A lift node (``highway=elevator``)
 where walkways on several levels meet is split into one node per level, joined by lift
 edges (see :func:`split_lifts`), whose length is that of an escalator or stairs between
-their levels plus 1 m (see :func:`with_lift_lengths`); a lift node whose own ``level``
+their levels plus 1 m (see :func:`with_climb_lengths`); a lift node whose own ``level``
 tag names levels that its walkways do not reach also enters, from inside, the platform
 and indoor areas of one level on those levels that it lies in, when it then reaches two
 or more levels, unless it lies inside a lift area on one of its levels (see
@@ -1416,39 +1416,53 @@ def _with_lift_rows(nodes, edges, copies, lift_rows, metadata, rows=None):
 
 
 # How many metres longer a lift edge is than the escalator or stairs whose length it
-# takes (see with_lift_lengths), so that a route by length takes the escalator.
+# takes (see with_climb_lengths), so that a route by length takes the escalator.
 LIFT_EXTRA_LENGTH = 1.0
 
-# The height of one level in metres, for a lift edge between levels that no escalator or
-# stairs join (see with_lift_lengths): a rough storey height.
+# The height of one level in metres, for a lift edge, or a step from floor to floor at
+# one place in stairs, between levels that no escalator or stairs join (see
+# with_climb_lengths): a rough storey height.
 LEVEL_HEIGHT = 4.0
 
 
-def with_lift_lengths(edges):
+def with_climb_lengths(edges):
     """``edges`` (with ``vertical``, ``u_level``, ``v_level`` and ``length``) with the
-    ``length`` of each lift edge (``vertical`` "lift"): the length of a climb between its
-    two levels along escalators among ``edges`` (see :func:`_climb_length`), plus
-    :data:`LIFT_EXTRA_LENGTH`; without one, along escalators and stairs; else
-    :data:`LEVEL_HEIGHT` for each level between them, plus :data:`LIFT_EXTRA_LENGTH`."""
-    lifts = np.flatnonzero((edges["vertical"] == "lift").to_numpy())
-    if not len(lifts):
-        return edges
-    escalators = _ways_between_levels(edges, "escalator")
-    both = dict(escalators)
-    for pair, ways in _ways_between_levels(edges, "stairs").items():
-        both[pair] = both.get(pair, []) + ways
+    ``length`` of the edges that change floors at one place. A lift edge (``vertical``
+    "lift") gets the length of a climb between its two levels along escalators among
+    ``edges`` (see :func:`_climb_length`), plus :data:`LIFT_EXTRA_LENGTH`; without one,
+    along escalators and stairs; else :data:`LEVEL_HEIGHT` for each level between them,
+    plus :data:`LIFT_EXTRA_LENGTH`. A line across stairs from a door tagged ``repeat_on``
+    to its copy on the next floor, from a place to itself (see
+    :func:`pyrosm.walking_areas.crossing_rows`), gets that of a climb along stairs;
+    without one, along stairs and escalators; else :data:`LEVEL_HEIGHT` for each level
+    between them."""
+    lifts = (edges["vertical"] == "lift").to_numpy()
     u_level = edges["u_level"].to_numpy(dtype=float)
     v_level = edges["v_level"].to_numpy(dtype=float)
+    steps = (
+        _area_lines(edges)
+        & ~np.isnan(u_level)
+        & ~np.isnan(v_level)
+        & (u_level != v_level)
+        & (shapely.length(edges.geometry.to_numpy()) == 0)
+    )
+    if not (lifts | steps).any():
+        return edges
+    escalators = _ways_between_levels(edges, "escalator")
+    stairs = _ways_between_levels(edges, "stairs")
+    both = dict(escalators)
+    for pair, ways in stairs.items():
+        both[pair] = both.get(pair, []) + ways
     lengths = edges["length"].to_numpy(dtype=float).copy()
-    for i in lifts:
+    for i in np.flatnonzero(lifts | steps):
         low, high = sorted((u_level[i], v_level[i]))
         point = shapely.get_point(edges.geometry.iloc[i], 0)
-        length = _climb_length(escalators, low, high, point)
+        length = _climb_length(escalators if lifts[i] else stairs, low, high, point)
         if length is None:
             length = _climb_length(both, low, high, point)
         if length is None:
             length = LEVEL_HEIGHT * (high - low)
-        lengths[i] = round(length + LIFT_EXTRA_LENGTH, 3)
+        lengths[i] = round(length + (LIFT_EXTRA_LENGTH if lifts[i] else 0.0), 3)
     attrs = dict(edges.attrs)
     edges = edges.assign(length=lengths)
     edges.attrs = attrs

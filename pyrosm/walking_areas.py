@@ -127,7 +127,7 @@ def crossing_rows(
     the entrances (among ``nodes``, with their tags in ``tags`` when known), ``length``
     in metres, the line as ``geometry``, and the area's ``id``, ``osm_type`` and tags in
     the other columns, its tags without a column of ``edges`` in the JSON ``tags``. None
-    when no area has two entrances. A node of ``nodes`` without an edge in ``edges``, a
+    when no area gets an edge. A node of ``nodes`` without an edge in ``edges``, a
     door, enters only the areas that ``door_areas`` marks (one bool per area; by default
     every area). The end of stairs or an escalator that is a dead end, enters no area
     but stairs or an escalator mapped as an area, such as its own, and has the level its
@@ -138,7 +138,10 @@ def crossing_rows(
     of one level that ``door_areas`` marks on the levels of its own ``level`` tag that
     its walkways do not reach (see :func:`_lift_entrances`). A node in ``only``, a dict
     of node id to the ``(osm_type, id)`` of areas, enters only those areas, and a node in
-    ``strict`` only the areas on its own level. A lift node inside one of the
+    ``strict`` only the areas on its own level; in stairs mapped as an area or room, the
+    nodes of ``strict`` at one place (a door tagged ``repeat_on`` and its copies) are
+    also joined from each floor to the next (see :func:`_floor_steps`). A lift node
+    inside one of the
     ``lift_areas`` (a frame of lift areas with their tags) on a level of both is left
     to that area (see :func:`pyrosm.indoor.join_lift_areas`) and does not enter other
     areas as a lift."""
@@ -271,6 +274,7 @@ def crossing_rows(
             reached[area, k, node] = end
     found = []
     for area, parts in kept.items():
+        stairs = _is_stair_area(area_tags[area])
         for k, (part, within) in enumerate(parts):
             for u, v, line in _part_crossings(part, within):
                 start, end = reached.get((area, k, u)), reached.get((area, k, v))
@@ -280,9 +284,32 @@ def crossing_rows(
                         ([start] if start else []) + coords + ([end] if end else [])
                     )
                 found.append((area, u, v, line))
+            if stairs:
+                found.extend(
+                    (area, u, v, line)
+                    for u, v, line in _floor_steps(within, strict, positions)
+                )
     if not found:
         return None
     return area_edge_rows(areas, found, edges)
+
+
+def _floor_steps(entrances, repeated, positions):
+    """``(u, v, line)`` for each two of the ``repeated`` nodes (a door tagged
+    ``repeat_on`` and its copies, see :func:`pyrosm.indoor.door_copies`) at one of the
+    ``entrances`` (see :func:`_entrances`) whose levels (``positions``, see
+    :func:`_level_position`) follow each other, the lower one first, the line from that
+    place to itself."""
+    found = []
+    for x, y, node_ids in entrances.values():
+        doors = sorted(
+            (min(low for low, _ in positions[node][0]), node)
+            for node in node_ids
+            if node in repeated and positions.get(node, ((), set()))[0]
+        )
+        line = shapely.LineString([(x, y), (x, y)])
+        found.extend((u, v, line) for (a, u), (b, v) in zip(doors, doors[1:]) if a < b)
+    return found
 
 
 def _lift_entrances(
