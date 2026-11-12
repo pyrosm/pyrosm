@@ -767,12 +767,17 @@ class OSM:
             meet is split into one node per level: the lowest keeps the node's id, the
             others get negative ids derived from it, each edge ends at the copy of its
             level, and lift edges with the lift node's id, `osm_type` "node" and
-            `vertical` "lift" join the copies of neighbouring levels. A lift node whose
-            own `level` tag, such as `level=0;1`, names levels that its edges do not
-            reach, also one on no edge, enters the platform and indoor areas of one
-            level on those levels that it lies in, from inside, when it then reaches
-            two or more levels, and is split on their levels too, unless it lies
-            inside a lift area on one of its levels, which joins that lift's floors.
+            `vertical` "lift" join the copies of neighbouring levels. Where a lift
+            node's own `level` tag names two or more levels and its edges with a level
+            reach all of them but one, its edges without a level end on that one, unless
+            their own `level` tag leaves it out: a footway without a `level` tag at a
+            lift tagged `level=-1;0` whose other edges are on level -1 joins the lift on
+            level 0. A lift node
+            whose own `level` tag, such as `level=0;1`, names levels that its edges do
+            not reach, also one on no edge, enters the platform and indoor areas of one
+            level on those levels that it lies in, from inside, when it then reaches two
+            or more levels, and is split on their levels too, unless it lies inside a
+            lift area on one of its levels, which joins that lift's floors.
             A lift mapped as an area (a closed way or multipolygon tagged
             `highway=elevator`, as Simple Indoor Tagging maps lifts) is not a walkway
             around the lift: when the network enters it on two or more of the levels
