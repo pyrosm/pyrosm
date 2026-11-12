@@ -82,7 +82,7 @@ from pyrosm.indoor import (
     split_lifts,
     with_indoor_crossings,
     with_indoor_columns,
-    with_lift_lengths,
+    with_climb_lengths,
     with_platform_filter,
     with_platforms,
     without_lift_area_ways,
@@ -786,7 +786,11 @@ class OSM:
             at most two levels apart, make one lift. A door tagged `repeat_on`, such as
             the one door of a lift on all its floors, is a door on each of those levels:
             its own `level` keeps its id and the other levels get copies with negative
-            ids, each entering the areas of its level. A lift edge has the `length` of a
+            ids, each entering the areas of its level; in stairs mapped as an area or
+            room, a line from the door to its copy on the next floor, from that place
+            to itself, joins the two floors, with the `length` of a climb along stairs
+            between them (else along stairs and escalators, else 4 metres for each
+            level between them). A lift edge has the `length` of a
             climb between its two levels along escalators, plus 1 metre, so that a route
             by length takes the escalators: the nearest escalator in the read whose way
             runs between the two levels, else the shortest chain of escalators between
@@ -889,7 +893,7 @@ class OSM:
             node_gdf, edges = without_lines_between_levels(node_gdf, edges)
             node_gdf, edges = split_lifts(node_gdf, edges)
             node_gdf, edges = join_lift_areas(node_gdf, edges, lifts)
-            result = node_gdf, with_lift_lengths(edges)
+            result = node_gdf, with_climb_lengths(edges)
         return result
 
     @contextlib.contextmanager

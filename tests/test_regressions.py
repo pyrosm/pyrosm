@@ -7598,6 +7598,72 @@ def test_indoor_reads_cross_stairs_mapped_as_rooms(tmp_path, engine, room, joine
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
+    "room, steps, joined",
+    [({"stairs": "yes"}, False, True), ({"stairs": "yes"}, True, True), ({}, False, False)],
+)
+def test_indoor_reads_climb_stairs_at_a_door_repeated_on_two_floors(
+    tmp_path, engine, room, steps, joined
+):
+    """A staircase mapped as a room on levels 0 and 1 (way 41) has one door (node 5,
+    level=0, repeat_on=1), into a level-0 corridor (way 40) and, at the same place one
+    floor up, into a level-1 corridor drawn over it (way 42); a walkway enters each
+    corridor. A line across the stairs from the door to its copy on level 1, from that
+    place to itself, joins the walkways; its length is that of a climb along stairs
+    between the two levels (way 52) when there are some, else 4 m. A plain room on both
+    levels joins nothing."""
+    import math
+
+    import numpy as np
+
+    from pyrosm import OSM
+    from pyrosm.indoor import node_copy_id
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (10, 0), 3: (10, 10), 4: (0, 10), 5: (10, 5), 6: (20, 0),
+          7: (20, 10), 8: (25, 0), 9: (25, 10), 14: (40, 0), 15: (40, 6), 16: (45, 0),
+          17: (45, 6)}
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    door = {"door": "yes", "level": "0", "repeat_on": "1"}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [door if i == 5 else None for i in ids],
+    }
+    ways = [
+        {"id": 41, "refs": [1, 2, 5, 3, 4, 1],
+         "tags": {"indoor": "room", "level": "0;1", **room}},
+        {"id": 40, "refs": [2, 6, 7, 3, 5, 2], "tags": {"indoor": "corridor", "level": "0"}},
+        {"id": 42, "refs": [2, 6, 7, 3, 5, 2], "tags": {"indoor": "corridor", "level": "1"}},
+        {"id": 50, "refs": [8, 6], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 51, "refs": [9, 7], "tags": {"highway": "footway", "level": "1"}},
+    ]
+    if steps:
+        ways += [
+            {"id": 52, "refs": [14, 15], "tags": {"highway": "steps", "level": "0;1"}},
+            {"id": 53, "refs": [16, 14], "tags": {"highway": "footway", "level": "0"}},
+            {"id": 54, "refs": [15, 17], "tags": {"highway": "footway", "level": "1"}},
+        ]
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "stairs.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    _, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    assert _nodes_joined(edges, 8, 9) == joined
+    step = edges[edges["walking_area"] & (edges["id"] == 41)]
+    expected = [(5, node_copy_id(5, 1), 0.0, 1.0)] if joined else []
+    assert list(zip(step["u"], step["v"], step["u_level"], step["v_level"])) == expected
+    if joined:
+        climb = edges.loc[edges["id"] == 52, "length"].sum() if steps else 4.0
+        assert step["length"].iloc[0] == pytest.approx(climb, abs=1e-3)
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
 @pytest.mark.parametrize("repeat_on, on_walkway", [(True, False), (False, False), (True, True)])
 def test_indoor_reads_split_doors_that_repeat_on_other_levels(
     tmp_path, engine, repeat_on, on_walkway
