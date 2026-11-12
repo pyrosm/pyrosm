@@ -743,12 +743,14 @@ class OSM:
             enters the nearest platform or indoor area on that level that it lies
             outside of within 2.5 metres: its edges run from the end to the closest
             point of the area's outline and on inside the area. An edge across an area
-            between two nodes on different levels is left out, unless the area is
-            stairs or an escalator mapped as an area (`stairs` or `conveying` other than
-            `no`, `room=stairs` or `highway=steps`) whose steps are not also mapped as a
-            way: stairs, an escalator or a moving walkway with the middle of an edge
-            inside the area joins its levels instead, and the edges across the area run
-            only on one level.
+            between two nodes on different levels is left out, unless the area is stairs
+            or an escalator mapped as an area (`stairs` or `conveying` other than `no`,
+            `room=stairs` or `highway=steps`) whose steps are not also mapped as a way:
+            stairs, an escalator or a moving walkway with the middle of an edge inside
+            the area joins its levels instead, and the edges across the area run only on
+            one level. Across other such areas, of the edges between two neighbouring
+            levels only the longest stays, so that one edge runs from end to end, as
+            stairs or an escalator would.
             The edges get the level at each of their two ends in
             the columns `u_level` and `v_level`, from the OSM `level` tags: an edge with
             one level has it at both ends; stairs, escalators and moving walkways run

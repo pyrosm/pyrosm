@@ -7118,8 +7118,9 @@ def test_indoor_reads_give_lines_across_a_multi_level_area_the_levels_of_their_e
     level 0 walkways at nodes 6 and 10, a walkway without a level through node 11 and a
     door tagged level=0 at node 12: each line across it has, at each end, the level of
     the walkway there or the door's own level, and none at node 11. Tagged stairs=yes,
-    the area joins node 5 to the level 0 entrances; otherwise only to node 11, whose
-    level is not known. A second such area (way 60), entered only by a level -1 walkway
+    the area joins node 5 to the level 0 entrances through the longest such line, to
+    node 6 (20 m; those to nodes 10 and 12 are 14 m and 18 m long); otherwise only to
+    node 11, whose level is not known. A second such area (way 60), entered only by a level -1 walkway
     at node 25 and a door tagged level=0 at node 24, then has no line, and the door is
     left out of the nodes."""
     import math
@@ -7165,11 +7166,10 @@ def test_indoor_reads_give_lines_across_a_multi_level_area_the_levels_of_their_e
         (u, v, None if a != a else a, None if b != b else b)
         for u, v, a, b in zip(across["u"], across["v"], across["u_level"], across["v_level"])
     ]
-    between = [(5, 6, -1.0, 0.0), (5, 10, -1.0, 0.0), (5, 12, -1.0, 0.0)]
     assert rows == [
-        *(between[:2] if stairs else []), (5, 11, -1.0, None),
-        *(between[2:] if stairs else []), (6, 10, 0.0, 0.0), (6, 11, 0.0, None),
-        (6, 12, 0.0, 0.0), (10, 11, 0.0, None), (10, 12, 0.0, 0.0), (11, 12, None, 0.0),
+        *([(5, 6, -1.0, 0.0)] if stairs else []), (5, 11, -1.0, None),
+        (6, 10, 0.0, 0.0), (6, 11, 0.0, None), (6, 12, 0.0, 0.0), (10, 11, 0.0, None),
+        (10, 12, 0.0, 0.0), (11, 12, None, 0.0),
     ]
     other = edges[edges["id"] == 60]
     assert list(zip(other["u"], other["v"])) == ([(24, 25)] if stairs else [])
@@ -7612,6 +7612,52 @@ def test_indoor_reads_cross_stairs_mapped_as_rooms(
     if steps:
         expected = [(5, 14, 0.0, 0.0), (6, 15, 1.0, 1.0)]
     assert list(zip(stairs["u"], stairs["v"], stairs["u_level"], stairs["v_level"])) == expected
+
+
+def test_indoor_reads_keep_one_line_per_two_floors_across_stair_areas():
+    """Across stairs mapped as an area without a way of its own (way 40, levels 0 to 2),
+    of the lines between two levels only the longest between each two neighbouring
+    levels stays (1-3 on levels 0 and 1, 3-5 on levels 1 and 2): shorter ones and the
+    line skipping level 1 go, and so do the nodes only they used. Lines between levels
+    across a corridor (way 41) and across stairs whose steps are mapped as a way inside
+    them (way 42) go; a line on one level stays."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, Point
+
+    from pyrosm.indoor import without_lines_between_levels
+
+    lines = [
+        (40, 1, 2, 0.0, 1.0, 3.0),
+        (40, 1, 3, 0.0, 1.0, 8.0),
+        (40, 4, 3, 1.0, 1.0, 2.0),
+        (40, 1, 5, 0.0, 2.0, 9.0),
+        (40, 3, 5, 1.0, 2.0, 4.0),
+        (40, 2, 6, 1.0, 2.0, 2.0),
+        (41, 7, 8, 0.0, 1.0, 5.0),
+        (42, 9, 10, 0.0, 1.0, 5.0),
+    ]
+    stairs = {40: "yes", 41: None, 42: "yes"}
+    edges = gpd.GeoDataFrame(
+        {
+            "id": [line[0] for line in lines],
+            "osm_type": "way",
+            "u": [line[1] for line in lines],
+            "v": [line[2] for line in lines],
+            "u_level": [line[3] for line in lines],
+            "v_level": [line[4] for line in lines],
+            "length": [line[5] for line in lines],
+            "walking_area": True,
+            "stairs": [stairs[line[0]] for line in lines],
+        },
+        geometry=[LineString([(0, 0), (1, 1)])] * len(lines),
+        crs=4326,
+    )
+    nodes = gpd.GeoDataFrame(
+        {"id": list(range(1, 11))}, geometry=[Point(0, 0)] * 10, crs=4326
+    )
+    nodes, edges = without_lines_between_levels(nodes, edges, {("way", 42)})
+    assert list(zip(edges["u"], edges["v"])) == [(1, 3), (4, 3), (3, 5)]
+    assert sorted(nodes["id"]) == [1, 3, 4, 5]
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])

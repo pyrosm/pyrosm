@@ -27,7 +27,8 @@ takes at each end the level in the range of the other edges there or, without on
 end node's own ``level``; an end with none or with several stays empty, and a line
 between entrances on two levels has these two levels; such lines are kept only across
 stairs or an escalator mapped as an area whose steps are not also mapped as a stairs,
-escalator or moving-walkway way inside it (see :func:`without_lines_between_levels`). A
+escalator or moving-walkway way inside it, and there only the longest line between each
+two neighbouring levels (see :func:`without_lines_between_levels`). A
 way of several edges also keeps the level of a walkway that joins it in between (or of
 an inner node's own ``level``), an end without a level then takes the other end of the
 range from the nearest such level, a way whose two ends are on one level reaches the
@@ -615,13 +616,47 @@ def stair_areas_with_ways(areas, edges):
     }
 
 
+def _longest_per_level_pair(edges, rows):
+    """Whether each of the lines ``rows`` of ``edges`` (with ``u_level``, ``v_level``
+    and ``length``), across stairs or escalators mapped as areas and between two levels,
+    is the longest of its area's lines between the same two levels, when these levels
+    are neighbours among the levels of the area's lines; a line that skips such a level
+    is not."""
+    low = np.fmin(
+        edges["u_level"].to_numpy(dtype=float)[rows],
+        edges["v_level"].to_numpy(dtype=float)[rows],
+    )
+    high = np.fmax(
+        edges["u_level"].to_numpy(dtype=float)[rows],
+        edges["v_level"].to_numpy(dtype=float)[rows],
+    )
+    lengths = edges["length"].to_numpy(dtype=float)[rows]
+    areas = list(zip(edges["osm_type"].to_numpy()[rows], edges["id"].to_numpy()[rows]))
+    levels = {}
+    for area, a, b in zip(areas, low, high):
+        levels.setdefault(area, set()).update((a, b))
+    longest = {}
+    for i, (area, a, b) in enumerate(zip(areas, low, high)):
+        ordered = sorted(levels[area])
+        if ordered.index(b) - ordered.index(a) != 1:
+            continue
+        pair = (area, a, b)
+        if pair not in longest or lengths[i] > lengths[longest[pair]]:
+            longest[pair] = i
+    kept = np.zeros(len(rows), dtype=bool)
+    kept[list(longest.values())] = True
+    return kept
+
+
 def without_lines_between_levels(nodes, edges, stepped=()):
-    """``nodes`` and ``edges`` (with ``u_level`` and ``v_level``) without the lines
-    across areas (``walking_area`` True) whose two ends are on two different levels,
-    except across stairs or an escalator mapped as an area (see :func:`_is_stair_area`)
-    whose steps are not also mapped as a way inside it (the areas ``stepped``,
-    ``(osm_type, id)`` each, see :func:`stair_areas_with_ways`), and without the doors
-    that only those lines used."""
+    """``nodes`` and ``edges`` (with ``u_level``, ``v_level`` and ``length``) without
+    the lines across areas (``walking_area`` True) whose two ends are on two different
+    levels, except across stairs or an escalator mapped as an area (see
+    :func:`_is_stair_area`) whose steps are not also mapped as a way inside it (the
+    areas ``stepped``, ``(osm_type, id)`` each, see :func:`stair_areas_with_ways`): of
+    those, for each two neighbouring levels the longest line between them (see
+    :func:`_longest_per_level_pair`); and without the doors that only the left-out lines
+    used."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     u_level = edges["u_level"].to_numpy(dtype=float)
@@ -641,6 +676,7 @@ def without_lines_between_levels(nodes, edges, stepped=()):
         ],
         dtype=bool,
     )
+    stair[stair] = _longest_per_level_pair(edges, rows[stair])
     rows = rows[~stair]
     if not len(rows):
         return nodes, edges
