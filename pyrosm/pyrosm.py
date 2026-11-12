@@ -80,6 +80,7 @@ from pyrosm.indoor import (
     indoor_areas,
     join_lift_areas,
     split_lifts,
+    stair_areas_with_ways,
     with_indoor_crossings,
     with_indoor_columns,
     with_climb_lengths,
@@ -743,8 +744,11 @@ class OSM:
             outside of within 2.5 metres: its edges run from the end to the closest
             point of the area's outline and on inside the area. An edge across an area
             between two nodes on different levels is left out, unless the area is
-            stairs or an escalator mapped as an area (`stairs` or `conveying` other
-            than `no`, `room=stairs` or `highway=steps`).
+            stairs or an escalator mapped as an area (`stairs` or `conveying` other than
+            `no`, `room=stairs` or `highway=steps`) whose steps are not also mapped as a
+            way: stairs, an escalator or a moving walkway with the middle of an edge
+            inside the area joins its levels instead, and the edges across the area run
+            only on one level.
             The edges get the level at each of their two ends in
             the columns `u_level` and `v_level`, from the OSM `level` tags: an edge with
             one level has it at both ends; stairs, escalators and moving walkways run
@@ -891,11 +895,11 @@ class OSM:
             if edges is None:
                 _warn_no_edges(custom_filter)
                 return node_gdf, edges
-            node_gdf, edges, lifts, border_levels = self._with_indoor_areas(
+            node_gdf, edges, lifts, border_levels, stepped = self._with_indoor_areas(
                 node_gdf, edges, timestamp, walking
             )
             edges = with_indoor_columns(edges, escalator_slope, node_gdf, border_levels)
-            node_gdf, edges = without_lines_between_levels(node_gdf, edges)
+            node_gdf, edges = without_lines_between_levels(node_gdf, edges, stepped)
             node_gdf, edges = split_lifts(node_gdf, edges)
             node_gdf, edges = join_lift_areas(node_gdf, edges, lifts)
             result = node_gdf, with_climb_lengths(edges)
@@ -1088,14 +1092,16 @@ class OSM:
         return select_areas(candidates, keep, rule)
 
     def _with_indoor_areas(self, nodes, edges, timestamp, walking=None):
-        """``(nodes, edges, lifts, levels)`` of an indoor network read: ``nodes`` and
-        ``edges`` without the walkways around its lift areas (see
+        """``(nodes, edges, lifts, levels, stepped)`` of an indoor network read:
+        ``nodes`` and ``edges`` without the walkways around its lift areas (see
         :func:`pyrosm.indoor.without_lift_area_ways`), with the edges across its indoor
         areas and its ``walking`` areas (see :meth:`_walking_area_polygons`) and the doors
         they use (see :func:`pyrosm.indoor.with_indoor_crossings`); the lift areas (see
-        :func:`pyrosm.indoor.indoor_areas`), None when there are none; and the levels of
+        :func:`pyrosm.indoor.indoor_areas`), None when there are none; the levels of
         the nodes where open indoor spaces meet and are entered (see
-        :func:`pyrosm.indoor.border_entrances`), ``{id: (level,)}``."""
+        :func:`pyrosm.indoor.border_entrances`), ``{id: (level,)}``; and the stair and
+        escalator areas whose steps are also mapped as ways inside them (see
+        :func:`pyrosm.indoor.stair_areas_with_ways`)."""
         from pyrosm.pbf_writer import _FIELD_COLS, _NETWORK_COLS
 
         columns = [
@@ -1161,8 +1167,9 @@ class OSM:
             }
         areas, lifts = self._drop_node_lists(areas), self._drop_node_lists(lifts)
         nodes, edges = without_lift_area_ways(nodes, edges, lifts)
+        stepped = stair_areas_with_ways(areas, edges)
         nodes, edges = with_indoor_crossings(nodes, edges, areas, doors, borders, lifts)
-        return nodes, edges, lifts, levels
+        return nodes, edges, lifts, levels, stepped
 
     @logged()
     @records_read(lambda args: _require_layer_key(args["custom_filter"], "building"))

@@ -26,7 +26,8 @@ which level, and both ends stay empty. A line across an area with a level list o
 takes at each end the level in the range of the other edges there or, without one, the
 end node's own ``level``; an end with none or with several stays empty, and a line
 between entrances on two levels has these two levels; such lines are kept only across
-stairs or an escalator mapped as an area (see :func:`without_lines_between_levels`). A
+stairs or an escalator mapped as an area whose steps are not also mapped as a stairs,
+escalator or moving-walkway way inside it (see :func:`without_lines_between_levels`). A
 way of several edges also keeps the level of a walkway that joins it in between (or of
 an inner node's own ``level``), an end without a level then takes the other end of the
 range from the nearest such level, a way whose two ends are on one level reaches the
@@ -583,11 +584,44 @@ def with_indoor_columns(edges, escalator_slope, nodes=None, levels=None):
     return edges
 
 
-def without_lines_between_levels(nodes, edges):
-    """``nodes`` and ``edges`` (with ``u_level`` and ``v_level``) without the lines across
-    areas (``walking_area`` True) whose two ends are on two different levels, except
-    across stairs or an escalator mapped as an area (see :func:`_is_stair_area`), and
-    without the doors that only those lines used."""
+def stair_areas_with_ways(areas, edges):
+    """The ``(osm_type, id)`` of those of ``areas`` (a frame with ``osm_type``, ``id``,
+    tag columns and polygons) that are stairs or an escalator mapped as an area (see
+    :func:`_is_stair_area`) with their steps also mapped as a way: an edge among
+    ``edges`` (the network's edges, with ``osm_type``) of a way that is stairs, an
+    escalator or a moving walkway (see :func:`is_vertical`) has its middle inside the
+    area."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
+    if areas is None or not len(areas) or not len(edges):
+        return set()
+    area_tags = _frame_tags(areas, _frame_tag_columns(areas))
+    stair = np.array([_is_stair_area(tags) for tags in area_tags], dtype=bool)
+    rows = np.flatnonzero((edges["osm_type"] == "way").to_numpy() & ~_area_lines(edges))
+    if not stair.any() or not len(rows):
+        return set()
+    middles = shapely.line_interpolate_point(
+        edges.geometry.to_numpy()[rows], 0.5, normalized=True
+    )
+    inside, area_rows = shapely.STRtree(areas.geometry.to_numpy()[stair]).query(
+        middles, predicate="within"
+    )
+    edge_tags = _frame_tags(edges.iloc[rows[inside]], _frame_tag_columns(edges))
+    keys = list(zip(areas["osm_type"][stair], areas["id"][stair]))
+    return {
+        (keys[area][0], int(keys[area][1]))
+        for area, tags in zip(area_rows, edge_tags)
+        if is_vertical(tags)
+    }
+
+
+def without_lines_between_levels(nodes, edges, stepped=()):
+    """``nodes`` and ``edges`` (with ``u_level`` and ``v_level``) without the lines
+    across areas (``walking_area`` True) whose two ends are on two different levels,
+    except across stairs or an escalator mapped as an area (see :func:`_is_stair_area`)
+    whose steps are not also mapped as a way inside it (the areas ``stepped``,
+    ``(osm_type, id)`` each, see :func:`stair_areas_with_ways`), and without the doors
+    that only those lines used."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     u_level = edges["u_level"].to_numpy(dtype=float)
@@ -599,7 +633,15 @@ def without_lines_between_levels(nodes, edges):
         & (u_level != v_level)
     )
     tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges))
-    rows = rows[[not _is_stair_area(row_tags) for row_tags in tags]]
+    keys = zip(edges["osm_type"].to_numpy()[rows], edges["id"].to_numpy()[rows])
+    stair = np.array(
+        [
+            _is_stair_area(row_tags) and (key[0], int(key[1])) not in stepped
+            for row_tags, key in zip(tags, keys)
+        ],
+        dtype=bool,
+    )
+    rows = rows[~stair]
     if not len(rows):
         return nodes, edges
     drop = np.zeros(len(edges), dtype=bool)
