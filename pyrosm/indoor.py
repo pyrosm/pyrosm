@@ -43,10 +43,14 @@ has no level. The column ``vertical`` marks escalators, moving walkways and stai
 the direction it moves (see :func:`moving_one_way`). A lift node (``highway=elevator``)
 where walkways on several levels meet is split into one node per level, joined by lift
 edges (see :func:`split_lifts`), whose length is that of an escalator or stairs between
-their levels plus 1 m (see :func:`with_climb_lengths`); a lift node whose own ``level``
-tag names levels that its walkways do not reach also enters, from inside, the platform
-and indoor areas of one level on those levels that it lies in, when it then reaches two
-or more levels, unless it lies inside a lift area on one of its levels (see
+their levels plus 1 m (see :func:`with_climb_lengths`); where a lift node's own
+``level`` tag names two or more levels and its walkways with a level reach all of them
+but one, its walkway ends without a level take that one, unless the walkway's own
+``level`` tag leaves it out (see :func:`_lift_end_levels`); a lift node whose own
+``level`` tag names levels that its
+walkways do not reach also enters, from inside, the platform and indoor areas of one
+level on those levels that it lies in, when it then reaches two or more levels, unless
+it lies inside a lift area on one of its levels (see
 :func:`pyrosm.walking_areas.crossing_rows`), and gets lift edges to them; a lift mapped
 as an area (``highway=elevator`` on a closed way or multipolygon) is not a walkway
 around the lift but joins the levels at which the network enters it in the same way, and
@@ -839,7 +843,7 @@ def without_clashing_copies(borders, nodes, doors):
 
     if borders is None:
         return None
-    doors_ids, split = set(), _lift_ids(nodes)
+    doors_ids, split = set(), set(_lift_levels(nodes))
     if doors is not None:
         doors_ids = set(doors["id"])
         split |= {
@@ -1307,10 +1311,13 @@ def _tags_by_node(nodes):
             yield int(node), tags
 
 
-def _lift_ids(nodes):
-    """The ids of the lift nodes (``highway=elevator``) among ``nodes``."""
+def _lift_levels(nodes):
+    """``{id: [level, ...]}``: each lift node (``highway=elevator``) among ``nodes`` and
+    the levels its own ``level`` tag names (see :func:`_whole_levels`)."""
     return {
-        node for node, tags in _tags_by_node(nodes) if tags.get("highway") == "elevator"
+        node: _whole_levels(level_ranges(tags.get("level")) or [])
+        for node, tags in _tags_by_node(nodes)
+        if tags.get("highway") == "elevator"
     }
 
 
@@ -1329,18 +1336,22 @@ def split_lifts(nodes, edges):
     """``nodes`` and ``edges`` (with ``u_level`` and ``v_level``) with each lift node
     where edges on two or more levels meet split into one node per level: the lowest
     keeps the node's id, the others get :func:`node_copy_id`, and each edge ends at the
-    copy of its level there (an end without a level stays at the lowest). Lift edges of
+    copy of its level there (an end without a level stays at the lowest, unless it takes
+    the one level of the lift node's own ``level`` tag that the other edges do not
+    reach, see :func:`_lift_end_levels`; the edges come back with that level). Lift
+    edges of
     length 0 join the copies of neighbouring levels, with the lift node's id and metadata
     (those of :data:`LIFT_METADATA` that ``edges`` has), ``osm_type`` "node",
     ``highway`` "elevator" and ``vertical`` "lift". A copy id that another node has
     already raises a ValueError; a lift node with a negative id (one pyrosm wrote) is
     not split."""
-    lifts = _lift_ids(nodes)
+    lifts = _lift_levels(nodes)
     if not lifts:
         return nodes, edges
     u, v = edges["u"].to_numpy().copy(), edges["v"].to_numpy().copy()
-    u_level, v_level = edges["u_level"].to_numpy(), edges["v_level"].to_numpy()
-    levels = _levels_at_nodes(edges, lifts)
+    u_level, v_level = _lift_end_levels(edges, lifts)
+    ends = edges[["u", "v"]].assign(u_level=u_level, v_level=v_level)
+    levels = _levels_at_nodes(ends, lifts)
     at = nodes.set_index("id")
     metadata = [
         col for col in LIFT_METADATA if col in edges.columns and col in at.columns
@@ -1385,7 +1396,44 @@ def split_lifts(nodes, edges):
             )
     if not lift_rows:
         return nodes, edges
-    return _with_lift_rows(nodes, edges.assign(u=u, v=v), copies, lift_rows, metadata)
+    edges = edges.assign(u=u, v=v, u_level=u_level, v_level=v_level)
+    return _with_lift_rows(nodes, edges, copies, lift_rows, metadata)
+
+
+def _lift_end_levels(edges, lifts):
+    """``u_level`` and ``v_level`` of ``edges`` (arrays), where the ends without a level
+    at a lift node of ``lifts`` (``{id: [level, ...]}``, the levels of its own ``level``
+    tag) take the one level of the tag that the edges with a level there do not reach,
+    when the tag names two or more levels and the edges reach all the others, the lift
+    node's id is one :func:`node_copy_id` copies, and the edge's own ``level`` tag, if
+    any, names that level."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+    from pyrosm.walking_areas import _in_ranges
+
+    u_level = edges["u_level"].to_numpy(dtype=float).copy()
+    v_level = edges["v_level"].to_numpy(dtype=float).copy()
+    missed = {}
+    for lift, reached in _levels_at_nodes(edges, lifts).items():
+        missing = [level for level in lifts[lift] if level not in reached]
+        if len(missing) == 1 < len(lifts[lift]) and 0 < lift <= _MAX_LIFT_ID:
+            missed[lift] = missing[0]
+    if not missed:
+        return u_level, v_level
+    u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
+    rows = np.flatnonzero(
+        (np.isin(u, list(missed)) & np.isnan(u_level))
+        | (np.isin(v, list(missed)) & np.isnan(v_level))
+    )
+    tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges))
+    for row, row_tags in zip(rows, tags):
+        ranges = level_ranges(row_tags.get("level"))
+        for ends, end_levels in ((u, u_level), (v, v_level)):
+            level = missed.get(int(ends[row]))
+            if level is None or not np.isnan(end_levels[row]):
+                continue
+            if ranges is None or _in_ranges(level, ranges):
+                end_levels[row] = level
+    return u_level, v_level
 
 
 def _with_lift_rows(nodes, edges, copies, lift_rows, metadata, rows=None):

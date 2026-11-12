@@ -1106,6 +1106,56 @@ def test_indoor_lifts_split_per_level():
     assert split_lifts(written, two.replace({1: -1}))[1]["u"].tolist() == [2, -1]
 
 
+@pytest.mark.parametrize(
+    "lift_level, walkway_level, end_level",
+    [
+        ("-1;0", None, 0.0),
+        ("-1;0", "0;1", 0.0),
+        ("-1;0", "1;2", np.nan),
+        ("-2;-1;0", None, np.nan),
+    ],
+)
+def test_lift_end_without_level_takes_missed_tag_level(
+    lift_level, walkway_level, end_level
+):
+    """An end without a level at a lift node takes the one level of the lift's own
+    ``level`` tag that the edges with a level there miss (way 11 at level -1), unless the
+    walkway's own ``level`` tag leaves that level out or the tag names two missed levels;
+    the lift is then split on both levels."""
+    import geopandas as gpd
+    from shapely.geometry import LineString, Point
+
+    from pyrosm.indoor import node_copy_id, split_lifts
+
+    nodes = gpd.GeoDataFrame(
+        {"id": [1, 2, 3], "tags": [{"highway": "elevator", "level": lift_level}, {}, {}]},
+        geometry=[Point(0, 0), Point(1, 0), Point(2, 0)],
+        crs=4326,
+    )
+    edges = gpd.GeoDataFrame(
+        {
+            "id": [10, 11],
+            "u": [2, 3],
+            "v": [1, 1],
+            "u_level": [np.nan, -1.0],
+            "v_level": [np.nan, -1.0],
+            "level": [walkway_level, "-1"],
+        },
+        geometry=[LineString([(0, 0), (1, 1)])] * 2,
+        crs=4326,
+    )
+    _, split = split_lifts(nodes, edges)
+    walkway = split.iloc[0]
+    assert walkway["u_level"] != walkway["u_level"]
+    if end_level == end_level:
+        assert walkway["v_level"] == end_level and walkway["v"] == node_copy_id(1, 1)
+        assert split.loc[2, ["u", "v", "u_level", "v_level"]].tolist() == [
+            1, node_copy_id(1, 1), -1.0, 0.0
+        ]
+    else:
+        assert split is edges
+
+
 def test_lift_areas_joined_per_level(monkeypatch):
     """A lift area that the network enters on two of its levels gets a node per level in
     its middle, an edge to it from each entrance there (on that level, with that one
