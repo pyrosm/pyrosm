@@ -1,6 +1,6 @@
 ---
 name: pyrosm
-description: Use when writing or running Python code that reads OpenStreetMap data with pyrosm, downloads OSM extracts with it (get_data, get_data_by_area, get_data_by_bbox, get_data_by_geocoding, find_extracts, recipes) or geocodes places with it. Says how to plan a download and reuse it, what the data providers ask, and what pyrosm's refusals mean.
+description: Use when writing or running Python code that reads OpenStreetMap data with pyrosm, downloads OSM extracts with it (get_data, get_data_by_area, get_data_by_bbox, get_data_by_geocoding, find_extracts, recipes), geocodes places with it or builds indoor networks with it (indoor_elements). Says how to plan a download and reuse it, what the data providers ask, what pyrosm's refusals mean, and what to check before routing in an indoor network.
 ---
 
 # pyrosm
@@ -86,6 +86,23 @@ https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the documen
   a release asset, and let the pipeline fetch it from there. If a pipeline must download
   an extract, cache the download folder between runs. Do not write a test or a job that
   downloads an extract on every run.
+
+## Indoor networks
+
+- `osm.get_network("walking", nodes=True, indoor_elements=True)` and
+  `osm.get_graph("walking", indoor_elements=True)` add the walkways, stairs, escalators and
+  lifts inside stations and buildings, with lines across platforms and indoor areas. They
+  work for the `walking`, `all` and `all_public` network types and with a `custom_filter`.
+  Each edge has the level at each end in `u_level` and `v_level`, and `vertical` marks
+  stairs, escalators, moving walkways and lifts.
+- The `length` of a lift edge is an estimate (the climb along escalators or stairs between
+  its levels, else 4 m per level, plus 1 m), not a measured distance. For travel times,
+  give lifts and escalators times of their own, as the documentation page Indoor passages
+  and platforms shows.
+- pyrosm joins only what the data joins. Before you report a route, check that its start
+  and end lie in one connected part of the network; `get_graph` keeps only the largest
+  part unless `retain_all=True`. Where parts stay apart, tell the user that the
+  OpenStreetMap data has no link there, and do not add edges to join them.
 
 ## What pyrosm's refusals mean
 
