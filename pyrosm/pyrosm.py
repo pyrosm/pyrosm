@@ -730,11 +730,13 @@ class OSM:
             areas (`indoor=area`, also stairs mapped as one) and platform areas that
             share outline nodes on a common level join through those nodes, also
             when one is mapped as a multipolygon, as Simple Indoor Tagging maps them
-            without walls, unless an `indoor=wall` way on their level runs through a
-            node. Where the spaces at a shared node have no level in common, such as
-            stairs on levels 1 and 2 drawn with the nodes of both floors, the spaces of
-            each level join through a copy of the node of their own, with a negative id
-            derived from it; the lowest level keeps the node's id. The end of stairs or
+            without walls, unless an `indoor=wall` way on their level runs along the
+            side they share at a node (a wall that only ends at the node, beside an
+            opening, keeps them joined). Where the spaces at a shared node have no
+            level in common, such as stairs on levels 1 and 2 drawn with the nodes of
+            both floors, the spaces of each level join through a copy of the node of
+            their own, with a negative id derived from it; the lowest level keeps the
+            node's id. The end of stairs or
             an escalator that joins nothing else, and whose level its way gives, also
             enters the nearest platform or indoor area on that level that it lies
             outside of within 2.5 metres: its edges run from the end to the closest

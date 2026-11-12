@@ -7473,7 +7473,13 @@ def test_indoor_reads_join_open_spaces_where_they_meet(
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
 @pytest.mark.parametrize(
     "doors, wall, joined",
-    [(False, None, True), (True, None, False), (False, "1", False), (False, "5", True)],
+    [
+        (False, None, True),
+        (True, None, False),
+        (False, ("1", [2, 3]), False),
+        (False, ("5", [2, 3]), True),
+        (False, ("1", [2, 1]), True),
+    ],
 )
 def test_indoor_reads_join_stairs_to_both_floors_at_shared_nodes(
     tmp_path, engine, doors, wall, joined
@@ -7484,9 +7490,9 @@ def test_indoor_reads_join_stairs_to_both_floors_at_shared_nodes(
     in common at nodes 2 and 3, so each node joins the stairs and the lower corridor on
     level 1, and a copy of it with a negative id the stairs and the upper corridor on
     level 2: the walkways join through the stairs. A door at the shared nodes enters
-    the areas on its own level only and gets no copy. An indoor=wall way through the
-    shared nodes keeps the spaces on its level apart there, but not those of another
-    level."""
+    the areas on its own level only and gets no copy. An indoor=wall way along the
+    shared side from node 2 to 3 keeps the spaces on its level apart there, but not
+    those of another level; one that only ends at node 2 keeps none apart."""
     import math
 
     import numpy as np
@@ -7517,7 +7523,8 @@ def test_indoor_reads_join_stairs_to_both_floors_at_shared_nodes(
         {"id": 51, "refs": [10, 7], "tags": {"highway": "footway", "level": "2"}},
     ]
     if wall:
-        ways.append({"id": 52, "refs": [2, 3], "tags": {"indoor": "wall", "level": wall}})
+        level, refs = wall
+        ways.append({"id": 52, "refs": refs, "tags": {"indoor": "wall", "level": level}})
     path = write_pbf_from_records(
         nodes, ways, [], str(tmp_path / "stairs.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
     )

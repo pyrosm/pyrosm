@@ -1282,11 +1282,12 @@ def test_border_entrances():
     lists of ways, and the nodes with known places (``anchors``, walls), tell the node.
     Where the spaces at a node have no level in common, each group on a common level
     joins, the lowest through the node and the others through copies of it; a wall
-    through the node keeps the spaces on its levels apart. Left out: a vertex whose node
-    no way tells, a node whose places disagree, a node listed twice in one way, a space
-    on a level no other space at the node has, and an area that is not a polygon; a wall
-    whose node list does not match its line tells no places. A door or lift node, or a
-    copy id that a node has already, gets no copy."""
+    keeps the spaces on its levels apart where it runs along the side they share at the
+    node, and anywhere through a node where they only touch. Left out: a vertex whose
+    node no way tells, a node whose places disagree, a node listed twice in one way, a
+    space on a level no other space at the node has, and an area that is not a polygon;
+    a wall whose node list does not match its line tells no places. A door or lift node,
+    or a copy id that a node has already, gets no copy."""
     import json
 
     import geopandas as gpd
@@ -1337,21 +1338,48 @@ def test_border_entrances():
     assert split.set_index("id").loc[-11001, "spaces"] == {("way", 1), ("way", 3)}
     negative = stacked.assign(nodes=[[-n for n in ring] for ring in stacked["nodes"]])
     assert sorted(border_entrances(negative)["id"]) == [-12, -11]
-    # A wall keeps the spaces on its levels apart: one on level 1 through node 11 leaves
-    # the upper group, which takes the node's id; one on level 5 through node 12 leaves
-    # both groups; one without a level tag through node 12 leaves none
-    stacked_walls = gpd.GeoDataFrame(
-        {"id": [21, 22], "osm_type": "way", "indoor": "wall", "level": ["1", "5"],
-         "nodes": [[11, 98], [12, 97]]},
-        geometry=[LineString([(1, 0), (1, -1)]), LineString([(1, 1), (1, 2)])],
+    # A wall keeps the spaces on its levels apart where it runs along the side they
+    # share: one on level 1 along nodes 11 and 12, drawn with a vertex more or as a
+    # closed way, leaves the upper groups, which take the nodes' ids; one on level 5, or
+    # one that only ends at node 11, leaves both groups; one without a level tag none
+    along = gpd.GeoDataFrame(
+        {"id": [21], "osm_type": "way", "indoor": "wall", "level": ["1"],
+         "nodes": [[11, 96, 12]]},
+        geometry=[LineString([(1, 0), (1, 0.5), (1, 1)])],
         crs=4326,
     )
-    walled = border_entrances(stacked, stacked_walls).set_index("id")
-    assert sorted(walled.index) == [-12001, 11, 12]
-    assert walled.loc[11, "level"] == 2
+    closed = along.assign(nodes=[[11, 95, 12, 11]]).set_geometry(
+        [LineString([(1, 0), (1.5, 0.5), (1, 1), (1, 0)])]
+    )
+    for walls in (along, closed):
+        walled = border_entrances(stacked, walls).set_index("id")
+        assert sorted(walled.index) == [11, 12]
+        assert walled.loc[[11, 12], "level"].tolist() == [2, 2]
     assert walled.loc[11, "spaces"] == {("way", 1), ("way", 3)}
-    untagged = stacked_walls.assign(level=["1", None])
-    assert sorted(border_entrances(stacked, untagged)["id"]) == [11]
+    ends = along.assign(nodes=[[11, 98]]).set_geometry([LineString([(1, 0), (1, -1)])])
+    for walls in (along.assign(level="5"), ends):
+        assert sorted(border_entrances(stacked, walls)["id"]) == [-12001, -11001, 11, 12]
+    assert border_entrances(stacked, along.assign(level=None)) is None
+    # A wall along the shared side from node 11 to 16 leaves the opening from 16 to 12:
+    # ways 1 and 2 join at 16 and 12, not at 11. Way 4 touches way 1 only at node 13,
+    # where any wall through the node keeps them apart
+    opening = gpd.GeoDataFrame(
+        {"id": [1, 2, 4], "osm_type": "way", "indoor": "corridor", "level": "0",
+         "nodes": [[10, 11, 16, 12, 13, 10], [11, 14, 15, 12, 16, 11],
+                   [40, 13, 41, 42, 40]]},
+        geometry=[Polygon([(0, 0), (1, 0), (1, 0.5), (1, 1), (0, 1)]),
+                  Polygon([(1, 0), (2, 0), (2, 1), (1, 1), (1, 0.5)]),
+                  Polygon([(-1, 1), (0, 1), (0, 2), (-1, 2)])],
+        crs=4326,
+    )
+    assert sorted(border_entrances(opening)["id"]) == [11, 12, 13, 16]
+    part = gpd.GeoDataFrame(
+        {"id": [23, 24], "osm_type": "way", "indoor": "wall", "level": "0",
+         "nodes": [[11, 16], [13, 43]]},
+        geometry=[LineString([(1, 0), (1, 0.5)]), LineString([(0, 1), (0, 3)])],
+        crs=4326,
+    )
+    assert sorted(border_entrances(opening, part)["id"]) == [12, 16]
     # No copies of a door or lift node, nor with the id of a node of the network
     doors = pd.DataFrame({"id": [12], "tags": [None]})
     network = pd.DataFrame({"id": [-11001], "tags": [None]})
