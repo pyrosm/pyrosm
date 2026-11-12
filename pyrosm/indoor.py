@@ -712,6 +712,19 @@ def indoor_areas(candidates, walking=None, lifts=None):
     return (areas if len(areas) else None), lifts
 
 
+def without_member_nodes(areas):
+    """``(areas, nodes)``: ``areas`` without their ``member_nodes`` column (see
+    :func:`pyrosm.engine.relation_geometry.member_nodes`) and the nodes it lists as a
+    frame with ``id``, ``lon`` and ``lat``, None when it lists none."""
+    if areas is None or "member_nodes" not in areas.columns:
+        return areas, None
+    rows = [
+        row for listed in areas["member_nodes"].dropna() for row in json.loads(listed)
+    ]
+    nodes = pd.DataFrame(rows, columns=["id", "lon", "lat"]) if rows else None
+    return areas.drop(columns="member_nodes"), nodes
+
+
 # The indoor spaces that Simple Indoor Tagging maps without walls; neighbouring ones on a
 # level join where their outlines share nodes (see border_entrances), as platform areas do.
 OPEN_INDOOR = ("corridor", "area")

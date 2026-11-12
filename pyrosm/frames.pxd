@@ -14,4 +14,5 @@ cpdef prepare_geodataframe(nodes,
                            bint keep_metadata=*,
                            bint complete_relations=*,
                            steps=*,
-                           bint grouping_relations=*)
+                           bint grouping_relations=*,
+                           bint member_nodes=*)

@@ -3701,3 +3701,80 @@ def test_osm_custom_criteria_everything_matches_in_memory(
     if fixture == "helsinki_pbf":
         assert _untagged_relation_member_ways(fp) > 0
     _assert_full_parity(mine, ref)
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_relation_reads_keep_member_nodes_on_request(tmp_path, engine):
+    """With ``member_nodes``, a multipolygon relation comes with the nodes of its member
+    ways and their coordinates: an outer ring of two open ways (nodes 1 to 4) and a hole
+    (5 to 7), each node once, in id order; node 8, on no member way, is not listed. A
+    site relation that groups only node 8 has none, also when it is the only relation of
+    the read. A read without it, also after one with it, has no such column."""
+    import json
+
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (4, 0), 3: (4, 4), 4: (0, 4), 5: (1, 1), 6: (2, 1), 7: (1, 2),
+          8: (9, 9)}
+    ids = sorted(xy)
+    lon = {i: round(24.9 + xy[i][0] * 1e-4, 7) for i in ids}
+    lat = {i: round(60.2 + xy[i][1] * 1e-4, 7) for i in ids}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [None] * len(ids),
+    }
+    ways = [{"id": 10, "refs": [1, 2, 3], "tags": {}},
+            {"id": 11, "refs": [3, 4, 1], "tags": {}},
+            {"id": 12, "refs": [5, 6, 7, 5], "tags": {}}]
+    relations = [{"id": 20, "tags": {"type": "multipolygon", "indoor": "area"},
+                  "members": [("way", 10, "outer"), ("way", 11, "outer"),
+                              ("way", 12, "inner")]},
+                 {"id": 30, "tags": {"type": "site", "indoor": "room"},
+                  "members": [("node", 8, "")]}]
+    path = write_pbf_from_records(
+        nodes, ways, relations, str(tmp_path / "rings.osm.pbf"), (24.8, 60.1, 25.0, 60.3)
+    )
+    osm = OSM(path, engine=engine)
+    args = ({"indoor": True}, None, "keep", None, False, False, True, None, True, None,
+            None)
+    found = osm._read_custom_criteria(*args, member_nodes=True).set_index("id")
+    listed = json.loads(found.loc[20, "member_nodes"])
+    assert [[n, round(x, 7), round(y, 7)] for n, x, y in listed] == [
+        [i, lon[i], lat[i]] for i in range(1, 8)
+    ]
+    assert found["member_nodes"].isna().tolist() == [False, True]
+    site = osm._read_custom_criteria(
+        {"indoor": ["room"]}, *args[1:], member_nodes=True
+    )
+    assert site["id"].tolist() == [30] and site["member_nodes"].isna().all()
+    assert "member_nodes" not in osm._read_custom_criteria(*args).columns
+
+
+def test_relation_member_nodes_match_between_readers(helsinki_pbf):
+    """The member nodes of the Helsinki building relations are the same in both readers,
+    and every outline vertex at an OSM node's place (seven decimals) is among them; the
+    others are points the repair of an invalid outline added."""
+    import json
+
+    from pyrosm.new_elements import _coordinate_key
+
+    args = ({"building": True}, None, "keep", None, False, False, True, None, True, None,
+            None)
+    found = {
+        engine: OSM(helsinki_pbf, engine=engine)._read_custom_criteria(
+            *args, member_nodes=True
+        )
+        for engine in ("in_memory", "out_of_core")
+    }
+    assert len(found["in_memory"]) > 0
+    assert dict(zip(found["in_memory"]["id"], found["in_memory"]["member_nodes"])) == dict(
+        zip(found["out_of_core"]["id"], found["out_of_core"]["member_nodes"])
+    )
+    for geometry, listed in zip(found["in_memory"].geometry,
+                                found["in_memory"]["member_nodes"]):
+        keys = {_coordinate_key(x, y) for _, x, y in json.loads(listed)}
+        coords = shapely.get_coordinates(geometry)
+        on_grid = (np.abs(coords * 1e7 - np.round(coords * 1e7)) < 1e-3).all(axis=1)
+        assert all(_coordinate_key(x, y) in keys for x, y in coords[on_grid])

@@ -7391,6 +7391,7 @@ def _nodes_joined(edges, a, b):
         ({"indoor": "room", "level": "0"}, None, False),
         ({"indoor": "area", "stairs": "yes", "level": "0;1"}, None, True),
         ({"indoor": "area", "level": "0"}, "multipolygon", True),
+        ({"indoor": "area", "level": "0"}, "two multipolygons", True),
     ],
 )
 def test_indoor_reads_join_open_spaces_where_they_meet(
@@ -7408,7 +7409,9 @@ def test_indoor_reads_join_open_spaces_where_they_meet(
     shared nodes would join two levels across spaces that are not stairs, and are left
     out. A neighbour mapped as a multipolygon (relation 60) joins at the vertices it
     shares with the corridor, whose nodes the corridor's node list tells once a walkway
-    node on it (node 4) gives the direction the corridor is drawn in."""
+    node on it (node 4) gives the direction the corridor is drawn in. Two multipolygons
+    (relations 61 and 60) join at the vertices they share, whose nodes the nodes of their
+    member ways tell."""
     import math
 
     import numpy as np
@@ -7446,11 +7449,16 @@ def test_indoor_reads_join_open_spaces_where_they_meet(
         ways.append({"id": 42, "refs": [3, 6, 4, 3],
                      "tags": {"indoor": "room", "room": "lobby", "level": "0"}})
     relations = []
-    if variant == "multipolygon":
+    if variant in ("multipolygon", "two multipolygons"):
         ways[1]["tags"] = {}
-        ways.append({"id": 53, "refs": [9, 4], "tags": {"highway": "footway", "level": "0"}})
         relations.append({"id": 60, "members": [("way", 41, "outer")],
                           "tags": {"type": "multipolygon", **neighbour}})
+    if variant == "multipolygon":
+        ways.append({"id": 53, "refs": [9, 4], "tags": {"highway": "footway", "level": "0"}})
+    if variant == "two multipolygons":
+        ways[0]["tags"] = {}
+        relations.append({"id": 61, "members": [("way", 40, "outer")],
+                          "tags": {"type": "multipolygon", **corridor}})
     path = write_pbf_from_records(
         nodes, ways, relations, str(tmp_path / "spaces.osm.pbf"),
         (8.539, 47.379, 8.541, 47.381),
@@ -7463,8 +7471,9 @@ def test_indoor_reads_join_open_spaces_where_they_meet(
     across = edges[edges["walking_area"]]
     at_border = across["u"].isin([2, 3]) | across["v"].isin([2, 3])
     if joined:
-        neighbour_id = 60 if variant == "multipolygon" else 41
-        assert set(across.loc[at_border, "id"]) == {40, neighbour_id}
+        neighbour_id = 60 if variant in ("multipolygon", "two multipolygons") else 41
+        corridor_id = 61 if variant == "two multipolygons" else 40
+        assert set(across.loc[at_border, "id"]) == {corridor_id, neighbour_id}
         assert {2, 3} <= set(found["id"])
     lobby = across[across["id"] == 42]
     assert not (lobby["u"].isin([2, 3]) | lobby["v"].isin([2, 3])).any()

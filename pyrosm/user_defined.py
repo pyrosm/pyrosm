@@ -20,12 +20,15 @@ def get_user_defined_data(
     complete_relations=False,
     keep_all=False,
     steps=None,
+    member_nodes=False,
 ):
     """The elements of the kinds ``keep_nodes``/``keep_ways``/``keep_relations`` that
     ``custom_filter`` keeps (or excludes, with ``filter_type``) as a GeoDataFrame, read
     from the in-memory reader's parsed arrays. Returns ``None`` when nothing matches;
     the selection and the geometries are steps of ``steps`` (a
-    :class:`~pyrosm.utils.progress.Steps`, or None)."""
+    :class:`~pyrosm.utils.progress.Steps`, or None). With ``member_nodes``, the relations
+    have the column ``member_nodes`` (see :func:`pyrosm.frames.prepare_relation_gdf`).
+    """
     if not keep_nodes:
         nodes = None
 
@@ -77,5 +80,6 @@ def get_user_defined_data(
         complete_relations=complete_relations,
         steps=steps,
         grouping_relations=True,
+        member_nodes=member_nodes,
     )
     return gdf
