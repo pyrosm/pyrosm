@@ -20,43 +20,44 @@ their two ends, ``u_level`` and ``v_level``, from the OSM ``level`` tags (see
 list or range on stairs, an escalator or a moving walkway runs between the levels of the
 walkways at the two ends of its way or, at an end where no walkway has a level in the
 range, the end node's own ``level``, and where neither gives an end, the way's
-``incline`` (``up`` rises along the way's drawn direction, ``down`` falls); on another
-walkway, such as a corridor tagged ``level=0;1``, the data does not say which part is on
-which level, and both ends stay empty. A line across an area with a level list or range
-takes at each end the level in the range of the other edges there or, without one, the
-end node's own ``level``; an end with none or with several stays empty, and a line
-between entrances on two levels has these two levels; such lines are kept only across
-stairs or an escalator mapped as an area whose steps are not also mapped as a stairs,
-escalator or moving-walkway way inside it, and there only the longest line between each
-two neighbouring levels (see :func:`without_lines_between_levels`). A
-way of several edges also keeps the level of a walkway that joins it in between (or of
-an inner node's own ``level``), an end without a level then takes the other end of the
-range from the nearest such level, a way whose two ends are on one level reaches the
-other end of its range in between, and the other inner nodes get levels in proportion to
-the distance along the way. Stairs, escalators and moving walkways without a level range
-(no ``level`` tag or a single level) take the levels of the walkways that join their
-way, when these give two different levels, and keep the outermost ones up to the way's
-ends. A platform without a ``level`` tag, its way and the lines across its area, takes
-the level that the other edges give at its nodes, when the platforms joined to it
-through shared nodes meet exactly one level. An edge without a ``level`` tag otherwise
-has no level. The column ``vertical`` marks escalators, moving walkways and stairs; the
-``length`` of an escalator is measured along its slope (see
-:func:`with_indoor_columns`), and in a graph an escalator or moving walkway runs only in
-the direction it moves (see :func:`moving_one_way`). A lift node (``highway=elevator``)
-where walkways on several levels meet is split into one node per level, joined by lift
-edges (see :func:`split_lifts`), whose length is that of an escalator or stairs between
-their levels plus 1 m (see :func:`with_climb_lengths`); where a lift node's own
-``level`` tag names two or more levels and its walkways with a level reach all of them
-but one, its walkway ends without a level take that one, unless the walkway's own
-``level`` tag leaves it out (see :func:`_lift_end_levels`); a lift node whose own
-``level`` tag names levels that its
-walkways do not reach also enters, from inside, the platform and indoor areas of one
-level on those levels that it lies in, when it then reaches two or more levels, unless
-it lies inside a lift area on one of its levels (see
-:func:`pyrosm.walking_areas.crossing_rows`), and gets lift edges to them; a lift mapped
-as an area (``highway=elevator`` on a closed way or multipolygon) is not a walkway
-around the lift but joins the levels at which the network enters it in the same way, and
-lift areas mapped one floor at a time make one lift together (see
+``incline`` (``up`` rises along the way's drawn direction, ``down`` falls), which also
+decides an end whose level only the end node's own level gives (such as a corner shared
+with the floor above) when both ends would otherwise share one level and nothing gives a
+level in between; on another walkway, such as a corridor tagged ``level=0;1``, the data
+does not say which part is on which level, and both ends stay empty. A line across an
+area with a level list or range takes at each end the level in the range of the other
+edges there or, without one, the end node's own ``level``; an end with none or with
+several stays empty, and a line between entrances on two levels has these two levels;
+such lines are kept only across stairs or an escalator mapped as an area whose steps are
+not also mapped as a stairs, escalator or moving-walkway way inside it, and there only
+the longest line between each two neighbouring levels (see
+:func:`without_lines_between_levels`). A way of several edges also keeps the level of a
+walkway that joins it in between (or of an inner node's own ``level``), an end without a
+level then takes the other end of the range from the nearest such level, a way whose two
+ends are on one level reaches the other end of its range in between, and the other inner
+nodes get levels in proportion to the distance along the way. Stairs, escalators and
+moving walkways without a level range (no ``level`` tag or a single level) take the
+levels of the walkways that join their way, when these give two different levels, and
+keep the outermost ones up to the way's ends. A platform without a ``level`` tag, its
+way and the lines across its area, takes the level that the other edges give at its
+nodes, when the platforms joined to it through shared nodes meet exactly one level. An
+edge without a ``level`` tag otherwise has no level. The column ``vertical`` marks
+escalators, moving walkways and stairs; the ``length`` of an escalator is measured along
+its slope (see :func:`with_indoor_columns`), and in a graph an escalator or moving
+walkway runs only in the direction it moves (see :func:`moving_one_way`). A lift node
+(``highway=elevator``) where walkways on several levels meet is split into one node per
+level, joined by lift edges (see :func:`split_lifts`), whose length is that of an
+escalator or stairs between their levels plus 1 m (see :func:`with_climb_lengths`);
+where a lift node's own ``level`` tag names two or more levels and its walkways with a
+level reach all of them but one, its walkway ends without a level take that one, unless
+the walkway's own ``level`` tag leaves it out (see :func:`_lift_end_levels`); a lift
+node whose own ``level`` tag names levels that its walkways do not reach also enters,
+from inside, the platform and indoor areas of one level on those levels that it lies in,
+when it then reaches two or more levels, unless it lies inside a lift area on one of its
+levels (see :func:`pyrosm.walking_areas.crossing_rows`), and gets lift edges to them; a
+lift mapped as an area (``highway=elevator`` on a closed way or multipolygon) is not a
+walkway around the lift but joins the levels at which the network enters it in the same
+way, and lift areas mapped one floor at a time make one lift together (see
 :func:`join_lift_areas`). A door tagged ``repeat_on`` is a door on each of its levels, a
 copy per level (see :func:`door_copies`).
 """
@@ -414,7 +415,9 @@ def _range_points(nodes, low, high, levels_at, node_levels, rise=0):
     same level and no inner node has one, the inner nodes take the other end of the
     range. An end still without a level takes the low end of the range at the start of a
     way that rises (``rise`` 1, see :func:`_rise`) and the high end at its end, the other
-    way round when it falls (-1). None when the ends are not known."""
+    way round when it falls (-1); so does an end whose level only its own level gives,
+    when the two ends of a way without inner levels would otherwise share one level. None
+    when the ends are not known."""
 
     def at(node):
         return _levels_in_range(node, low, high, levels_at, node_levels)
@@ -437,6 +440,13 @@ def _range_points(nodes, low, high, levels_at, node_levels, rise=0):
     if (ends is None or None in ends) and rise and not (first and last):
         bottom, top = (low, high) if rise > 0 else (high, low)
         ends = (first[0] if first else bottom, last[0] if last else top)
+    elif ends is None and first and last and rise:
+        walked = [
+            _span_levels(levels_at.get(node, ()), low, high)
+            for node in (nodes[0], nodes[-1])
+        ]
+        bottom, top = (low, high) if rise > 0 else (high, low)
+        ends = (first[0] if walked[0] else bottom, last[0] if walked[1] else top)
     if ends is None or None in ends or (ends[0] == ends[1] and not inner):
         return None
     return {0: ends[0], len(nodes) - 1: ends[1], **inner}
