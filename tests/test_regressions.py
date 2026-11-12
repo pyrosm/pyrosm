@@ -7475,7 +7475,7 @@ def test_indoor_reads_join_open_spaces_where_they_meet(
     "doors, wall, joined",
     [
         (False, None, True),
-        (True, None, False),
+        (True, None, True),
         (False, ("1", [2, 3]), False),
         (False, ("5", [2, 3]), True),
         (False, ("1", [2, 1]), True),
@@ -7489,10 +7489,11 @@ def test_indoor_reads_join_stairs_to_both_floors_at_shared_nodes(
     and a walkway enters each corridor at a far corner. The three spaces have no level
     in common at nodes 2 and 3, so each node joins the stairs and the lower corridor on
     level 1, and a copy of it with a negative id the stairs and the upper corridor on
-    level 2: the walkways join through the stairs. A door at the shared nodes enters
-    the areas on its own level only and gets no copy. An indoor=wall way along the
-    shared side from node 2 to 3 keeps the spaces on its level apart there, but not
-    those of another level; one that only ends at node 2 keeps none apart."""
+    level 2: the walkways join through the stairs. A door on level 1 at the shared nodes
+    enters the areas on its own level, and the copies of its node those of level 2. An
+    indoor=wall way along the shared side from node 2 to 3 keeps the spaces on its level
+    apart there, but not those of another level; one that only ends at node 2 keeps none
+    apart."""
     import math
 
     import numpy as np

@@ -818,18 +818,27 @@ def border_entrances(areas, walls=None, anchors=()):
 
 def without_clashing_copies(borders, nodes, doors):
     """The ``borders`` (see :func:`border_entrances`) without the copies of the nodes
-    that are doors or lift nodes among ``doors`` and ``nodes`` (frames with ``id`` and
-    tags), whose copies per level :func:`door_copies` and :func:`split_lifts` make with
-    the same ids, and without the copies whose id a node of ``nodes`` or ``doors``, or
-    another border node, has already."""
+    that are doors tagged ``repeat_on`` or lift nodes among ``doors`` and ``nodes``
+    (frames with ``id`` and tags), whose copies per level :func:`door_copies` and
+    :func:`split_lifts` make with the same ids, and without the copies whose id a node
+    of ``nodes`` or ``doors``, or another border node, has already."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
     if borders is None:
         return None
-    doors_ids = set() if doors is None else set(doors["id"])
+    doors_ids, split = set(), _lift_ids(nodes)
+    if doors is not None:
+        doors_ids = set(doors["id"])
+        split |= {
+            int(door)
+            for door, tags in zip(
+                doors["id"], _frame_tags(doors, _frame_tag_columns(doors))
+            )
+            if tags.get("highway") == "elevator" or tags.get("repeat_on")
+        }
     copy = (borders["id"] != borders["node"]).to_numpy()
     taken = set(nodes["id"]) | doors_ids | set(borders["id"][~copy])
-    clash = borders["node"].isin(_lift_ids(nodes) | doors_ids) | borders["id"].isin(
-        taken
-    )
+    clash = borders["node"].isin(split) | borders["id"].isin(taken)
     kept = borders[~copy | ~clash.to_numpy()]
     return kept if len(kept) else None
 

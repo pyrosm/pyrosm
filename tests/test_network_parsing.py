@@ -1286,8 +1286,8 @@ def test_border_entrances():
     node, and anywhere through a node where they only touch. Left out: a vertex whose
     node no way tells, a node whose places disagree, a node listed twice in one way, a
     space on a level no other space at the node has, and an area that is not a polygon;
-    a wall whose node list does not match its line tells no places. A door or lift node,
-    or a copy id that a node has already, gets no copy."""
+    a wall whose node list does not match its line tells no places. A door tagged
+    repeat_on or a lift node, or a copy id that a node has already, gets no copy."""
     import json
 
     import geopandas as gpd
@@ -1380,13 +1380,24 @@ def test_border_entrances():
         crs=4326,
     )
     assert sorted(border_entrances(opening, part)["id"]) == [12, 16]
-    # No copies of a door or lift node, nor with the id of a node of the network
-    doors = pd.DataFrame({"id": [12], "tags": [None]})
+    # No copies of a door tagged repeat_on or a lift node, nor with the id of a node of
+    # the network; a door without repeat_on keeps its copies
+    doors = gpd.GeoDataFrame(
+        {"id": [12], "door": ["yes"], "tags": ['{"repeat_on": "2"}']},
+        geometry=gpd.points_from_xy([1], [1]),
+        crs=4326,
+    )
     network = pd.DataFrame({"id": [-11001], "tags": [None]})
     kept = without_clashing_copies(split, network, doors)
     assert sorted(kept["id"]) == [11, 12]
+    plain = doors.assign(tags=[None])
+    assert sorted(without_clashing_copies(split, network, plain)["id"]) == [-12001, 11, 12]
     lift = pd.DataFrame({"id": [11], "tags": ['{"highway": "elevator"}']})
     assert sorted(without_clashing_copies(split, lift, None)["id"]) == [-12001, 11, 12]
+    # A lift node among the doors only, its filter key as a column as a read gives it
+    lift_door = doors.assign(id=11, door=None, highway="elevator", tags=[None])
+    kept = without_clashing_copies(split, network.iloc[:0], lift_door)
+    assert sorted(kept["id"]) == [-12001, 11, 12]
     assert without_clashing_copies(None, network, doors) is None
     # A border node of a file pyrosm wrote, with the id of the copy of node 11
     own = split[split["id"] == -11001].assign(node=-11001)
