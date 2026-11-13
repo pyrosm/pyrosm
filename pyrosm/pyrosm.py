@@ -86,6 +86,7 @@ from pyrosm.indoor import (
     with_climb_lengths,
     with_platform_filter,
     with_platforms,
+    without_levelless_lines,
     without_lift_area_ways,
     without_lines_between_levels,
 )
@@ -750,7 +751,9 @@ class OSM:
             the area joins its levels instead, and the edges across the area run only on
             one level. Across other such areas, of the edges between two neighbouring
             levels only the longest stays, so that one edge runs from end to end, as
-            stairs or an escalator would.
+            stairs or an escalator would. An edge across an area tagged with a `level`
+            whose two ends have no level is left out as well: nothing tells on which
+            level it runs.
             The edges get the level at each of their two ends in
             the columns `u_level` and `v_level`, from the OSM `level` tags: an edge with
             one level has it at both ends; stairs, escalators and moving walkways run
@@ -902,6 +905,7 @@ class OSM:
             )
             edges = with_indoor_columns(edges, escalator_slope, node_gdf, border_levels)
             node_gdf, edges = without_lines_between_levels(node_gdf, edges, stepped)
+            node_gdf, edges = without_levelless_lines(node_gdf, edges)
             node_gdf, edges = split_lifts(node_gdf, edges)
             node_gdf, edges = join_lift_areas(node_gdf, edges, lifts)
             result = node_gdf, with_climb_lengths(edges)

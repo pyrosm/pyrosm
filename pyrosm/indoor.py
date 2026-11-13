@@ -27,10 +27,11 @@ level in between; on another walkway, such as a corridor tagged ``level=0;1``, t
 does not say which part is on which level, and both ends stay empty. A line across an
 area with a level list or range takes at each end the level in the range of the other
 edges there or, without one, the end node's own ``level``; an end with none or with
-several stays empty, and a line between entrances on two levels has these two levels;
-such lines are kept only across stairs or an escalator mapped as an area whose steps are
-not also mapped as a stairs, escalator or moving-walkway way inside it, and there only
-the longest line between each two neighbouring levels (see
+several stays empty (a line with both ends empty is left out, see
+:func:`without_levelless_lines`), and a line between entrances on two levels has these
+two levels; such lines are kept only across stairs or an escalator mapped as an area
+whose steps are not also mapped as a stairs, escalator or moving-walkway way inside it,
+and there only the longest line between each two neighbouring levels (see
 :func:`without_lines_between_levels`). A way of several edges also keeps the level of a
 walkway that joins it in between (or of an inner node's own ``level``), an end without a
 level then takes the other end of the range from the nearest such level, a way whose two
@@ -687,7 +688,29 @@ def without_lines_between_levels(nodes, edges, stepped=()):
         dtype=bool,
     )
     stair[stair] = _longest_per_level_pair(edges, rows[stair])
-    rows = rows[~stair]
+    return _without_rows(nodes, edges, rows[~stair])
+
+
+def without_levelless_lines(nodes, edges):
+    """``nodes`` and ``edges`` (with ``u_level`` and ``v_level``) without the lines
+    across areas (``walking_area`` True) tagged with a ``level`` whose two ends have no
+    level, so that nothing tells on which level they run, and without the nodes that
+    only those lines used."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
+    rows = np.flatnonzero(
+        _area_lines(edges)
+        & np.isnan(edges["u_level"].to_numpy(dtype=float))
+        & np.isnan(edges["v_level"].to_numpy(dtype=float))
+    )
+    tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges))
+    levelled = [level_ranges(row_tags.get("level")) is not None for row_tags in tags]
+    return _without_rows(nodes, edges, rows[levelled])
+
+
+def _without_rows(nodes, edges, rows):
+    """``nodes`` and ``edges`` without the edges at the positions ``rows`` and without
+    the nodes that only those edges used."""
     if not len(rows):
         return nodes, edges
     drop = np.zeros(len(edges), dtype=bool)
@@ -695,8 +718,8 @@ def without_lines_between_levels(nodes, edges, stepped=()):
     kept = edges[~drop].reset_index(drop=True)
     kept.attrs = dict(edges.attrs)
     used = set(kept["u"]) | set(kept["v"])
-    doors = set(edges["u"].iloc[rows]) | set(edges["v"].iloc[rows])
-    left = nodes[~nodes["id"].isin(doors - used)].reset_index(drop=True)
+    ends = set(edges["u"].iloc[rows]) | set(edges["v"].iloc[rows])
+    left = nodes[~nodes["id"].isin(ends - used)].reset_index(drop=True)
     left.attrs = dict(nodes.attrs)
     return left, kept
 

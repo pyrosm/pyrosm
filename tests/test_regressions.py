@@ -7614,6 +7614,42 @@ def test_indoor_reads_cross_stairs_mapped_as_rooms(
     assert list(zip(stairs["u"], stairs["v"], stairs["u_level"], stairs["v_level"])) == expected
 
 
+def test_indoor_reads_leave_out_lines_across_levelled_areas_without_levels():
+    """A line across an area tagged level=0;1 (way 40) whose two ends have no level goes,
+    with the node only it used (2); one with a level at one end stays, and so does a line
+    without levels across a walking area without a level tag (way 41)."""
+    import geopandas as gpd
+    import numpy as np
+    from shapely.geometry import LineString, Point
+
+    from pyrosm.indoor import without_levelless_lines
+
+    lines = [
+        (40, 1, 2, np.nan, np.nan, "0;1"),
+        (40, 1, 3, np.nan, 1.0, "0;1"),
+        (41, 4, 5, np.nan, np.nan, None),
+    ]
+    edges = gpd.GeoDataFrame(
+        {
+            "id": [line[0] for line in lines],
+            "osm_type": "way",
+            "u": [line[1] for line in lines],
+            "v": [line[2] for line in lines],
+            "u_level": [line[3] for line in lines],
+            "v_level": [line[4] for line in lines],
+            "length": 1.0,
+            "walking_area": True,
+            "level": [line[5] for line in lines],
+        },
+        geometry=[LineString([(0, 0), (1, 1)])] * len(lines),
+        crs=4326,
+    )
+    nodes = gpd.GeoDataFrame({"id": [1, 2, 3, 4, 5]}, geometry=[Point(0, 0)] * 5, crs=4326)
+    nodes, edges = without_levelless_lines(nodes, edges)
+    assert list(zip(edges["u"], edges["v"])) == [(1, 3), (4, 5)]
+    assert sorted(nodes["id"]) == [1, 3, 4, 5]
+
+
 def test_indoor_reads_keep_one_line_per_two_floors_across_stair_areas():
     """Across stairs mapped as an area without a way of its own (way 40, levels 0 to 2),
     of the lines between two levels only the longest between each two neighbouring
