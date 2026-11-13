@@ -161,13 +161,15 @@ def is_indoor_area(tags):
 
 def _is_stair_area(tags):
     """Whether an area with the OSM tags ``tags`` is stairs or an escalator mapped as an
-    area: stairs or an escalator by :func:`is_vertical`, ``stairs`` other than no, or
-    ``room=stairs``."""
-    return (
-        is_vertical(tags)
-        or tags.get("stairs") not in (None, "no")
-        or tags.get("room") == "stairs"
-    )
+    area: stairs or an escalator by :func:`is_vertical`, or by :func:`_stairs_tagged`.
+    """
+    return is_vertical(tags) or _stairs_tagged(tags)
+
+
+def _stairs_tagged(tags):
+    """Whether an area with the OSM tags ``tags`` is tagged as stairs, as Simple Indoor
+    Tagging maps staircases: ``stairs`` other than no, or ``room=stairs``."""
+    return tags.get("stairs") not in (None, "no") or tags.get("room") == "stairs"
 
 
 def edge_levels(edges, tags, node_levels=None):
@@ -383,6 +385,19 @@ def _area_lines(edges):
     return edges["walking_area"].fillna(False).to_numpy(dtype=bool)
 
 
+def _area_climbs(edges):
+    """Whether each of ``edges`` (with ``u_level`` and ``v_level``) is a line across an
+    area (see :func:`_area_lines`) whose two ends are on two different levels."""
+    u_level = edges["u_level"].to_numpy(dtype=float)
+    v_level = edges["v_level"].to_numpy(dtype=float)
+    return (
+        _area_lines(edges)
+        & ~np.isnan(u_level)
+        & ~np.isnan(v_level)
+        & (u_level != v_level)
+    )
+
+
 def _line_order(rows, u, v):
     """``(rows, nodes)``: the edges ``rows`` (with the end nodes ``u`` and ``v``) in their
     order along the line they form, and its nodes in that order, from the end where an
@@ -536,14 +551,16 @@ def check_escalator_slope(escalator_slope):
         )
 
 
-def edge_vertical(tags):
+def edge_vertical(tags, areas=False):
     """The vertical movement of edges with the OSM tags ``tags`` (a list of dicts):
     ``"escalator"`` for steps that move (``conveying`` other than no), ``"stairs"`` for
-    other steps, ``"moving_walkway"`` for other ways that move, None for the rest."""
+    other steps, ``"moving_walkway"`` for other ways that move, None for the rest. With
+    ``areas``, the tags are those of the areas the edges cross, and stairs mapped as an
+    area (see :func:`_stairs_tagged`) count as steps too."""
     kinds = []
     for row_tags in tags:
         kind = None
-        if row_tags.get("highway") == "steps":
+        if row_tags.get("highway") == "steps" or (areas and _stairs_tagged(row_tags)):
             kind = "escalator" if _is_moving(row_tags) else "stairs"
         elif _is_moving(row_tags):
             kind = "moving_walkway"
@@ -555,10 +572,11 @@ def moving_one_way(edges):
     """``(forward, backward)`` by position in ``edges``: whether each edge is an escalator
     or a moving walkway (:data:`MOVING`) that moves only from its ``u`` to its ``v`` node
     (``conveying=forward``, the direction the way is drawn in) or only from ``v`` to ``u``
-    (``conveying=backward``); None when ``edges`` have neither."""
+    (``conveying=backward``); None when ``edges`` have neither. A line across an area
+    (see :func:`_area_lines`) has no drawn direction and moves both ways."""
     if "vertical" not in edges.columns:
         return None
-    moving = edges["vertical"].isin(MOVING).to_numpy()
+    moving = edges["vertical"].isin(MOVING).to_numpy() & ~_area_lines(edges)
     if not moving.any():
         return None
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
@@ -575,10 +593,12 @@ def with_indoor_columns(edges, escalator_slope, nodes=None, levels=None):
     ``u_level`` and ``v_level`` (see :func:`edge_levels`, with the own levels of
     ``nodes``, the read's nodes, and for the nodes without one the ``levels``, ``{id:
     (level,)}``, such as those of border entrances) and ``vertical`` (see
-    :func:`edge_vertical`; none on the lines across areas, ``walking_area`` True, which
-    do not move whatever the area's tags say). The ``length`` of an escalator is its
-    length on the map divided by the cosine of ``escalator_slope`` (degrees), its length
-    along a slope of that angle, in millimetres; None keeps the length on the map."""
+    :func:`edge_vertical`; none on the lines across areas, ``walking_area`` True: those
+    that join two levels get theirs from :func:`with_area_climb_verticals` once the
+    levels are final, the others do not move whatever the area's tags say). The
+    ``length`` of an escalator is its length on the map divided by the cosine of
+    ``escalator_slope`` (degrees), its length along a slope of that angle, in
+    millimetres; None keeps the length on the map."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     tags = _frame_tags(edges, _frame_tag_columns(edges))
@@ -670,14 +690,7 @@ def without_lines_between_levels(nodes, edges, stepped=()):
     used."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
-    u_level = edges["u_level"].to_numpy(dtype=float)
-    v_level = edges["v_level"].to_numpy(dtype=float)
-    rows = np.flatnonzero(
-        _area_lines(edges)
-        & ~np.isnan(u_level)
-        & ~np.isnan(v_level)
-        & (u_level != v_level)
-    )
+    rows = np.flatnonzero(_area_climbs(edges))
     tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges))
     keys = zip(edges["osm_type"].to_numpy()[rows], edges["id"].to_numpy()[rows])
     stair = np.array(
@@ -1599,12 +1612,7 @@ def with_climb_lengths(edges):
     lifts = (edges["vertical"] == "lift").to_numpy()
     u_level = edges["u_level"].to_numpy(dtype=float)
     v_level = edges["v_level"].to_numpy(dtype=float)
-    steps = (
-        _area_lines(edges)
-        & ~np.isnan(u_level)
-        & ~np.isnan(v_level)
-        & (u_level != v_level)
-    )
+    steps = _area_climbs(edges)
     if not (lifts | steps).any():
         return edges
     escalators = _ways_between_levels(edges, "escalator")
@@ -1627,6 +1635,26 @@ def with_climb_lengths(edges):
             lengths[i] = max(lengths[i], round(length, 3))
     attrs = dict(edges.attrs)
     edges = edges.assign(length=lengths)
+    edges.attrs = attrs
+    return edges
+
+
+def with_area_climb_verticals(edges):
+    """``edges`` (with ``vertical``, ``u_level`` and ``v_level``) where each line across
+    an area that joins two levels (see :func:`_area_climbs`), after
+    :func:`without_lines_between_levels` stairs or an escalator mapped as an area, has
+    the ``vertical`` of a way with the area's tags (see :func:`edge_vertical` with
+    ``areas``): ``"escalator"``, ``"stairs"`` or ``"moving_walkway"``."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
+    rows = np.flatnonzero(_area_climbs(edges))
+    if not len(rows):
+        return edges
+    tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges))
+    vertical = edges["vertical"].copy()
+    vertical.iloc[rows] = edge_vertical(tags, areas=True)
+    attrs = dict(edges.attrs)
+    edges = edges.assign(vertical=vertical)
     edges.attrs = attrs
     return edges
 

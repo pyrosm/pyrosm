@@ -100,10 +100,10 @@ def _graph_frames(graph):
 def _edge_kind(tags, vertical, u_level, v_level, crossing):
     """``(kind, z at u, z at v)`` of an edge with the OSM ``tags``, ``vertical`` value
     and end levels."""
-    if crossing:
-        kind = "crossing"
-    elif vertical in ("escalator", "moving_walkway", "stairs", "lift"):
+    if vertical in ("escalator", "moving_walkway", "stairs", "lift"):
         kind = vertical
+    elif crossing:
+        kind = "crossing"
     elif any(tags.get(key) == "platform" for key in _PLATFORM_TAGS):
         kind = "platform"
     else:
