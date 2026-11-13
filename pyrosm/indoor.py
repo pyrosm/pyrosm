@@ -1590,11 +1590,12 @@ def with_climb_lengths(edges):
     "lift") gets the length of a climb between its two levels along escalators among
     ``edges`` (see :func:`_climb_length`), plus :data:`LIFT_EXTRA_LENGTH`; without one,
     along escalators and stairs; else :data:`LEVEL_HEIGHT` for each level between them,
-    plus :data:`LIFT_EXTRA_LENGTH`. A line across stairs from a door tagged ``repeat_on``
-    to its copy on the next floor, from a place to itself (see
+    plus :data:`LIFT_EXTRA_LENGTH`. A line across stairs or an escalator mapped as an
+    area between two levels, such as the line from a door tagged ``repeat_on`` to its
+    copy on the next floor, from a place to itself (see
     :func:`pyrosm.walking_areas.crossing_rows`), gets that of a climb along stairs;
     without one, along stairs and escalators; else :data:`LEVEL_HEIGHT` for each level
-    between them."""
+    between them; it keeps its length on the map when that is longer."""
     lifts = (edges["vertical"] == "lift").to_numpy()
     u_level = edges["u_level"].to_numpy(dtype=float)
     v_level = edges["v_level"].to_numpy(dtype=float)
@@ -1603,7 +1604,6 @@ def with_climb_lengths(edges):
         & ~np.isnan(u_level)
         & ~np.isnan(v_level)
         & (u_level != v_level)
-        & (shapely.length(edges.geometry.to_numpy()) == 0)
     )
     if not (lifts | steps).any():
         return edges
@@ -1621,7 +1621,10 @@ def with_climb_lengths(edges):
             length = _climb_length(both, low, high, point)
         if length is None:
             length = LEVEL_HEIGHT * (high - low)
-        lengths[i] = round(length + (LIFT_EXTRA_LENGTH if lifts[i] else 0.0), 3)
+        if lifts[i]:
+            lengths[i] = round(length + LIFT_EXTRA_LENGTH, 3)
+        else:
+            lengths[i] = max(lengths[i], round(length, 3))
     attrs = dict(edges.attrs)
     edges = edges.assign(length=lengths)
     edges.attrs = attrs

@@ -7614,6 +7614,40 @@ def test_indoor_reads_cross_stairs_mapped_as_rooms(
     assert list(zip(stairs["u"], stairs["v"], stairs["u_level"], stairs["v_level"])) == expected
 
 
+def test_indoor_reads_give_lines_across_stairs_the_length_of_a_climb():
+    """A line across stairs mapped as an area between levels 0 and 1 that is shorter on
+    the map than the stairs between these levels (way 10, 9 m) takes their length, and a
+    longer one (12 m) keeps its own; one between levels 1 and 3, which no stairs or
+    escalator climb, takes 4 m per level."""
+    import geopandas as gpd
+    from shapely.geometry import LineString
+
+    from pyrosm.indoor import with_climb_lengths
+
+    rows = [
+        (10, 1, 2, 0.0, 1.0, 9.0, "stairs", False),
+        (40, 3, 4, 0.0, 1.0, 2.0, None, True),
+        (40, 3, 5, 0.0, 1.0, 12.0, None, True),
+        (41, 6, 7, 1.0, 3.0, 1.0, None, True),
+    ]
+    edges = gpd.GeoDataFrame(
+        {
+            "id": [r[0] for r in rows],
+            "osm_type": "way",
+            "u": [r[1] for r in rows],
+            "v": [r[2] for r in rows],
+            "u_level": [r[3] for r in rows],
+            "v_level": [r[4] for r in rows],
+            "length": [r[5] for r in rows],
+            "vertical": [r[6] for r in rows],
+            "walking_area": [r[7] for r in rows],
+        },
+        geometry=[LineString([(8.54, 47.38), (8.5401, 47.38)])] * len(rows),
+        crs=4326,
+    )
+    assert with_climb_lengths(edges)["length"].tolist() == [9.0, 9.0, 12.0, 8.0]
+
+
 def test_indoor_reads_leave_out_lines_across_levelled_areas_without_levels():
     """A line across an area tagged level=0;1 (way 40) whose two ends have no level goes,
     with the node only it used (2); one with a level at one end stays, and so does a line

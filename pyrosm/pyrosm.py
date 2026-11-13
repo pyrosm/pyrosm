@@ -803,16 +803,17 @@ class OSM:
             ids, each entering the areas of its level; in stairs mapped as an area or
             room, a line from the door to its copy on the next floor, from that place
             to itself, joins the two floors, with the `length` of a climb along stairs
-            between them (else along stairs and escalators, else 4 metres for each
-            level between them). A lift edge has the `length` of a
-            climb between its two levels along escalators, plus 1 metre, so that a route
-            by length takes the escalators: the nearest escalator in the read whose way
-            runs between the two levels, else the shortest chain of escalators between
-            levels in between, each the nearest one between its two levels; without
-            escalators, the same with stairs too; else 4 metres for each level between
-            them, a rough storey height, plus 1 metre. For the network
-            types `walking`, `all` and `all_public` and with a `custom_filter`. Requires
-            `nodes=True`.
+            between them (else along stairs and escalators, else 4 metres for each level
+            between them). Another line across stairs or an escalator mapped as an area
+            between two levels gets that length too when its length on the map is
+            shorter. A lift edge has the `length` of a climb between its two levels
+            along escalators, plus 1 metre, so that a route by length takes the
+            escalators: the nearest escalator in the read whose way runs between the two
+            levels, else the shortest chain of escalators between levels in between,
+            each the nearest one between its two levels; without escalators, the same
+            with stairs too; else 4 metres for each level between them, a rough storey
+            height, plus 1 metre. For the network types `walking`, `all` and
+            `all_public` and with a `custom_filter`. Requires `nodes=True`.
 
         escalator_slope : float or None (default: 30)
             With `indoor_elements=True`, the angle in degrees at which escalators climb.
