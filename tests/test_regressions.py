@@ -7553,6 +7553,7 @@ def test_indoor_reads_join_stairs_to_both_floors_at_shared_nodes(
         ({"stairs": "yes"}, False, True),
         ({"stairs": "yes"}, True, True),
         ({"room": "stairs"}, False, True),
+        ({"stairs": "yes", "conveying": "yes"}, False, True),
         ({}, False, False),
     ],
 )
@@ -7562,10 +7563,11 @@ def test_indoor_reads_cross_stairs_mapped_as_rooms(
     """A staircase mapped as a room (way 41, indoor=room with stairs=yes or room=stairs,
     level=0;1), as Simple Indoor Tagging maps it, is entered through its door on level 0
     (node 5), from a level-0 corridor, and its door on level 1 (node 6), to a level-1
-    corridor: the line across it joins the two levels. Where the steps are also mapped as
-    a way inside the room (way 43, from level 0 to 1), the way joins them: lines run from
-    each door to the end of the steps on its level, none between the levels. A plain room
-    on both levels joins nothing."""
+    corridor: the line across it joins the two levels, as stairs (``vertical``), or as an
+    escalator when the room also has conveying=yes. Where the steps are also mapped as a
+    way inside the room (way 43, from level 0 to 1), the way joins them: lines run from
+    each door to the end of the steps on its level, none between the levels and none
+    marked as stairs. A plain room on both levels joins nothing."""
     import math
 
     import numpy as np
@@ -7608,10 +7610,13 @@ def test_indoor_reads_cross_stairs_mapped_as_rooms(
     )
     assert _nodes_joined(edges, 12, 13) == joined
     stairs = edges[edges["walking_area"] & (edges["id"] == 41)]
-    expected = [(5, 6, 0.0, 1.0)] if joined else []
+    kind = "escalator" if "conveying" in room else "stairs"
+    expected = [(5, 6, 0.0, 1.0, kind)] if joined else []
     if steps:
-        expected = [(5, 14, 0.0, 0.0), (6, 15, 1.0, 1.0)]
-    assert list(zip(stairs["u"], stairs["v"], stairs["u_level"], stairs["v_level"])) == expected
+        expected = [(5, 14, 0.0, 0.0, None), (6, 15, 1.0, 1.0, None)]
+    vertical = [v if isinstance(v, str) else None for v in stairs["vertical"]]
+    found = zip(stairs["u"], stairs["v"], stairs["u_level"], stairs["v_level"], vertical)
+    assert list(found) == expected
 
 
 def test_indoor_reads_give_lines_across_stairs_the_length_of_a_climb():
@@ -7646,6 +7651,48 @@ def test_indoor_reads_give_lines_across_stairs_the_length_of_a_climb():
         crs=4326,
     )
     assert with_climb_lengths(edges)["length"].tolist() == [9.0, 9.0, 12.0, 8.0]
+
+
+def test_indoor_reads_give_lines_that_climb_across_areas_a_vertical_both_ways():
+    """A line between levels 0 and 1 across an escalator mapped as an area (way 40,
+    stairs=yes, conveying=forward) is an escalator that runs both ways, a line on level
+    0 across it moves nowhere, and a line between levels across an area that moves
+    without stairs (way 41) is a moving walkway; an escalator way (10) keeps its
+    direction."""
+    import geopandas as gpd
+    from shapely.geometry import LineString
+
+    from pyrosm.indoor import moving_one_way, with_area_climb_verticals
+
+    rows = [
+        (10, 1, 2, 0.0, 1.0, "escalator", False, "steps", None),
+        (40, 3, 4, 0.0, 1.0, None, True, None, "yes"),
+        (40, 3, 5, 0.0, 0.0, None, True, None, "yes"),
+        (41, 6, 7, 0.0, 1.0, None, True, None, None),
+    ]
+    edges = gpd.GeoDataFrame(
+        {
+            "id": [r[0] for r in rows],
+            "osm_type": "way",
+            "u": [r[1] for r in rows],
+            "v": [r[2] for r in rows],
+            "u_level": [r[3] for r in rows],
+            "v_level": [r[4] for r in rows],
+            "vertical": [r[5] for r in rows],
+            "walking_area": [r[6] for r in rows],
+            "highway": [r[7] for r in rows],
+            "stairs": [r[8] for r in rows],
+            "conveying": "forward",
+        },
+        geometry=[LineString([(8.54, 47.38), (8.5401, 47.38)])] * len(rows),
+        crs=4326,
+    )
+    edges = with_area_climb_verticals(edges)
+    vertical = [v if isinstance(v, str) else None for v in edges["vertical"]]
+    assert vertical == ["escalator", "escalator", None, "moving_walkway"]
+    forward, backward = moving_one_way(edges)
+    assert forward.tolist() == [True, False, False, False]
+    assert not backward.any()
 
 
 def test_indoor_reads_leave_out_lines_across_levelled_areas_without_levels():

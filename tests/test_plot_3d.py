@@ -161,13 +161,14 @@ def test_plot_3d_refuses_what_it_cannot_draw(monkeypatch):
         ({"railway": "platform"}, None, (0.0, 0.0), False, ("platform", 0.0, 0.0)),
         ({}, "stairs", (0.0, 1.0), False, ("stairs", 0.0, 1.0)),
         ({}, "moving_walkway", (-4.0, -3.5), False, ("moving_walkway", -4.0, -3.5)),
+        ({"stairs": "yes"}, "escalator", (1.0, 2.0), True, ("escalator", 1.0, 2.0)),
     ],
 )
 def test_plot_3d_edge_kinds(tags, vertical, levels, crossing, expected):
     """An edge's kind and the levels it is drawn at: a walkway tagged with several
     levels flat at the lowest, one with one level at it, an edge without a level at its layer below street level
     (a tunnel at least one below), else at street level, a missing end level from the
-    other end."""
+    other end; a line across an area by its vertical value when it has one."""
     from pyrosm.plot3d import _edge_kind
 
     assert _edge_kind(tags, vertical, *levels, crossing) == expected

@@ -81,6 +81,7 @@ from pyrosm.indoor import (
     join_lift_areas,
     split_lifts,
     stair_areas_with_ways,
+    with_area_climb_verticals,
     with_indoor_crossings,
     with_indoor_columns,
     with_climb_lengths,
@@ -772,7 +773,10 @@ class OSM:
             `level=0;1`, and another edge without a `level` tag have no level (NaN). The
             column `vertical` is `escalator` for steps that move (`conveying`), `stairs`
             for other steps, `moving_walkway` for other ways that move and missing on
-            other edges. A lift node (`highway=elevator`) where edges on several levels
+            other edges; an edge across stairs or an escalator mapped as an area between
+            two levels has the `vertical` of such a way, from the area's tags, and runs
+            both ways in a graph.
+            A lift node (`highway=elevator`) where edges on several levels
             meet is split into one node per level: the lowest keeps the node's id, the
             others get negative ids derived from it, each edge ends at the copy of its
             level, and lift edges with the lift node's id, `osm_type` "node" and
@@ -824,7 +828,8 @@ class OSM:
             escalator standards EN 115-1 and ASME A17.1 allow; EN 115-1 allows 35
             degrees for small rises. `None` keeps the length on the map. The length of
             stairs is their length on the map; a lift edge takes the length of an
-            escalator or stairs between its levels plus 1 metre (see
+            escalator or stairs between its levels plus 1 metre, and an edge across
+            stairs or an escalator mapped as an area the length of a climb (see
             `indoor_elements`).
 
         Returns
@@ -909,7 +914,7 @@ class OSM:
             node_gdf, edges = without_levelless_lines(node_gdf, edges)
             node_gdf, edges = split_lifts(node_gdf, edges)
             node_gdf, edges = join_lift_areas(node_gdf, edges, lifts)
-            result = node_gdf, with_climb_lengths(edges)
+            result = node_gdf, with_area_climb_verticals(with_climb_lengths(edges))
         return result
 
     @contextlib.contextmanager
@@ -2462,7 +2467,8 @@ class OSM:
         ``get_network(..., indoor_elements=True)``, an escalator or moving walkway
         (``vertical`` "escalator" or "moving_walkway") tagged ``conveying=forward`` runs
         only in the direction its way is drawn in, and one tagged ``conveying=backward``
-        only against it, whatever the network type; ``force_bidirectional`` and ``force_oneway`` override this.
+        only against it, whatever the network type; an edge across an area runs both
+        ways, whatever its ``conveying`` tag; ``force_bidirectional`` and ``force_oneway`` override this.
 
         The graph is topologically simplified before export: interstitial degree-2
         nodes are removed and each intersection-to-intersection chain is collapsed into
