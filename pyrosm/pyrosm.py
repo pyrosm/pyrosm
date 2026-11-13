@@ -86,6 +86,7 @@ from pyrosm.indoor import (
     with_climb_lengths,
     with_platform_filter,
     with_platforms,
+    without_levelless_lines,
     without_lift_area_ways,
     without_lines_between_levels,
 )
@@ -743,12 +744,16 @@ class OSM:
             enters the nearest platform or indoor area on that level that it lies
             outside of within 2.5 metres: its edges run from the end to the closest
             point of the area's outline and on inside the area. An edge across an area
-            between two nodes on different levels is left out, unless the area is
-            stairs or an escalator mapped as an area (`stairs` or `conveying` other than
-            `no`, `room=stairs` or `highway=steps`) whose steps are not also mapped as a
-            way: stairs, an escalator or a moving walkway with the middle of an edge
-            inside the area joins its levels instead, and the edges across the area run
-            only on one level.
+            between two nodes on different levels is left out, unless the area is stairs
+            or an escalator mapped as an area (`stairs` or `conveying` other than `no`,
+            `room=stairs` or `highway=steps`) whose steps are not also mapped as a way:
+            stairs, an escalator or a moving walkway with the middle of an edge inside
+            the area joins its levels instead, and the edges across the area run only on
+            one level. Across other such areas, of the edges between two neighbouring
+            levels only the longest stays, so that one edge runs from end to end, as
+            stairs or an escalator would. An edge across an area tagged with a `level`
+            whose two ends have no level is left out as well: nothing tells on which
+            level it runs.
             The edges get the level at each of their two ends in
             the columns `u_level` and `v_level`, from the OSM `level` tags: an edge with
             one level has it at both ends; stairs, escalators and moving walkways run
@@ -798,16 +803,17 @@ class OSM:
             ids, each entering the areas of its level; in stairs mapped as an area or
             room, a line from the door to its copy on the next floor, from that place
             to itself, joins the two floors, with the `length` of a climb along stairs
-            between them (else along stairs and escalators, else 4 metres for each
-            level between them). A lift edge has the `length` of a
-            climb between its two levels along escalators, plus 1 metre, so that a route
-            by length takes the escalators: the nearest escalator in the read whose way
-            runs between the two levels, else the shortest chain of escalators between
-            levels in between, each the nearest one between its two levels; without
-            escalators, the same with stairs too; else 4 metres for each level between
-            them, a rough storey height, plus 1 metre. For the network
-            types `walking`, `all` and `all_public` and with a `custom_filter`. Requires
-            `nodes=True`.
+            between them (else along stairs and escalators, else 4 metres for each level
+            between them). Another line across stairs or an escalator mapped as an area
+            between two levels gets that length too when its length on the map is
+            shorter. A lift edge has the `length` of a climb between its two levels
+            along escalators, plus 1 metre, so that a route by length takes the
+            escalators: the nearest escalator in the read whose way runs between the two
+            levels, else the shortest chain of escalators between levels in between,
+            each the nearest one between its two levels; without escalators, the same
+            with stairs too; else 4 metres for each level between them, a rough storey
+            height, plus 1 metre. For the network types `walking`, `all` and
+            `all_public` and with a `custom_filter`. Requires `nodes=True`.
 
         escalator_slope : float or None (default: 30)
             With `indoor_elements=True`, the angle in degrees at which escalators climb.
@@ -900,6 +906,7 @@ class OSM:
             )
             edges = with_indoor_columns(edges, escalator_slope, node_gdf, border_levels)
             node_gdf, edges = without_lines_between_levels(node_gdf, edges, stepped)
+            node_gdf, edges = without_levelless_lines(node_gdf, edges)
             node_gdf, edges = split_lifts(node_gdf, edges)
             node_gdf, edges = join_lift_areas(node_gdf, edges, lifts)
             result = node_gdf, with_climb_lengths(edges)

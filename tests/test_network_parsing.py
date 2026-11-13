@@ -1644,7 +1644,8 @@ def test_indoor_levels_along_ways_of_several_edges():
     length 0 counts each edge as one. A way whose edges branch or close a ring is taken
     edge by edge. Where nothing gives an end, incline=up puts the low end of the range at
     the start of the way (its drawn direction) and incline=down the high end, but not
-    against two known ends."""
+    against two ends that walkways give; an end whose level only its own level gives
+    follows the incline when the two ends would otherwise share one level."""
     import geopandas as gpd
 
     from pyrosm.indoor import edge_levels, node_levels
@@ -1716,6 +1717,10 @@ def test_indoor_levels_along_ways_of_several_edges():
         (44, 230, 231, 1, {"highway": "steps", "level": "-1;0", "incline": "up"}),
         (20, 232, 230, 1, {**walkway, "level": "-1"}),
         (21, 231, 233, 1, {**walkway, "level": "-1"}),
+        # Way 45, 0;1 rising, a walkway at 1 at its top and node 240's own level 1 at its
+        # bottom
+        (45, 240, 241, 1, {"highway": "steps", "level": "0;1", "incline": "up"}),
+        (22, 241, 242, 1, {**walkway, "level": "1"}),
     ]
     edges = pd.DataFrame(
         {
@@ -1727,11 +1732,12 @@ def test_indoor_levels_along_ways_of_several_edges():
     )
     nodes = gpd.GeoDataFrame(
         {
-            "id": [20, 21, 22, 23, 94],
-            "tags": [{"level": "0"}, '{"level": "-1;0"}', {}, None, {"level": "0"}],
+            "id": [20, 21, 22, 23, 94, 240],
+            "tags": [{"level": "0"}, '{"level": "-1;0"}', {}, None, {"level": "0"},
+                     {"level": "1"}],
         }
     )
-    assert node_levels(nodes) == {20: (0.0,), 94: (0.0,)}
+    assert node_levels(nodes) == {20: (0.0,), 94: (0.0,), 240: (1.0,)}
     u_level, v_level = edge_levels(edges, [r[4] for r in rows], node_levels(nodes))
     got = {
         (r[0], r[1], r[2]): (a, b)
@@ -1755,6 +1761,7 @@ def test_indoor_levels_along_ways_of_several_edges():
         (42, 211, 212): (0.5, 0.0), (42, 210, 211): (1.0, 0.5),
         (43, 220, 221): (-2.0, -1.0),
         (44, 230, 231): nan,
+        (45, 240, 241): (0.0, 1.0),
     }
     assert got.keys() == expected.keys()
     for key, levels in expected.items():
