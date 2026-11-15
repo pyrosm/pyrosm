@@ -1,4 +1,5 @@
 import contextlib
+import importlib.util
 import logging
 import math
 import warnings
@@ -2818,6 +2819,42 @@ class OSM:
                 progress=progress,
                 force_oneway=force_oneway,
             )
+
+    @property
+    def in3d(self):
+        """
+        3D views of the data of this object, drawn by the
+        `pyrosm3d <https://github.com/pyrosm/pyrosm3D>`__ package, which is installed
+        separately::
+
+            osm = OSM("station.osm.pbf")
+            osm.in3d.plot_indoor().show()     # floors, walls and the walking network
+            osm.in3d.plot_network().show()    # the network with its indoor elements
+            osm.in3d.to_html("station.html")  # a web page with a button for each level
+
+        Each view reads what it draws with the reads of this object, such as
+        :meth:`get_indoor_elements`, within its ``bounding_box``.
+
+        Returns
+        -------
+        pyrosm3d.In3D
+            The views of pyrosm3d for this object.
+
+        Raises
+        ------
+        ImportError
+            When pyrosm3d is not installed; the message has the command that installs
+            it.
+        """
+        if importlib.util.find_spec("pyrosm3d") is None:
+            raise ImportError(
+                "OSM.in3d needs the pyrosm3d package, which draws the 3D views: "
+                'install it with pip install "pyrosm3d @ '
+                'git+https://github.com/pyrosm/pyrosm3D@main".'
+            )
+        from pyrosm3d import In3D
+
+        return In3D(self)
 
     @staticmethod
     def list_cache(filepath=None):
