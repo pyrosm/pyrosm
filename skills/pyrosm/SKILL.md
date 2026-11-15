@@ -111,8 +111,9 @@ https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the documen
   `walking_areas=True` adds the walking areas of the walking network: squares, pedestrian
   streets and halls mapped as areas.
 - `osm.in3d.plot_network()`, `osm.in3d.plot_indoor()` and `osm.in3d.to_html(path)` draw
-  the network and the indoor elements in 3D. They need the separate package pyrosm3d;
-  without it, `osm.in3d` raises an `ImportError` with the command that installs it.
+  the network and the indoor elements in 3D. They need the package pyrosm3d, which
+  `pip install "pyrosm[3d]"` adds; without it, `osm.in3d` raises an `ImportError` that
+  names this command.
 
 ## What pyrosm's refusals mean
 
