@@ -8013,3 +8013,20 @@ def test_indoor_reads_leave_a_lift_node_inside_a_lift_area_to_the_area(
     assert set(zip(lifts["osm_type"], lifts["id"])) == lifts_expected
     for pair in [(31, 32), (33, 34), (31, 33)]:
         assert _nodes_joined(edges, *pair) == (pair in joined)
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+def test_indoor_read_with_walking_areas_of_an_area_without_ways(engine):
+    """An indoor read with walking areas of a box that holds no way finds no edges and
+    warns of it, as the same read without walking areas does. It raised an
+    AttributeError."""
+    from pyrosm import OSM, get_data
+
+    box = [26.94, 60.52, 26.9401, 60.5201]
+    osm = OSM(get_data("test_pbf"), bounding_box=box, engine=engine)
+    with pytest.warns(UserWarning, match="Could not find any edges"):
+        found = osm.get_network(
+            "walking", nodes=True, walking_areas=True, indoor_elements=True
+        )
+    assert found == (None, None)
+

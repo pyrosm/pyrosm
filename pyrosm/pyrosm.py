@@ -1068,7 +1068,8 @@ class OSM:
     ):
         """The walking areas of a network read (see
         :func:`pyrosm.walking_areas.select_areas`), with the tag columns of its
-        ``edges`` (the default columns when the read has no edges)."""
+        ``edges`` (the default columns when the read has no edges); None where the
+        area has no element with the network's keys."""
         from pyrosm.pbf_writer import _FIELD_COLS, _NETWORK_COLS
         from pyrosm.walking_areas import area_filter, select_areas
 
@@ -1101,6 +1102,8 @@ class OSM:
                 timestamp,
                 columns,
             )
+        if candidates is None:
+            return None
         return select_areas(candidates, keep, rule)
 
     def _with_indoor_areas(self, nodes, edges, timestamp, walking=None):
