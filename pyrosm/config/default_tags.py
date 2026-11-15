@@ -43,6 +43,26 @@ basic_info_tags = [
 
 # Default tags to keep as columns with highways
 # Mostly based on: https://wiki.openstreetmap.org/wiki/Key:highway
+indoor_columns = [
+    "access",
+    "amenity",
+    "area",
+    "door",
+    "entrance",
+    "highway",
+    "indoor",
+    "layer",
+    "level",
+    "name",
+    "public_transport",
+    "railway",
+    "ref",
+    "repeat_on",
+    "room",
+    "shop",
+    "wheelchair",
+]
+
 highway_columns = [
     "access",
     "area",

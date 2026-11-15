@@ -619,6 +619,7 @@ _EMPTY_RESULT_MESSAGES = {
     ),
     "pois": "Could not find any POIs for given area.",
     "custom": "Could not find any OSM data for given area.",
+    "indoor_elements": "Could not find any indoor elements for given area.",
 }
 
 

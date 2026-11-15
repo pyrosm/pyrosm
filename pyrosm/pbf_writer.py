@@ -113,9 +113,10 @@ def _tag_key(col):
 
 def _frame_tag_columns(gdf):
     """The columns of ``gdf`` that hold tags: all but its geometry, the element fields
-    and the columns get_network computes (numeric ``u``, ``v``, ``length``,
-    ``u_level`` and ``v_level``, boolean ``walking_area``, and ``vertical`` in an indoor
-    network, see :func:`_is_indoor_network`)."""
+    and the columns the readers compute: those of get_network (numeric ``u``, ``v``,
+    ``length``, ``u_level`` and ``v_level``, boolean ``walking_area``, and ``vertical``
+    in an indoor network, see :func:`_is_indoor_network`) and the ``levels`` of
+    get_indoor_elements (see :func:`_has_level_lists`)."""
     computed = {
         col
         for col in _NETWORK_COLS
@@ -125,6 +126,8 @@ def _frame_tag_columns(gdf):
         computed.add("walking_area")
     if _is_indoor_network(gdf):
         computed.add("vertical")
+    if _has_level_lists(gdf):
+        computed.add("levels")
     return [
         col
         for col in gdf.columns
@@ -133,6 +136,16 @@ def _frame_tag_columns(gdf):
         and _column_name(col) not in computed
         and _tag_key(col) is not None
     ]
+
+
+def _has_level_lists(gdf):
+    """Whether ``gdf`` has the ``levels`` column that get_indoor_elements computes: a
+    column of that name in a frame with the note of that read (see
+    :func:`pyrosm.utils.records_read`). In any other frame ``levels`` is the OSM tag
+    of that name."""
+    note = gdf.attrs.get("pyrosm_read")
+    reader = note.get("reader") if isinstance(note, dict) else None
+    return "levels" in gdf.columns and reader == "get_indoor_elements"
 
 
 def _is_indoor_network(gdf):
@@ -224,6 +237,7 @@ _READ_FEATURES = {
     "get_natural": "natural features",
     "get_boundaries": "boundaries",
     "get_network": "network ways",
+    "get_indoor_elements": "indoor elements",
     "get_data_by_custom_criteria": "matches of its filter",
 }
 

@@ -14,7 +14,7 @@ from pyrosm.config.osm_filters import (
     network_type_of_read,
     with_shared_paths,
 )
-from pyrosm.filter_compiler import CompiledFilter
+from pyrosm.filter_compiler import CompiledFilter, compile_custom_filter
 from pyrosm.pbfreader import parse_osm_data
 from pyrosm.frames import create_nodes_gdf
 from pyrosm.utils import (
@@ -69,6 +69,8 @@ from pyrosm.layers import get_layer_data, without_building_parts
 from pyrosm.indoor import (
     ENTRANCE_FILTER,
     INDOOR_AREA_FILTER,
+    INDOOR_ELEMENT_FILTER,
+    INDOOR_ELEMENT_TAGS,
     LIFT_AREA_FILTER,
     PLATFORM_FILTER,
     WALL_FILTER,
@@ -77,7 +79,9 @@ from pyrosm.indoor import (
     without_member_nodes,
     check_escalator_slope,
     check_indoor_read,
+    concat_with_tag_columns,
     indoor_areas,
+    is_indoor_element,
     join_lift_areas,
     split_lifts,
     stair_areas_with_ways,
@@ -158,6 +162,17 @@ def _warn_no_edges(custom_filter):
     """Warn that a network read found no edges, naming the filter when ``custom_filter``
     was given."""
     warn_empty_result("network" if custom_filter is None else "custom_network")
+
+
+def _indoor_elements_read_filter(args):
+    """The filter a ``get_indoor_elements`` call selects its elements by (see
+    :func:`pyrosm.utils.records_read`): the tags of
+    :data:`pyrosm.indoor.INDOOR_ELEMENT_TAGS` and, with ``walking_areas``, the
+    ``highway`` tag of the walking areas."""
+    selected_by = list(INDOOR_ELEMENT_TAGS)
+    if args["walking_areas"]:
+        selected_by.append('["highway"]')
+    return compile_custom_filter(selected_by)
 
 
 def _custom_read_filter(args):
@@ -1621,6 +1636,133 @@ class OSM:
         return self._drop_node_lists(gdf)
 
     @logged()
+    @records_read(_indoor_elements_read_filter)
+    def get_indoor_elements(
+        self,
+        walking_areas=False,
+        extra_attributes=None,
+        timestamp=None,
+        tags_to_keep=None,
+    ):
+        """
+        Parse the indoor elements from OSM: the elements with an `indoor` tag (the rooms,
+        corridors, areas, walls and level outlines of Simple Indoor Tagging), the rooms
+        tagged as walkways without one (`room` is `corridor`, `entrance`, `lobby`,
+        `hall`, `waiting` or `stairs`), the doors and entrances, the lifts
+        (`highway=elevator`), the platforms mapped as ways or areas, and the shops and
+        amenities that have a level.
+
+        The column `levels` has the levels of each element, from its `level` tag, as OSM
+        lists them with each range written out: `"0;1;2"` for `level=0-2` and `"-2;0"`
+        for `level=-2;0`. It is empty for an element without a level. The OSM tag
+        `levels` cannot be a column of this read, and `write_pbf` does not write the
+        column of a frame of this read as a tag.
+
+        Parameters
+        ----------
+
+        walking_areas : bool (default: False)
+            If True, also the walking areas of the walking network: the squares,
+            pedestrian streets and halls mapped as areas, which
+            `get_network("walking", walking_areas=True)` draws lines across where the
+            network reaches them. Where there are walking areas, `area` is a column
+            of the result. A walking area that is a member way of a multipolygon
+            among the indoor elements, such as the outline of a concourse that is
+            also mapped as an indoor area with holes, is not a row of its own, as in
+            the other reads.
+
+        extra_attributes : list (optional)
+            Additional OSM tag keys that will be converted into columns in the resulting GeoDataFrame.
+
+        tags_to_keep : list (optional)
+            When given, only these OSM tag keys are kept as columns, replacing the
+            default set of tag columns (reduces memory). Structural columns and
+            filtering are unaffected; `extra_attributes` still apply.
+
+        timestamp: str | datetime | int
+            If provided, the data from given moment of time will be returned. The time should be provided in UTC.
+            Note: This functionality only works with OSH.PBF files that can be downloaded manually e.g. from Geofabrik
+            (requires login with OSM account).
+
+            The logic: the closest version of each element up to given timestamp will be selected to the result.
+            This means that elements can be older than the given timestamp (the most up-to-date version is selected),
+            but not newer (records having exactly the selected timestamp will be kept). In case only a date is given,
+            the time will represent midnight of the given day, such as "2021-01-01 00:00:00".
+
+        Returns
+        -------
+        geopandas.GeoDataFrame
+            The indoor elements, or None when the area has none.
+        """
+        from pyrosm.levels import level_list
+        from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
+        validate_bool(walking_areas, "walking_areas")
+        columns = read_tag_columns(
+            self.conf.tags.indoor, extra_attributes, tags_to_keep
+        )
+        if "levels" in columns:
+            raise ValueError(
+                "get_indoor_elements computes the column 'levels', so the OSM tag "
+                "'levels' cannot be a column of this read; it stays in the 'tags' "
+                "column."
+            )
+        elements = self._read_custom_criteria(
+            INDOOR_ELEMENT_FILTER,
+            None,
+            "keep",
+            None,
+            True,
+            True,
+            True,
+            None,
+            True,
+            timestamp,
+            columns,
+        )
+        if elements is not None:
+            tags = _frame_tags(elements, _frame_tag_columns(elements))
+            is_node = elements["osm_type"] == "node"
+            kept = [is_indoor_element(row, node) for row, node in zip(tags, is_node)]
+            elements = elements[kept]
+        if walking_areas:
+            elements = self._elements_and_walking_areas(elements, columns, timestamp)
+        if elements is None or elements.empty:
+            warn_empty_result("indoor_elements")
+            return None
+        elements = elements.reset_index(drop=True)
+        tags = _frame_tags(elements, _frame_tag_columns(elements))
+        levels = [level_list(row.get("level")) for row in tags]
+        if "level" in elements.columns:
+            position = elements.columns.get_loc("level") + 1
+        else:
+            position = elements.columns.get_loc(elements.geometry.name)
+        elements.insert(position, "levels", levels)
+        return self._drop_node_lists(elements)
+
+    def _elements_and_walking_areas(self, elements, columns, timestamp):
+        """``elements`` (a frame of indoor elements, or None) with the walking areas of
+        the walking network (see :meth:`_walking_area_polygons`), read with the tag
+        ``columns``, that are not among them and that no area relation among them
+        takes in as a member way (see
+        :func:`pyrosm.grouping_relations.frame_area_member_way_ids`), each part with
+        the tag columns of the other (see
+        :func:`pyrosm.indoor.concat_with_tag_columns`); None when there is neither."""
+        from pyrosm.grouping_relations import frame_area_member_way_ids
+
+        areas = self._walking_area_polygons(
+            pd.DataFrame(columns=columns), "walking", None, None, "local", timestamp
+        )
+        if areas is None or areas.empty:
+            return elements
+        if elements is None or elements.empty:
+            return areas
+        taken = set(zip(elements["osm_type"], elements["id"]))
+        taken.update(("way", way) for way in frame_area_member_way_ids(elements))
+        new = [key not in taken for key in zip(areas["osm_type"], areas["id"])]
+        return concat_with_tag_columns([elements, areas[new]])
+
+    @logged()
     @records_read(_custom_read_filter)
     def get_data_by_custom_criteria(
         self,
@@ -1958,7 +2100,8 @@ class OSM:
         A frame without tag columns (only ``id``, ``osm_type``, the geometry and other
         structural columns) changes no tags: the elements it matches keep their own.
         The columns ``get_network`` computes (``u``, ``v`` and the numeric ``length``)
-        are not tags, and ``id_tag``, the column of a tag keyed ``id``, is written as
+        and the ``levels`` of ``get_indoor_elements`` are not tags, and ``id_tag``, the
+        column of a tag keyed ``id``, is written as
         ``id``. An element in several rows, such as a way split into segments by
         ``get_network(nodes=True)`` or an element in two frames, gets each tag from its
         rows: a value changed or removed in only some of them is written for the whole

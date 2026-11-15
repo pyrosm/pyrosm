@@ -32,6 +32,7 @@ Reading OSM features
    OSM.get_landuse
    OSM.get_natural
    OSM.get_boundaries
+   OSM.get_indoor_elements
    OSM.get_data_by_custom_criteria
 
 Exporting to a graph
