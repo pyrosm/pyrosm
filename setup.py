@@ -132,6 +132,7 @@ setup(
     extras_require={
         "notebook": ["ipywidgets>=8"],
         "recipes": ["pyyaml"],
+        "3d": ["pyrosm3d"],
     },
     entry_points={"console_scripts": ["pyrosm = pyrosm.cli:main"]},
     ext_modules=_ext_modules,

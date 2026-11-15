@@ -24,5 +24,5 @@ def test_in3d_gives_the_views_of_pyrosm3d(monkeypatch):
     assert isinstance(views, In3D) and views.osm is osm
 
     monkeypatch.setitem(sys.modules, "pyrosm3d", None)
-    with pytest.raises(ImportError, match=r"pip install \"pyrosm3d @ git\+https://"):
+    with pytest.raises(ImportError, match=r"pip install \"pyrosm\[3d\]\""):
         osm.in3d
