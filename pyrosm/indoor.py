@@ -190,20 +190,17 @@ def is_indoor_area(tags):
     )
 
 
-def is_indoor_element(tags, is_node):
+def is_indoor_element(tags):
     """Whether an element with the OSM tags ``tags`` is one that
     :meth:`pyrosm.OSM.get_indoor_elements` returns: an element with an ``indoor`` tag,
     a room tagged as a walkway (the ``room`` values of :data:`INDOOR_AREA_FILTER`), a
-    door or an entrance, a lift (``highway=elevator``), a platform that is not a node
-    (``is_node``: a platform node is a stop position), or a shop or an amenity whose
-    ``level`` tag names a level."""
+    door or an entrance, a lift (``highway=elevator``), a platform, or a shop or an
+    amenity whose ``level`` tag names a level."""
     if "indoor" in tags or "door" in tags or "entrance" in tags:
         return True
     if tags.get("room") in INDOOR_AREA_FILTER["room"]:
         return True
-    if tags.get("highway") == "elevator":
-        return True
-    if _is_platform(tags) and not is_node:
+    if tags.get("highway") == "elevator" or _is_platform(tags):
         return True
     has_level = level_ranges(tags.get("level")) is not None
     return has_level and ("shop" in tags or "amenity" in tags)

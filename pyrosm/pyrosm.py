@@ -1650,8 +1650,9 @@ class OSM:
         corridors, areas, walls and level outlines of Simple Indoor Tagging), the rooms
         tagged as walkways without one (`room` is `corridor`, `entrance`, `lobby`,
         `hall`, `waiting` or `stairs`), the doors and entrances, the lifts
-        (`highway=elevator`), the platforms mapped as ways or areas, and the shops and
-        amenities that have a level.
+        (`highway=elevator`), the platforms (`railway=platform`,
+        `public_transport=platform` or `highway=platform`, also the bus and tram stops
+        mapped as platform nodes), and the shops and amenities that have a level.
 
         The column `levels` has the levels of each element, from its `level` tag, as OSM
         lists them with each range written out: `"0;1;2"` for `level=0-2` and `"-2;0"`
@@ -1723,9 +1724,7 @@ class OSM:
         )
         if elements is not None:
             tags = _frame_tags(elements, _frame_tag_columns(elements))
-            is_node = elements["osm_type"] == "node"
-            kept = [is_indoor_element(row, node) for row, node in zip(tags, is_node)]
-            elements = elements[kept]
+            elements = elements[[is_indoor_element(row) for row in tags]]
         if walking_areas:
             elements = self._elements_and_walking_areas(elements, columns, timestamp)
         if elements is None or elements.empty:
