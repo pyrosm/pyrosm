@@ -36,13 +36,13 @@ def _tags(frame):
 
 def test_get_indoor_elements_of_helsinki(helsinki_pbf):
     """The indoor elements of central Helsinki: every element with an indoor tag,
-    every entrance and lift, every platform (also the stops mapped as platform
-    nodes), and the shops and amenities that have a level, each once; ``levels``
-    stands next to ``level`` and lists its levels."""
+    every entrance and lift, every platform, every bus and tram stop (none of them
+    is a stop position here), and the shops and amenities that have a level, each
+    once; ``levels`` stands next to ``level`` and lists its levels."""
     osm = OSM(helsinki_pbf)
     elements = osm.get_indoor_elements()
-    assert len(elements) == 707 and elements.crs.to_epsg() == 4326
-    assert Counter(elements["osm_type"]) == {"node": 573, "way": 133, "relation": 1}
+    assert len(elements) == 823 and elements.crs.to_epsg() == 4326
+    assert Counter(elements["osm_type"]) == {"node": 689, "way": 133, "relation": 1}
     assert Counter(elements["indoor"].dropna()) == {"yes": 22, "room": 2, "wall": 2}
     keys = _keys(elements)
     assert len(keys) == len(elements)
@@ -53,6 +53,12 @@ def test_get_indoor_elements_of_helsinki(helsinki_pbf):
     platforms = osm.get_data_by_custom_criteria(PLATFORM_FILTER)
     assert Counter(platforms["osm_type"]) == {"node": 12, "way": 107, "relation": 1}
     by_reason |= _keys(platforms)
+    stops = osm.get_data_by_custom_criteria(
+        {"highway": ["bus_stop"], "railway": ["tram_stop"]},
+        extra_attributes=["public_transport"],
+    )
+    assert Counter(stops["public_transport"].fillna("")) == {"": 116, "platform": 12}
+    by_reason |= _keys(stops)
     places = osm.get_data_by_custom_criteria(
         {"shop": True, "amenity": True}, extra_attributes=["level"]
     )
@@ -109,22 +115,23 @@ def test_get_indoor_elements_with_walking_areas(helsinki_pbf):
 
 
 def test_get_indoor_elements_where_there_are_few_or_none(test_pbf, helsinki_pbf):
-    """The small test file has one entrance and no walking area. A box that holds a
-    square and no indoor element gives the square with walking_areas and nothing
-    without. A read that finds nothing warns and returns None. Without a level
+    """The small test file has one entrance, 36 bus stops and no walking area. A box
+    that holds a square and no indoor element gives the square with walking_areas and
+    nothing without. A read that finds nothing warns and returns None. Without a level
     column, levels stands before the geometry. walking_areas is a boolean, and the
     OSM tag levels cannot be asked for as a column."""
     osm = OSM(test_pbf)
     for walking_areas in (False, True):
         elements = osm.get_indoor_elements(walking_areas=walking_areas)
-        assert elements["id"].tolist() == [1909030939]
-        assert elements["entrance"].tolist() == ["main"]
+        assert Counter(elements["highway"].fillna("")) == {"bus_stop": 36, "": 1}
+        entrance = elements[elements["entrance"].notna()]
+        assert entrance[["id", "entrance"]].values.tolist() == [[1909030939, "main"]]
         assert elements["levels"].isna().all()
         columns = list(elements.columns)
         assert "level" not in columns
         assert columns.index("levels") == columns.index("geometry") - 1
 
-    square = OSM(helsinki_pbf, bounding_box=[24.94964, 60.17827, 24.9499, 60.17905])
+    square = OSM(helsinki_pbf, bounding_box=[24.94964, 60.17827, 24.9499, 60.1786])
     with pytest.warns(UserWarning, match="Could not find any indoor elements"):
         assert square.get_indoor_elements() is None
     areas = square.get_indoor_elements(walking_areas=True)
@@ -272,7 +279,10 @@ def test_level_list(level, levels):
         ({"entrance": "main"}, True),
         ({"highway": "elevator"}, True),
         ({"railway": "platform"}, True),
-        ({"public_transport": "platform", "highway": "bus_stop"}, True),
+        ({"public_transport": "platform"}, True),
+        ({"highway": "bus_stop"}, True),
+        ({"railway": "tram_stop"}, True),
+        ({"railway": "tram_stop", "public_transport": "stop_position"}, False),
         ({"shop": "kiosk", "level": "-1"}, True),
         ({"amenity": "cafe", "level": "ground"}, False),
         ({"amenity": "cafe"}, False),
@@ -281,6 +291,6 @@ def test_level_list(level, levels):
 )
 def test_is_indoor_element(tags, expected):
     """An indoor element has an indoor tag, is a room tagged as a walkway, a door, an
-    entrance, a lift or a platform (also a stop mapped as a platform node), or is a
-    shop or amenity whose level tag names a level."""
+    entrance, a lift, a platform or a bus or tram stop other than a stop position on
+    the track, or is a shop or amenity whose level tag names a level."""
     assert is_indoor_element(tags) is expected
