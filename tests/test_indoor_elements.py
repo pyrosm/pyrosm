@@ -36,13 +36,13 @@ def _tags(frame):
 
 def test_get_indoor_elements_of_helsinki(helsinki_pbf):
     """The indoor elements of central Helsinki: every element with an indoor tag,
-    every entrance and lift, the platforms that are ways or relations (not the stop
-    positions mapped as platform nodes), and the shops and amenities that have a
-    level, each once; ``levels`` stands next to ``level`` and lists its levels."""
+    every entrance and lift, every platform (also the stops mapped as platform
+    nodes), and the shops and amenities that have a level, each once; ``levels``
+    stands next to ``level`` and lists its levels."""
     osm = OSM(helsinki_pbf)
     elements = osm.get_indoor_elements()
-    assert len(elements) == 695 and elements.crs.to_epsg() == 4326
-    assert Counter(elements["osm_type"]) == {"node": 561, "way": 133, "relation": 1}
+    assert len(elements) == 707 and elements.crs.to_epsg() == 4326
+    assert Counter(elements["osm_type"]) == {"node": 573, "way": 133, "relation": 1}
     assert Counter(elements["indoor"].dropna()) == {"yes": 22, "room": 2, "wall": 2}
     keys = _keys(elements)
     assert len(keys) == len(elements)
@@ -52,9 +52,7 @@ def test_get_indoor_elements_of_helsinki(helsinki_pbf):
         by_reason |= _keys(osm.get_data_by_custom_criteria(reason))
     platforms = osm.get_data_by_custom_criteria(PLATFORM_FILTER)
     assert Counter(platforms["osm_type"]) == {"node": 12, "way": 107, "relation": 1}
-    is_node = platforms["osm_type"] == "node"
-    by_reason |= _keys(platforms[~is_node])
-    assert not _keys(platforms[is_node]) & keys
+    by_reason |= _keys(platforms)
     places = osm.get_data_by_custom_criteria(
         {"shop": True, "amenity": True}, extra_attributes=["level"]
     )
@@ -265,26 +263,24 @@ def test_level_list(level, levels):
 
 
 @pytest.mark.parametrize(
-    "tags, is_node, expected",
+    "tags, expected",
     [
-        ({"indoor": "room"}, False, True),
-        ({"room": "stairs", "building": "roof"}, False, True),
-        ({"room": "office"}, False, False),
-        ({"door": "hinged"}, True, True),
-        ({"entrance": "main"}, True, True),
-        ({"highway": "elevator"}, True, True),
-        ({"railway": "platform"}, False, True),
-        ({"public_transport": "platform"}, True, False),
-        ({"public_transport": "platform", "indoor": "yes"}, True, True),
-        ({"public_transport": "platform", "amenity": "shelter", "level": "0"}, True, True),
-        ({"shop": "kiosk", "level": "-1"}, True, True),
-        ({"amenity": "cafe", "level": "ground"}, True, False),
-        ({"amenity": "cafe"}, False, False),
-        ({"highway": "pedestrian", "level": "0"}, False, False),
+        ({"indoor": "room"}, True),
+        ({"room": "stairs", "building": "roof"}, True),
+        ({"room": "office"}, False),
+        ({"door": "hinged"}, True),
+        ({"entrance": "main"}, True),
+        ({"highway": "elevator"}, True),
+        ({"railway": "platform"}, True),
+        ({"public_transport": "platform", "highway": "bus_stop"}, True),
+        ({"shop": "kiosk", "level": "-1"}, True),
+        ({"amenity": "cafe", "level": "ground"}, False),
+        ({"amenity": "cafe"}, False),
+        ({"highway": "pedestrian", "level": "0"}, False),
     ],
 )
-def test_is_indoor_element(tags, is_node, expected):
+def test_is_indoor_element(tags, expected):
     """An indoor element has an indoor tag, is a room tagged as a walkway, a door, an
-    entrance or a lift, a platform that is not a node, or a shop or amenity whose
-    level tag names a level."""
-    assert is_indoor_element(tags, is_node) is expected
+    entrance, a lift or a platform (also a stop mapped as a platform node), or is a
+    shop or amenity whose level tag names a level."""
+    assert is_indoor_element(tags) is expected
