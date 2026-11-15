@@ -103,6 +103,16 @@ https://pyrosm.readthedocs.io/en/stable/llms.txt lists every page of the documen
   and end lie in one connected part of the network; `get_graph` keeps only the largest
   part unless `retain_all=True`. Where parts stay apart, tell the user that the
   OpenStreetMap data has no link there, and do not add edges to join them.
+- `osm.get_indoor_elements()` returns the indoor elements themselves as one GeoDataFrame:
+  the elements with an `indoor` tag (rooms, corridors, areas, walls and level outlines),
+  rooms tagged as walkways, doors and entrances, lifts, platforms mapped as ways or
+  relations, and the shops and amenities that have a level. The column `levels` lists each
+  element's levels with ranges written out (`0;1;2` for `level=0-2`).
+  `walking_areas=True` adds the walking areas of the walking network: squares, pedestrian
+  streets and halls mapped as areas.
+- `osm.in3d.plot_network()`, `osm.in3d.plot_indoor()` and `osm.in3d.to_html(path)` draw
+  the network and the indoor elements in 3D. They need the separate package pyrosm3d;
+  without it, `osm.in3d` raises an `ImportError` with the command that installs it.
 
 ## What pyrosm's refusals mean
 

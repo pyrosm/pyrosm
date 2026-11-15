@@ -1650,8 +1650,8 @@ class OSM:
         corridors, areas, walls and level outlines of Simple Indoor Tagging), the rooms
         tagged as walkways without one (`room` is `corridor`, `entrance`, `lobby`,
         `hall`, `waiting` or `stairs`), the doors and entrances, the lifts
-        (`highway=elevator`), the platforms mapped as ways or areas, and the shops and
-        amenities that have a level.
+        (`highway=elevator`), the platforms mapped as ways or relations, and the shops
+        and amenities that have a level.
 
         The column `levels` has the levels of each element, from its `level` tag, as OSM
         lists them with each range written out: `"0;1;2"` for `level=0-2` and `"-2;0"`
