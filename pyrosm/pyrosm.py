@@ -2824,8 +2824,8 @@ class OSM:
     def in3d(self):
         """
         3D views of the data of this object, drawn by the
-        `pyrosm3d <https://github.com/pyrosm/pyrosm3D>`__ package, which is installed
-        separately::
+        `pyrosm3d <https://github.com/pyrosm/pyrosm3D>`__ package, which the ``3d``
+        extra installs (``pip install "pyrosm[3d]"``)::
 
             osm = OSM("station.osm.pbf")
             osm.in3d.plot_indoor().show()     # floors, walls and the walking network
@@ -2849,8 +2849,7 @@ class OSM:
         if importlib.util.find_spec("pyrosm3d") is None:
             raise ImportError(
                 "OSM.in3d needs the pyrosm3d package, which draws the 3D views: "
-                'install it with pip install "pyrosm3d @ '
-                'git+https://github.com/pyrosm/pyrosm3D@main".'
+                'install it with pip install "pyrosm[3d]".'
             )
         from pyrosm3d import In3D
 
