@@ -32,6 +32,7 @@ Reading OSM features
    OSM.get_landuse
    OSM.get_natural
    OSM.get_boundaries
+   OSM.get_indoor_elements
    OSM.get_data_by_custom_criteria
 
 Exporting to a graph
@@ -43,13 +44,13 @@ Exporting to a graph
    OSM.get_graph
    OSM.to_graph
 
-Viewing indoor networks in 3D
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Viewing in 3D
+~~~~~~~~~~~~~
 
 .. autosummary::
    :toctree: api/
 
-   plot_3d
+   OSM.in3d
 
 Saving, cropping and merging PBF files
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -16,7 +16,6 @@ dependencies:
   - pyyaml
   # optional
   - ipywidgets
-  - plotly
   - networkx
   - pandana
   - pandarm

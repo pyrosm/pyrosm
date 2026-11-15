@@ -11,6 +11,8 @@ tags match the filter is also returned as a row of its own. The layer reads, suc
 ways of multipolygons whose own tags match are rows of their own.
 """
 
+import json
+
 import numpy as np
 import shapely
 
@@ -67,6 +69,27 @@ def area_member_way_ids(relations, grouping=True):
             )
         found.append(np.asarray(members["member_id"], dtype=np.int64)[ways])
     return np.concatenate(found) if found else np.empty(0, np.int64)
+
+
+def frame_area_member_way_ids(frame):
+    """The ids of the member ways that the area relations among the rows of ``frame``
+    take in (see :func:`area_member_way_ids`), as a set. ``frame`` is the
+    GeoDataFrame of a read: a relation's ``members`` are in its JSON ``tags``, and so
+    is its ``type`` where the frame has no column for it."""
+    relations = frame[frame["osm_type"] == "relation"]
+    types = relations.get("type", [None] * len(relations))
+    tags, members = [], []
+    for kind, fields in zip(types, relations.get("tags", [])):
+        fields = json.loads(fields) if isinstance(fields, str) else {}
+        listed = fields.get("members") or []
+        tags.append({"type": kind if isinstance(kind, str) else fields.get("type")})
+        members.append(
+            {
+                name: [member[name] for member in listed]
+                for name in ("member_id", "member_type", "member_role")
+            }
+        )
+    return set(area_member_way_ids({"tags": tags, "members": members}).tolist())
 
 
 def grouping_records(

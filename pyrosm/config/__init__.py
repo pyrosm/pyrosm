@@ -1,6 +1,7 @@
 from pyrosm.config.default_tags import (
     basic_info_tags,
     highway_columns,
+    indoor_columns,
     building_columns,
     amenity_columns,
     shop_columns,
@@ -76,6 +77,7 @@ class Tags:
     emergency = emergency_columns
     geological = geological_columns
     highway = highway_columns
+    indoor = indoor_columns
     historic = historic_columns
     landuse = landuse_columns
     leisure = leisure_columns

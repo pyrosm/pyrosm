@@ -97,6 +97,37 @@ INDOOR_AREA_FILTER = {
     **PLATFORM_FILTER,
 }
 
+# The candidates of :meth:`pyrosm.OSM.get_indoor_elements`: the elements with an
+# ``indoor`` tag, the rooms tagged as walkways, the doors and entrances, the lifts, the
+# platforms, and the shops and amenities (see is_indoor_element, which the rows read
+# with this filter pass).
+INDOOR_ELEMENT_FILTER = {
+    "indoor": [True],
+    "room": INDOOR_AREA_FILTER["room"],
+    "door": [True],
+    "entrance": [True],
+    "shop": [True],
+    "amenity": [True],
+    **PLATFORM_FILTER,
+    "highway": ["platform", "elevator"],
+}
+
+# The tags by which is_indoor_element picks an element, as bracket filters, one for
+# each of its reasons: what the frame of get_indoor_elements notes of its read (see
+# pyrosm.utils.records_read).
+INDOOR_ELEMENT_TAGS = (
+    '["indoor"]',
+    '["room"]',
+    '["door"]',
+    '["entrance"]',
+    '["highway"="elevator"]',
+    '["railway"="platform"]',
+    '["public_transport"="platform"]',
+    '["highway"="platform"]',
+    '["shop"]["level"]',
+    '["amenity"]["level"]',
+)
+
 # The lifts mapped as areas, closed ways and multipolygons, that a read with
 # indoor_elements=True joins as lifts instead of crossing them (see join_lift_areas); an
 # open way with this tag is an inclined lift, a walkway. Read on their own: a lift is
@@ -157,6 +188,22 @@ def is_indoor_area(tags):
         or tags.get("room") in INDOOR_AREA_FILTER["room"]
         or (tags.get("indoor") == "room" and tags.get("stairs") not in (None, "no"))
     )
+
+
+def is_indoor_element(tags):
+    """Whether an element with the OSM tags ``tags`` is one that
+    :meth:`pyrosm.OSM.get_indoor_elements` returns: an element with an ``indoor`` tag,
+    a room tagged as a walkway (the ``room`` values of :data:`INDOOR_AREA_FILTER`), a
+    door or an entrance, a lift (``highway=elevator``), a platform, or a shop or an
+    amenity whose ``level`` tag names a level."""
+    if "indoor" in tags or "door" in tags or "entrance" in tags:
+        return True
+    if tags.get("room") in INDOOR_AREA_FILTER["room"]:
+        return True
+    if tags.get("highway") == "elevator" or _is_platform(tags):
+        return True
+    has_level = level_ranges(tags.get("level")) is not None
+    return has_level and ("shop" in tags or "amenity" in tags)
 
 
 def _is_stair_area(tags):
@@ -825,9 +872,7 @@ def indoor_areas(candidates, walking=None, lifts=None):
     frames = [frame for frame in frames if len(frame)]
     if not frames:
         return None, lifts
-    columns = [col for frame in frames for col in frame.columns]
-    frames = [_with_tag_columns(frame, columns) for frame in frames]
-    areas = pd.concat(frames, ignore_index=True)
+    areas = concat_with_tag_columns(frames)
     areas = GeoDataFrame(areas, geometry="geometry", crs=frames[0].crs)
     lift = np.array(
         [
@@ -1241,6 +1286,14 @@ def without_lift_area_ways(nodes, edges, lifts):
     used = set(kept["u"]) | set(kept["v"])
     gone = (set(edges.loc[drop, "u"]) | set(edges.loc[drop, "v"])) - used
     return nodes[~nodes["id"].isin(gone)], kept
+
+
+def concat_with_tag_columns(frames):
+    """The rows of ``frames`` in one frame, in which each frame has the columns of the
+    others: those it lacks are filled from its tags (see :func:`_with_tag_columns`)."""
+    columns = [col for frame in frames for col in frame.columns]
+    frames = [_with_tag_columns(frame, columns) for frame in frames]
+    return pd.concat(frames, ignore_index=True)
 
 
 def _with_tag_columns(frame, columns):
