@@ -9,6 +9,15 @@ new options that leave the defaults as they were, and fixes of calls that failed
 
 ## Unreleased
 
+- **Buildings mapped with a building relation.** `get_buildings` and the other layer reads
+  return a building that is mapped with its parts as a relation tagged `type=building` as its
+  outline way, with the building's own tags and its whole footprint, and no row for the
+  relation. Earlier versions returned the relation, without the building's tags and with the
+  part of the footprint that the building parts do not cover, or no row at all where the parts
+  cover the outline. On the BBBike extracts, `get_buildings()` returns 5,216 more buildings for
+  Tokyo (5,850 more ways, 634 fewer relations), 5 more for Vienna and 2 more for Helsinki. Code
+  that picked such a building by `osm_type == "relation"` finds it among the ways.
+  `get_data_by_custom_criteria` is unchanged.
 - **Tagged holes of multipolygons.** `get_data_by_custom_criteria(..., keep_relations=True)`
   and the layer reads `get_buildings`, `get_landuse`, `get_natural`, `get_pois` and
   `get_boundaries` return an inner way of a multipolygon as a row of its own when the way's own
