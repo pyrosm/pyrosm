@@ -3665,6 +3665,12 @@ def test_auto_workers_count_the_cores_the_process_may_use(monkeypatch, functions
             "1 element is written without its 'building' tag; get_buildings() will not "
             "find it",
         ),
+        (
+            "other_group_has_its_key",
+            "2 elements would no longer be found by get_data_by_custom_criteria(): "
+            "their 'shop' tag is not in the frame",
+        ),
+        ("other_group_matches", None),
     ],
 )
 def test_write_pbf_warns_when_elements_lose_the_tag_they_were_read_by(
@@ -3674,7 +3680,10 @@ def test_write_pbf_warns_when_elements_lose_the_tag_they_were_read_by(
     tag their read selected them by: naming the reader while the frame notes its read, and
     the tags pyrosm's readers detect features by once the note is gone (e.g. after a
     merge). It gave no warning. A changed value is an edit, the nodes of a network are kept
-    for their ways and a deleted element is not written, so none of these warns."""
+    for their ways and a deleted element is not written, so none of these warns. Two cafés
+    that a read of restaurants and shops kept as tea shops lose their shop tag: they keep
+    an amenity tag, which gave no warning, and warn unless they are written as
+    restaurants, which the read still finds."""
     import json
     import warnings
 
@@ -3702,6 +3711,15 @@ def test_write_pbf_warns_when_elements_lose_the_tag_they_were_read_by(
     elif case == "deleted":
         frame = named[named["osm_type"] == "way"].iloc[:1]
         delete = [("way", int(frame["id"].iloc[0]))]
+    elif case.startswith("other_group"):
+        found = osm.get_data_by_custom_criteria({"amenity": ["restaurant"], "shop": True})
+        tea_cafes = found["id"].isin([311747780, 1007416273])
+        assert found.loc[tea_cafes, ["amenity", "shop"]].values.tolist() == [
+            ["cafe", "tea"]
+        ] * 2
+        frame = found[tea_cafes].drop(columns="shop")
+        if case == "other_group_matches":
+            frame = frame.assign(amenity="restaurant")
     else:
         frame = named.iloc[:1].copy()
         frame.attrs["pyrosm_read"] = "unreadable"

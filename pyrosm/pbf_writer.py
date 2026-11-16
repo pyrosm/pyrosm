@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 from geopandas import GeoDataFrame
 
-from pyrosm.filter_compiler import CompiledFilter, Condition
+from pyrosm.filter_compiler import CompiledFilter
 from pyrosm.pbf_export import _any_member, write_pbf_from_records
 from pyrosm.utils import _stacklevel_outside_pyrosm, notice
 from pyrosm.utils.progress import start_step
@@ -297,23 +297,12 @@ def _elements(count):
 
 def _read_note(gdf):
     """``(reader, filter)`` from the note a pyrosm reader left on ``gdf`` (see
-    :func:`pyrosm.utils.records_read`), or ``None`` when it has none. The filter keeps
-    only which keys the read selected by: each AND-group requires its positively tested
-    keys to exist, so a changed value is an edit, not a lost tag."""
+    :func:`pyrosm.utils.records_read`), or ``None`` when it has none."""
     note = gdf.attrs.get("pyrosm_read")
     try:
-        read_filter = CompiledFilter.from_json(note["filter"])
-        reader = note["reader"]
+        return note["reader"], CompiledFilter.from_json(note["filter"])
     except (KeyError, TypeError, ValueError):
         return None
-    groups = tuple(
-        tuple(
-            Condition(key, "exists")
-            for key in sorted({c.key for c in group if c.is_positive})
-        )
-        for group in read_filter.groups
-    )
-    return reader, CompiledFilter(groups)
 
 
 class _LostTags:
@@ -325,20 +314,23 @@ class _LostTags:
         self.by_tag = {}  # feature tag -> elements, for frames without a note
 
     def check(self, note, element, original, written):
-        """Count ``element`` (its type and id) if its ``written`` tags no longer match the
-        filter of the ``note`` its frame carries (see :func:`_read_note`) while its
-        ``original`` tags do, or, without a note, lose a tag of :data:`_FEATURE_TAGS` that
-        its reader finds elements of this type by."""
+        """Count ``element`` (its type and id) if its ``written`` tags lose what the read
+        of the ``note`` its frame carries (see :func:`_read_note`) selected it by: every
+        group of the read's filter that its ``original`` tags match tests for a key that
+        is no longer written, and the written tags match no group of the filter. A
+        changed value is an edit, not a lost tag. Without a note, count it if it loses a
+        tag of :data:`_FEATURE_TAGS` that its reader finds elements of this type by."""
         if note is not None:
             reader, read_filter = note
-            if read_filter.matches(original) and not read_filter.matches(written):
+            lost = [
+                {c.key for c in group if c.is_positive} - written.keys()
+                for group in read_filter.groups
+                if all(condition.matches(original) for condition in group)
+            ]
+            if lost and all(lost) and not read_filter.matches(written):
                 entry = self.by_reader.setdefault(reader, [set(), set()])
                 entry[0].add(element)
-                entry[1].update(
-                    key
-                    for key in read_filter.positive_keys
-                    if key in original and key not in written
-                )
+                entry[1].update(*lost)
             return
         for tag, (_, types) in _FEATURE_TAGS.items():
             if element[0] in types and tag in original and tag not in written:
