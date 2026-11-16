@@ -14,6 +14,7 @@ rather than through its (derived) LineString.
 """
 
 import json
+import re
 import time
 import warnings
 
@@ -185,20 +186,55 @@ def _add_dict_tags(tags, extra, columns=()):
     return tags
 
 
-def _frame_tags(gdf, tag_cols):
+def _frame_tags(gdf, tag_cols, only=None):
     """The tags of each row of ``gdf``: its values in the tag columns ``tag_cols`` (see
     :func:`_frame_tag_columns`) and its JSON ``tags``. A missing value removes the tag
-    of its column, also when the JSON holds it."""
+    of its column, also when the JSON holds it. With ``only`` (a set of keys), the
+    rows' tags with these keys alone, for a caller that reads no other; the JSON of a
+    row is then parsed only when it can hold one of them (see :func:`_may_hold_key`).
+    """
     keys = [_tag_key(col) for col in tag_cols]
     tags = [{} for _ in range(len(gdf))]
     for col, key in zip(tag_cols, keys):
+        if only is not None and key not in only:
+            continue
         values = gdf[col]
         present = values.notna().to_numpy()
         for i, value in zip(np.flatnonzero(present).tolist(), values[present].tolist()):
             tags[i][key] = _tag_str(value)
     extras = gdf["tags"].tolist() if "tags" in gdf.columns else [None] * len(gdf)
     columns = set(keys)
-    return [_add_dict_tags(row, extra, columns) for row, extra in zip(tags, extras)]
+    if only is None:
+        return [_add_dict_tags(row, extra, columns) for row, extra in zip(tags, extras)]
+    in_json = set(only) - columns
+    if not in_json:
+        return tags
+    # The reader's name of a tag keyed "id" is "id_tag" (see _tag_key)
+    names = in_json | ({"id_tag"} if "id" in in_json else set())
+    quoted = [json.dumps(name, ensure_ascii=False) for name in sorted(names)]
+    escape = _ASCII_ESCAPE if all(name.isascii() for name in names) else _ESCAPE
+    for row, extra in zip(tags, extras):
+        if _may_hold_key(extra, quoted, escape):
+            found = _add_dict_tags({}, extra, columns)
+            row.update((key, found[key]) for key in in_json.intersection(found))
+    return tags
+
+
+# JSON escapes with which a key can be spelled in other characters than its own: any,
+# and those of ASCII characters
+_ESCAPE = re.compile(r"\\u")
+_ASCII_ESCAPE = re.compile(r"\\u00[2-7]")
+
+
+def _may_hold_key(extra, quoted, escape):
+    """Whether the JSON ``tags`` value ``extra`` (a string, a dict or missing) can hold
+    one of the keys whose JSON strings are ``quoted``: a dict, or a string that has one
+    of them or an ``escape`` that could spell one."""
+    if isinstance(extra, str):
+        if any(key in extra for key in quoted):
+            return True
+        return "\\u" in extra and escape.search(extra) is not None
+    return isinstance(extra, dict)
 
 
 def _record_tags(record):

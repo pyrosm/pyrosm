@@ -2560,6 +2560,37 @@ def test_write_pbf_osmium_counts_additions(helsinki_pbf, tmp_path):
 # ---------------------------------------------------------------------------
 # pbf_writer unit coverage (issue #285 modularization)
 # ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "only",
+    [{"level"}, {"highway", "level", "incline"}, {"id", "ref"}, {"name"}, set()],
+)
+def test_frame_tags_with_only_gives_the_rows_tags_of_those_keys(only):
+    import pandas as pd
+    from pyrosm.pbf_writer import _frame_tags
+
+    frame = pd.DataFrame(
+        {
+            "highway": ["steps", None, "footway", "path", "corridor", "steps"],
+            "ref": ["A1", None, None, None, None, None],
+            "tags": [
+                '{"level": "0;1", "incline": "up", "highway": "road"}',
+                '{"level": "2", "ref": "B2", "id_tag": "x9"}',
+                {"level": -1, "visible": False, "surface": "tiles"},
+                '{"\\u006cevel": "3", "name": "K\\u00e4yt\\u00e4v\\u00e4"}',
+                '{"name": "T\\u00f6\\u00f6l\\u00f6", "surface": "asphalt"}',
+                "{not json",
+            ],
+        }
+    )
+    columns = ["highway", "ref"]
+    full = _frame_tags(frame, columns)
+    assert full[0] == {"highway": "steps", "ref": "A1", "level": "0;1", "incline": "up"}
+    assert full[1] == {"level": "2", "id": "x9"}
+    assert full[3]["level"] == "3"
+    expected = [{k: v for k, v in tags.items() if k in only} for tags in full]
+    assert _frame_tags(frame, columns, only=only) == expected
+
+
 def test_pbf_writer_tag_helpers():
     import pandas as pd
     from pyrosm.pbf_writer import _frame_tags, _record_tags, _tag_key, _is_missing

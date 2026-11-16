@@ -235,6 +235,12 @@ def _stairs_tagged(tags):
     return tags.get("stairs") not in (None, "no") or tags.get("room") == "stairs"
 
 
+# The tags that edge_levels and edge_vertical read of an edge
+_EDGE_TAG_KEYS = frozenset(
+    {"level", "highway", "conveying", "incline", *PLATFORM_FILTER}
+)
+
+
 def edge_levels(edges, tags, node_levels=None):
     """``(u_level, v_level)``: float arrays of the level at each end of ``edges`` (a
     frame with ``u`` and ``v``, and ``id``, ``length`` and ``walking_area`` when known),
@@ -664,7 +670,7 @@ def with_indoor_columns(edges, escalator_slope, nodes=None, levels=None):
     millimetres; None keeps the length on the map."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
-    tags = _frame_tags(edges, _frame_tag_columns(edges))
+    tags = _frame_tags(edges, _frame_tag_columns(edges), only=_EDGE_TAG_KEYS)
     own = {**(levels or {}), **({} if nodes is None else node_levels(nodes))}
     u_level, v_level = edge_levels(edges, tags, own)
     vertical = edge_vertical(tags)
