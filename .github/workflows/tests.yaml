@@ -77,9 +77,6 @@ jobs:
         with:
           environment-file: ${{ matrix.env }}
           create-args: ${{ matrix.compiler == 'conda-clang' && 'c-compiler' || '' }}
-          auto-activate-base: false
-          activate-environment: test
-          channel-priority: strict
 
       - name: Check the compiler
         if: matrix.compiler == 'conda-clang'
@@ -152,9 +149,6 @@ jobs:
         uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: ci/r5py-conda.yaml
-          auto-activate-base: false
-          activate-environment: test
-          channel-priority: strict
 
       - name: Install pyrosm
         shell: bash -l {0}
