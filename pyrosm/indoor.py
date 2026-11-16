@@ -99,8 +99,8 @@ INDOOR_AREA_FILTER = {
 
 # The candidates of :meth:`pyrosm.OSM.get_indoor_elements`: the elements with an
 # ``indoor`` tag, the rooms tagged as walkways, the doors and entrances, the lifts, the
-# platforms, and the shops and amenities (see is_indoor_element, which the rows read
-# with this filter pass).
+# platforms, the bus and tram stops, and the shops and amenities (see
+# is_indoor_element, which the rows read with this filter pass).
 INDOOR_ELEMENT_FILTER = {
     "indoor": [True],
     "room": INDOOR_AREA_FILTER["room"],
@@ -109,7 +109,8 @@ INDOOR_ELEMENT_FILTER = {
     "shop": [True],
     "amenity": [True],
     **PLATFORM_FILTER,
-    "highway": ["platform", "elevator"],
+    "highway": ["platform", "elevator", "bus_stop"],
+    "railway": ["platform", "tram_stop"],
 }
 
 # The tags by which is_indoor_element picks an element, as bracket filters, one for
@@ -124,6 +125,8 @@ INDOOR_ELEMENT_TAGS = (
     '["railway"="platform"]',
     '["public_transport"="platform"]',
     '["highway"="platform"]',
+    '["highway"="bus_stop"]',
+    '["railway"="tram_stop"]["public_transport"!="stop_position"]',
     '["shop"]["level"]',
     '["amenity"]["level"]',
 )
@@ -194,16 +197,29 @@ def is_indoor_element(tags):
     """Whether an element with the OSM tags ``tags`` is one that
     :meth:`pyrosm.OSM.get_indoor_elements` returns: an element with an ``indoor`` tag,
     a room tagged as a walkway (the ``room`` values of :data:`INDOOR_AREA_FILTER`), a
-    door or an entrance, a lift (``highway=elevator``), a platform, or a shop or an
-    amenity whose ``level`` tag names a level."""
+    door or an entrance, a lift (``highway=elevator``), a platform, a bus or tram stop
+    (see :func:`_is_bus_or_tram_stop`), or a shop or an amenity whose ``level`` tag
+    names a level."""
     if "indoor" in tags or "door" in tags or "entrance" in tags:
         return True
     if tags.get("room") in INDOOR_AREA_FILTER["room"]:
         return True
     if tags.get("highway") == "elevator" or _is_platform(tags):
         return True
+    if _is_bus_or_tram_stop(tags):
+        return True
     has_level = level_ranges(tags.get("level")) is not None
     return has_level and ("shop" in tags or "amenity" in tags)
+
+
+def _is_bus_or_tram_stop(tags):
+    """Whether an element with the OSM tags ``tags`` is a bus stop
+    (``highway=bus_stop``) or a tram stop (``railway=tram_stop``) other than a stop
+    position on the track (``public_transport=stop_position``)."""
+    if tags.get("highway") == "bus_stop":
+        return True
+    on_track = tags.get("public_transport") == "stop_position"
+    return tags.get("railway") == "tram_stop" and not on_track
 
 
 def _is_stair_area(tags):

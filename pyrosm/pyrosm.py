@@ -1651,8 +1651,10 @@ class OSM:
         tagged as walkways without one (`room` is `corridor`, `entrance`, `lobby`,
         `hall`, `waiting` or `stairs`), the doors and entrances, the lifts
         (`highway=elevator`), the platforms (`railway=platform`,
-        `public_transport=platform` or `highway=platform`, also the bus and tram stops
-        mapped as platform nodes), and the shops and amenities that have a level.
+        `public_transport=platform` or `highway=platform`), the bus and tram stops
+        (`highway=bus_stop`, and `railway=tram_stop` unless it is a
+        `public_transport=stop_position` on the track), and the shops and amenities
+        that have a level.
 
         The column `levels` has the levels of each element, from its `level` tag, as OSM
         lists them with each range written out: `"0;1;2"` for `level=0-2` and `"-2;0"`
