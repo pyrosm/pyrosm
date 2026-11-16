@@ -933,7 +933,7 @@ class OSM:
             node_gdf, edges = without_levelless_lines(node_gdf, edges)
             node_gdf, edges = split_lifts(node_gdf, edges)
             node_gdf, edges = join_lift_areas(node_gdf, edges, lifts)
-            result = node_gdf, with_area_climb_verticals(with_climb_lengths(edges))
+            result = node_gdf, with_climb_lengths(with_area_climb_verticals(edges))
         return result
 
     @contextlib.contextmanager

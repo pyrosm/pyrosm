@@ -31,8 +31,10 @@ several stays empty (a line with both ends empty is left out, see
 :func:`without_levelless_lines`), and a line between entrances on two levels has these
 two levels; such lines are kept only across stairs or an escalator mapped as an area
 whose steps are not also mapped as a stairs, escalator or moving-walkway way inside it,
-and there only the longest line between each two neighbouring levels (see
-:func:`without_lines_between_levels`). A way of several edges also keeps the level of a
+and there only the longest line between each two neighbouring levels, and across
+another area when the two levels are less than one level apart, as on a ramp from a
+mezzanine to a floor (see :func:`without_lines_between_levels`). A way of several edges
+also keeps the level of a
 walkway that joins it in between (or of an inner node's own ``level``), an end without a
 level then takes the other end of the range from the nearest such level, a way whose two
 ends are on one level reaches the other end of its range in between, and the other inner
@@ -751,26 +753,31 @@ def _longest_per_level_pair(edges, rows):
 def without_lines_between_levels(nodes, edges, stepped=()):
     """``nodes`` and ``edges`` (with ``u_level``, ``v_level`` and ``length``) without
     the lines across areas (``walking_area`` True) whose two ends are on two different
-    levels, except across stairs or an escalator mapped as an area (see
+    levels, with two exceptions. Across stairs or an escalator mapped as an area (see
     :func:`_is_stair_area`) whose steps are not also mapped as a way inside it (the
-    areas ``stepped``, ``(osm_type, id)`` each, see :func:`stair_areas_with_ways`): of
-    those, for each two neighbouring levels the longest line between them (see
-    :func:`_longest_per_level_pair`); and without the doors that only the left-out lines
-    used."""
+    areas ``stepped``, ``(osm_type, id)`` each, see :func:`stair_areas_with_ways`), the
+    longest line between each two neighbouring levels stays (see
+    :func:`_longest_per_level_pair`). Across any other area, the lines between two
+    levels less than one level apart stay: a ramp from a mezzanine to a floor, such as
+    a corridor tagged ``level=-0.5;0``. The doors that only the left-out lines used go
+    with them."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     rows = np.flatnonzero(_area_climbs(edges))
     tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges))
     keys = zip(edges["osm_type"].to_numpy()[rows], edges["id"].to_numpy()[rows])
-    stair = np.array(
-        [
-            _is_stair_area(row_tags) and (key[0], int(key[1])) not in stepped
-            for row_tags, key in zip(tags, keys)
-        ],
-        dtype=bool,
+    stairs = np.array([_is_stair_area(row_tags) for row_tags in tags], dtype=bool)
+    unstepped = np.array(
+        [(key[0], int(key[1])) not in stepped for key in keys], dtype=bool
     )
-    stair[stair] = _longest_per_level_pair(edges, rows[stair])
-    return _without_rows(nodes, edges, rows[~stair])
+    kept = stairs & unstepped
+    kept[kept] = _longest_per_level_pair(edges, rows[kept])
+    apart = np.abs(
+        edges["u_level"].to_numpy(dtype=float)[rows]
+        - edges["v_level"].to_numpy(dtype=float)[rows]
+    )
+    kept |= ~stairs & (apart < 1)
+    return _without_rows(nodes, edges, rows[~kept])
 
 
 def without_levelless_lines(nodes, edges):
@@ -1679,15 +1686,17 @@ def with_climb_lengths(edges):
     ``edges`` (see :func:`_climb_length`), plus :data:`LIFT_EXTRA_LENGTH`; without one,
     along escalators and stairs; else :data:`LEVEL_HEIGHT` for each level between them,
     plus :data:`LIFT_EXTRA_LENGTH`. A line across stairs or an escalator mapped as an
-    area between two levels, such as the line from a door tagged ``repeat_on`` to its
-    copy on the next floor, from a place to itself (see
+    area between two levels (a line with a ``vertical``, see
+    :func:`with_area_climb_verticals`), such as the line from a door tagged
+    ``repeat_on`` to its copy on the next floor, from a place to itself (see
     :func:`pyrosm.walking_areas.crossing_rows`), gets that of a climb along stairs;
     without one, along stairs and escalators; else :data:`LEVEL_HEIGHT` for each level
-    between them; it keeps its length on the map when that is longer."""
+    between them; it keeps its length on the map when that is longer. A line between
+    two levels across another area, a ramp, keeps its length on the map."""
     lifts = (edges["vertical"] == "lift").to_numpy()
     u_level = edges["u_level"].to_numpy(dtype=float)
     v_level = edges["v_level"].to_numpy(dtype=float)
-    steps = _area_climbs(edges)
+    steps = _area_climbs(edges) & edges["vertical"].notna().to_numpy()
     if not (lifts | steps).any():
         return edges
     escalators = _ways_between_levels(edges, "escalator")
@@ -1716,10 +1725,11 @@ def with_climb_lengths(edges):
 
 def with_area_climb_verticals(edges):
     """``edges`` (with ``vertical``, ``u_level`` and ``v_level``) where each line across
-    an area that joins two levels (see :func:`_area_climbs`), after
-    :func:`without_lines_between_levels` stairs or an escalator mapped as an area, has
-    the ``vertical`` of a way with the area's tags (see :func:`edge_vertical` with
-    ``areas``): ``"escalator"``, ``"stairs"`` or ``"moving_walkway"``."""
+    an area that joins two levels (see :func:`_area_climbs`) has the ``vertical`` of a
+    way with the area's tags (see :func:`edge_vertical` with ``areas``):
+    ``"escalator"``, ``"stairs"`` or ``"moving_walkway"`` across stairs or an escalator
+    mapped as an area, and none across another area, a ramp (the lines that
+    :func:`without_lines_between_levels` keeps)."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     rows = np.flatnonzero(_area_climbs(edges))

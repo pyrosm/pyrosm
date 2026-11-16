@@ -7641,7 +7641,8 @@ def test_indoor_reads_give_lines_across_stairs_the_length_of_a_climb():
     """A line across stairs mapped as an area between levels 0 and 1 that is shorter on
     the map than the stairs between these levels (way 10, 9 m) takes their length, and a
     longer one (12 m) keeps its own; one between levels 1 and 3, which no stairs or
-    escalator climb, takes 4 m per level."""
+    escalator climb, takes 4 m per level. A line between levels -0.5 and 0 across
+    another area, a ramp without a ``vertical`` (way 42, 1 m), keeps its length."""
     import geopandas as gpd
     from shapely.geometry import LineString
 
@@ -7649,9 +7650,10 @@ def test_indoor_reads_give_lines_across_stairs_the_length_of_a_climb():
 
     rows = [
         (10, 1, 2, 0.0, 1.0, 9.0, "stairs", False),
-        (40, 3, 4, 0.0, 1.0, 2.0, None, True),
-        (40, 3, 5, 0.0, 1.0, 12.0, None, True),
-        (41, 6, 7, 1.0, 3.0, 1.0, None, True),
+        (40, 3, 4, 0.0, 1.0, 2.0, "stairs", True),
+        (40, 3, 5, 0.0, 1.0, 12.0, "stairs", True),
+        (41, 6, 7, 1.0, 3.0, 1.0, "stairs", True),
+        (42, 8, 9, -0.5, 0.0, 1.0, None, True),
     ]
     edges = gpd.GeoDataFrame(
         {
@@ -7668,7 +7670,7 @@ def test_indoor_reads_give_lines_across_stairs_the_length_of_a_climb():
         geometry=[LineString([(8.54, 47.38), (8.5401, 47.38)])] * len(rows),
         crs=4326,
     )
-    assert with_climb_lengths(edges)["length"].tolist() == [9.0, 9.0, 12.0, 8.0]
+    assert with_climb_lengths(edges)["length"].tolist() == [9.0, 9.0, 12.0, 8.0, 1.0]
 
 
 def test_indoor_reads_give_lines_that_climb_across_areas_a_vertical_both_ways():
@@ -7755,7 +7757,9 @@ def test_indoor_reads_keep_one_line_per_two_floors_across_stair_areas():
     levels stays (1-3 on levels 0 and 1, 3-5 on levels 1 and 2): shorter ones and the
     line skipping level 1 go, and so do the nodes only they used. Lines between levels
     across a corridor (way 41) and across stairs whose steps are mapped as a way inside
-    them (way 42) go; a line on one level stays."""
+    them (way 42) go; a line on one level stays. A line between levels -0.5 and 0, less
+    than one level apart, stays across a corridor (way 43), a ramp, and goes across the
+    stairs with their own way (way 42)."""
     import geopandas as gpd
     from shapely.geometry import LineString, Point
 
@@ -7770,8 +7774,10 @@ def test_indoor_reads_keep_one_line_per_two_floors_across_stair_areas():
         (40, 2, 6, 1.0, 2.0, 2.0),
         (41, 7, 8, 0.0, 1.0, 5.0),
         (42, 9, 10, 0.0, 1.0, 5.0),
+        (43, 11, 12, -0.5, 0.0, 6.0),
+        (42, 13, 14, -0.5, 0.0, 3.0),
     ]
-    stairs = {40: "yes", 41: None, 42: "yes"}
+    stairs = {40: "yes", 41: None, 42: "yes", 43: None}
     edges = gpd.GeoDataFrame(
         {
             "id": [line[0] for line in lines],
@@ -7788,11 +7794,11 @@ def test_indoor_reads_keep_one_line_per_two_floors_across_stair_areas():
         crs=4326,
     )
     nodes = gpd.GeoDataFrame(
-        {"id": list(range(1, 11))}, geometry=[Point(0, 0)] * 10, crs=4326
+        {"id": list(range(1, 15))}, geometry=[Point(0, 0)] * 14, crs=4326
     )
     nodes, edges = without_lines_between_levels(nodes, edges, {("way", 42)})
-    assert list(zip(edges["u"], edges["v"])) == [(1, 3), (4, 3), (3, 5)]
-    assert sorted(nodes["id"]) == [1, 3, 4, 5]
+    assert list(zip(edges["u"], edges["v"])) == [(1, 3), (4, 3), (3, 5), (11, 12)]
+    assert sorted(nodes["id"]) == [1, 3, 4, 5, 11, 12]
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
