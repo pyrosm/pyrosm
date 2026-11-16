@@ -1343,13 +1343,16 @@ def _with_tag_columns(frame, columns):
 def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
     """The ``nodes`` and ``edges`` of a network read with the edges across the indoor and
     walking ``areas`` (see :func:`pyrosm.walking_areas.crossing_rows`), marked True in
-    the column ``walking_area`` (False on the other edges), entered through the
+    the column ``walking_area`` (False on the other edges; without ``areas`` only the
+    doors tagged ``repeat_on`` change the network), entered through the
     network's nodes on the areas' outlines and, for the areas of
     :data:`INDOOR_AREA_FILTER`, through the ``doors`` (a frame of nodes with ``id``,
     ``lon``, ``lat`` and tags, a read of :data:`ENTRANCE_FILTER`) on their outlines and
     the lift nodes among them (see :func:`pyrosm.walking_areas.crossing_rows`), a door
     tagged ``repeat_on`` once on each of its levels (see :func:`door_copies`; a copy id
-    that a node has already raises a ValueError), and
+    that a node has already raises a ValueError), where the network's edges with one
+    level end at the door's copy on their level (see :func:`_walkways_on_door_copies`;
+    a door left without an edge is a node only when an edge across an area uses it), and
     through the ``borders``, the nodes where open indoor spaces meet (see
     :func:`border_entrances`), into those spaces only unless the node is already one of
     the network's, without those between two nodes an edge already joins (a lift node
@@ -1361,11 +1364,10 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
 
     if "walking_area" not in edges.columns:
         edges = edges.assign(walking_area=False)
-    if areas is None:
+    if areas is None and doors is None:
         return nodes, edges
     columns = [col for col in ("id", "lon", "lat", "tags") if col in nodes.columns]
-    entrances = nodes[columns]
-    repeated = set()
+    repeated, copy_ids = set(), set()
     if doors is not None:
         doors = doors.assign(
             tags=[dumps(t) for t in _frame_tags(doors, _frame_tag_columns(doors))]
@@ -1382,9 +1384,18 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
             )
         # The doors copied per level, and their copies, enter areas on their level only
         repeated = new | {door for door in doors["id"] if node_copy_id(door, 1) in new}
-        doors = copied
+        doors, copy_ids = copied, new
+        ends = set(edges["u"]) | set(edges["v"])
+        edges = _walkways_on_door_copies(edges, copied[copied["id"].isin(new)])
+        left = ends - set(edges["u"]) - set(edges["v"])
+        if left:
+            # A door whose edges all end at its copies is no node of the network now
+            attrs = dict(nodes.attrs)
+            nodes = nodes[~nodes["id"].isin(left)].reset_index(drop=True)
+            nodes.attrs = attrs
     if borders is not None and doors is not None:
         borders = borders[~borders["id"].isin(doors["id"])]
+    entrances = nodes[columns]
     added = [frame for frame in (doors, borders) if frame is not None]
     if doors is not None and "tags" in entrances.columns:
         # A door of the network enters areas with its tags as a door, on its own level
@@ -1399,30 +1410,33 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
         new = frame[~frame["id"].isin(nodes["id"])]
         new = new[[col for col in columns if col in new.columns]]
         entrances = pd.concat([entrances, new], ignore_index=True)
-    plain = edges[~edges["walking_area"]]
-    door_areas = [
-        is_indoor_area(tags) for tags in _frame_tags(areas, _frame_tag_columns(areas))
-    ]
-    only = None
-    if borders is not None:
-        new = borders[~borders["id"].isin(nodes["id"])]
-        only = dict(zip(new["id"], new["spaces"]))
-    rows = crossing_rows(entrances, plain, areas, door_areas, only, repeated, lifts)
+    rows = None
+    if areas is not None:
+        plain = edges[~edges["walking_area"]]
+        area_tags = _frame_tags(areas, _frame_tag_columns(areas))
+        door_areas = [is_indoor_area(tags) for tags in area_tags]
+        only = None
+        if borders is not None:
+            new = borders[~borders["id"].isin(nodes["id"])]
+            only = dict(zip(new["id"], new["spaces"]))
+        rows = crossing_rows(entrances, plain, areas, door_areas, only, repeated, lifts)
     if rows is not None:
         # A line along the outline of an area that is an edge itself (a platform's ring)
         joined = set(zip(edges["u"], edges["v"])) | set(zip(edges["v"], edges["u"]))
         rows = rows[[pair not in joined for pair in zip(rows["u"], rows["v"])]]
-    if rows is None or rows.empty:
-        return nodes, edges
-    rows = rows.assign(walking_area=True)
-    attrs = dict(edges.attrs)
-    edges = GeoDataFrame(
-        pd.concat([edges, rows], ignore_index=True), geometry="geometry", crs=edges.crs
-    )
-    edges.attrs = attrs
-    if borders is not None:
-        added[-1] = borders.drop(columns=["spaces", "level"]).assign(tags=None)
-    used = set(rows["u"]) | set(rows["v"])
+    used = (set(edges["u"]) | set(edges["v"])) & copy_ids
+    if rows is not None and not rows.empty:
+        rows = rows.assign(walking_area=True)
+        attrs = dict(edges.attrs)
+        edges = GeoDataFrame(
+            pd.concat([edges, rows], ignore_index=True),
+            geometry="geometry",
+            crs=edges.crs,
+        )
+        edges.attrs = attrs
+        if borders is not None:
+            added[-1] = borders.drop(columns=["spaces", "level"]).assign(tags=None)
+        used |= set(rows["u"]) | set(rows["v"])
     for frame in added:
         new = frame[frame["id"].isin(used) & ~frame["id"].isin(nodes["id"])]
         if len(new):
@@ -1486,6 +1500,42 @@ def door_copies(doors):
             rows.append(row.copy())
             rows[-1]["id"], rows[-1]["tags"] = node, dumps(copy)
     return GeoDataFrame(rows, geometry="geometry", crs=doors.crs).reset_index(drop=True)
+
+
+def copied_node(copy):
+    """The id of the node that ``copy`` is a copy of (see :func:`node_copy_id`)."""
+    return -int(copy) // 1000
+
+
+def _walkways_on_door_copies(edges, copies):
+    """``edges`` with their ends at a door copied per level moved to the door's copy on
+    the edge's level: ``copies`` are the rows of the copies that :func:`door_copies`
+    made, with their ``id`` and their one ``level`` in the JSON ``tags``. An edge
+    tagged with one level that a copy of the door has ends at that copy; an edge on
+    the door's own level, with several levels or with none stays at the door's node."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
+    by_level = {
+        (copied_node(copy), float(json.loads(tags)["level"])): copy
+        for copy, tags in zip(copies["id"], copies["tags"])
+    }
+    u, v = edges["u"].to_numpy().copy(), edges["v"].to_numpy().copy()
+    doors = sorted({door for door, _ in by_level})
+    rows = np.flatnonzero(np.isin(u, doors) | np.isin(v, doors))
+    if not len(rows):
+        return edges
+    tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges), only={"level"})
+    for row, row_tags in zip(rows, tags):
+        ranges = level_ranges(row_tags.get("level"))
+        if not ranges:
+            continue
+        level = _one_level(ranges)
+        for ends in (u, v):
+            ends[row] = by_level.get((ends[row], level), ends[row])
+    attrs = dict(edges.attrs)
+    edges = edges.assign(u=u, v=v)
+    edges.attrs = attrs
+    return edges
 
 
 # A door's repeat_on is read as further levels only when its levels span at most this

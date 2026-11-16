@@ -7803,6 +7803,73 @@ def test_indoor_reads_keep_one_line_per_two_floors_across_stair_areas():
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
 @pytest.mark.parametrize(
+    "room, footways, joined",
+    [({"stairs": "yes"}, (50, 51), True), ({}, (50, 51), False), ({}, (51,), None)],
+)
+def test_indoor_reads_end_walkways_at_the_copy_of_a_repeated_door_on_their_level(
+    tmp_path, engine, room, footways, joined
+):
+    """A room on levels 0 and 1 (way 41) has one door (node 5, level=0, repeat_on=1),
+    and a level-0 footway (way 50) and a level-1 footway (way 51) both end at the door's
+    node. The level-1 footway ends at the door's copy on level 1, so the door's own node
+    carries level 0 only and the footways meet only through the room: across stairs
+    mapped as a room, by the line from the door to its copy; across a plain room, not at
+    all. Without the level-0 footway and with a plain room, nothing ends at the door's
+    own node, and it is no node of the network."""
+    import math
+
+    import numpy as np
+    import pandas as pd
+
+    from pyrosm import OSM
+    from pyrosm.indoor import node_copy_id
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (10, 0), 3: (10, 10), 4: (0, 10), 5: (10, 5), 8: (20, 3), 9: (20, 7)}
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    door = {"door": "yes", "level": "0", "repeat_on": "1"}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [door if i == 5 else None for i in ids],
+    }
+    ways = [
+        {"id": 41, "refs": [1, 2, 5, 3, 4, 1],
+         "tags": {"indoor": "room", "level": "0;1", **room}},
+        {"id": 50, "refs": [8, 5], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 51, "refs": [9, 5], "tags": {"highway": "footway", "level": "1"}},
+    ]
+    ways = [way for way in ways if way["id"] == 41 or way["id"] in footways]
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "door.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    found, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    copy = node_copy_id(5, 1)
+    ends = {
+        way: set(edges.loc[edges["id"] == way, ["u", "v"]].to_numpy().ravel())
+        for way in footways
+    }
+    expected = {50: {8, 5}, 51: {9, copy}}
+    assert ends == {way: expected[way] for way in footways}
+    assert copy in set(found["id"])
+    if joined is None:
+        assert 5 not in set(found["id"])
+        return
+    assert _nodes_joined(edges, 8, 9) == joined
+    at_door = pd.concat(
+        [edges.loc[edges["u"] == 5, "u_level"], edges.loc[edges["v"] == 5, "v_level"]]
+    )
+    assert set(at_door) == {0.0}
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
     "room, steps, joined",
     [({"stairs": "yes"}, False, True), ({"stairs": "yes"}, True, True), ({}, False, False)],
 )
