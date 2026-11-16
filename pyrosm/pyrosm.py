@@ -823,7 +823,9 @@ class OSM:
             at most two levels apart, make one lift. A door tagged `repeat_on`, such as
             the one door of a lift on all its floors, is a door on each of those levels:
             its own `level` keeps its id and the other levels get copies with negative
-            ids, each entering the areas of its level; in stairs mapped as an area or
+            ids, each entering the areas of its level; a door whose own `level` names
+            several levels is such a door on each of them when it stands on the
+            outlines of areas on two or more of those levels; in stairs mapped as an area or
             room, a line from the door to its copy on the next floor, from that place
             to itself, joins the two floors, with the `length` of a climb along stairs
             between them (else along stairs and escalators, else 4 metres for each level

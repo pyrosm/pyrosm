@@ -1349,7 +1349,9 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
     :data:`INDOOR_AREA_FILTER`, through the ``doors`` (a frame of nodes with ``id``,
     ``lon``, ``lat`` and tags, a read of :data:`ENTRANCE_FILTER`) on their outlines and
     the lift nodes among them (see :func:`pyrosm.walking_areas.crossing_rows`), a door
-    tagged ``repeat_on`` once on each of its levels (see :func:`door_copies`; a copy id
+    tagged ``repeat_on`` once on each of its levels, and so a door whose own ``level``
+    lists the levels of areas that it stands between (see :func:`door_copies` and
+    :func:`doors_joining_levels`; a copy id
     that a node has already raises a ValueError), where the network's edges with one
     level end at the door's copy on their level (see :func:`_walkways_on_door_copies`;
     a door left without an edge is a node only when an edge across an area uses it), and
@@ -1372,15 +1374,16 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
         doors = doors.assign(
             tags=[dumps(t) for t in _frame_tags(doors, _frame_tag_columns(doors))]
         )
-        copied = door_copies(doors)
+        copied = door_copies(doors, doors_joining_levels(doors, areas, lifts))
         twice = set(copied["id"][copied["id"].duplicated()])
         new = set(copied["id"]) - set(doors["id"])
         taken = set(nodes["id"]) | (set() if borders is None else set(borders["id"]))
         clash = sorted(twice | (new & taken))
         if clash:
             raise ValueError(
-                "Doors tagged repeat_on cannot be copied per level: the ids of their "
-                "copies, %s, are taken." % clash[:3]
+                "Doors on several levels (a repeat_on tag, or a level tag that lists "
+                "the levels of the areas around the door) cannot be copied per level: "
+                "the ids of their copies, %s, are taken." % clash[:3]
             )
         # The doors copied per level, and their copies, enter areas on their level only
         repeated = new | {door for door in doors["id"] if node_copy_id(door, 1) in new}
@@ -1465,12 +1468,61 @@ def node_copy_id(node, rank):
     return -(int(node) * 1000 + rank)
 
 
-def door_copies(doors):
+# How far from the outline of an area, in degrees, a door still stands on it.
+_ON_OUTLINE = 1e-8
+
+
+def doors_joining_levels(doors, areas, lifts=None):
+    """The ids, as a set, of the ``doors`` (a frame of nodes with ``id``, point
+    geometries and ``tags``, JSON with all their tags) whose own ``level`` tag names
+    several levels, as a list or a range, and that stand on the outlines of areas on
+    two or more of those levels. The areas are those of ``areas`` that indoor reads
+    cross (see :func:`is_indoor_area`) and the lift areas ``lifts``, each on the levels
+    of its ``level`` tag (see :func:`_whole_levels`). Doors tagged ``repeat_on`` and
+    lift nodes (``highway=elevator``) are left out: :func:`door_copies` and
+    :func:`split_lifts` copy them by their own tags."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
+    listed = {}
+    for row, text in enumerate(doors["tags"]):
+        tags = json.loads(text) if isinstance(text, str) else {}
+        if "repeat_on" in tags or tags.get("highway") == "elevator":
+            continue
+        levels = _whole_levels(level_ranges(tags.get("level")) or [])
+        if len(levels) > 1:
+            listed[row] = set(levels)
+    outlines, on = [], []
+    for frame, crossed in ((areas, is_indoor_area), (lifts, None)):
+        if frame is None or not listed:
+            continue
+        tags = _frame_tags(frame, _frame_tag_columns(frame))
+        for geometry, area_tags in zip(frame.geometry, tags):
+            levels = _whole_levels(level_ranges(area_tags.get("level")) or [])
+            if levels and (crossed is None or crossed(area_tags)):
+                outlines.append(shapely.boundary(geometry))
+                on.append(set(levels))
+    if not outlines:
+        return set()
+    rows = np.array(sorted(listed))
+    points = doors.geometry.to_numpy()[rows]
+    near, area_rows = shapely.STRtree(outlines).query(
+        points, predicate="dwithin", distance=_ON_OUTLINE
+    )
+    around = {}
+    for row, area in zip(rows[near].tolist(), area_rows.tolist()):
+        around.setdefault(row, set()).update(on[area])
+    ids = doors["id"].to_numpy()
+    return {int(ids[row]) for row, at in around.items() if len(at & listed[row]) > 1}
+
+
+def door_copies(doors, joining=()):
     """``doors`` (a frame of nodes with ``id`` and ``tags``, JSON with all their tags)
     with each door tagged ``repeat_on`` as one row per level, as Simple Indoor Tagging
     maps a door that repeats on other floors, such as the door of a lift: the door's
     ``level`` keeps its id, the other levels get :func:`node_copy_id`, ranked from the
-    lowest, and each row's ``tags`` have its one ``level`` and no ``repeat_on``. Left as
+    lowest, and each row's ``tags`` have its one ``level`` and no ``repeat_on``. A door
+    whose id is in ``joining`` (see :func:`doors_joining_levels`) is copied in the same
+    way on the levels of its ``level`` tag, the first of them at its own node. Left as
     they are: a door that is also a lift node (``highway=elevator``, split per level by
     :func:`split_lifts`), a door whose id is not a positive one the copy ids fit, and a
     door on more than :data:`MAX_REPEATED_LEVELS` levels or with a range spanning more.
@@ -1483,7 +1535,7 @@ def door_copies(doors):
         own = level_ranges(tags.get("level")) or []
         levels = _whole_levels(own + (level_ranges(tags.get("repeat_on")) or []))
         copied = (
-            tags.get("repeat_on")
+            (tags.get("repeat_on") or row["id"] in joining)
             and tags.get("highway") != "elevator"
             and 0 < row["id"] <= _MAX_LIFT_ID
             and 1 < len(levels) <= MAX_REPEATED_LEVELS
