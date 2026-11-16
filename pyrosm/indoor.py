@@ -31,8 +31,10 @@ several stays empty (a line with both ends empty is left out, see
 :func:`without_levelless_lines`), and a line between entrances on two levels has these
 two levels; such lines are kept only across stairs or an escalator mapped as an area
 whose steps are not also mapped as a stairs, escalator or moving-walkway way inside it,
-and there only the longest line between each two neighbouring levels (see
-:func:`without_lines_between_levels`). A way of several edges also keeps the level of a
+and there only the longest line between each two neighbouring levels, and across
+another area when the two levels are less than one level apart, as on a ramp from a
+mezzanine to a floor (see :func:`without_lines_between_levels`). A way of several edges
+also keeps the level of a
 walkway that joins it in between (or of an inner node's own ``level``), an end without a
 level then takes the other end of the range from the nearest such level, a way whose two
 ends are on one level reaches the other end of its range in between, and the other inner
@@ -233,6 +235,12 @@ def _stairs_tagged(tags):
     """Whether an area with the OSM tags ``tags`` is tagged as stairs, as Simple Indoor
     Tagging maps staircases: ``stairs`` other than no, or ``room=stairs``."""
     return tags.get("stairs") not in (None, "no") or tags.get("room") == "stairs"
+
+
+# The tags that edge_levels and edge_vertical read of an edge
+_EDGE_TAG_KEYS = frozenset(
+    {"level", "highway", "conveying", "incline", *PLATFORM_FILTER}
+)
 
 
 def edge_levels(edges, tags, node_levels=None):
@@ -664,7 +672,7 @@ def with_indoor_columns(edges, escalator_slope, nodes=None, levels=None):
     millimetres; None keeps the length on the map."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
-    tags = _frame_tags(edges, _frame_tag_columns(edges))
+    tags = _frame_tags(edges, _frame_tag_columns(edges), only=_EDGE_TAG_KEYS)
     own = {**(levels or {}), **({} if nodes is None else node_levels(nodes))}
     u_level, v_level = edge_levels(edges, tags, own)
     vertical = edge_vertical(tags)
@@ -745,26 +753,31 @@ def _longest_per_level_pair(edges, rows):
 def without_lines_between_levels(nodes, edges, stepped=()):
     """``nodes`` and ``edges`` (with ``u_level``, ``v_level`` and ``length``) without
     the lines across areas (``walking_area`` True) whose two ends are on two different
-    levels, except across stairs or an escalator mapped as an area (see
+    levels, with two exceptions. Across stairs or an escalator mapped as an area (see
     :func:`_is_stair_area`) whose steps are not also mapped as a way inside it (the
-    areas ``stepped``, ``(osm_type, id)`` each, see :func:`stair_areas_with_ways`): of
-    those, for each two neighbouring levels the longest line between them (see
-    :func:`_longest_per_level_pair`); and without the doors that only the left-out lines
-    used."""
+    areas ``stepped``, ``(osm_type, id)`` each, see :func:`stair_areas_with_ways`), the
+    longest line between each two neighbouring levels stays (see
+    :func:`_longest_per_level_pair`). Across any other area, the lines between two
+    levels less than one level apart stay: a ramp from a mezzanine to a floor, such as
+    a corridor tagged ``level=-0.5;0``. The doors that only the left-out lines used go
+    with them."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     rows = np.flatnonzero(_area_climbs(edges))
     tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges))
     keys = zip(edges["osm_type"].to_numpy()[rows], edges["id"].to_numpy()[rows])
-    stair = np.array(
-        [
-            _is_stair_area(row_tags) and (key[0], int(key[1])) not in stepped
-            for row_tags, key in zip(tags, keys)
-        ],
-        dtype=bool,
+    stairs = np.array([_is_stair_area(row_tags) for row_tags in tags], dtype=bool)
+    unstepped = np.array(
+        [(key[0], int(key[1])) not in stepped for key in keys], dtype=bool
     )
-    stair[stair] = _longest_per_level_pair(edges, rows[stair])
-    return _without_rows(nodes, edges, rows[~stair])
+    kept = stairs & unstepped
+    kept[kept] = _longest_per_level_pair(edges, rows[kept])
+    apart = np.abs(
+        edges["u_level"].to_numpy(dtype=float)[rows]
+        - edges["v_level"].to_numpy(dtype=float)[rows]
+    )
+    kept |= ~stairs & (apart < 1)
+    return _without_rows(nodes, edges, rows[~kept])
 
 
 def without_levelless_lines(nodes, edges):
@@ -1330,13 +1343,16 @@ def _with_tag_columns(frame, columns):
 def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
     """The ``nodes`` and ``edges`` of a network read with the edges across the indoor and
     walking ``areas`` (see :func:`pyrosm.walking_areas.crossing_rows`), marked True in
-    the column ``walking_area`` (False on the other edges), entered through the
+    the column ``walking_area`` (False on the other edges; without ``areas`` only the
+    doors tagged ``repeat_on`` change the network), entered through the
     network's nodes on the areas' outlines and, for the areas of
     :data:`INDOOR_AREA_FILTER`, through the ``doors`` (a frame of nodes with ``id``,
     ``lon``, ``lat`` and tags, a read of :data:`ENTRANCE_FILTER`) on their outlines and
     the lift nodes among them (see :func:`pyrosm.walking_areas.crossing_rows`), a door
     tagged ``repeat_on`` once on each of its levels (see :func:`door_copies`; a copy id
-    that a node has already raises a ValueError), and
+    that a node has already raises a ValueError), where the network's edges with one
+    level end at the door's copy on their level (see :func:`_walkways_on_door_copies`;
+    a door left without an edge is a node only when an edge across an area uses it), and
     through the ``borders``, the nodes where open indoor spaces meet (see
     :func:`border_entrances`), into those spaces only unless the node is already one of
     the network's, without those between two nodes an edge already joins (a lift node
@@ -1348,11 +1364,10 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
 
     if "walking_area" not in edges.columns:
         edges = edges.assign(walking_area=False)
-    if areas is None:
+    if areas is None and doors is None:
         return nodes, edges
     columns = [col for col in ("id", "lon", "lat", "tags") if col in nodes.columns]
-    entrances = nodes[columns]
-    repeated = set()
+    repeated, copy_ids = set(), set()
     if doors is not None:
         doors = doors.assign(
             tags=[dumps(t) for t in _frame_tags(doors, _frame_tag_columns(doors))]
@@ -1369,9 +1384,18 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
             )
         # The doors copied per level, and their copies, enter areas on their level only
         repeated = new | {door for door in doors["id"] if node_copy_id(door, 1) in new}
-        doors = copied
+        doors, copy_ids = copied, new
+        ends = set(edges["u"]) | set(edges["v"])
+        edges = _walkways_on_door_copies(edges, copied[copied["id"].isin(new)])
+        left = ends - set(edges["u"]) - set(edges["v"])
+        if left:
+            # A door whose edges all end at its copies is no node of the network now
+            attrs = dict(nodes.attrs)
+            nodes = nodes[~nodes["id"].isin(left)].reset_index(drop=True)
+            nodes.attrs = attrs
     if borders is not None and doors is not None:
         borders = borders[~borders["id"].isin(doors["id"])]
+    entrances = nodes[columns]
     added = [frame for frame in (doors, borders) if frame is not None]
     if doors is not None and "tags" in entrances.columns:
         # A door of the network enters areas with its tags as a door, on its own level
@@ -1386,30 +1410,33 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
         new = frame[~frame["id"].isin(nodes["id"])]
         new = new[[col for col in columns if col in new.columns]]
         entrances = pd.concat([entrances, new], ignore_index=True)
-    plain = edges[~edges["walking_area"]]
-    door_areas = [
-        is_indoor_area(tags) for tags in _frame_tags(areas, _frame_tag_columns(areas))
-    ]
-    only = None
-    if borders is not None:
-        new = borders[~borders["id"].isin(nodes["id"])]
-        only = dict(zip(new["id"], new["spaces"]))
-    rows = crossing_rows(entrances, plain, areas, door_areas, only, repeated, lifts)
+    rows = None
+    if areas is not None:
+        plain = edges[~edges["walking_area"]]
+        area_tags = _frame_tags(areas, _frame_tag_columns(areas))
+        door_areas = [is_indoor_area(tags) for tags in area_tags]
+        only = None
+        if borders is not None:
+            new = borders[~borders["id"].isin(nodes["id"])]
+            only = dict(zip(new["id"], new["spaces"]))
+        rows = crossing_rows(entrances, plain, areas, door_areas, only, repeated, lifts)
     if rows is not None:
         # A line along the outline of an area that is an edge itself (a platform's ring)
         joined = set(zip(edges["u"], edges["v"])) | set(zip(edges["v"], edges["u"]))
         rows = rows[[pair not in joined for pair in zip(rows["u"], rows["v"])]]
-    if rows is None or rows.empty:
-        return nodes, edges
-    rows = rows.assign(walking_area=True)
-    attrs = dict(edges.attrs)
-    edges = GeoDataFrame(
-        pd.concat([edges, rows], ignore_index=True), geometry="geometry", crs=edges.crs
-    )
-    edges.attrs = attrs
-    if borders is not None:
-        added[-1] = borders.drop(columns=["spaces", "level"]).assign(tags=None)
-    used = set(rows["u"]) | set(rows["v"])
+    used = (set(edges["u"]) | set(edges["v"])) & copy_ids
+    if rows is not None and not rows.empty:
+        rows = rows.assign(walking_area=True)
+        attrs = dict(edges.attrs)
+        edges = GeoDataFrame(
+            pd.concat([edges, rows], ignore_index=True),
+            geometry="geometry",
+            crs=edges.crs,
+        )
+        edges.attrs = attrs
+        if borders is not None:
+            added[-1] = borders.drop(columns=["spaces", "level"]).assign(tags=None)
+        used |= set(rows["u"]) | set(rows["v"])
     for frame in added:
         new = frame[frame["id"].isin(used) & ~frame["id"].isin(nodes["id"])]
         if len(new):
@@ -1473,6 +1500,42 @@ def door_copies(doors):
             rows.append(row.copy())
             rows[-1]["id"], rows[-1]["tags"] = node, dumps(copy)
     return GeoDataFrame(rows, geometry="geometry", crs=doors.crs).reset_index(drop=True)
+
+
+def copied_node(copy):
+    """The id of the node that ``copy`` is a copy of (see :func:`node_copy_id`)."""
+    return -int(copy) // 1000
+
+
+def _walkways_on_door_copies(edges, copies):
+    """``edges`` with their ends at a door copied per level moved to the door's copy on
+    the edge's level: ``copies`` are the rows of the copies that :func:`door_copies`
+    made, with their ``id`` and their one ``level`` in the JSON ``tags``. An edge
+    tagged with one level that a copy of the door has ends at that copy; an edge on
+    the door's own level, with several levels or with none stays at the door's node."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+
+    by_level = {
+        (copied_node(copy), float(json.loads(tags)["level"])): copy
+        for copy, tags in zip(copies["id"], copies["tags"])
+    }
+    u, v = edges["u"].to_numpy().copy(), edges["v"].to_numpy().copy()
+    doors = sorted({door for door, _ in by_level})
+    rows = np.flatnonzero(np.isin(u, doors) | np.isin(v, doors))
+    if not len(rows):
+        return edges
+    tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges), only={"level"})
+    for row, row_tags in zip(rows, tags):
+        ranges = level_ranges(row_tags.get("level"))
+        if not ranges:
+            continue
+        level = _one_level(ranges)
+        for ends in (u, v):
+            ends[row] = by_level.get((ends[row], level), ends[row])
+    attrs = dict(edges.attrs)
+    edges = edges.assign(u=u, v=v)
+    edges.attrs = attrs
+    return edges
 
 
 # A door's repeat_on is read as further levels only when its levels span at most this
@@ -1673,15 +1736,17 @@ def with_climb_lengths(edges):
     ``edges`` (see :func:`_climb_length`), plus :data:`LIFT_EXTRA_LENGTH`; without one,
     along escalators and stairs; else :data:`LEVEL_HEIGHT` for each level between them,
     plus :data:`LIFT_EXTRA_LENGTH`. A line across stairs or an escalator mapped as an
-    area between two levels, such as the line from a door tagged ``repeat_on`` to its
-    copy on the next floor, from a place to itself (see
+    area between two levels (a line with a ``vertical``, see
+    :func:`with_area_climb_verticals`), such as the line from a door tagged
+    ``repeat_on`` to its copy on the next floor, from a place to itself (see
     :func:`pyrosm.walking_areas.crossing_rows`), gets that of a climb along stairs;
     without one, along stairs and escalators; else :data:`LEVEL_HEIGHT` for each level
-    between them; it keeps its length on the map when that is longer."""
+    between them; it keeps its length on the map when that is longer. A line between
+    two levels across another area, a ramp, keeps its length on the map."""
     lifts = (edges["vertical"] == "lift").to_numpy()
     u_level = edges["u_level"].to_numpy(dtype=float)
     v_level = edges["v_level"].to_numpy(dtype=float)
-    steps = _area_climbs(edges)
+    steps = _area_climbs(edges) & edges["vertical"].notna().to_numpy()
     if not (lifts | steps).any():
         return edges
     escalators = _ways_between_levels(edges, "escalator")
@@ -1710,10 +1775,11 @@ def with_climb_lengths(edges):
 
 def with_area_climb_verticals(edges):
     """``edges`` (with ``vertical``, ``u_level`` and ``v_level``) where each line across
-    an area that joins two levels (see :func:`_area_climbs`), after
-    :func:`without_lines_between_levels` stairs or an escalator mapped as an area, has
-    the ``vertical`` of a way with the area's tags (see :func:`edge_vertical` with
-    ``areas``): ``"escalator"``, ``"stairs"`` or ``"moving_walkway"``."""
+    an area that joins two levels (see :func:`_area_climbs`) has the ``vertical`` of a
+    way with the area's tags (see :func:`edge_vertical` with ``areas``):
+    ``"escalator"``, ``"stairs"`` or ``"moving_walkway"`` across stairs or an escalator
+    mapped as an area, and none across another area, a ramp (the lines that
+    :func:`without_lines_between_levels` keeps)."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     rows = np.flatnonzero(_area_climbs(edges))

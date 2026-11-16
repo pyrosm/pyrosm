@@ -673,15 +673,28 @@ def test_walking_areas_leave_a_landing_of_two_stairs_open():
         assert 8 not in open_ends and {1, 3} <= set(open_ends)
 
 
+_WITHOUT_AREAS = {"area": ["yes"], "foot": ["no"], "service": ["private"]}
+
+
 @pytest.mark.parametrize(
-    "network_type, kept",
-    [("walking", [1, 4, 8, 9]), ("cycling", [1, 8, 9]), ("driving", [])],
+    "network_type, custom_filter, filter_type, kept",
+    [
+        ("walking", None, None, [1, 4, 8, 9]),
+        ("cycling", None, None, [1, 8, 9]),
+        ("driving", None, None, []),
+        ("walking", _WITHOUT_AREAS, "exclude", [1, 4, 7, 8, 9]),
+        ("walking", {"highway": ["platform"]}, "exclude", [1, 4, 6, 8, 9]),
+        ("walking", {"highway": ["pedestrian"]}, "keep", [1]),
+    ],
 )
-def test_walking_areas_pass_the_network_filter(network_type, kept, monkeypatch):
+def test_walking_areas_pass_the_network_filter(
+    network_type, custom_filter, filter_type, kept, monkeypatch
+):
     """A walking area is a closed way tagged area=yes or a multipolygon relation whose
     tags the network's filter keeps. One built for another mode, without a tag of the
     network's mode, counts where its country lets the mode use it: cyclists may use foot
-    ways in Norway, not in Finland."""
+    ways in Norway, not in Finland. The area group of a filter that excludes, also of a
+    custom_filter dict, does not apply to the areas."""
     import geopandas as gpd
     from shapely.geometry import LineString, box
 
@@ -712,16 +725,19 @@ def test_walking_areas_pass_the_network_filter(network_type, kept, monkeypatch):
         crs="EPSG:4326",
     )
     _, keep, rule = area_filter(
-        network_type, None, None, "local", get_data("test_pbf"), None
+        network_type, custom_filter, filter_type, "local", get_data("test_pbf"), None
     )
     assert select_areas(candidates, keep, rule)["id"].tolist() == kept
 
 
-@pytest.mark.parametrize("case", ["walking", "driving", "footway areas", "node lists"])
+@pytest.mark.parametrize(
+    "case", ["walking", "driving", "footway areas", "node lists", "excluded areas"]
+)
 def test_get_network_with_walking_areas(case):
     """walking_areas=True adds the edges across the walking areas that the network's
     filter keeps to the edges of the network, marked by the column walking_area, with the
-    area's id, type and tags; both engines return the same frames."""
+    area's id, type and tags; both engines return the same frames. A custom_filter that
+    excludes area=yes leaves the areas out as ways and still crosses them."""
     from geopandas.testing import assert_geodataframe_equal
 
     from pyrosm import OSM
@@ -731,6 +747,9 @@ def test_get_network_with_walking_areas(case):
         kwargs = {"network_type": "driving"}
     elif case == "footway areas":
         kwargs = {"custom_filter": {"highway": ["footway"]}}
+    elif case == "excluded areas":
+        custom_filter = {"area": ["yes"], "highway": ["motorway", "motorway_link"]}
+        kwargs = {"custom_filter": custom_filter, "filter_type": "exclude"}
     frames = []
     for engine in ("in_memory", "out_of_core"):
         osm = OSM(
@@ -753,6 +772,24 @@ def test_get_network_with_walking_areas(case):
         assert crossing["nodes"].map(list).tolist() == [
             [u, v] for u, v in zip(crossing["u"], crossing["v"])
         ]
+    elif case == "excluded areas":
+        import json
+
+        ways = crossing[crossing["osm_type"] == "way"]
+        assert len(ways) > 0
+        assert all(json.loads(tags)["area"] == "yes" for tags in ways["tags"])
+        assert not any(
+            json.loads(tags).get("area") == "yes" for tags in plain["tags"].dropna()
+        )
+        # Without the area group the outlines are ways too, and the same areas are crossed
+        _, with_outlines = osm.get_network(
+            nodes=True,
+            walking_areas=True,
+            custom_filter={"highway": custom_filter["highway"]},
+            filter_type="exclude",
+        )
+        crossed = with_outlines[with_outlines["walking_area"]]
+        assert set(ways["id"]) <= set(crossed.loc[crossed["osm_type"] == "way", "id"])
     else:
         import json
 

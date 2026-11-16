@@ -61,8 +61,10 @@ def area_filter(network_type, custom_filter, filter_type, shared_paths, filepath
     elements are candidates, ``keep(tags)``, whether an area's tags pass the network's
     filter, and the access rule that leaves areas built for another mode without a tag of
     the mode to their country (see :func:`~pyrosm.config.osm_filters.country_rule`), or
-    None. The ``area=yes`` exclusion of the predefined network types does not apply; a
-    ``custom_filter`` is used as given."""
+    None. The ``area`` group of a filter that excludes, that of the predefined network
+    types or of a ``custom_filter`` dict, does not apply: the areas such a network
+    leaves out as ways are still crossed. Any other ``custom_filter`` is used as
+    given."""
     from pyrosm.config.osm_filters import country_rule, filter_for_read
     from pyrosm.engine.collect import _keep_fn
     from pyrosm.engine.readers import _network_spec
@@ -70,7 +72,7 @@ def area_filter(network_type, custom_filter, filter_type, shared_paths, filepath
     osm_keys, data_filter, filter_type = _network_spec(
         network_type, None, custom_filter, filter_type, None, shared_paths
     )[1]
-    if custom_filter is None:
+    if filter_type == "exclude" and isinstance(data_filter, dict):
         data_filter = {k: v for k, v in data_filter.items() if k != "area"}
     data_filter = filter_for_read(data_filter, filter_type, filepath, box)
     data_filter, rule = country_rule(data_filter, filter_type)

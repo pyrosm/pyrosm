@@ -14,6 +14,7 @@ rather than through its (derived) LineString.
 """
 
 import json
+import re
 import time
 import warnings
 
@@ -21,7 +22,7 @@ import numpy as np
 import pandas as pd
 from geopandas import GeoDataFrame
 
-from pyrosm.filter_compiler import CompiledFilter, Condition
+from pyrosm.filter_compiler import CompiledFilter
 from pyrosm.pbf_export import _any_member, write_pbf_from_records
 from pyrosm.utils import _stacklevel_outside_pyrosm, notice
 from pyrosm.utils.progress import start_step
@@ -185,20 +186,60 @@ def _add_dict_tags(tags, extra, columns=()):
     return tags
 
 
-def _frame_tags(gdf, tag_cols):
+def _frame_tags(gdf, tag_cols, only=None):
     """The tags of each row of ``gdf``: its values in the tag columns ``tag_cols`` (see
     :func:`_frame_tag_columns`) and its JSON ``tags``. A missing value removes the tag
-    of its column, also when the JSON holds it."""
+    of its column, also when the JSON holds it. With ``only`` (a set of keys), the
+    rows' tags with these keys alone, for a caller that reads no other; the JSON of a
+    row is then parsed only when it can hold one of them (see :func:`_may_hold_key`).
+    """
     keys = [_tag_key(col) for col in tag_cols]
     tags = [{} for _ in range(len(gdf))]
     for col, key in zip(tag_cols, keys):
+        if only is not None and key not in only:
+            continue
         values = gdf[col]
         present = values.notna().to_numpy()
         for i, value in zip(np.flatnonzero(present).tolist(), values[present].tolist()):
             tags[i][key] = _tag_str(value)
     extras = gdf["tags"].tolist() if "tags" in gdf.columns else [None] * len(gdf)
     columns = set(keys)
-    return [_add_dict_tags(row, extra, columns) for row, extra in zip(tags, extras)]
+    if only is None:
+        return [_add_dict_tags(row, extra, columns) for row, extra in zip(tags, extras)]
+    in_json = set(only) - columns
+    if not in_json:
+        return tags
+    # The reader's name of a tag keyed "id" is "id_tag" (see _tag_key)
+    names = in_json | ({"id_tag"} if "id" in in_json else set())
+    quoted = [json.dumps(name, ensure_ascii=False) for name in sorted(names)]
+    escape = _key_escapes(names)
+    for row, extra in zip(tags, extras):
+        if _may_hold_key(extra, quoted, escape):
+            found = _add_dict_tags({}, extra, columns)
+            row.update((key, found[key]) for key in in_json.intersection(found))
+    return tags
+
+
+def _key_escapes(names):
+    """A pattern of the JSON escapes with which one of the keys ``names`` can be
+    spelled in other characters than those of ``json.dumps(name, ensure_ascii=False)``:
+    the ``\\u`` escapes of ASCII characters, of every character when a name has others,
+    and the escaped solidus when a name has a solidus."""
+    escapes = r"\\u00[0-7]" if all(name.isascii() for name in names) else r"\\u"
+    if any("/" in name for name in names):
+        escapes += r"|\\/"
+    return re.compile(escapes)
+
+
+def _may_hold_key(extra, quoted, escape):
+    """Whether the JSON ``tags`` value ``extra`` (a string, a dict or missing) can hold
+    one of the keys whose JSON strings are ``quoted``: a dict, or a string that has one
+    of them or an ``escape`` that could spell one (see :func:`_key_escapes`)."""
+    if isinstance(extra, str):
+        if any(key in extra for key in quoted):
+            return True
+        return "\\" in extra and escape.search(extra) is not None
+    return isinstance(extra, dict)
 
 
 def _record_tags(record):
@@ -256,23 +297,12 @@ def _elements(count):
 
 def _read_note(gdf):
     """``(reader, filter)`` from the note a pyrosm reader left on ``gdf`` (see
-    :func:`pyrosm.utils.records_read`), or ``None`` when it has none. The filter keeps
-    only which keys the read selected by: each AND-group requires its positively tested
-    keys to exist, so a changed value is an edit, not a lost tag."""
+    :func:`pyrosm.utils.records_read`), or ``None`` when it has none."""
     note = gdf.attrs.get("pyrosm_read")
     try:
-        read_filter = CompiledFilter.from_json(note["filter"])
-        reader = note["reader"]
+        return note["reader"], CompiledFilter.from_json(note["filter"])
     except (KeyError, TypeError, ValueError):
         return None
-    groups = tuple(
-        tuple(
-            Condition(key, "exists")
-            for key in sorted({c.key for c in group if c.is_positive})
-        )
-        for group in read_filter.groups
-    )
-    return reader, CompiledFilter(groups)
 
 
 class _LostTags:
@@ -284,20 +314,23 @@ class _LostTags:
         self.by_tag = {}  # feature tag -> elements, for frames without a note
 
     def check(self, note, element, original, written):
-        """Count ``element`` (its type and id) if its ``written`` tags no longer match the
-        filter of the ``note`` its frame carries (see :func:`_read_note`) while its
-        ``original`` tags do, or, without a note, lose a tag of :data:`_FEATURE_TAGS` that
-        its reader finds elements of this type by."""
+        """Count ``element`` (its type and id) if its ``written`` tags lose what the read
+        of the ``note`` its frame carries (see :func:`_read_note`) selected it by: every
+        group of the read's filter that its ``original`` tags match tests for a key that
+        is no longer written, and the written tags match no group of the filter. A
+        changed value is an edit, not a lost tag. Without a note, count it if it loses a
+        tag of :data:`_FEATURE_TAGS` that its reader finds elements of this type by."""
         if note is not None:
             reader, read_filter = note
-            if read_filter.matches(original) and not read_filter.matches(written):
+            lost = [
+                {c.key for c in group if c.is_positive} - written.keys()
+                for group in read_filter.groups
+                if all(condition.matches(original) for condition in group)
+            ]
+            if lost and all(lost) and not read_filter.matches(written):
                 entry = self.by_reader.setdefault(reader, [set(), set()])
                 entry[0].add(element)
-                entry[1].update(
-                    key
-                    for key in read_filter.positive_keys
-                    if key in original and key not in written
-                )
+                entry[1].update(*lost)
             return
         for tag, (_, types) in _FEATURE_TAGS.items():
             if element[0] in types and tag in original and tag not in written:

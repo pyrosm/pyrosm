@@ -3665,6 +3665,12 @@ def test_auto_workers_count_the_cores_the_process_may_use(monkeypatch, functions
             "1 element is written without its 'building' tag; get_buildings() will not "
             "find it",
         ),
+        (
+            "other_group_has_its_key",
+            "2 elements would no longer be found by get_data_by_custom_criteria(): "
+            "their 'shop' tag is not in the frame",
+        ),
+        ("other_group_matches", None),
     ],
 )
 def test_write_pbf_warns_when_elements_lose_the_tag_they_were_read_by(
@@ -3674,7 +3680,10 @@ def test_write_pbf_warns_when_elements_lose_the_tag_they_were_read_by(
     tag their read selected them by: naming the reader while the frame notes its read, and
     the tags pyrosm's readers detect features by once the note is gone (e.g. after a
     merge). It gave no warning. A changed value is an edit, the nodes of a network are kept
-    for their ways and a deleted element is not written, so none of these warns."""
+    for their ways and a deleted element is not written, so none of these warns. Two cafés
+    that a read of restaurants and shops kept as tea shops lose their shop tag: they keep
+    an amenity tag, which gave no warning, and warn unless they are written as
+    restaurants, which the read still finds."""
     import json
     import warnings
 
@@ -3702,6 +3711,15 @@ def test_write_pbf_warns_when_elements_lose_the_tag_they_were_read_by(
     elif case == "deleted":
         frame = named[named["osm_type"] == "way"].iloc[:1]
         delete = [("way", int(frame["id"].iloc[0]))]
+    elif case.startswith("other_group"):
+        found = osm.get_data_by_custom_criteria({"amenity": ["restaurant"], "shop": True})
+        tea_cafes = found["id"].isin([311747780, 1007416273])
+        assert found.loc[tea_cafes, ["amenity", "shop"]].values.tolist() == [
+            ["cafe", "tea"]
+        ] * 2
+        frame = found[tea_cafes].drop(columns="shop")
+        if case == "other_group_matches":
+            frame = frame.assign(amenity="restaurant")
     else:
         frame = named.iloc[:1].copy()
         frame.attrs["pyrosm_read"] = "unreadable"
@@ -7623,7 +7641,8 @@ def test_indoor_reads_give_lines_across_stairs_the_length_of_a_climb():
     """A line across stairs mapped as an area between levels 0 and 1 that is shorter on
     the map than the stairs between these levels (way 10, 9 m) takes their length, and a
     longer one (12 m) keeps its own; one between levels 1 and 3, which no stairs or
-    escalator climb, takes 4 m per level."""
+    escalator climb, takes 4 m per level. A line between levels -0.5 and 0 across
+    another area, a ramp without a ``vertical`` (way 42, 1 m), keeps its length."""
     import geopandas as gpd
     from shapely.geometry import LineString
 
@@ -7631,9 +7650,10 @@ def test_indoor_reads_give_lines_across_stairs_the_length_of_a_climb():
 
     rows = [
         (10, 1, 2, 0.0, 1.0, 9.0, "stairs", False),
-        (40, 3, 4, 0.0, 1.0, 2.0, None, True),
-        (40, 3, 5, 0.0, 1.0, 12.0, None, True),
-        (41, 6, 7, 1.0, 3.0, 1.0, None, True),
+        (40, 3, 4, 0.0, 1.0, 2.0, "stairs", True),
+        (40, 3, 5, 0.0, 1.0, 12.0, "stairs", True),
+        (41, 6, 7, 1.0, 3.0, 1.0, "stairs", True),
+        (42, 8, 9, -0.5, 0.0, 1.0, None, True),
     ]
     edges = gpd.GeoDataFrame(
         {
@@ -7650,7 +7670,7 @@ def test_indoor_reads_give_lines_across_stairs_the_length_of_a_climb():
         geometry=[LineString([(8.54, 47.38), (8.5401, 47.38)])] * len(rows),
         crs=4326,
     )
-    assert with_climb_lengths(edges)["length"].tolist() == [9.0, 9.0, 12.0, 8.0]
+    assert with_climb_lengths(edges)["length"].tolist() == [9.0, 9.0, 12.0, 8.0, 1.0]
 
 
 def test_indoor_reads_give_lines_that_climb_across_areas_a_vertical_both_ways():
@@ -7737,7 +7757,9 @@ def test_indoor_reads_keep_one_line_per_two_floors_across_stair_areas():
     levels stays (1-3 on levels 0 and 1, 3-5 on levels 1 and 2): shorter ones and the
     line skipping level 1 go, and so do the nodes only they used. Lines between levels
     across a corridor (way 41) and across stairs whose steps are mapped as a way inside
-    them (way 42) go; a line on one level stays."""
+    them (way 42) go; a line on one level stays. A line between levels -0.5 and 0, less
+    than one level apart, stays across a corridor (way 43), a ramp, and goes across the
+    stairs with their own way (way 42)."""
     import geopandas as gpd
     from shapely.geometry import LineString, Point
 
@@ -7752,8 +7774,10 @@ def test_indoor_reads_keep_one_line_per_two_floors_across_stair_areas():
         (40, 2, 6, 1.0, 2.0, 2.0),
         (41, 7, 8, 0.0, 1.0, 5.0),
         (42, 9, 10, 0.0, 1.0, 5.0),
+        (43, 11, 12, -0.5, 0.0, 6.0),
+        (42, 13, 14, -0.5, 0.0, 3.0),
     ]
-    stairs = {40: "yes", 41: None, 42: "yes"}
+    stairs = {40: "yes", 41: None, 42: "yes", 43: None}
     edges = gpd.GeoDataFrame(
         {
             "id": [line[0] for line in lines],
@@ -7770,11 +7794,78 @@ def test_indoor_reads_keep_one_line_per_two_floors_across_stair_areas():
         crs=4326,
     )
     nodes = gpd.GeoDataFrame(
-        {"id": list(range(1, 11))}, geometry=[Point(0, 0)] * 10, crs=4326
+        {"id": list(range(1, 15))}, geometry=[Point(0, 0)] * 14, crs=4326
     )
     nodes, edges = without_lines_between_levels(nodes, edges, {("way", 42)})
-    assert list(zip(edges["u"], edges["v"])) == [(1, 3), (4, 3), (3, 5)]
-    assert sorted(nodes["id"]) == [1, 3, 4, 5]
+    assert list(zip(edges["u"], edges["v"])) == [(1, 3), (4, 3), (3, 5), (11, 12)]
+    assert sorted(nodes["id"]) == [1, 3, 4, 5, 11, 12]
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
+    "room, footways, joined",
+    [({"stairs": "yes"}, (50, 51), True), ({}, (50, 51), False), ({}, (51,), None)],
+)
+def test_indoor_reads_end_walkways_at_the_copy_of_a_repeated_door_on_their_level(
+    tmp_path, engine, room, footways, joined
+):
+    """A room on levels 0 and 1 (way 41) has one door (node 5, level=0, repeat_on=1),
+    and a level-0 footway (way 50) and a level-1 footway (way 51) both end at the door's
+    node. The level-1 footway ends at the door's copy on level 1, so the door's own node
+    carries level 0 only and the footways meet only through the room: across stairs
+    mapped as a room, by the line from the door to its copy; across a plain room, not at
+    all. Without the level-0 footway and with a plain room, nothing ends at the door's
+    own node, and it is no node of the network."""
+    import math
+
+    import numpy as np
+    import pandas as pd
+
+    from pyrosm import OSM
+    from pyrosm.indoor import node_copy_id
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (10, 0), 3: (10, 10), 4: (0, 10), 5: (10, 5), 8: (20, 3), 9: (20, 7)}
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    door = {"door": "yes", "level": "0", "repeat_on": "1"}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [door if i == 5 else None for i in ids],
+    }
+    ways = [
+        {"id": 41, "refs": [1, 2, 5, 3, 4, 1],
+         "tags": {"indoor": "room", "level": "0;1", **room}},
+        {"id": 50, "refs": [8, 5], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 51, "refs": [9, 5], "tags": {"highway": "footway", "level": "1"}},
+    ]
+    ways = [way for way in ways if way["id"] == 41 or way["id"] in footways]
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "door.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    found, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    copy = node_copy_id(5, 1)
+    ends = {
+        way: set(edges.loc[edges["id"] == way, ["u", "v"]].to_numpy().ravel())
+        for way in footways
+    }
+    expected = {50: {8, 5}, 51: {9, copy}}
+    assert ends == {way: expected[way] for way in footways}
+    assert copy in set(found["id"])
+    if joined is None:
+        assert 5 not in set(found["id"])
+        return
+    assert _nodes_joined(edges, 8, 9) == joined
+    at_door = pd.concat(
+        [edges.loc[edges["u"] == 5, "u_level"], edges.loc[edges["v"] == 5, "v_level"]]
+    )
+    assert set(at_door) == {0.0}
 
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
