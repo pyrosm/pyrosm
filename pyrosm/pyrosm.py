@@ -709,7 +709,10 @@ class OSM:
             pedestrian squares and station halls: the closed ways tagged `area=yes` and
             the multipolygon relations whose tags the network's filter keeps (it keeps
             `highway=pedestrian` and `highway=footway` areas in the walking network),
-            or that the `custom_filter` keeps. The network's nodes on the outline of an
+            or that the `custom_filter` keeps. A filter that excludes `area=yes`, as
+            those of the network types do and as a `custom_filter` dict can, leaves
+            these areas out only as ways: they are still crossed, from the nodes where
+            the network meets them. The network's nodes on the outline of an
             area, and its dead ends inside the area on the area's level, are joined in
             pairs by an edge along the shortest line inside the area, which bends only
             at the corners where the outline or a hole turns into the area. A dead end
