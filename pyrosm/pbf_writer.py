@@ -212,7 +212,7 @@ def _frame_tags(gdf, tag_cols, only=None):
     # The reader's name of a tag keyed "id" is "id_tag" (see _tag_key)
     names = in_json | ({"id_tag"} if "id" in in_json else set())
     quoted = [json.dumps(name, ensure_ascii=False) for name in sorted(names)]
-    escape = _ASCII_ESCAPE if all(name.isascii() for name in names) else _ESCAPE
+    escape = _key_escapes(names)
     for row, extra in zip(tags, extras):
         if _may_hold_key(extra, quoted, escape):
             found = _add_dict_tags({}, extra, columns)
@@ -220,20 +220,25 @@ def _frame_tags(gdf, tag_cols, only=None):
     return tags
 
 
-# JSON escapes with which a key can be spelled in other characters than its own: any,
-# and those of ASCII characters
-_ESCAPE = re.compile(r"\\u")
-_ASCII_ESCAPE = re.compile(r"\\u00[2-7]")
+def _key_escapes(names):
+    """A pattern of the JSON escapes with which one of the keys ``names`` can be
+    spelled in other characters than those of ``json.dumps(name, ensure_ascii=False)``:
+    the ``\\u`` escapes of ASCII characters, of every character when a name has others,
+    and the escaped solidus when a name has a solidus."""
+    escapes = r"\\u00[0-7]" if all(name.isascii() for name in names) else r"\\u"
+    if any("/" in name for name in names):
+        escapes += r"|\\/"
+    return re.compile(escapes)
 
 
 def _may_hold_key(extra, quoted, escape):
     """Whether the JSON ``tags`` value ``extra`` (a string, a dict or missing) can hold
     one of the keys whose JSON strings are ``quoted``: a dict, or a string that has one
-    of them or an ``escape`` that could spell one."""
+    of them or an ``escape`` that could spell one (see :func:`_key_escapes`)."""
     if isinstance(extra, str):
         if any(key in extra for key in quoted):
             return True
-        return "\\u" in extra and escape.search(extra) is not None
+        return "\\" in extra and escape.search(extra) is not None
     return isinstance(extra, dict)
 
 

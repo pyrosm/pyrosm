@@ -2562,7 +2562,14 @@ def test_write_pbf_osmium_counts_additions(helsinki_pbf, tmp_path):
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "only",
-    [{"level"}, {"highway", "level", "incline"}, {"id", "ref"}, {"name"}, set()],
+    [
+        {"level"},
+        {"highway", "level", "incline"},
+        {"id", "ref"},
+        {"name"},
+        {"ref/old", "a\tb"},
+        set(),
+    ],
 )
 def test_frame_tags_with_only_gives_the_rows_tags_of_those_keys(only):
     import pandas as pd
@@ -2577,7 +2584,7 @@ def test_frame_tags_with_only_gives_the_rows_tags_of_those_keys(only):
                 '{"level": "2", "ref": "B2", "id_tag": "x9"}',
                 {"level": -1, "visible": False, "surface": "tiles"},
                 '{"\\u006cevel": "3", "name": "K\\u00e4yt\\u00e4v\\u00e4"}',
-                '{"name": "T\\u00f6\\u00f6l\\u00f6", "surface": "asphalt"}',
+                '{"name": "T\\u00f6\\u00f6l\\u00f6", "ref\\/old": "C3", "a\\u0009b": "1"}',
                 "{not json",
             ],
         }
@@ -2587,6 +2594,7 @@ def test_frame_tags_with_only_gives_the_rows_tags_of_those_keys(only):
     assert full[0] == {"highway": "steps", "ref": "A1", "level": "0;1", "incline": "up"}
     assert full[1] == {"level": "2", "id": "x9"}
     assert full[3]["level"] == "3"
+    assert full[4] == {"highway": "corridor", "name": "Töölö", "ref/old": "C3", "a\tb": "1"}
     expected = [{k: v for k, v in tags.items() if k in only} for tags in full]
     assert _frame_tags(frame, columns, only=only) == expected
 
