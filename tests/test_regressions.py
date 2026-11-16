@@ -7870,6 +7870,91 @@ def test_indoor_reads_end_walkways_at_the_copy_of_a_repeated_door_on_their_level
 
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
 @pytest.mark.parametrize(
+    "door, other, footway_end, copied, joined, door_levels",
+    [
+        ({"level": "0;1"}, {"indoor": "corridor", "level": "1"}, 7, True, False, {0}),
+        ({"level": "0-1"}, {"indoor": "corridor", "level": "1"}, 7, True, False, {0}),
+        ({"level": "0;1"}, {"highway": "elevator", "level": "0;1"}, 5, True, True, {0}),
+        ({"level": "0;1"}, {"indoor": "corridor", "level": "2"}, 7, False, True, {0, 2}),
+        ({"level": "0;1"}, {"indoor": "room", "level": "1"}, 7, False, False, {0}),
+        ({"level": "0;1"}, {"indoor": "corridor"}, 7, False, True, {0}),
+        (
+            {"level": "0", "repeat_on": "1"},
+            {"indoor": "corridor", "level": "1"},
+            7,
+            True,
+            False,
+            {0},
+        ),
+    ],
+)
+def test_indoor_reads_copy_a_door_with_a_level_list_between_two_floors(
+    tmp_path, engine, door, other, footway_end, copied, joined, door_levels
+):
+    """A corridor on level 0 (way 41) and another area beside it (way 42) share one door
+    (node 5). A level-0 footway (way 50) ends at a corner of the corridor, and a level-1
+    footway (way 51) at a corner of the other area or at the door.
+
+    A door whose own ``level`` names levels 0 and 1, as a list or a range, is copied per
+    level when the areas on whose outlines it stands are on both. With a corridor on
+    level 1, the two corridors are entered on their own levels, at the door and at its
+    copy, and the footways do not join. With a lift mapped as an area on levels 0 and 1,
+    the level-1 footway ends at the door's copy, and the footways join by the lift. The
+    door stays one node when the other area is on a level that the door does not name
+    or has no level (the two corridors join at it), or is a room that indoor reads do
+    not cross. A door tagged ``repeat_on`` is copied as before."""
+    import math
+
+    import numpy as np
+    import pandas as pd
+
+    from pyrosm import OSM
+    from pyrosm.indoor import node_copy_id
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    xy = {1: (0, 0), 2: (10, 0), 3: (10, 10), 4: (0, 10), 5: (10, 5)}
+    xy.update({6: (20, 0), 7: (20, 10), 8: (-10, 0), 9: (30, 10)})
+    ids = sorted(xy)
+    per_metre = 1 / 111_195
+    lon = {i: 8.54 + xy[i][0] * per_metre / math.cos(math.radians(47.38)) for i in ids}
+    lat = {i: 47.38 + xy[i][1] * per_metre for i in ids}
+    nodes = {
+        "id": np.array(ids, dtype=np.int64),
+        "lon": np.array([lon[i] for i in ids]),
+        "lat": np.array([lat[i] for i in ids]),
+        "tags": [dict(door, door="yes") if i == 5 else None for i in ids],
+    }
+    ways = [
+        {"id": 41, "refs": [1, 2, 5, 3, 4, 1],
+         "tags": {"indoor": "corridor", "level": "0"}},
+        {"id": 42, "refs": [2, 6, 7, 3, 5, 2], "tags": other},
+        {"id": 50, "refs": [8, 1], "tags": {"highway": "footway", "level": "0"}},
+        {"id": 51, "refs": [9, footway_end],
+         "tags": {"highway": "footway", "level": "1"}},
+    ]
+    path = write_pbf_from_records(
+        nodes, ways, [], str(tmp_path / "door.osm.pbf"), (8.539, 47.379, 8.541, 47.381)
+    )
+    found, edges = OSM(path, engine=engine).get_network(
+        "walking", nodes=True, indoor_elements=True
+    )
+    copy = node_copy_id(5, 1)
+    assert (copy in set(edges["u"]) | set(edges["v"])) == copied
+    assert _nodes_joined(edges, 8, 9) == joined
+    at_door = pd.concat(
+        [edges.loc[edges["u"] == 5, "u_level"], edges.loc[edges["v"] == 5, "v_level"]]
+    )
+    assert set(at_door.dropna()) == door_levels
+    if footway_end == 5:
+        assert set(edges.loc[edges["id"] == 51, ["u", "v"]].to_numpy().ravel()) == {
+            9,
+            copy,
+        }
+        assert set(edges["vertical"].dropna()) == {"lift"}
+
+
+@pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
+@pytest.mark.parametrize(
     "room, steps, joined",
     [({"stairs": "yes"}, False, True), ({"stairs": "yes"}, True, True), ({}, False, False)],
 )
