@@ -1219,7 +1219,9 @@ class OSM:
     ):
         """
         Parses buildings from OSM: the building ways and relations, and with ``keep_nodes``
-        the buildings mapped as single nodes.
+        the buildings mapped as single nodes. A building mapped with its parts as a
+        relation tagged ``type=building`` is returned as its outline way, which carries
+        the building's tags, not as the relation.
 
         Parameters
         ----------

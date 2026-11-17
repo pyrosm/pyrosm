@@ -8,7 +8,9 @@ as a lift in a corridor (see :func:`area_member_way_ids`). Any other relation gr
 members: its row holds a GeometryCollection of the members, and a member way whose own
 tags match the filter is also returned as a row of its own. The layer reads, such as
 :meth:`pyrosm.OSM.get_buildings`, take every relation as an area: there, only the inner
-ways of multipolygons whose own tags match are rows of their own.
+ways of multipolygons whose own tags match are rows of their own. A building relation
+(``type=building``, see :func:`is_building_relation`) is no area: a layer read leaves it
+out, and its member ways are rows of their own where their tags match.
 """
 
 import json
@@ -24,6 +26,26 @@ def is_grouping(tags):
     """Whether a relation with the OSM tags ``tags`` groups its members rather than
     forming an area of them (see :data:`AREA_TYPES`)."""
     return tags.get("type") not in AREA_TYPES
+
+
+def is_building_relation(tags):
+    """Whether a relation with the OSM tags ``tags`` is a building relation
+    (``type=building``, Simple 3D Buildings): its members are the outline way of one
+    building, which carries the building's tags, and the building's parts."""
+    return tags.get("type") == "building"
+
+
+def without_building_relations(relations):
+    """``relations`` (a dict of arrays of one length, with ``tags``) without the
+    building relations (see :func:`is_building_relation`); None when none is left."""
+    kept = np.array(
+        [not is_building_relation(tags) for tags in relations["tags"]], dtype=bool
+    )
+    if kept.all():
+        return relations
+    if not kept.any():
+        return None
+    return {key: values[kept] for key, values in relations.items()}
 
 
 def _member_kind(value):

@@ -6841,6 +6841,72 @@ def test_relation_node_member_sharing_a_way_id(tmp_path, engine):
         shapely.normalize(expected[key]), 1e-7) for key in expected), got
 
 
+@pytest.mark.parametrize("engine", ["out_of_core", "in_memory"])
+@pytest.mark.parametrize("parts, multipolygon", [((11,), True), ((11, 12), False)])
+def test_layer_reads_return_the_outline_way_of_a_building_relation(
+    tmp_path, engine, parts, multipolygon
+):
+    """A building mapped with its parts, as Simple 3D Buildings maps it: the outline
+    way 10 carries the building's tags, the building parts 11 and 12 are its west and
+    east halves, and the relation 30 (``type=building``) has the outline and the parts
+    as members. get_buildings returns the outline way with its tags and its whole
+    shape, and no row for the relation. It returned the relation instead, with what
+    the parts leave of the outline as its shape: the east half with one part, and no
+    building at all with both. A read by custom criteria still returns the relation
+    beside the way, as a group of its members. A building mapped as a multipolygon
+    beside it (relation 31, of the untagged way 13), in the file of the first case, is
+    an area in both reads."""
+    import numpy as np
+    import shapely
+
+    from pyrosm import OSM
+    from pyrosm.pbf_export import write_pbf_from_records
+
+    nodes = {
+        "id": np.arange(1, 11, dtype=np.int64),
+        "lon": np.array(
+            [24.90, 24.92, 24.92, 24.90, 24.91, 24.91, 24.93, 24.94, 24.94, 24.93]
+        ),
+        "lat": np.array(
+            [60.10, 60.10, 60.11, 60.11, 60.10, 60.11, 60.10, 60.10, 60.11, 60.11]
+        ),
+        "tags": [None] * 10,
+    }
+    part = {"building:part": "yes", "building:levels": "5"}
+    ways = [
+        {"id": 10, "refs": [1, 2, 3, 4, 1],
+         "tags": {"building": "retail", "name": "Sokos", "building:levels": "10"}},
+        {"id": 11, "refs": [1, 5, 6, 4, 1], "tags": part},
+        {"id": 12, "refs": [5, 2, 3, 6, 5], "tags": part},
+        {"id": 13, "refs": [7, 8, 9, 10, 7], "tags": {}},
+    ]
+    members = [("way", 10, "outline")] + [("way", way, "part") for way in parts]
+    relations = [
+        {"id": 30, "tags": {"type": "building", "building": "retail"},
+         "members": members},
+        {"id": 31, "tags": {"type": "multipolygon", "building": "yes"},
+         "members": [("way", 13, "outer")]},
+    ][: 2 if multipolygon else 1]
+    path = write_pbf_from_records(
+        nodes, ways, relations, str(tmp_path / "parts.osm.pbf"),
+        (24.89, 60.09, 24.95, 60.12),
+    )
+    osm = OSM(path, engine=engine)
+    buildings = osm.get_buildings()
+    rows = dict(zip(zip(buildings["osm_type"], buildings["id"]), buildings.index))
+    assert sorted(rows) == [("relation", 31), ("way", 10)][0 if multipolygon else 1 :]
+    row = buildings.loc[rows[("way", 10)]]
+    assert (row["name"], row["building:levels"]) == ("Sokos", "10")
+    outline = shapely.box(24.90, 60.10, 24.92, 60.11)
+    assert shapely.normalize(row.geometry).equals_exact(shapely.normalize(outline), 1e-7)
+    grouped = osm.get_data_by_custom_criteria({"building": True}, keep_nodes=False)
+    kinds = dict(zip(zip(grouped["osm_type"], grouped["id"]), grouped.geom_type))
+    expected = {("way", 10): "Polygon", ("relation", 30): "GeometryCollection"}
+    if multipolygon:
+        expected[("relation", 31)] = "Polygon"
+    assert kinds == expected
+
+
 @pytest.mark.parametrize("engine", ["in_memory", "out_of_core"])
 @pytest.mark.parametrize(
     "room, crossed",

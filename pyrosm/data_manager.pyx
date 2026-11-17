@@ -5,7 +5,7 @@ from pyrosm.tagparser cimport explode_tag_array
 from pyrosm.filter_compiler import compile_custom_filter, CompiledFilter, rename_filter_key
 from pyrosm.way_store import NodeTags, WayStore
 from pyrosm.geometry import AREA_BY_TAGS, tags_make_area
-from pyrosm.grouping_relations import area_member_way_ids
+from pyrosm.grouping_relations import area_member_way_ids, without_building_relations
 from pyrosm.grouping_relations import member_ids as grouping_member_ids
 from pyrosm.utils.progress import COLLECTING, start_step
 import numpy as np
@@ -194,6 +194,9 @@ cdef get_osm_ways_and_relations(way_records, relations, osm_keys, tags_as_column
     # Get relations for specified OSM keys (one or multiple)
     if relations is not None:
         filtered_relations = get_relation_arrays(relations, osm_keys, data_filter, filter_type, keep_all)
+        if filtered_relations is not None and not grouping:
+            # A layer read returns the outline way of a building relation, not the relation
+            filtered_relations = without_building_relations(filtered_relations)
 
         # The ids of the relations' way members (a node or relation can share a way's id)
         relation_way_ids = None

@@ -16,7 +16,11 @@ from pyrosm.tagparser import explode_node_tag_array
 from pyrosm.data_filter import element_should_be_kept
 from pyrosm.data.countries import way_points
 from pyrosm.geometry import AREA_BY_TAGS, tags_make_area
-from pyrosm.grouping_relations import area_member_way_ids, is_grouping
+from pyrosm.grouping_relations import (
+    area_member_way_ids,
+    is_building_relation,
+    is_grouping,
+)
 from pyrosm.grouping_relations import member_ids as grouping_member_ids
 from pyrosm.engine.decode import (
     _is_threaded,
@@ -444,11 +448,13 @@ def _kept_by_country(shard_paths, kept, osm_keys, rule):
     return {k: v[keep] for k, v in kept.items()}
 
 
-def _collect_relations(shard_paths, keep):
+def _collect_relations(shard_paths, keep, grouping_relations=False):
     """Reassemble the spilled relations into the ``relations`` struct pyrosm's assembly
     expects (``id`` / ``members`` / ``tags`` / metadata), refined by the exact value filter
     ``keep``, and return it with the unique set of their way-member ids. ``(None, empty)``
-    when no relation passes."""
+    when no relation passes. Without ``grouping_relations`` (a layer read), the building
+    relations are left out (see :func:`pyrosm.grouping_relations.is_building_relation`).
+    """
     ids, members, tags, meta, way_member_ids = [], [], [], [], []
     for path in shard_paths:
         z = _open_shard(path)
@@ -465,6 +471,8 @@ def _collect_relations(shard_paths, keep):
         )
         for k in range(len(rid)):
             if not keep(rtags[k]):
+                continue
+            if not grouping_relations and is_building_relation(rtags[k]):
                 continue
             s, e = memoff[k], memoff[k + 1]
             mids, mtypes = memid[s:e], memtype[s:e]
@@ -792,7 +800,9 @@ def _collect_layer(
     in_box = _in_box_nodes(shard_paths) if bounding_box is not None else None
     member_nodes = None
     if keep_relations:
-        relations, member_ids = _collect_relations(shard_paths, keep)
+        relations, member_ids = _collect_relations(
+            shard_paths, keep, grouping_relations
+        )
         if relations is not None and in_box is not None:
             # Restrict to relations with >=1 member way in the box (the rest are dropped by
             # the final spatial filter anyway; excluding them here keeps their tags from
