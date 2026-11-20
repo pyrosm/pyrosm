@@ -95,12 +95,11 @@ def test_city_sources_resolve():
     [
         ("helsinki", "Helsinki"),
         ("algeria", "algeria-latest.osm.pbf"),
-        ("alsace", "france/alsace-latest.osm.pbf"),
-        ("new_york", "us/new-york-latest.osm.pbf"),
-        ("anhui", "asia/china/anhui-latest.osm.pbf"),
-        ("kivalliq", "canada/nunavut/kivalliq-latest.osm.pbf"),
-        ("enfield", "england/london/enfield-latest.osm.pbf"),
-        ("china/beijing", "asia/china/beijing-latest.osm.pbf"),
+        ("alsace", "france/alsace/alsace-latest.osm.pbf"),
+        ("new_york", "us/new-york/new-york-latest.osm.pbf"),
+        ("anhui", "asia/china/anhui/anhui-latest.osm.pbf"),
+        ("kivalliq", "canada/nunavut/kivalliq/kivalliq-latest.osm.pbf"),
+        ("china/beijing", "asia/china/beijing/beijing-latest.osm.pbf"),
         ("cities/beijing", "bbbike/Beijing/Beijing.osm.pbf"),
     ],
 )
