@@ -97,7 +97,7 @@ def test_fetched_index_readers():
 @pytest.mark.live_download
 def test_update_fetches_the_live_indexes(tmp_path):
     geofabrik = ei._geofabrik_extracts(tmp_path, update=True).set_index("id")
-    url = "https://download.geofabrik.de/europe/finland-latest.osm.pbf"
+    url = "https://download.geofabrik.de/europe/finland/finland-latest.osm.pbf"
     assert geofabrik.loc["finland", "url"] == url
     assert "Helsinki" in set(ei._bbbike_extracts(tmp_path, update=True)["id"])
 
@@ -381,7 +381,7 @@ def test_vendored_geofabrik_sizes():
             assert type(props["bytes"]) is int and 0 <= props["bytes"] < 2**63
             assert len(props["bytes_date"]) == 10
     sizes = ei._vendored_geofabrik_sizes()
-    size, day = sizes["https://download.geofabrik.de/europe/finland-latest.osm.pbf"]
+    size, day = sizes["https://download.geofabrik.de/europe/finland/finland-latest.osm.pbf"]
     assert 100 * 2**20 < size < 10 * 2**30 and len(day) == 10
     assert ei._vendored_geofabrik_sizes() is sizes
 

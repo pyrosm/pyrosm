@@ -60,10 +60,15 @@ def extract_file_name(url, name=None):
     """The local file name of the extract at ``url``: ``name`` (by default the file name
     of the URL), or, when other Geofabrik extracts have the same file name, the URL's
     file name with its region in front (``us-georgia-latest.osm.pbf``,
-    ``europe-georgia-latest.osm.pbf``)."""
+    ``europe-georgia-latest.osm.pbf``). The region is the folder that holds the file, or
+    the one above it when the file is in a folder of its own
+    (``europe/georgia/georgia-latest.osm.pbf``)."""
     path = PurePosixPath(urlparse(url).path)
     if path.name.lower() in _shared_file_names():
-        return "%s-%s" % (path.parent.name, path.name)
+        region = path.parent
+        if path.name.startswith(region.name + "-"):
+            region = region.parent
+        return "%s-%s" % (region.name, path.name)
     return name or path.name
 
 

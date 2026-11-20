@@ -1,6 +1,15 @@
 # BASE
 URL = "https://download.geofabrik.de/"
 suffix = "-latest.osm.pbf"
+
+
+def _extract_url(parent, name):
+    """The download URL of Geofabrik's extract ``name`` under ``parent`` (``""`` or a
+    path such as ``"europe/"``): each extract has a folder of its own,
+    ``<parent><name>/<name>-latest.osm.pbf``."""
+    return URL + parent + name + "/" + name + suffix
+
+
 africa_url = "africa/"
 asia_url = "asia/"
 australia_oceania_url = "australia-oceania/"
@@ -25,7 +34,6 @@ india_url = "asia/india/"
 indonesia_url = "asia/indonesia/"
 italy_url = "europe/italy/"
 japan_url = "asia/japan/"
-london_url = "europe/united-kingdom/england/london/"
 netherlands_url = "europe/netherlands/"
 nordrhein_wesfalen_url = "europe/germany/nordrhein-westfalen/"
 norway_url = "europe/norway/"
@@ -97,13 +105,13 @@ class USA:
     available = regions + ["southern_california", "northern_california"]
     available.sort()
 
-    country = {"name": "us" + suffix, "url": URL + north_america_url + "us" + suffix}
+    country = {"name": "us" + suffix, "url": _extract_url(north_america_url, "us")}
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + usa_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(usa_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -111,11 +119,11 @@ class USA:
     # Add California separately
     _sources["southern_california"] = {
         "name": "socal" + suffix,
-        "url": URL + "north-america/us/california/socal-latest.osm.pbf",
+        "url": _extract_url("north-america/us/california/", "socal"),
     }
     _sources["northern_california"] = {
         "name": "norcal" + suffix,
-        "url": URL + "north-america/us/california/norcal-latest.osm.pbf",
+        "url": _extract_url("north-america/us/california/", "norcal"),
     }
     __dict__ = _sources
 
@@ -160,40 +168,13 @@ class France:
     available = regions
     available.sort()
 
-    country = {"name": "france" + suffix, "url": URL + europe_url + "france" + suffix}
+    country = {"name": "france" + suffix, "url": _extract_url(europe_url, "france")}
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + france_url + region.replace("_", "-") + suffix,
-        }
-        for region in regions
-    }
-
-    __dict__ = _sources
-
-    def __getattr__(self, name):
-        return self.__dict__[name]
-
-    def __call__(self):
-        return self.available
-
-
-class GreaterLondon:
-    # Geofabrik serves the Greater London boroughs under "england/london".
-    regions = [
-        "enfield",
-    ]
-
-    available = regions
-    available.sort()
-
-    # Create data sources
-    _sources = {
-        region: {
-            "name": region.replace("_", "-") + suffix,
-            "url": URL + london_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(france_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -258,25 +239,17 @@ class England:
         "worcestershire",
     ]
 
-    greater_london = GreaterLondon()
-
-    available = regions + greater_london.available
+    available = regions
     available.sort()
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + england_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(england_url, region.replace("_", "-")),
         }
         for region in regions
     }
-
-    for region in greater_london.available:
-        _sources[region] = {
-            "name": region.replace("_", "-") + suffix,
-            "url": URL + london_url + region.replace("_", "-") + suffix,
-        }
 
     __dict__ = _sources
 
@@ -296,14 +269,14 @@ class UnitedKingdom:
 
     country = {
         "name": "united-kingdom" + suffix,
-        "url": URL + europe_url + "united-kingdom" + suffix,
+        "url": _extract_url(europe_url, "united-kingdom"),
     }
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + uk_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(uk_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -332,14 +305,14 @@ class GreatBritain:
 
     country = {
         "name": "great-britain" + suffix,
-        "url": URL + europe_url + "great-britain" + suffix,
+        "url": _extract_url(europe_url, "great-britain"),
     }
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + uk_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(uk_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -362,13 +335,13 @@ class Italy:
     available = regions
     available.sort()
 
-    country = {"name": "italy" + suffix, "url": URL + europe_url + "italy" + suffix}
+    country = {"name": "italy" + suffix, "url": _extract_url(europe_url, "italy")}
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + italy_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(italy_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -399,13 +372,13 @@ class Russia:
     available = regions
     available.sort()
 
-    country = {"name": "russia" + suffix, "url": URL + "russia" + suffix}
+    country = {"name": "russia" + suffix, "url": _extract_url("", "russia")}
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + russia_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(russia_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -442,13 +415,13 @@ class Poland:
     available = regions
     available.sort()
 
-    country = {"name": "poland" + suffix, "url": URL + europe_url + "poland" + suffix}
+    country = {"name": "poland" + suffix, "url": _extract_url(europe_url, "poland")}
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + poland_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(poland_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -477,7 +450,7 @@ class BadenWuerttemberg:
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + baden_wuerttemberg_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(baden_wuerttemberg_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -507,7 +480,7 @@ class NordrheinWestfalen:
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + nordrhein_wesfalen_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(nordrhein_wesfalen_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -539,7 +512,7 @@ class Bayern:
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + bayern_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(bayern_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -585,13 +558,13 @@ class Germany:
     )
     available.sort()
 
-    country = {"name": "germany" + suffix, "url": URL + europe_url + "germany" + suffix}
+    country = {"name": "germany" + suffix, "url": _extract_url(europe_url, "germany")}
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + germany_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(germany_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -599,19 +572,19 @@ class Germany:
     for region in nordrhein_westfalen.available:
         _sources[region] = {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + nordrhein_wesfalen_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(nordrhein_wesfalen_url, region.replace("_", "-")),
         }
 
     for region in baden_wuerttemberg.available:
         _sources[region] = {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + baden_wuerttemberg_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(baden_wuerttemberg_url, region.replace("_", "-")),
         }
 
     for region in bayern.available:
         _sources[region] = {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + bayern_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(bayern_url, region.replace("_", "-")),
         }
 
     __dict__ = _sources
@@ -643,14 +616,14 @@ class Netherlands:
 
     country = {
         "name": "netherlands" + suffix,
-        "url": URL + europe_url + "netherlands" + suffix,
+        "url": _extract_url(europe_url, "netherlands"),
     }
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + netherlands_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(netherlands_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -687,14 +660,14 @@ class CzechRepublic:
 
     country = {
         "name": "czech-republic" + suffix,
-        "url": URL + europe_url + "czech-republic" + suffix,
+        "url": _extract_url(europe_url, "czech-republic"),
     }
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + czech_republic_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(czech_republic_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -721,13 +694,13 @@ class Norway:
     available = regions
     available.sort()
 
-    country = {"name": "norway" + suffix, "url": URL + europe_url + "norway" + suffix}
+    country = {"name": "norway" + suffix, "url": _extract_url(europe_url, "norway")}
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + norway_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(norway_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -758,7 +731,7 @@ class BritishColumbia:
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + british_columbia_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(british_columbia_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -786,7 +759,7 @@ class Nunavut:
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + nunavut_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(nunavut_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -825,14 +798,14 @@ class Canada:
 
     country = {
         "name": "canada" + suffix,
-        "url": URL + north_america_url + "canada" + suffix,
+        "url": _extract_url(north_america_url, "canada"),
     }
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + canada_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(canada_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -840,13 +813,13 @@ class Canada:
     for region in british_columbia.available:
         _sources[region] = {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + british_columbia_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(british_columbia_url, region.replace("_", "-")),
         }
 
     for region in nunavut.available:
         _sources[region] = {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + nunavut_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(nunavut_url, region.replace("_", "-")),
         }
 
     __dict__ = _sources
@@ -885,14 +858,14 @@ class Spain:
 
     country = {
         "name": "spain" + suffix,
-        "url": URL + europe_url + "spain" + suffix,
+        "url": _extract_url(europe_url, "spain"),
     }
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + spain_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(spain_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -913,14 +886,14 @@ class Brazil:
 
     country = {
         "name": "brazil" + suffix,
-        "url": URL + south_america_url + "brazil" + suffix,
+        "url": _extract_url(south_america_url, "brazil"),
     }
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + brazil_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(brazil_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -949,13 +922,13 @@ class Japan:
     available = regions
     available.sort()
 
-    country = {"name": "japan" + suffix, "url": URL + asia_url + "japan" + suffix}
+    country = {"name": "japan" + suffix, "url": _extract_url(asia_url, "japan")}
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + japan_url + region + suffix,
+            "url": _extract_url(japan_url, region),
         }
         for region in regions
     }
@@ -1009,13 +982,13 @@ class China:
     available = regions
     available.sort()
 
-    country = {"name": "china" + suffix, "url": URL + asia_url + "china" + suffix}
+    country = {"name": "china" + suffix, "url": _extract_url(asia_url, "china")}
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + china_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(china_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -1042,13 +1015,13 @@ class India:
     available = regions
     available.sort()
 
-    country = {"name": "india" + suffix, "url": URL + asia_url + "india" + suffix}
+    country = {"name": "india" + suffix, "url": _extract_url(asia_url, "india")}
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + india_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(india_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -1078,14 +1051,14 @@ class Indonesia:
 
     country = {
         "name": "indonesia" + suffix,
-        "url": URL + asia_url + "indonesia" + suffix,
+        "url": _extract_url(asia_url, "indonesia"),
     }
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + indonesia_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(indonesia_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -1122,14 +1095,14 @@ class Australia:
 
     country = {
         "name": "australia" + suffix,
-        "url": URL + australia_oceania_url + "australia" + suffix,
+        "url": _extract_url(australia_oceania_url, "australia"),
     }
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + australia_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(australia_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -1177,14 +1150,14 @@ class AustraliaOceania:
 
     continent = {
         "name": "australia-oceania" + suffix,
-        "url": URL + "australia-oceania" + suffix,
+        "url": _extract_url("", "australia-oceania"),
     }
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + australia_oceania_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(australia_oceania_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -1219,14 +1192,14 @@ class NorthAmerica:
 
     continent = {
         "name": "north-america" + suffix,
-        "url": URL + "north-america" + suffix,
+        "url": _extract_url("", "north-america"),
     }
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + north_america_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(north_america_url, region.replace("_", "-")),
         }
         for region in regions
         if region != "usa"
@@ -1234,7 +1207,7 @@ class NorthAmerica:
     # USA is "us" in GeoFabrik
     _sources["usa"] = {
         "name": "us" + suffix,
-        "url": URL + north_america_url + "us" + suffix,
+        "url": _extract_url(north_america_url, "us"),
     }
 
     __dict__ = _sources
@@ -1270,14 +1243,14 @@ class SouthAmerica:
 
     continent = {
         "name": "south-america" + suffix,
-        "url": URL + "south-america" + suffix,
+        "url": _extract_url("", "south-america"),
     }
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + south_america_url + region + suffix,
+            "url": _extract_url(south_america_url, region),
         }
         for region in regions
     }
@@ -1311,14 +1284,14 @@ class CentralAmerica:
 
     continent = {
         "name": "central-america" + suffix,
-        "url": URL + "central-america" + suffix,
+        "url": _extract_url("", "central-america"),
     }
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + central_america_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(central_america_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -1406,19 +1379,19 @@ class Europe:
     available = regions
     available.sort()
 
-    continent = {"name": "europe" + suffix, "url": URL + "europe" + suffix}
+    continent = {"name": "europe" + suffix, "url": _extract_url("", "europe")}
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + europe_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(europe_url, region.replace("_", "-")),
         }
         for region in regions
         if region != "russia"
     }
     # Russia is separately from Europe
-    _sources["russia"] = {"name": "russia" + suffix, "url": URL + "russia" + suffix}
+    _sources["russia"] = {"name": "russia" + suffix, "url": _extract_url("", "russia")}
 
     __dict__ = _sources
 
@@ -1492,13 +1465,13 @@ class Africa:
     available = regions
     available.sort()
 
-    continent = {"name": "africa" + suffix, "url": URL + "africa" + suffix}
+    continent = {"name": "africa" + suffix, "url": _extract_url("", "africa")}
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + africa_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(africa_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -1563,13 +1536,13 @@ class Asia:
     available = regions
     available.sort()
 
-    continent = {"name": "asia" + suffix, "url": URL + "asia" + suffix}
+    continent = {"name": "asia" + suffix, "url": _extract_url("", "asia")}
 
     # Create data sources
     _sources = {
         region: {
             "name": region.replace("_", "-") + suffix,
-            "url": URL + asia_url + region.replace("_", "-") + suffix,
+            "url": _extract_url(asia_url, region.replace("_", "-")),
         }
         for region in regions
     }
@@ -1588,11 +1561,11 @@ class Antarctica:
     available = regions
     available.sort()
 
-    continent = {"name": "antarctica" + suffix, "url": URL + "antarctica" + suffix}
+    continent = {"name": "antarctica" + suffix, "url": _extract_url("", "antarctica")}
 
     # Create data sources
     _sources = {
-        region: {"name": region + suffix, "url": URL + region + suffix}
+        region: {"name": region + suffix, "url": _extract_url("", region)}
         for region in regions
     }
 
