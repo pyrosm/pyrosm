@@ -102,7 +102,7 @@ def read_size(pbf_url):
     except (OSError, http.client.HTTPException):
         pass
     try:
-        page_url = pbf_url[: -len(LATEST_PBF)] + ".html"
+        page_url = pbf_url.rsplit("/", 1)[0] + "/"
         html, _ = fetch(page_url, limit=2**20)
         size = page_size(html.decode("utf-8", "replace"))
         if size is not None:

@@ -75,10 +75,10 @@ def test_uk_subregions_use_united_kingdom_path():
 
     # The two whole-region country files stay distinct and both valid.
     assert search_source("united_kingdom")["url"].endswith(
-        "europe/united-kingdom-latest.osm.pbf"
+        "europe/united-kingdom/united-kingdom-latest.osm.pbf"
     )
     assert search_source("great_britain")["url"].endswith(
-        "europe/great-britain-latest.osm.pbf"
+        "europe/great-britain/great-britain-latest.osm.pbf"
     )
 
     # Sub-region navigation via the great_britain group still works and resolves
@@ -1345,8 +1345,8 @@ def test_get_data_disambiguates_ambiguous_region_name(monkeypatch):
     # The two regions resolve to different files.
     state = search_source("usa/georgia")["url"]
     country = search_source("europe/georgia")["url"]
-    assert state.endswith("north-america/us/georgia-latest.osm.pbf")
-    assert country.endswith("europe/georgia-latest.osm.pbf")
+    assert state.endswith("north-america/us/georgia/georgia-latest.osm.pbf")
+    assert country.endswith("europe/georgia/georgia-latest.osm.pbf")
     assert state != country
 
     # The bare, ambiguous name raises with guidance (search_source and get_data).
@@ -1357,7 +1357,7 @@ def test_get_data_disambiguates_ambiguous_region_name(monkeypatch):
 
     # A benign collision (same file reachable via two groupings) is not ambiguous.
     assert search_source("oxfordshire")["url"].endswith(
-        "england/oxfordshire-latest.osm.pbf"
+        "england/oxfordshire/oxfordshire-latest.osm.pbf"
     )
 
     # An unknown region qualifier is rejected.
@@ -1373,7 +1373,7 @@ def test_get_data_disambiguates_ambiguous_region_name(monkeypatch):
 
     monkeypatch.setattr(data, "retrieve", fake_retrieve)
     data.get_data("usa/georgia")
-    assert captured["url"].endswith("north-america/us/georgia-latest.osm.pbf")
+    assert captured["url"].endswith("north-america/us/georgia/georgia-latest.osm.pbf")
 
     # A source-registry entry that is neither a region list nor a subregion dict is
     # skipped rather than crashing the lookup.
@@ -3773,7 +3773,9 @@ def test_extracts_with_the_same_file_name_download_to_their_own_files(tmp_path):
     """``get_data("usa/georgia")`` and ``get_data("europe/georgia")`` both saved
     ``georgia-latest.osm.pbf``, so the second returned the first one's file, and the
     Geofabrik downloads of ``get_data_by_bbox`` and ``get_data_by_area`` shared the name
-    too. A file name that several extracts have gets the extract's region in front."""
+    too. Since Geofabrik keeps each extract in a folder of its own, both were named
+    ``georgia-georgia-latest.osm.pbf``. A file name that several extracts have gets the
+    extract's region, the folder above the extract's own folder, in front."""
     import io
 
     from pyrosm import get_data
@@ -3805,10 +3807,12 @@ def test_extracts_with_the_same_file_name_download_to_their_own_files(tmp_path):
         "europe-georgia-latest.osm.pbf",
     ]
     urls = [p.read_bytes().decode() for p in paths]  # each file holds its own download
-    assert urls[0].endswith("download.geofabrik.de/north-america/us/georgia-latest.osm.pbf")
-    assert urls[1].endswith("download.geofabrik.de/europe/georgia-latest.osm.pbf")
-    finland = "https://download.geofabrik.de/europe/finland-latest.osm.pbf"
+    assert urls[0].endswith("north-america/us/georgia/georgia-latest.osm.pbf")
+    assert urls[1].endswith("geofabrik.de/europe/georgia/georgia-latest.osm.pbf")
+    finland = "https://download.geofabrik.de/europe/finland/finland-latest.osm.pbf"
     assert extract_file_name(finland) == "finland-latest.osm.pbf"
+    old = "https://download.geofabrik.de/north-america/us/georgia-latest.osm.pbf"
+    assert extract_file_name(old) == "us-georgia-latest.osm.pbf"
 
 
 @pytest.mark.parametrize("graph_type", ["networkx", "igraph", "pandarm"])
@@ -5056,7 +5060,7 @@ def test_dataset_names_take_every_spelling_and_get_suggestions():
     from pyrosm.data import _resolve_dataset
 
     for name in ("usa/new york", "USA / New-York", "usa/new_york"):
-        assert _resolve_dataset(name)[1]["url"].endswith("/us/new-york-latest.osm.pbf")
+        assert _resolve_dataset(name)[1]["url"].endswith("/us/new-york/new-york-latest.osm.pbf")
     assert _resolve_dataset("Rio-de-Janeiro")[1]["url"].endswith("/RiodeJaneiro.osm.pbf")
     for name, hint in (
         ("finlnd", "'finland'"),
