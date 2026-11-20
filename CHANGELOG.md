@@ -1,6 +1,12 @@
 Changelog
 =========
 
+v0.29.1
+-------
+
+- FIXED: Downloads from Geofabrik use the addresses of its new layout, in which every extract has a folder of its own: `north-america/us/new-mexico/new-mexico-latest.osm.pbf` instead of `north-america/us/new-mexico-latest.osm.pbf`. Geofabrik moved its extracts on 19 November 2026, and its redirects from the old addresses led to a missing page for 333 of pyrosm's 555 Geofabrik extracts, such as the US states and the German and French regions: `get_data("new_mexico")` failed with an HTTP 404, and so did `get_data_by_area` and `get_data_by_bbox` when they chose one of these extracts. pyrosm's copy of Geofabrik's index is refreshed. The dataset `enfield`, a London borough that Geofabrik no longer offers, is removed ([#1083](https://github.com/pyrosm/pyrosm/pull/1083), [#1081](https://github.com/pyrosm/pyrosm/issues/1081))
+- FIXED: The two Georgias, the US state and the country, keep their own local files, `us-georgia-latest.osm.pbf` and `europe-georgia-latest.osm.pbf`, also with Geofabrik's new addresses. With them, both were named `georgia-georgia-latest.osm.pbf`: `get_data_by_area` and `get_data_by_bbox` with `update=True`, which read Geofabrik's live index, downloaded both Georgias to the same file ([#1083](https://github.com/pyrosm/pyrosm/pull/1083), [#1082](https://github.com/pyrosm/pyrosm/issues/1082))
+
 v0.29.0
 -------
 
