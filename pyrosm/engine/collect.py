@@ -31,6 +31,7 @@ from pyrosm.engine.decode import (
 from pyrosm.engine.bounding_box import _in_box_nodes
 from pyrosm.engine.ways import (
     ElementStore,
+    closed_ways,
     keep_mask,
     node_coordinates,
     node_record_blocks,
@@ -393,6 +394,22 @@ def _collect_kept_ways(shard_paths, exclude_ids, keep, in_box=None):
     return _filter_way_columns(
         _read_way_columns(shard_paths), exclude_ids, keep, in_box
     )
+
+
+def _closed_only(kept):
+    """The ways of ``kept`` (an :class:`~pyrosm.engine.ways.ElementStore` or way columns)
+    that end at the node they start at, the ways that can be areas; all of ``kept`` when
+    none does, or None for no ways."""
+    if kept is None:
+        return None
+    if isinstance(kept, ElementStore):
+        rows = np.flatnonzero(closed_ways(kept.refs_off, kept.refs))
+        return kept.take(rows) if len(rows) else kept
+    closed = np.array(
+        [len(nodes) > 0 and nodes[0] == nodes[-1] for nodes in kept["nodes"]],
+        dtype=bool,
+    )
+    return {k: v[closed] for k, v in kept.items()} if closed.any() else kept
 
 
 # No node ids, to concatenate with.

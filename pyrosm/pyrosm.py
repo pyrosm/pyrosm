@@ -1122,6 +1122,7 @@ class OSM:
                 True,
                 timestamp,
                 columns,
+                closed_only=True,
             )
         if candidates is None:
             return None
@@ -1891,11 +1892,15 @@ class OSM:
         timestamp,
         tags_to_keep,
         member_nodes=False,
+        closed_only=False,
     ):
         """The frame of :meth:`get_data_by_custom_criteria`, or None when nothing
         matches, without the warning of an empty result; with ``member_nodes``, the
         relations have the column ``member_nodes``, the nodes of their member ways with
-        their coordinates (see :func:`pyrosm.engine.relation_geometry.member_nodes`)."""
+        their coordinates (see :func:`pyrosm.engine.relation_geometry.member_nodes`).
+        With ``closed_only``, the out-of-core reader leaves out the ways that do not end
+        at the node they start at, which cannot be areas, for a caller that keeps areas
+        only; the in-memory reader returns them."""
         # custom_filter=None means "return everything": keep every tagged element
         # with no key/value filtering (issue #113). There is nothing to keep or exclude
         # by value then, so filter_type is ignored; it is pinned to a valid no-op so a
@@ -1932,6 +1937,7 @@ class OSM:
                 keep_other_tags=keep_other_tags,
                 tags_to_keep=tags_to_keep,
                 member_nodes=member_nodes,
+                closed_only=closed_only,
             )
             return gdf
 

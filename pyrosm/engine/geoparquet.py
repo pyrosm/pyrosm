@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from pyrosm.engine.collect import (
+    _closed_only,
     _collect_layer,
     _num_ways,
     _result_tag_columns,
@@ -84,6 +85,7 @@ def _stream_layer_to_parquet(
     steps=None,
     grouping_relations=False,
     member_nodes=False,
+    closed_only=False,
 ):
     """Stream the layer (point nodes, then ways in chunks, then relations) to a
     GeoParquet at ``output``, a few chunks in memory at a time (see
@@ -91,7 +93,9 @@ def _stream_layer_to_parquet(
     was nothing to write. ``keep_node_info`` keeps the ways' ``nodes`` column;
     ``grouping_relations`` returns the relations that group their members with them (see
     :mod:`pyrosm.grouping_relations`); ``member_nodes`` gives the relations the column
-    ``member_nodes`` (see :func:`pyrosm.frames.prepare_relation_gdf`). The work
+    ``member_nodes`` (see :func:`pyrosm.frames.prepare_relation_gdf`); ``closed_only``
+    builds only the closed ways (see :func:`~pyrosm.engine.collect._closed_only`), with
+    the columns of all of them. The work
     is the steps ``COLLECTING`` and ``BUILDING`` (by tables written) of ``steps`` (a
     :class:`~pyrosm.utils.progress.Steps`, or None)."""
     import pyarrow.parquet as pq
@@ -117,6 +121,10 @@ def _stream_layer_to_parquet(
         if kept is not None
         else None
     )
+    all_ways = kept
+    if closed_only:
+        # The columns stay those of all the ways
+        kept = _closed_only(kept)
     # The tables to build: the point nodes, each way chunk and the relations.
     tables = [0, (node_features is not None) + (relations is not None)]
     if kept is not None:
@@ -181,14 +189,24 @@ def _stream_layer_to_parquet(
                 to_table(relations=relations, relation_ways=relation_ways), "relations"
             )
             built()
-        # The first way chunk that has rows.
+
+        def first_way_table():
+            """The first way chunk from ``starts`` on that has rows, or None."""
+            for start in starts:
+                table = way_table(start)
+                built()
+                if table is not None:
+                    return table
+            return None
+
         starts = iter(range(0, _num_ways(kept), chunk_size) if kept is not None else ())
-        first_ways = None
-        for start in starts:
-            first_ways = way_table(start)
-            built()
-            if first_ways is not None:
-                break
+        first_ways = first_way_table()
+        if first_ways is None and kept is not all_ways:
+            # No closed way gives a geometry: all the ways, as without closed_only
+            kept = all_ways
+            tables[1] += -(-_num_ways(kept) // chunk_size)
+            starts = iter(range(0, _num_ways(kept), chunk_size))
+            first_ways = first_way_table()
         # The columns of the nodes, the ways and the relations in order of appearance, as
         # the in-memory reader's concatenation of the three frames gives them.
         schemas = []
