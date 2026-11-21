@@ -6995,7 +6995,8 @@ def test_indoor_reads_join_lift_areas_as_lifts(tmp_path, engine):
     found, edges = osm.get_network("walking", nodes=True, indoor_elements=True)
     low, high = lift_area_copy_id(40, "way", 1), lift_area_copy_id(40, "way", 2)
     lift = edges[edges["id"] == 40]
-    assert lift[["u", "v", "u_level", "v_level", "walking_area", "vertical"]].values.tolist() == [
+    rows = lift[["u", "v", "u_level", "v_level", "walking_area", "vertical"]]
+    assert rows.astype(object).where(rows.notna(), None).values.tolist() == [
         [5, low, 0.0, 0.0, True, None],
         [12, high, 1.0, 1.0, True, None],
         [low, high, 0.0, 1.0, False, "lift"],
