@@ -242,6 +242,29 @@ _EDGE_TAG_KEYS = frozenset(
     {"level", "highway", "conveying", "incline", *PLATFORM_FILTER}
 )
 
+# The highway values that make an edge stairs (see is_vertical) or a platform
+_EDGE_HIGHWAYS = frozenset({"steps", *PLATFORM_FILTER["highway"]})
+
+
+def _edge_tag_rows(edges):
+    """The rows of ``edges`` whose tags can give them a level or a kind in
+    :func:`edge_levels` and :func:`edge_vertical`: a value in a column of a key of
+    :data:`_EDGE_TAG_KEYS` (of ``highway``, one of :data:`_EDGE_HIGHWAYS`), or JSON
+    ``tags`` that can hold one of those keys (see
+    :func:`pyrosm.pbf_writer._may_hold_key`)."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _may_hold_keys, _tag_key
+
+    found = np.zeros(len(edges), dtype=bool)
+    for col in _frame_tag_columns(edges):
+        key = _tag_key(col)
+        if key == "highway":
+            found |= edges[col].isin(_EDGE_HIGHWAYS).to_numpy()
+        elif key in _EDGE_TAG_KEYS:
+            found |= edges[col].notna().to_numpy()
+    if "tags" in edges.columns:
+        found |= _may_hold_keys(edges["tags"], _EDGE_TAG_KEYS)
+    return np.flatnonzero(found)
+
 
 def edge_levels(edges, tags, node_levels=None):
     """``(u_level, v_level)``: float arrays of the level at each end of ``edges`` (a
@@ -252,13 +275,18 @@ def edge_levels(edges, tags, node_levels=None):
     n = len(edges)
     low, high = np.full(n, np.nan), np.full(n, np.nan)
     vertical = np.zeros(n, dtype=bool)
+    rise = np.zeros(n, dtype=np.int8)
+    platform = np.zeros(n, dtype=bool)
     for i, row_tags in enumerate(tags):
+        if not row_tags:
+            continue
         ranges = level_ranges(row_tags.get("level"))
         if ranges:
             low[i] = min(r[0] for r in ranges)
             high[i] = max(r[1] for r in ranges)
         vertical[i] = is_vertical(row_tags)
-    rise = np.array([_rise(row_tags) for row_tags in tags], dtype=np.int8)
+        rise[i] = _rise(row_tags)
+        platform[i] = _is_platform(row_tags)
     single = low == high
     listed = high > low
     u_level = np.where(single, low, np.nan)
@@ -295,7 +323,7 @@ def edge_levels(edges, tags, node_levels=None):
                 )
                 if len(found) == 1:
                     end_levels[i] = found[0]
-    platforms = np.isnan(low) & np.array([_is_platform(t) for t in tags], dtype=bool)
+    platforms = np.isnan(low) & platform
     if platforms.any():
         _fill_platform_levels(u, v, u_level, v_level, platforms)
     return u_level, v_level
@@ -448,12 +476,13 @@ def _vertical_ways(edges, vertical):
     each edge on its own, as are the lines across areas (``walking_area`` True)."""
     u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
     alone = np.full(len(edges), "id" not in edges.columns) | _area_lines(edges)
+    ids = edges["id"].to_numpy() if "id" in edges.columns else None
     ways, found = {}, []
     for i in np.flatnonzero(vertical):
         if alone[i]:
             found.append(([i], [u[i], v[i]]))
         else:
-            ways.setdefault(edges["id"].iat[i], []).append(i)
+            ways.setdefault(ids[i], []).append(i)
     for rows in ways.values():
         line = _line_order(rows, u, v)
         found += [line] if line else [([i], [u[i], v[i]]) for i in rows]
@@ -640,14 +669,14 @@ def edge_vertical(tags, areas=False):
     other steps, ``"moving_walkway"`` for other ways that move, None for the rest. With
     ``areas``, the tags are those of the areas the edges cross, and stairs mapped as an
     area (see :func:`_stairs_tagged`) count as steps too."""
-    kinds = []
-    for row_tags in tags:
-        kind = None
+    kinds = [None] * len(tags)
+    for i, row_tags in enumerate(tags):
+        if not row_tags:
+            continue
         if row_tags.get("highway") == "steps" or (areas and _stairs_tagged(row_tags)):
-            kind = "escalator" if _is_moving(row_tags) else "stairs"
+            kinds[i] = "escalator" if _is_moving(row_tags) else "stairs"
         elif _is_moving(row_tags):
-            kind = "moving_walkway"
-        kinds.append(kind)
+            kinds[i] = "moving_walkway"
     return kinds
 
 
@@ -684,13 +713,18 @@ def with_indoor_columns(edges, escalator_slope, nodes=None, levels=None):
     millimetres; None keeps the length on the map."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
-    tags = _frame_tags(edges, _frame_tag_columns(edges), only=_EDGE_TAG_KEYS)
+    # The other edges' tags give them no level and no kind: they count as no tags
+    rows = _edge_tag_rows(edges)
+    tags = [{}] * len(edges)
+    for row, row_tags in zip(
+        rows,
+        _frame_tags(edges.iloc[rows], _frame_tag_columns(edges), only=_EDGE_TAG_KEYS),
+    ):
+        tags[row] = row_tags
     own = {**(levels or {}), **({} if nodes is None else node_levels(nodes))}
     u_level, v_level = edge_levels(edges, tags, own)
-    vertical = edge_vertical(tags)
-    vertical = [
-        None if line else kind for kind, line in zip(vertical, _area_lines(edges))
-    ]
+    vertical = np.array(edge_vertical(tags), dtype=object)
+    vertical[_area_lines(edges)] = None
     edges = edges.assign(u_level=u_level, v_level=v_level, vertical=vertical)
     if escalator_slope is not None:
         escalator = edges["vertical"] == "escalator"
