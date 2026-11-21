@@ -76,6 +76,7 @@ from geopandas import GeoDataFrame
 from rapidjson import dumps
 from shapely.geometry import LineString
 
+from pyrosm.int64_hash import Int64Set
 from pyrosm.levels import level_ranges
 
 # The network types whose reads take indoor_elements=True.
@@ -370,7 +371,6 @@ def _root(parent, node):
 def _range_stair_rows(edges, ends):
     """The rows of ``edges`` (a frame with ``id``) that are stairs, escalators or moving
     walkways with a level range and end at one of the nodes ``ends``."""
-    from pyrosm.int64_hash import Int64Set
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
@@ -399,7 +399,6 @@ def stair_end_levels(edges, ends, own_levels=None):
     :func:`stair_way_ends`), where :func:`edge_levels` finds the level
     of that end from the rest of the way: from the walkways at its other end (or the
     nodes' ``own_levels``, see :func:`node_levels`), or from its incline."""
-    from pyrosm.int64_hash import Int64Set
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     stairs = _range_stair_rows(edges, ends)
@@ -434,8 +433,6 @@ def stair_way_ends(edges, ends, stairs=None):
     its drawn direction, and the number of nodes between its ends. ``stairs`` are the
     rows of such ways that end at ``ends`` when the caller has them (see
     :func:`_range_stair_rows`)."""
-    from pyrosm.int64_hash import Int64Set
-
     if stairs is None:
         stairs = _range_stair_rows(edges, ends)
     if not stairs:
@@ -1407,7 +1404,6 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
     inside one of the lift areas ``lifts`` is left to that area);
     the doors and lift nodes that the new edges use join the nodes, with all their tags
     in ``tags``, and so do the border nodes, without tags."""
-    from pyrosm.int64_hash import Int64Set
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
     from pyrosm.walking_areas import crossing_rows
 
@@ -1508,8 +1504,6 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
 def _ends_left(before, after):
     """The nodes that end edges of ``before`` and no edge of ``after``, the same edges
     with some of their ends moved (see :func:`_walkways_on_door_copies`)."""
-    from pyrosm.int64_hash import Int64Set
-
     old = np.concatenate([before["u"].to_numpy(), before["v"].to_numpy()])
     new = np.concatenate([after["u"].to_numpy(), after["v"].to_numpy()])
     moved = old[old != new]
@@ -1749,7 +1743,14 @@ def split_lifts(nodes, edges):
     metadata = [
         col for col in LIFT_METADATA if col in edges.columns and col in at.columns
     ]
-    taken = set(nodes["id"].tolist())
+    taken, new = Int64Set(nodes["id"].to_numpy()), set()
+    # The edges whose ends are at each lift node, in their order
+    at_lift = {}
+    for ends, end_levels in ((u, u_level), (v, v_level)):
+        for i in np.flatnonzero(
+            Int64Set(list(levels)).isin(ends) & ~np.isnan(end_levels)
+        ).tolist():
+            at_lift.setdefault((int(ends[i]), ends is v), []).append(i)
     copies, lift_rows = [], []
     for lift, found in sorted(levels.items()):
         if len(found) < 2 or not 0 < lift <= _MAX_LIFT_ID:
@@ -1757,15 +1758,17 @@ def split_lifts(nodes, edges):
         ordered = sorted(found)
         ids = {level: node_copy_id(lift, rank) for rank, level in enumerate(ordered)}
         ids[ordered[0]] = lift
-        clash = [node for node in list(ids.values())[1:] if node in taken]
+        clash = [
+            node for node in list(ids.values())[1:] if node in taken or node in new
+        ]
         if clash or len(ordered) >= 500:
             raise ValueError(
                 "Lift node %d cannot be split per level: the ids of its copies, %s, "
                 "are taken or too many." % (lift, sorted(ids.values())[:3])
             )
-        taken.update(ids.values())
+        new.update(ids.values())
         for ends, end_levels in ((u, u_level), (v, v_level)):
-            for i in np.flatnonzero((ends == lift) & ~np.isnan(end_levels)):
+            for i in at_lift.get((lift, ends is v), ()):
                 ends[i] = ids[float(end_levels[i])]
         row = at.loc[lift]
         point = row.geometry
@@ -1999,11 +2002,11 @@ def _levels_at_nodes(edges, nodes):
     """``{node id: {level, ...}}``: the levels of ``edges`` (``u_level`` and
     ``v_level``) at those of their end nodes that are among ``nodes``."""
     found = {}
-    wanted = list(nodes)
+    wanted = Int64Set(np.fromiter(nodes, dtype=np.int64))
     for ends, end_levels in (("u", "u_level"), ("v", "v_level")):
         ends = edges[ends].to_numpy()
         end_levels = edges[end_levels].to_numpy(dtype=float)
-        for i in np.flatnonzero(np.isin(ends, wanted) & ~np.isnan(end_levels)):
+        for i in np.flatnonzero(wanted.isin(ends) & ~np.isnan(end_levels)):
             found.setdefault(int(ends[i]), set()).add(float(end_levels[i]))
     return found
 
@@ -2022,15 +2025,18 @@ def _lift_area_entrances(lifts, nodes, edges):
     lon = nodes["lon"].to_numpy(dtype=float)
     lat = nodes["lat"].to_numpy(dtype=float)
     geometries = lifts.geometry.to_numpy()
-    area_rows, node_rows = shapely.STRtree(shapely.points(lon, lat)).query(
+    near = _rows_in_boxes(lon, lat, shapely.bounds(geometries))
+    area_rows, node_rows = shapely.STRtree(shapely.points(lon[near], lat[near])).query(
         geometries, predicate="intersects"
     )
+    # In the order of the areas and the nodes, whatever the tree's order
+    order = np.lexsort((near[node_rows], area_rows))
+    area_rows, node_rows = area_rows[order], near[node_rows][order]
     levels_at = _levels_at_nodes(edges, ids[node_rows])
-    ends, counts = np.unique(
-        np.concatenate([edges["u"].to_numpy(), edges["v"].to_numpy()]),
-        return_counts=True,
-    )
-    dead_end = np.isin(ids, ends[counts == 1])
+    counts = pd.Series(
+        np.concatenate([edges["u"].to_numpy(), edges["v"].to_numpy()])
+    ).value_counts()
+    dead_end = Int64Set(counts.index[counts.to_numpy() == 1].to_numpy()).isin(ids)
     tags = _frame_tags(lifts, _frame_tag_columns(lifts))
     found = {}
     for area in np.unique(area_rows):
@@ -2049,6 +2055,22 @@ def _lift_area_entrances(lifts, nodes, edges):
             parts.append((part, at))
         found[int(area)] = parts
     return found
+
+
+def _rows_in_boxes(lon, lat, boxes):
+    """The rows of the points ``lon``, ``lat`` that lie in one of the ``boxes`` (rows of
+    ``minx, miny, maxx, maxy``, edges included), ascending."""
+    order = np.argsort(lon, kind="stable")
+    ordered = lon[order]
+    found = [np.empty(0, dtype=np.intp)]
+    for minx, miny, maxx, maxy in boxes:
+        rows = order[
+            np.searchsorted(ordered, minx, side="left") : np.searchsorted(
+                ordered, maxx, side="right"
+            )
+        ]
+        found.append(rows[(lat[rows] >= miny) & (lat[rows] <= maxy)])
+    return np.unique(np.concatenate(found))
 
 
 def _line_inside(polygon, start, end):
@@ -2095,15 +2117,15 @@ def join_lift_areas(nodes, edges, lifts):
         col for col in LIFT_METADATA if col in nodes.columns and col in lifts.columns
     ]
     tags = _frame_tags(lifts, _frame_tag_columns(lifts))
-    taken = set(nodes["id"].tolist())
+    taken, new = Int64Set(nodes["id"].to_numpy()), set()
     items = []
     for area, parts in _lift_area_entrances(lifts, nodes, edges).items():
         row = lifts.iloc[area]
         planned = _lift_area_plan(row, parts) if 0 < row["id"] <= _MAX_LIFT_ID else []
         new_ids = [node for *_, ids in planned for node in ids.values()]
-        if len(new_ids) >= 250 or any(node in taken for node in new_ids):
+        if len(new_ids) >= 250 or any(node in taken or node in new for node in new_ids):
             continue
-        taken.update(new_ids)
+        new.update(new_ids)
         ranges = level_ranges(tags[area].get("level")) or []
         span = (
             (min(a for a, _ in ranges), max(b for _, b in ranges)) if ranges else None
