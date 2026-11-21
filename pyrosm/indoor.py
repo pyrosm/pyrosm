@@ -342,15 +342,18 @@ def _root(parent, node):
 def _range_stair_rows(edges, ends):
     """The rows of ``edges`` (a frame with ``id``) that are stairs, escalators or moving
     walkways with a level range and end at one of the nodes ``ends``."""
+    from pyrosm.int64_hash import Int64Set
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
-    at_end = np.flatnonzero(np.isin(u, ends) | np.isin(v, ends))
+    wanted = Int64Set(ends)
+    at_end = np.flatnonzero(wanted.isin(u) | wanted.isin(v))
     if "id" not in edges.columns or not len(at_end):
         return []
     stairs = []
     for row, tags in zip(
-        at_end, _frame_tags(edges.iloc[at_end], _frame_tag_columns(edges))
+        at_end,
+        _frame_tags(edges.iloc[at_end], _frame_tag_columns(edges), only=_EDGE_TAG_KEYS),
     ):
         ranges = level_ranges(tags.get("level"))
         if (
@@ -368,19 +371,23 @@ def stair_end_levels(edges, ends, own_levels=None):
     :func:`stair_way_ends`), where :func:`edge_levels` finds the level
     of that end from the rest of the way: from the walkways at its other end (or the
     nodes' ``own_levels``, see :func:`node_levels`), or from its incline."""
+    from pyrosm.int64_hash import Int64Set
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
-    wanted = stair_way_ends(edges, ends)
+    stairs = _range_stair_rows(edges, ends)
+    wanted = stair_way_ends(edges, ends, stairs)
     if not wanted:
         return {}
     u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
     ids = edges["id"].to_numpy()
-    ways = np.isin(ids, ids[_range_stair_rows(edges, ends)])
-    way_nodes = np.concatenate([u[ways], v[ways]])
-    near = np.flatnonzero(np.isin(u, way_nodes) | np.isin(v, way_nodes))
+    ways = Int64Set(ids[stairs]).isin(ids)
+    way_nodes = Int64Set(np.concatenate([u[ways], v[ways]]))
+    near = np.flatnonzero(way_nodes.isin(u) | way_nodes.isin(v))
     subset = edges.iloc[near]
     u_level, v_level = edge_levels(
-        subset, _frame_tags(subset, _frame_tag_columns(edges)), own_levels
+        subset,
+        _frame_tags(subset, _frame_tag_columns(edges), only=_EDGE_TAG_KEYS),
+        own_levels,
     )
     found = {}
     for a, b, level_a, level_b, way in zip(
@@ -392,16 +399,21 @@ def stair_end_levels(edges, ends, own_levels=None):
     return found
 
 
-def stair_way_ends(edges, ends):
+def stair_way_ends(edges, ends, stairs=None):
     """``{node: (other end, starts, inner)}`` for the nodes ``ends`` that end stairs,
     escalators or moving walkways with a level range in ``edges``: the node at the other
     end of the way (see :func:`_vertical_ways`), whether the way starts at the node, in
-    its drawn direction, and the number of nodes between its ends."""
-    stairs = _range_stair_rows(edges, ends)
+    its drawn direction, and the number of nodes between its ends. ``stairs`` are the
+    rows of such ways that end at ``ends`` when the caller has them (see
+    :func:`_range_stair_rows`)."""
+    from pyrosm.int64_hash import Int64Set
+
+    if stairs is None:
+        stairs = _range_stair_rows(edges, ends)
     if not stairs:
         return {}
     ids = edges["id"].to_numpy()
-    rows = np.flatnonzero(np.isin(ids, ids[stairs]))
+    rows = np.flatnonzero(Int64Set(ids[stairs]).isin(ids))
     vertical = np.zeros(len(edges), dtype=bool)
     vertical[rows] = True
     wanted = set(np.asarray(ends).tolist())
@@ -1607,16 +1619,23 @@ def _whole_levels(ranges):
     return sorted(float(level) for level in found)
 
 
-def _tags_by_node(nodes):
-    """``(id, tags)`` of each of ``nodes`` with tags, from their ``tags`` column (dicts,
-    or JSON text)."""
+def _tags_by_node(nodes, keys):
+    """``(id, tags)`` of each of ``nodes`` whose tags can hold one of ``keys`` (see
+    :func:`pyrosm.pbf_writer._may_hold_key`), from their ``tags`` column (dicts, or JSON
+    text)."""
+    from pyrosm.pbf_writer import _key_escapes, _may_hold_key
+
     if "tags" not in nodes.columns:
         return
-    for node, tags in zip(nodes["id"], nodes["tags"]):
-        if isinstance(tags, str):
-            tags = json.loads(tags)
-        if isinstance(tags, dict):
-            yield int(node), tags
+    values = nodes["tags"]
+    present = values.notna().to_numpy()
+    quoted = [json.dumps(key, ensure_ascii=False) for key in sorted(keys)]
+    escape = _key_escapes(keys)
+    for node, tags in zip(
+        nodes["id"].to_numpy()[present].tolist(), values[present].tolist()
+    ):
+        if _may_hold_key(tags, quoted, escape):
+            yield int(node), json.loads(tags) if isinstance(tags, str) else tags
 
 
 def _lift_levels(nodes):
@@ -1624,7 +1643,7 @@ def _lift_levels(nodes):
     the levels its own ``level`` tag names (see :func:`_whole_levels`)."""
     return {
         node: _whole_levels(level_ranges(tags.get("level")) or [])
-        for node, tags in _tags_by_node(nodes)
+        for node, tags in _tags_by_node(nodes, {"highway"})
         if tags.get("highway") == "elevator"
     }
 
@@ -1633,7 +1652,7 @@ def node_levels(nodes):
     """``{id: (level,)}``: the level of each of ``nodes`` whose ``level`` tag names one
     level."""
     found = {}
-    for node, tags in _tags_by_node(nodes):
+    for node, tags in _tags_by_node(nodes, {"level"}):
         ranges = level_ranges(tags.get("level"))
         if ranges and len(ranges) == 1 and ranges[0][0] == ranges[0][1]:
             found[node] = (ranges[0][0],)
