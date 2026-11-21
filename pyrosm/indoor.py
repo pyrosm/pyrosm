@@ -1373,6 +1373,7 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
     inside one of the lift areas ``lifts`` is left to that area);
     the doors and lift nodes that the new edges use join the nodes, with all their tags
     in ``tags``, and so do the border nodes, without tags."""
+    from pyrosm.int64_hash import Int64Set
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
     from pyrosm.walking_areas import crossing_rows
 
@@ -1389,8 +1390,10 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
         copied = door_copies(doors, doors_joining_levels(doors, areas, lifts))
         twice = set(copied["id"][copied["id"].duplicated()])
         new = set(copied["id"]) - set(doors["id"])
-        taken = set(nodes["id"]) | (set() if borders is None else set(borders["id"]))
-        clash = sorted(twice | (new & taken))
+        taken = Int64Set(
+            nodes["id"] if borders is None else pd.concat([nodes["id"], borders["id"]])
+        )
+        clash = sorted(twice | {node for node in new if node in taken})
         if clash:
             raise ValueError(
                 "Doors on several levels (a repeat_on tag, or a level tag that lists "
@@ -1400,9 +1403,9 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
         # The doors copied per level, and their copies, enter areas on their level only
         repeated = new | {door for door in doors["id"] if node_copy_id(door, 1) in new}
         doors, copy_ids = copied, new
-        ends = set(edges["u"]) | set(edges["v"])
+        before = edges
         edges = _walkways_on_door_copies(edges, copied[copied["id"].isin(new)])
-        left = ends - set(edges["u"]) - set(edges["v"])
+        left = _ends_left(before, edges)
         if left:
             # A door whose edges all end at its copies is no node of the network now
             attrs = dict(nodes.attrs)
@@ -1415,12 +1418,11 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
     if doors is not None and "tags" in entrances.columns:
         # A door of the network enters areas with its tags as a door, on its own level
         door_tags = dict(zip(doors["id"], doors["tags"]))
-        entrances = entrances.assign(
-            tags=[
-                door_tags.get(i, tags)
-                for i, tags in zip(entrances["id"], entrances["tags"])
-            ]
-        )
+        ids = entrances["id"].to_numpy()
+        tags = entrances["tags"].to_numpy(dtype=object, copy=True)
+        for row in np.flatnonzero(Int64Set(list(door_tags)).isin(ids)):
+            tags[row] = door_tags[ids[row]]
+        entrances = entrances.assign(tags=tags)
     for frame in added:
         new = frame[~frame["id"].isin(nodes["id"])]
         new = new[[col for col in columns if col in new.columns]]
@@ -1435,11 +1437,16 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
             new = borders[~borders["id"].isin(nodes["id"])]
             only = dict(zip(new["id"], new["spaces"]))
         rows = crossing_rows(entrances, plain, areas, door_areas, only, repeated, lifts)
+    u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
     if rows is not None:
         # A line along the outline of an area that is an edge itself (a platform's ring)
-        joined = set(zip(edges["u"], edges["v"])) | set(zip(edges["v"], edges["u"]))
+        at = Int64Set(np.concatenate([rows["u"].to_numpy(), rows["v"].to_numpy()]))
+        near = np.flatnonzero(at.isin(u) & at.isin(v))
+        joined = set(zip(u[near].tolist(), v[near].tolist()))
+        joined |= set(zip(v[near].tolist(), u[near].tolist()))
         rows = rows[[pair not in joined for pair in zip(rows["u"], rows["v"])]]
-    used = (set(edges["u"]) | set(edges["v"])) & copy_ids
+    copies = Int64Set(list(copy_ids))
+    used = set(u[copies.isin(u)].tolist()) | set(v[copies.isin(v)].tolist())
     if rows is not None and not rows.empty:
         rows = rows.assign(walking_area=True)
         attrs = dict(edges.attrs)
@@ -1462,6 +1469,19 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
                 crs=nodes.crs,
             )
     return nodes, edges
+
+
+def _ends_left(before, after):
+    """The nodes that end edges of ``before`` and no edge of ``after``, the same edges
+    with some of their ends moved (see :func:`_walkways_on_door_copies`)."""
+    from pyrosm.int64_hash import Int64Set
+
+    old = np.concatenate([before["u"].to_numpy(), before["v"].to_numpy()])
+    new = np.concatenate([after["u"].to_numpy(), after["v"].to_numpy()])
+    moved = old[old != new]
+    if not len(moved):
+        return set()
+    return set(moved[~Int64Set(new).isin(moved)].tolist())
 
 
 # The largest lift node id whose copies' ids (see node_copy_id) fit in a signed 64-bit
@@ -1541,29 +1561,41 @@ def door_copies(doors, joining=()):
     """
     from pyrosm.pbf_writer import _tag_str
 
-    rows = []
-    for _, row in doors.iterrows():
-        tags = json.loads(row["tags"]) if isinstance(row["tags"], str) else {}
+    rows, ids, texts = [], [], []
+    for row, (door, text) in enumerate(zip(doors["id"].tolist(), doors["tags"])):
+        tags = json.loads(text) if isinstance(text, str) else {}
         own = level_ranges(tags.get("level")) or []
         levels = _whole_levels(own + (level_ranges(tags.get("repeat_on")) or []))
         copied = (
-            (tags.get("repeat_on") or row["id"] in joining)
+            (tags.get("repeat_on") or door in joining)
             and tags.get("highway") != "elevator"
-            and 0 < row["id"] <= _MAX_LIFT_ID
+            and 0 < door <= _MAX_LIFT_ID
             and 1 < len(levels) <= MAX_REPEATED_LEVELS
         )
         if not copied:
             rows.append(row)
+            ids.append(door)
+            texts.append(text)
             continue
         home = own[0][0] if own else min(levels)
         others = [level for level in levels if level != home]
         for rank, level in [(0, home)] + list(enumerate(others, 1)):
             copy = {k: v for k, v in tags.items() if k != "repeat_on"}
             copy["level"] = _tag_str(level)
-            node = row["id"] if rank == 0 else node_copy_id(row["id"], rank)
-            rows.append(row.copy())
-            rows[-1]["id"], rows[-1]["tags"] = node, dumps(copy)
-    return GeoDataFrame(rows, geometry="geometry", crs=doors.crs).reset_index(drop=True)
+            rows.append(row)
+            ids.append(door if rank == 0 else node_copy_id(door, rank))
+            texts.append(dumps(copy))
+    copies = doors.iloc[rows].reset_index(drop=True)
+    copies["id"] = ids
+    copies["tags"] = texts
+    copies.attrs = {}
+    # Integer and float columns come back as int64 and float64
+    for col in copies.columns:
+        if copies[col].dtype.kind in "iu":
+            copies[col] = copies[col].astype(np.int64)
+        elif copies[col].dtype.kind == "f":
+            copies[col] = copies[col].astype(np.float64)
+    return copies
 
 
 def copied_node(copy):
