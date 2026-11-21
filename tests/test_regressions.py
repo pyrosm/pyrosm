@@ -8276,3 +8276,20 @@ def test_indoor_read_with_walking_areas_of_an_area_without_ways(engine):
         )
     assert found == (None, None)
 
+
+
+@pytest.mark.parametrize(
+    "switches",
+    [{"walking_areas": True}, {"walking_areas": True, "indoor_elements": True}],
+)
+def test_network_reads_with_walking_areas_keep_the_column_types(switches):
+    """A network read with walking areas, or with walking areas and indoor elements,
+    returns the columns of the plain read in their types: the text columns stay text,
+    also those that no crossed area has a value in. They came back as object columns
+    (#1089)."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    _, plain = osm.get_network("walking", nodes=True)
+    _, edges = osm.get_network("walking", nodes=True, **switches)
+    assert {col: edges[col].dtype for col in plain.columns} == dict(plain.dtypes)

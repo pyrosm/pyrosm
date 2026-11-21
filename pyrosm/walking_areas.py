@@ -494,6 +494,14 @@ def area_edge_rows(areas, found, edges):
     crossings = pd.DataFrame(
         {col: rows[col].to_numpy() if col in rows else None for col in edges.columns}
     )
+    # The text columns keep the edges' type, also those no area has a value in
+    crossings = crossings.astype(
+        {
+            col: edges[col].dtype
+            for col in edges.columns
+            if isinstance(edges[col].dtype, pd.StringDtype)
+        }
+    )
     crossings["u"] = np.array([f[1] for f in found], dtype=edges["u"].dtype)
     crossings["v"] = np.array([f[2] for f in found], dtype=edges["v"].dtype)
     crossings["length"] = calculate_line_lengths(lines, decimals=3)

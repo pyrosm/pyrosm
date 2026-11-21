@@ -2147,7 +2147,12 @@ def join_lift_areas(nodes, edges, lifts):
         return nodes, edges
     rows = area_edge_rows(lifts, found, edges)
     levels = rows["v"].map(level_of).to_numpy(dtype=float)
-    rows = rows.assign(u_level=levels, v_level=levels, walking_area=True, vertical=None)
+    rows = rows.assign(
+        u_level=levels,
+        v_level=levels,
+        walking_area=True,
+        vertical=pd.Series(None, index=rows.index, dtype=edges["vertical"].dtype),
+    )
     if "level" in rows.columns:
         rows["level"] = [_tag_str(level) for level in levels]
     elif "tags" in rows.columns:
