@@ -3815,6 +3815,11 @@ def test_engine_stream_builds_all_ways_when_no_closed_way_gives_a_geometry(
     shards, _ = _decode_all(helsinki_pbf, blobs, 1, str(tmp_path), [b"building"], False)
 
     def unbuildable(kept):
+        if isinstance(kept, dict):
+            ways = {key: values[:1] for key, values in kept.items()}
+            ways["nodes"] = ways["nodes"].copy()
+            ways["nodes"][0] = np.full_like(ways["nodes"][0], -1)
+            return ways
         ways = kept.take([0])
         ways.refs = np.full_like(ways.refs, -1)
         return ways
