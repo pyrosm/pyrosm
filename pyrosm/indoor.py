@@ -836,7 +836,7 @@ def without_levelless_lines(nodes, edges):
         & np.isnan(edges["u_level"].to_numpy(dtype=float))
         & np.isnan(edges["v_level"].to_numpy(dtype=float))
     )
-    tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges))
+    tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges), only={"level"})
     levelled = [level_ranges(row_tags.get("level")) is not None for row_tags in tags]
     return _without_rows(nodes, edges, rows[levelled])
 
@@ -850,11 +850,17 @@ def _without_rows(nodes, edges, rows):
     drop[rows] = True
     kept = edges[~drop].reset_index(drop=True)
     kept.attrs = dict(edges.attrs)
-    used = set(kept["u"]) | set(kept["v"])
-    ends = set(edges["u"].iloc[rows]) | set(edges["v"].iloc[rows])
-    left = nodes[~nodes["id"].isin(ends - used)].reset_index(drop=True)
+    left = nodes[~nodes["id"].isin(_ends_only_of(edges, drop))].reset_index(drop=True)
     left.attrs = dict(nodes.attrs)
     return left, kept
+
+
+def _ends_only_of(edges, drop):
+    """The nodes that end edges among ``edges`` that ``drop`` marks and no other edge,
+    as an array."""
+    u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
+    ends = np.unique(np.concatenate([u[drop], v[drop]]))
+    return ends[~Int64Set(np.concatenate([u[~drop], v[~drop]])).isin(ends)]
 
 
 def with_platform_filter(read_filter):
@@ -1391,11 +1397,8 @@ def without_lift_area_ways(nodes, edges, lifts):
     drop &= edges["osm_type"] == "way"
     if not drop.any():
         return nodes, edges
-    kept = edges[~drop]
-    ends = np.unique(np.concatenate([edges.loc[drop, "u"], edges.loc[drop, "v"]]))
-    used = Int64Set(np.concatenate([kept["u"].to_numpy(), kept["v"].to_numpy()]))
-    gone = ends[~used.isin(ends)]
-    return nodes[~nodes["id"].isin(gone)], kept
+    gone = _ends_only_of(edges, drop.to_numpy())
+    return nodes[~nodes["id"].isin(gone)], edges[~drop]
 
 
 def concat_with_tag_columns(frames):
@@ -2004,16 +2007,27 @@ def _ways_between_levels(edges, kind):
     ``vertical`` is ``kind`` (lines across areas aside), by the lowest and highest level
     of their edges when these differ, each with the geometry and the summed ``length``
     of its edges."""
-    rows = edges[(edges["vertical"] == kind).to_numpy() & ~_area_lines(edges)]
+    keys = ["osm_type", "id"] if "osm_type" in edges else ["id"]
+    rows = np.flatnonzero((edges["vertical"] == kind).to_numpy() & ~_area_lines(edges))
+    # The ways in the order of their keys, the edges of a way in their order
+    codes = [pd.factorize(edges[key].to_numpy()[rows], sort=True)[0] for key in keys]
+    known = np.logical_and.reduce([code >= 0 for code in codes])
+    order = np.lexsort([code[known] for code in codes[::-1]])
+    rows = rows[known][order]
+    codes = [code[known][order] for code in codes]
+    new_way = np.logical_or.reduce([code[1:] != code[:-1] for code in codes])
+    starts = np.flatnonzero(np.concatenate([[True], new_way])) if len(rows) else []
+    u_level = edges["u_level"].to_numpy(dtype=float)[rows]
+    v_level = edges["v_level"].to_numpy(dtype=float)[rows]
+    lengths = edges["length"].to_numpy(dtype=float)[rows]
+    geometries = edges.geometry.to_numpy()[rows]
     found = {}
-    for _, way in rows.groupby(["osm_type", "id"] if "osm_type" in rows else "id"):
-        levels = np.concatenate(
-            [way["u_level"].to_numpy(dtype=float), way["v_level"].to_numpy(dtype=float)]
-        )
+    for a, b in zip(starts, list(starts[1:]) + [len(rows)]):
+        levels = np.concatenate([u_level[a:b], v_level[a:b]])
         levels = levels[~np.isnan(levels)]
         if len(levels) and levels.min() < levels.max():
             found.setdefault((levels.min(), levels.max()), []).append(
-                (shapely.union_all(way.geometry.to_numpy()), way["length"].sum())
+                (shapely.union_all(geometries[a:b]), np.nansum(lengths[a:b]))
             )
     return found
 
