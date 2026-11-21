@@ -1387,25 +1387,44 @@ def without_lift_area_ways(nodes, edges, lifts):
 
 def concat_with_tag_columns(frames):
     """The rows of ``frames`` in one frame, in which each frame has the columns of the
-    others: those it lacks are filled from its tags (see :func:`_with_tag_columns`)."""
+    others: those it lacks are filled from its tags (see :func:`_with_tag_columns`), in
+    the type the column has in the first frame that has it when the filled values fit
+    that type unchanged (text and float columns), else as objects."""
     columns = [col for frame in frames for col in frame.columns]
-    frames = [_with_tag_columns(frame, columns) for frame in frames]
+    dtypes = {}
+    for frame in frames:
+        for col in frame.columns:
+            dtypes.setdefault(col, frame[col].dtype)
+    frames = [_with_tag_columns(frame, columns, dtypes) for frame in frames]
     return pd.concat(frames, ignore_index=True)
 
 
-def _with_tag_columns(frame, columns):
+def _with_tag_columns(frame, columns, dtypes):
     """``frame`` with those of ``columns`` that it lacks, filled from its tags (see
     :func:`pyrosm.pbf_writer._frame_tags`), so that a tag of the JSON ``tags`` is kept
-    where another frame has a column for it."""
+    where another frame has a column for it. A filled column takes its type in
+    ``dtypes`` when its values fit it unchanged: text for a text column, or no value at
+    all for a float column; the type's missing value then stands for an absent tag."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_key
 
     missing = list(dict.fromkeys(col for col in columns if col not in frame.columns))
     if not missing:
         return frame
     tags = _frame_tags(frame, _frame_tag_columns(frame))
-    return frame.assign(
-        **{col: [row.get(_tag_key(col)) for row in tags] for col in missing}
-    )
+    filled = {}
+    for col in missing:
+        values = pd.Series(
+            [row.get(_tag_key(col)) for row in tags], index=frame.index, dtype=object
+        )
+        dtype = dtypes[col]
+        present = values.dropna()
+        if (
+            isinstance(dtype, pd.StringDtype)
+            and present.map(lambda value: isinstance(value, str)).all()
+        ) or (dtype.kind == "f" and present.empty):
+            values = values.astype(dtype)
+        filled[col] = values
+    return frame.assign(**filled)
 
 
 def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
