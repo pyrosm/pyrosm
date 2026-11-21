@@ -746,12 +746,13 @@ def stair_areas_with_ways(areas, edges):
     rows = np.flatnonzero((edges["osm_type"] == "way").to_numpy() & ~_area_lines(edges))
     if not stair.any() or not len(rows):
         return set()
+    tree = shapely.STRtree(areas.geometry.to_numpy()[stair])
+    # A middle inside an area is in its box, and so is a part of the edge's box
+    rows = rows[np.unique(tree.query(edges.geometry.to_numpy()[rows])[0])]
     middles = shapely.line_interpolate_point(
         edges.geometry.to_numpy()[rows], 0.5, normalized=True
     )
-    inside, area_rows = shapely.STRtree(areas.geometry.to_numpy()[stair]).query(
-        middles, predicate="within"
-    )
+    inside, area_rows = tree.query(middles, predicate="within")
     edge_tags = _frame_tags(edges.iloc[rows[inside]], _frame_tag_columns(edges))
     keys = list(zip(areas["osm_type"][stair], areas["id"][stair]))
     return {
@@ -1021,16 +1022,16 @@ def border_entrances(areas, walls=None, anchors=()):
                 ring if isinstance(ring, (list, np.ndarray)) else None,
             )
         )
-    places, walled = _node_places(spaces, walls, anchors)
-    node_at = {}
-    for node, (x, y) in places.items():
-        key = _coordinate_key(x, y)
-        node_at[key] = None if node_at.get(key, node) != node else node
     meeting, sides = {}, {}
     for key, geometry, ranges, _ in spaces:
         for vertex, next_to in _outline_sides(geometry).items():
             meeting.setdefault(vertex, {})[key] = ranges
             sides.setdefault(vertex, {})[key] = next_to
+    places, walled = _node_places(spaces, walls, anchors, meeting)
+    node_at = {}
+    for node, (x, y) in places.items():
+        key = _coordinate_key(x, y)
+        node_at[key] = None if node_at.get(key, node) != node else node
     rows = []
     for vertex, by_space in meeting.items():
         node = node_at.get(vertex)
@@ -1090,14 +1091,25 @@ def without_clashing_copies(borders, nodes, doors):
         split |= {
             int(door)
             for door, tags in zip(
-                doors["id"], _frame_tags(doors, _frame_tag_columns(doors))
+                doors["id"],
+                _frame_tags(
+                    doors, _frame_tag_columns(doors), only={"highway", "repeat_on"}
+                ),
             )
             if tags.get("highway") == "elevator" or tags.get("repeat_on")
         }
     copy = (borders["id"] != borders["node"]).to_numpy()
-    taken = set(nodes["id"]) | doors_ids | set(borders["id"][~copy])
-    clash = borders["node"].isin(split) | borders["id"].isin(taken)
-    kept = borders[~copy | ~clash.to_numpy()]
+    taken = Int64Set(
+        np.concatenate(
+            [
+                nodes["id"].to_numpy(),
+                np.fromiter(doors_ids, dtype=np.int64),
+                borders["id"].to_numpy()[~copy],
+            ]
+        )
+    )
+    clash = borders["node"].isin(split).to_numpy() | taken.isin(borders["id"])
+    kept = borders[~copy | ~clash]
     return kept if len(kept) else None
 
 
@@ -1227,9 +1239,10 @@ def _one_level(ranges):
     return low if len(set(ranges)) == 1 and low == high else np.nan
 
 
-def _node_places(spaces, walls, anchors):
+def _node_places(spaces, walls, anchors, vertices):
     """``(places, walled)``: ``{node id: (x, y)}``, the places of nodes that the reads
-    tell, and ``{node id: [(level ranges, vertices), ...]}``, for each ``indoor=wall``
+    tell (of the ``anchors``, only of the nodes that are at one of the coordinate keys
+    ``vertices`` there or are on a way of the walls or the spaces), and ``{node id: [(level ranges, vertices), ...]}``, for each ``indoor=wall``
     way among ``walls`` (with ``nodes`` lists) through a node, its levels (None without
     a ``level`` tag) and its vertices next to the node (None when its coordinates do not
     follow its node list). A node of the ``anchors`` (frames with ``id``, ``lon`` and ``lat``, such as
@@ -1253,10 +1266,18 @@ def _node_places(spaces, walls, anchors):
             conflicts.add(node)
         places.setdefault(node, (float(xy[0]), float(xy[1])))
 
-    for frame in anchors:
-        if frame is not None and len(frame):
-            for node, x, y in zip(frame["id"], frame["lon"], frame["lat"]):
-                place(node, (x, y))
+    frames = [frame for frame in anchors if frame is not None and len(frame)]
+    if frames:
+        ids = np.concatenate([frame["id"].to_numpy() for frame in frames])
+        lon = np.concatenate([frame["lon"].to_numpy(dtype=float) for frame in frames])
+        lat = np.concatenate([frame["lat"].to_numpy(dtype=float) for frame in frames])
+        rings = [ring for _, _, _, ring in spaces if ring is not None]
+        if walls is not None and "nodes" in walls.columns:
+            rings += [r for r in walls["nodes"] if isinstance(r, (list, np.ndarray))]
+        at_vertex = Int64Set(_key_codes(vertices)).isin(_coordinate_codes(lon, lat))
+        wanted = Int64Set(np.concatenate([ids[at_vertex], *map(np.asarray, rings)]))
+        for row in np.flatnonzero(wanted.isin(ids)).tolist():
+            place(ids[row], (lon[row], lat[row]))
     if walls is not None and "nodes" in walls.columns:
         wall_tags = _frame_tags(walls, _frame_tag_columns(walls))
         for ring, line, tags in zip(walls["nodes"], walls.geometry, wall_tags):
@@ -1311,6 +1332,22 @@ def _node_places(spaces, walls, anchors):
     return {n: xy for n, xy in places.items() if n not in conflicts}, walled
 
 
+def _coordinate_codes(lon, lat):
+    """The coordinate keys (see :func:`pyrosm.new_elements._coordinate_key`) of the
+    points ``lon``, ``lat`` (arrays), each as one integer (see :func:`_key_codes`)."""
+    key_lat = np.rint(lat * 1e7).astype(np.int64)
+    key_lon = np.rint(lon * 1e7).astype(np.int64)
+    key_lon[key_lon == -1_800_000_000] = 1_800_000_000
+    return (key_lat + 900_000_000) * 3_600_000_001 + (key_lon + 1_800_000_000)
+
+
+def _key_codes(keys):
+    """The coordinate ``keys`` ((latitude, longitude) in 1e-7 degrees each) as integers:
+    one integer per key, the same for the same key."""
+    pairs = np.array(list(keys), dtype=np.int64).reshape(-1, 2)
+    return (pairs[:, 0] + 900_000_000) * 3_600_000_001 + (pairs[:, 1] + 1_800_000_000)
+
+
 def _drawn_direction(candidates, places, conflicts):
     """For a way's nodes with their two places (see :func:`_ring_places`), a function
     that picks each node's place (the one at its position, or the mirrored one) when a
@@ -1355,8 +1392,9 @@ def without_lift_area_ways(nodes, edges, lifts):
     if not drop.any():
         return nodes, edges
     kept = edges[~drop]
-    used = set(kept["u"]) | set(kept["v"])
-    gone = (set(edges.loc[drop, "u"]) | set(edges.loc[drop, "v"])) - used
+    ends = np.unique(np.concatenate([edges.loc[drop, "u"], edges.loc[drop, "v"]]))
+    used = Int64Set(np.concatenate([kept["u"].to_numpy(), kept["v"].to_numpy()]))
+    gone = ends[~used.isin(ends)]
     return nodes[~nodes["id"].isin(gone)], kept
 
 
