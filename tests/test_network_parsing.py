@@ -521,6 +521,75 @@ def test_walking_areas_leave_out_lines_that_shorter_ones_cover(offset, direct):
 
 
 @pytest.mark.parametrize(
+    "outline, holes, extra, statuses",
+    [
+        # An L: lines across the notch leave the area, one passes its inner corner
+        ([(0, 0), (2, 0), (2, 1), (1, 1), (1, 2), (0, 2)], [], [(0.5, 0.5), (0, 1)],
+         {"visible", "hidden", "open"}),
+        ([(0, 0), (4, 0), (4, 4), (0, 4)], [[(1, 1), (3, 1), (3, 3), (1, 3)]], [],
+         {"visible", "hidden"}),
+        # A bow tie is not a valid polygon: shapely decides every pair
+        ([(0, 0), (2, 2), (2, 0), (0, 2)], [], [], set()),
+    ],
+)
+def test_walking_area_visibility_matches_shapely(
+    outline, holes, extra, statuses, monkeypatch
+):
+    """The pairs of points (corners and other points, in units of 1e-4 degrees) that a
+    straight line inside a walking area joins are those whose line the area, widened by
+    the tolerance, covers; the fast test decides the pairs it can (``statuses``) and
+    leaves the rest to shapely."""
+    import shapely
+    from shapely.geometry import Polygon
+
+    from pyrosm import _area_crossings, walking_areas
+
+    def lonlat(xy):
+        return 24.9 + xy[0] * 1e-4, 60.2 + xy[1] * 1e-4
+
+    polygon = Polygon(list(map(lonlat, outline)), [list(map(lonlat, h)) for h in holes])
+    points = np.array([lonlat(xy) for xy in outline + sum(holes, []) + extra])
+    seen = set()
+    names = {
+        _area_crossings.VISIBLE: "visible",
+        _area_crossings.HIDDEN: "hidden",
+        _area_crossings.OPEN: "open",
+    }
+
+    def recording(*args):
+        status = _area_crossings.visibility(*args)
+        seen.update(names[s] for s in status)
+        return status
+
+    monkeypatch.setattr(walking_areas, "visibility", recording)
+    first, second = walking_areas._visible_pairs(polygon, points)
+
+    a, b = np.triu_indices(len(points), 1)
+    widened = shapely.buffer(polygon, walking_areas._TOLERANCE, join_style="mitre")
+    lines = shapely.linestrings(np.stack([points[a], points[b]], axis=1))
+    inside = shapely.covers(widened, lines)
+    assert list(zip(first, second)) == list(zip(a[inside], b[inside]))
+    assert 0 < inside.sum() < len(inside)
+    assert seen == statuses
+
+
+def test_walking_area_entrances_passed():
+    """A path counts the points within the tolerance (1e-9 degrees) of it, its two ends
+    included: of points 0.3e-9, 0.9e-9, 1.5e-9 and 3e-9 degrees off its middle, the first
+    two."""
+    from pyrosm import walking_areas
+
+    offsets = [0.3e-9, 0.9e-9, 1.5e-9, 3e-9]
+    points = np.array(
+        [(24.9, 60.2), (24.9001, 60.2)] + [(24.90005, 60.2 + d) for d in offsets]
+    )
+    passed = walking_areas._entrances_passed(
+        points, len(points), np.array([0, 2], dtype=np.intp), np.array([0, 1])
+    )
+    assert passed.tolist() == [4]
+
+
+@pytest.mark.parametrize(
     "end_tags, area_tags, joined",
     [
         ({}, {}, True),

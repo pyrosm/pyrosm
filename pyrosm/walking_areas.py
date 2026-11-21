@@ -23,7 +23,6 @@ edges of shorter pairs already join it along a route at most :data:`MAX_ROUTE_ST
 times as long, so that an area with many entrances does not get an edge for every pair.
 """
 
-import heapq
 import math
 
 import numpy as np
@@ -32,6 +31,15 @@ import shapely
 from geopandas import GeoDataFrame
 from rapidjson import dumps
 
+from pyrosm._area_crossings import (
+    OPEN,
+    VISIBLE,
+    entrance_paths,
+    entrances_passed,
+    shortest_paths,
+    spanning_pairs,
+    visibility,
+)
 from pyrosm.distance import calculate_line_lengths
 from pyrosm.levels import level_ranges, tag_layer
 from pyrosm.new_elements import _coordinate_key, _query_pairs
@@ -749,7 +757,7 @@ def _part_crossings(polygon, entrances):
     inside the polygon joins get an edge. A pair whose line passes another entrance gets
     no edge: the edges to and from that entrance cover it. Nor does a pair that the edges
     of shorter pairs already join within :data:`MAX_ROUTE_STRETCH` times its length (see
-    :func:`_spanning_pairs`)."""
+    :func:`pyrosm._area_crossings.spanning_pairs`)."""
     if len(entrances) < 2:
         return []
     points = np.array([(x, y) for x, y, _ in entrances.values()])
@@ -763,104 +771,89 @@ def _part_crossings(polygon, entrances):
     if count + len(corners) <= MAX_VISIBILITY_POINTS:
         if corners:
             points = np.vstack([points, corners])
-        step, distance = _shortest_paths(
-            points, *_visible_pairs(polygon, points), scale
-        )
-        pairs, paths, lengths = [], [], []
-        for a in range(count):
-            for b in range(a + 1, count):
-                if step[a, b] >= 0:
-                    path = [a]
-                    while path[-1] != b:
-                        path.append(step[path[-1], b])
-                    pairs.append((a, b))
-                    paths.append(path)
-                    lengths.append(distance[a, b])
-    else:
-        pairs = list(zip(*_visible_pairs(polygon, points)))
-        paths = [list(pair) for pair in pairs]
+        first, second = _visible_pairs(polygon, points)
         plane = points * [scale, 1.0]
-        lengths = [float(np.hypot(*(plane[a] - plane[b]))) for a, b in pairs]
-    if not pairs:
+        length = np.hypot(*(plane[first] - plane[second]).T)
+        step, distance = shortest_paths(len(points), first, second, length, 1 - 1e-12)
+        first, second, lengths, offsets, path = entrance_paths(step, distance, count)
+    else:
+        first, second = _visible_pairs(polygon, points)
+        plane = points * [scale, 1.0]
+        lengths = np.array(
+            [float(np.hypot(*(plane[a] - plane[b]))) for a, b in zip(first, second)]
+        )
+        offsets = np.arange(0, 2 * len(first) + 1, 2, dtype=np.intp)
+        path = np.column_stack([first, second]).ravel()
+    if not len(first):
         return []
+    candidates = np.flatnonzero(_entrances_passed(points, count, offsets, path) == 2)
+    order = candidates[np.argsort(lengths[candidates], kind="stable")]
+    kept = spanning_pairs(len(points), first, second, lengths, order, MAX_ROUTE_STRETCH)
+    sizes = offsets[kept + 1] - offsets[kept]
+    rows = np.repeat(offsets[kept] - (np.cumsum(sizes) - sizes), sizes)
     lines = shapely.linestrings(
-        points[np.concatenate(paths)],
-        indices=np.repeat(np.arange(len(paths)), [len(path) for path in paths]),
+        points[path[rows + np.arange(sizes.sum())]],
+        indices=np.repeat(np.arange(len(kept)), sizes),
     )
-    passed = shapely.dwithin(
-        lines[:, None], shapely.points(points[:count])[None, :], _TOLERANCE
-    ).sum(axis=1)
     node_ids = [ids for _, _, ids in entrances.values()]
-    kept = _spanning_pairs(pairs, lengths, passed == 2)
     return [
-        (u, v, lines[i])
-        for i in kept
-        for u in node_ids[pairs[i][0]]
-        for v in node_ids[pairs[i][1]]
+        (u, v, lines[k])
+        for k, i in enumerate(kept)
+        for u in node_ids[first[i]]
+        for v in node_ids[second[i]]
     ]
 
 
-def _spanning_pairs(pairs, lengths, candidates):
-    """The indices of the ``pairs`` of entrances (``(a, b)``, the shortest line between
-    them ``lengths`` long) that get an edge, of those ``candidates`` marks, in their
-    order: taken shortest first, a pair is left out when the pairs kept before it already
-    join its two entrances within :data:`MAX_ROUTE_STRETCH` times its length."""
-    adjacent, kept = {}, []
-    for i in sorted(np.flatnonzero(candidates), key=lambda i: lengths[i]):
-        (a, b), length = pairs[i], lengths[i]
-        if not _joined_within(adjacent, a, b, MAX_ROUTE_STRETCH * length):
-            adjacent.setdefault(a, []).append((b, length))
-            adjacent.setdefault(b, []).append((a, length))
-            kept.append(i)
-    return sorted(kept)
-
-
-def _joined_within(adjacent, start, end, bound):
-    """Whether the edges ``adjacent`` (``{entrance: [(entrance, length), ...]}``) join
-    ``start`` to ``end`` along a route at most ``bound`` long."""
-    best = {start: 0.0}
-    queue = [(0.0, start)]
-    while queue:
-        distance, at = heapq.heappop(queue)
-        if at == end:
-            return True
-        if distance > best[at]:
-            continue
-        for to, length in adjacent.get(at, ()):
-            through = distance + length
-            if through <= bound and through < best.get(to, math.inf):
-                best[to] = through
-                heapq.heappush(queue, (through, to))
-    return False
+def _entrances_passed(points, count, offsets, path):
+    """How many of the first ``count`` ``points`` (lon/lat) lie within the tolerance of
+    each path through ``points`` (``path[offsets[i]:offsets[i + 1]]``), its two ends
+    included."""
+    passed, undecided = entrances_passed(
+        np.ascontiguousarray(points, dtype=float), count, offsets, path, _TOLERANCE
+    )
+    entrances = shapely.points(points[:count])
+    for i in np.flatnonzero(undecided):
+        line = shapely.LineString(points[path[offsets[i] : offsets[i + 1]]])
+        passed[i] = int(shapely.dwithin(line, entrances, _TOLERANCE).sum())
+    return passed
 
 
 def _visible_pairs(polygon, points):
     """The pairs ``(first, second)`` of indices of ``points`` (lon/lat), ``first`` below
-    ``second``, that a straight line inside ``polygon`` joins."""
+    ``second``, that a straight line inside ``polygon`` joins (by
+    :func:`shapely.covers` on the polygon widened by the tolerance, which is asked only
+    where :func:`pyrosm._area_crossings.visibility` leaves a pair open)."""
     first, second = np.triu_indices(len(points), 1)
-    lines = shapely.linestrings(np.stack([points[first], points[second]], axis=1))
-    widened = shapely.buffer(polygon, _TOLERANCE, join_style="mitre")
-    shapely.prepare(widened)
-    inside = shapely.covers(widened, lines)
+    if shapely.is_valid(polygon):
+        rings = _oriented_rings(polygon)
+        vertices = np.ascontiguousarray(np.vstack(rings), dtype=float)
+        sizes = [len(ring) for ring in rings]
+        starts = np.repeat(np.cumsum([0] + sizes[:-1]), sizes)
+        ends = np.repeat(np.cumsum(sizes), sizes)
+        index = np.arange(len(vertices))
+        following = np.where(index + 1 < ends, index + 1, starts).astype(np.intp)
+        preceding = np.where(index > starts, index - 1, ends - 1).astype(np.intp)
+        at = {}
+        for k, xy in enumerate(map(tuple, vertices)):
+            at[xy] = -1 if xy in at else k
+        point_vertex = np.array([at.get(tuple(xy), -1) for xy in points], dtype=np.intp)
+        status = visibility(
+            vertices,
+            following,
+            preceding,
+            np.ascontiguousarray(points, dtype=float),
+            point_vertex,
+        )
+        inside = status == VISIBLE
+        open_pairs = np.flatnonzero(status == OPEN)
+    else:
+        inside = np.zeros(len(first), dtype=bool)
+        open_pairs = np.arange(len(first))
+    if len(open_pairs):
+        lines = shapely.linestrings(
+            np.stack([points[first[open_pairs]], points[second[open_pairs]]], axis=1)
+        )
+        widened = shapely.buffer(polygon, _TOLERANCE, join_style="mitre")
+        shapely.prepare(widened)
+        inside[open_pairs] = shapely.covers(widened, lines)
     return first[inside], second[inside]
-
-
-def _shortest_paths(points, first, second, scale):
-    """The shortest paths between ``points`` (lon/lat) over the straight lines between the
-    pairs ``first``, ``second``, measured with longitudes multiplied by ``scale``, as
-    ``(step, distance)``: ``step[i, j]`` is the point after ``i`` on the way to ``j``, -1
-    where no path joins them, and ``distance[i, j]`` the path's length (infinite there).
-    """
-    n = len(points)
-    plane = points * [scale, 1.0]
-    length = np.hypot(*(plane[first] - plane[second]).T)
-    distance = np.full((n, n), np.inf)
-    np.fill_diagonal(distance, 0.0)
-    distance[first, second] = distance[second, first] = length
-    step = np.tile(np.arange(n), (n, 1))
-    for k in range(n):
-        through = distance[:, k : k + 1] + distance[k : k + 1, :]
-        shorter = through < distance * (1 - 1e-12)
-        distance = np.where(shorter, through, distance)
-        step = np.where(shorter, step[:, k : k + 1], step)
-    return np.where(np.isfinite(distance), step, -1), distance
