@@ -324,29 +324,62 @@ cdef class _Outline:
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
+def ring_links(const Py_ssize_t[::1] sizes):
+    """``(following, preceding)``: for each vertex of rings of ``sizes`` vertices,
+    stored one ring after another, the vertex after it and the vertex before it in its
+    ring."""
+    cdef Py_ssize_t total = 0, r, k, start
+    for r in range(sizes.shape[0]):
+        total += sizes[r]
+    following_arr = np.empty(total, dtype=np.intp)
+    preceding_arr = np.empty(total, dtype=np.intp)
+    cdef Py_ssize_t[::1] following = following_arr
+    cdef Py_ssize_t[::1] preceding = preceding_arr
+    start = 0
+    for r in range(sizes.shape[0]):
+        for k in range(start, start + sizes[r]):
+            following[k] = k + 1 if k + 1 < start + sizes[r] else start
+            preceding[k] = k - 1 if k > start else start + sizes[r] - 1
+        start += sizes[r]
+    return following_arr, preceding_arr
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
 def visibility(
     double[:, ::1] vertices,
     Py_ssize_t[::1] following,
     Py_ssize_t[::1] preceding,
     const double[:, ::1] points,
-    const Py_ssize_t[::1] point_vertex,
 ):
     """For each pair of ``points`` (``i < j``, in the order of ``np.triu_indices``),
     whether the straight line between them lies inside a valid polygon: ``VISIBLE``,
     ``HIDDEN``, or ``OPEN`` where rounding leaves it open. The polygon's rings are the
     ``vertices``, each ring with the area on its left, ``following[k]`` and
-    ``preceding[k]`` the vertices next to ``k`` in its ring; ``point_vertex[i]`` is the
-    vertex at point ``i`` (-1 for a point at no vertex)."""
+    ``preceding[k]`` the vertices next to ``k`` in its ring (see :func:`ring_links`). A
+    point counts as at a vertex when exactly one vertex has its coordinates."""
     cdef _Outline outline = _Outline(vertices, following, preceding)
-    cdef Py_ssize_t n = points.shape[0]
-    cdef Py_ssize_t i, j, end, pair = 0, vi, vj
+    cdef Py_ssize_t n = points.shape[0], m = vertices.shape[0]
+    cdef Py_ssize_t i, j, k, end, pair = 0, vi, vj
     cdef double px, py, qx, qy
     cdef int status, leaving
     status_arr = np.empty(n * (n - 1) // 2, dtype=np.uint8)
     clear_arr = np.empty(n, dtype=np.uint8)
+    point_vertex_arr = np.full(n, -1, dtype=np.intp)
     cdef unsigned char[::1] statuses = status_arr
     cdef unsigned char[::1] clear = clear_arr
+    cdef Py_ssize_t[::1] point_vertex = point_vertex_arr
     with nogil:
+        # The vertex at each point: -1 at none, or where several vertices are there
+        for i in range(n):
+            for k in range(m):
+                if vertices[k, 0] == points[i, 0] and vertices[k, 1] == points[i, 1]:
+                    if point_vertex[i] == -1:
+                        point_vertex[i] = k
+                    else:
+                        point_vertex[i] = -2
+            if point_vertex[i] == -2:
+                point_vertex[i] = -1
         # A point at no vertex counts only when it lies inside, clear of the rings
         for i in range(n):
             clear[i] = (

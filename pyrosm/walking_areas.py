@@ -36,6 +36,7 @@ from pyrosm._area_crossings import (
     VISIBLE,
     entrance_paths,
     entrances_passed,
+    ring_links,
     shortest_paths,
     spanning_pairs,
     visibility,
@@ -43,7 +44,12 @@ from pyrosm._area_crossings import (
 from pyrosm.distance import calculate_line_lengths
 from pyrosm.int64_hash import Int64Set
 from pyrosm.levels import level_ranges, tag_layer
-from pyrosm.new_elements import _coordinate_key, _query_pairs
+from pyrosm.new_elements import (
+    _coordinate_codes,
+    _coordinate_key,
+    _key_codes,
+    _query_pairs,
+)
 from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_key
 
 # An area with more entrances and inward corners than this gets edges only between the
@@ -170,9 +176,13 @@ def crossing_rows(
     dead_end = Int64Set(end_ids[counts == 1]).isin(ids)
 
     geometries = areas.geometry.to_numpy()
-    area_rows, node_rows = shapely.STRtree(shapely.points(lon, lat)).query(
+    near = _rows_in_boxes(lon, lat, shapely.bounds(geometries))
+    area_rows, node_rows = shapely.STRtree(shapely.points(lon[near], lat[near])).query(
         geometries, predicate="intersects"
     )
+    # In the order of the areas and the nodes, whatever the tree's order
+    order = np.lexsort((near[node_rows], area_rows))
+    area_rows, node_rows = area_rows[order], near[node_rows][order]
     if door_areas is not None:
         door = ~on_edges.isin(ids)
         keep = ~door[node_rows] | np.asarray(door_areas, dtype=bool)[area_rows]
@@ -307,6 +317,22 @@ def crossing_rows(
     if not found:
         return None
     return area_edge_rows(areas, found, edges)
+
+
+def _rows_in_boxes(lon, lat, boxes):
+    """The rows of the points ``lon``, ``lat`` that lie in one of the ``boxes`` (rows of
+    ``minx, miny, maxx, maxy``, edges included), ascending."""
+    order = np.argsort(lon, kind="stable")
+    ordered = lon[order]
+    found = np.zeros(len(lon), dtype=bool)
+    for minx, miny, maxx, maxy in boxes:
+        rows = order[
+            np.searchsorted(ordered, minx, side="left") : np.searchsorted(
+                ordered, maxx, side="right"
+            )
+        ]
+        found[rows[(lat[rows] >= miny) & (lat[rows] <= maxy)]] = True
+    return np.flatnonzero(found)
 
 
 def _floor_steps(entrances, repeated, positions):
@@ -756,18 +782,16 @@ def _oriented_rings(polygon):
     return [np.asarray(ring.coords)[:-1, :2] for ring in rings]
 
 
-def _inward_corners(rings, scale):
-    """The vertices of a polygon (its ``rings``, see :func:`_oriented_rings`) where its
-    outline or a hole turns away from the area: where the area's angle is over 180
-    degrees. ``scale`` multiplies longitudes, so the turns are measured in a plane true
-    to the area's latitude."""
-    corners = []
-    for ring in rings:
-        x, y = ring[:, 0] * scale, ring[:, 1]
-        dx_in, dy_in = x - np.roll(x, 1), y - np.roll(y, 1)
-        dx_out, dy_out = np.roll(x, -1) - x, np.roll(y, -1) - y
-        corners.append(ring[dx_in * dy_out - dy_in * dx_out < 0])
-    return np.concatenate(corners)
+def _inward_corners(vertices, following, preceding, scale):
+    """Whether each of the ``vertices`` of a polygon's rings (see
+    :func:`pyrosm._area_crossings.ring_links` for ``following`` and ``preceding``) is a
+    vertex where its outline or a hole turns away from the area: where the area's angle
+    is over 180 degrees. ``scale`` multiplies longitudes, so the turns are measured in a
+    plane true to the area's latitude."""
+    x, y = vertices[:, 0] * scale, vertices[:, 1]
+    dx_in, dy_in = x - x[preceding], y - y[preceding]
+    dx_out, dy_out = x[following] - x, y[following] - y
+    return dx_in * dy_out - dy_in * dx_out < 0
 
 
 def _part_crossings(polygon, entrances):
@@ -784,21 +808,23 @@ def _part_crossings(polygon, entrances):
     count = len(points)
     scale = math.cos(math.radians(points[:, 1].mean()))
     rings = _oriented_rings(polygon)
-    corners = [
-        xy
-        for xy in _inward_corners(rings, scale)
-        if _coordinate_key(*xy) not in entrances
+    vertices = np.ascontiguousarray(np.vstack(rings), dtype=float)
+    following, preceding = ring_links(np.array([len(r) for r in rings], dtype=np.intp))
+    corners = vertices[_inward_corners(vertices, following, preceding, scale)]
+    corners = corners[
+        ~np.isin(_coordinate_codes(corners[:, 0], corners[:, 1]), _key_codes(entrances))
     ]
+    outline = (vertices, following, preceding)
     if count + len(corners) <= MAX_VISIBILITY_POINTS:
-        if corners:
+        if len(corners):
             points = np.vstack([points, corners])
-        first, second = _visible_pairs(polygon, points, rings)
+        first, second = _visible_pairs(polygon, points, outline)
         plane = points * [scale, 1.0]
         length = np.hypot(*(plane[first] - plane[second]).T)
         step, distance = shortest_paths(len(points), first, second, length, 1 - 1e-12)
         first, second, lengths, offsets, path = entrance_paths(step, distance, count)
     else:
-        first, second = _visible_pairs(polygon, points, rings)
+        first, second = _visible_pairs(polygon, points, outline)
         plane = points * [scale, 1.0]
         lengths = np.array(
             [float(np.hypot(*(plane[a] - plane[b]))) for a, b in zip(first, second)]
@@ -839,32 +865,17 @@ def _entrances_passed(points, count, offsets, path):
     return passed
 
 
-def _visible_pairs(polygon, points, rings):
+def _visible_pairs(polygon, points, outline):
     """The pairs ``(first, second)`` of indices of ``points`` (lon/lat), ``first`` below
-    ``second``, that a straight line inside ``polygon`` (its ``rings``, see
-    :func:`_oriented_rings`) joins (by
+    ``second``, that a straight line inside ``polygon`` joins (by
     :func:`shapely.covers` on the polygon widened by the tolerance, which is asked only
-    where :func:`pyrosm._area_crossings.visibility` leaves a pair open)."""
+    where :func:`pyrosm._area_crossings.visibility` leaves a pair open). ``outline`` holds
+    the polygon's ring vertices (see :func:`_oriented_rings`), one ring after another,
+    and the vertex after and before each (see
+    :func:`pyrosm._area_crossings.ring_links`)."""
     first, second = np.triu_indices(len(points), 1)
     if shapely.is_valid(polygon):
-        vertices = np.ascontiguousarray(np.vstack(rings), dtype=float)
-        sizes = [len(ring) for ring in rings]
-        starts = np.repeat(np.cumsum([0] + sizes[:-1]), sizes)
-        ends = np.repeat(np.cumsum(sizes), sizes)
-        index = np.arange(len(vertices))
-        following = np.where(index + 1 < ends, index + 1, starts).astype(np.intp)
-        preceding = np.where(index > starts, index - 1, ends - 1).astype(np.intp)
-        at = {}
-        for k, xy in enumerate(map(tuple, vertices)):
-            at[xy] = -1 if xy in at else k
-        point_vertex = np.array([at.get(tuple(xy), -1) for xy in points], dtype=np.intp)
-        status = visibility(
-            vertices,
-            following,
-            preceding,
-            np.ascontiguousarray(points, dtype=float),
-            point_vertex,
-        )
+        status = visibility(*outline, np.ascontiguousarray(points, dtype=float))
         inside = status == VISIBLE
         open_pairs = np.flatnonzero(status == OPEN)
     else:

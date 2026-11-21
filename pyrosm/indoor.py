@@ -1261,7 +1261,7 @@ def _node_places(spaces, walls, anchors, vertices):
     known at just one of its two places is drawn in that direction, which gives the
     place of each of its nodes. A way whose node list does not match its outline tells
     nothing, and a node with places that disagree has none."""
-    from pyrosm.new_elements import _coordinate_key
+    from pyrosm.new_elements import _coordinate_codes, _coordinate_key, _key_codes
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     places, conflicts, walled = {}, set(), {}
@@ -1336,22 +1336,6 @@ def _node_places(spaces, walls, anchors, vertices):
             for node, pair in candidates:
                 place(node, side(pair))
     return {n: xy for n, xy in places.items() if n not in conflicts}, walled
-
-
-def _coordinate_codes(lon, lat):
-    """The coordinate keys (see :func:`pyrosm.new_elements._coordinate_key`) of the
-    points ``lon``, ``lat`` (arrays), each as one integer (see :func:`_key_codes`)."""
-    key_lat = np.rint(lat * 1e7).astype(np.int64)
-    key_lon = np.rint(lon * 1e7).astype(np.int64)
-    key_lon[key_lon == -1_800_000_000] = 1_800_000_000
-    return (key_lat + 900_000_000) * 3_600_000_001 + (key_lon + 1_800_000_000)
-
-
-def _key_codes(keys):
-    """The coordinate ``keys`` ((latitude, longitude) in 1e-7 degrees each) as integers:
-    one integer per key, the same for the same key."""
-    pairs = np.array(list(keys), dtype=np.int64).reshape(-1, 2)
-    return (pairs[:, 0] + 900_000_000) * 3_600_000_001 + (pairs[:, 1] + 1_800_000_000)
 
 
 def _drawn_direction(candidates, places, conflicts):
@@ -2071,7 +2055,7 @@ def _lift_area_entrances(lifts, nodes, edges):
     :func:`pyrosm.walking_areas._entrances`); a level counts when the area's ``level``
     tag lists it, or any level when the area has none."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
-    from pyrosm.walking_areas import _entrances
+    from pyrosm.walking_areas import _entrances, _rows_in_boxes
 
     ids = nodes["id"].to_numpy()
     lon = nodes["lon"].to_numpy(dtype=float)
@@ -2107,22 +2091,6 @@ def _lift_area_entrances(lifts, nodes, edges):
             parts.append((part, at))
         found[int(area)] = parts
     return found
-
-
-def _rows_in_boxes(lon, lat, boxes):
-    """The rows of the points ``lon``, ``lat`` that lie in one of the ``boxes`` (rows of
-    ``minx, miny, maxx, maxy``, edges included), ascending."""
-    order = np.argsort(lon, kind="stable")
-    ordered = lon[order]
-    found = [np.empty(0, dtype=np.intp)]
-    for minx, miny, maxx, maxy in boxes:
-        rows = order[
-            np.searchsorted(ordered, minx, side="left") : np.searchsorted(
-                ordered, maxx, side="right"
-            )
-        ]
-        found.append(rows[(lat[rows] >= miny) & (lat[rows] <= maxy)])
-    return np.unique(np.concatenate(found))
 
 
 def _line_inside(polygon, start, end):
