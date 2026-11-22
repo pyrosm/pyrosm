@@ -565,7 +565,9 @@ def test_walking_area_visibility_matches_shapely(
     rings = walking_areas._oriented_rings(polygon)
     links = _area_crossings.ring_links(np.array([len(r) for r in rings], dtype=np.intp))
     outline = (np.ascontiguousarray(np.vstack(rings)), *links)
-    first, second = walking_areas._visible_pairs(polygon, points, outline)
+    first, second = walking_areas._visible_pairs(
+        np.array([polygon], dtype=object), [points], [outline]
+    )[0]
 
     a, b = np.triu_indices(len(points), 1)
     widened = shapely.buffer(polygon, walking_areas._TOLERANCE, join_style="mitre")
