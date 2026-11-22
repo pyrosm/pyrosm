@@ -498,15 +498,15 @@ def shared_decode_for_keys(filepath, osm_key_bytes, bbox_bounds=None, unix_time=
     ``bbox_bounds`` and the time ``unix_time`` of the block and every tag kept, decode
     the file once between them: the first such read decodes it for all these keys, with
     the point features and every way's node refs, and the others collect from that
-    decode. The decode is removed when the block ends."""
+    decode. The decode's temp dir is removed when the block ends."""
     shared = _SharedDecode(filepath, osm_key_bytes, bbox_bounds, unix_time)
+    shared.shard_dir = tempfile.mkdtemp(prefix="pyrosm_ooc_")
     token = _SHARED_DECODE.set(shared)
     try:
         yield
     finally:
         _SHARED_DECODE.reset(token)
-        if shared.shard_dir is not None:
-            shutil.rmtree(shared.shard_dir, ignore_errors=True)
+        shutil.rmtree(shared.shard_dir, ignore_errors=True)
 
 
 def _decode_and_run(
@@ -539,8 +539,6 @@ def _decode_and_run(
     ):
         if shared.shard_paths is None:
             before = cache.source_identity(filepath)
-            if shared.shard_dir is None:
-                shared.shard_dir = tempfile.mkdtemp(prefix="pyrosm_ooc_")
             shared.shard_paths, shared.workers = _decode_to_shards(
                 shared.shard_dir,
                 filepath,
