@@ -2167,6 +2167,20 @@ def test_engine_shared_decode_reads_like_separate_decodes(
     for mine, ref in zip(shared + [changed], separate + [separate[1]]):
         assert_geodataframe_equal(mine, ref)
 
+    # A file that changes while the shared decode runs leaves it to the read that made it
+    def touching(*args):
+        shards = real(*args)
+        os.utime(pbf, ns=(pbf.stat().st_atime_ns, pbf.stat().st_mtime_ns + 10**9))
+        decodes.append(args[2])
+        return shards
+
+    decodes.clear()
+    monkeypatch.setattr(pool, "_decode_to_shards", touching)
+    with shared_decode(pbf, [f for f, _ in reads[:2]]):
+        for f, kw in reads[:2]:
+            get_data_by_custom_criteria(pbf, f, **kw)
+    assert decodes == [[b"amenity", b"shop"], [b"shop"]]
+
 
 def test_osm_list_and_clear_cache_per_file_and_all(test_pbf, helsinki_pbf, fresh_cache):
     # OSM.list_cache reflects what each out-of-core read cached; OSM.clear_cache(filepath)
