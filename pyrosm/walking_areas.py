@@ -50,7 +50,7 @@ from pyrosm.new_elements import (
     _key_codes,
     _query_pairs,
 )
-from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_key
+from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _rows_tags, _tag_key
 
 # An area with more entrances and inward corners than this gets edges only between the
 # entrances that a straight line inside it joins.
@@ -471,14 +471,9 @@ def _loose_stair_ends(edges, ids, dead_end):
     v = edges["v"].to_numpy()
     ends = Int64Set(ids[dead_end])
     rows = np.flatnonzero(ends.isin(u) | ends.isin(v))
-    subset = edges.iloc[rows]
     steps = [
         node
-        for a, b, tags in zip(
-            u[rows],
-            v[rows],
-            _frame_tags(subset, _frame_tag_columns(subset), only={"highway"}),
-        )
+        for a, b, tags in zip(u[rows], v[rows], _rows_tags(edges, rows, {"highway"}))
         if tags.get("highway") == "steps"
         for node in (a, b)
     ]
@@ -583,16 +578,12 @@ def _entrance_positions(edges, node_ids, dead_ends, own_levels):
     v = edges["v"].to_numpy()
     in_areas = Int64Set(node_ids)
     rows = np.flatnonzero(in_areas.isin(u) | in_areas.isin(v))
-    subset = edges.iloc[rows]
     wanted = set(np.asarray(node_ids).tolist())
     ends = set(np.asarray(dead_ends).tolist())
-    way_ids = subset["id"].to_numpy() if "id" in subset.columns else rows
+    way_ids = edges["id"].to_numpy()[rows] if "id" in edges.columns else rows
     single, other, sides, open_ends, stair_ways = {}, {}, {}, {}, {}
     for a, b, way, tags in zip(
-        u[rows],
-        v[rows],
-        way_ids,
-        _frame_tags(subset, _frame_tag_columns(subset), only=_POSITION_TAG_KEYS),
+        u[rows], v[rows], way_ids, _rows_tags(edges, rows, _POSITION_TAG_KEYS)
     ):
         ranges, side = _level_position(tags)
         vertical = is_vertical(tags)

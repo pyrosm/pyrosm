@@ -223,6 +223,17 @@ def _frame_tags(gdf, tag_cols, only=None):
     return tags
 
 
+def _rows_tags(gdf, rows, only=None):
+    """``_frame_tags(gdf.iloc[rows], _frame_tag_columns(gdf), only)``, with only the
+    columns it reads taken from the rows: the tag columns (with ``only``, those of its
+    keys) and ``tags``."""
+    tag_cols = _frame_tag_columns(gdf)
+    if only is not None:
+        tag_cols = [col for col in tag_cols if _tag_key(col) in only]
+    read = tag_cols + (["tags"] if "tags" in gdf.columns else [])
+    return _frame_tags(gdf[read].iloc[rows], tag_cols, only)
+
+
 def _key_escapes(names):
     """A pattern of the JSON escapes with which one of the keys ``names`` can be
     spelled in other characters than those of ``json.dumps(name, ensure_ascii=False)``:
