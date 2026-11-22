@@ -230,12 +230,14 @@ def _get_layer(
 
 @contextlib.contextmanager
 def shared_decode(filepath, custom_filters, bounding_box=None, unix_time=None):
-    """Within the block, the layer reads of ``filepath`` with ``filter_type="keep"`` and
-    one of ``custom_filters`` (dicts), the box ``bounding_box`` and the time
-    ``unix_time`` (see :func:`get_data_by_custom_criteria`) decode the file once between
-    them (see :func:`pyrosm.engine.pool.shared_decode_for_keys`): such a read keeps only
-    elements with one of its filter keys, so it selects the same elements from a decode
-    for all the filters' keys."""
+    """Within the block, the reads of ``filepath`` with the box ``bounding_box`` and
+    the time ``unix_time`` that keep what a value filter with keys among those of
+    ``custom_filters`` (dicts) passes, layer reads (see
+    :func:`get_data_by_custom_criteria`) and network reads (see :func:`get_network`),
+    decode the file once between them (see
+    :func:`pyrosm.engine.pool.shared_decode_for_keys`): such a read keeps only elements
+    with one of its filter keys, so it selects the same elements from a decode for all
+    the filters' keys."""
     keys = set()
     for custom_filter in custom_filters:
         data_filter, osm_keys = parse_custom_filter(custom_filter)
@@ -904,8 +906,10 @@ def _decode_network(
     """``assemble(shard_paths, steps)`` over the ways of ``filepath`` with the keys of
     ``filter_spec`` (see :func:`_network_spec`), decoded as
     :func:`~pyrosm.engine.pool._decode_and_run` does with ``workers``, ``steps`` and
-    ``unix_time``.
+    ``unix_time``. A read that keeps the ways its value filter passes, which have one
+    of its keys, can take them from a shared decode (see :func:`shared_decode`).
     """
+    _, data_filter, filter_type = filter_spec
     return _decode_and_run(
         filepath,
         [_key_bytes(k) for k in filter_spec[0]],
@@ -916,6 +920,7 @@ def _decode_network(
         steps=steps,
         spill_all_ways=False,
         unix_time=unix_time,
+        shareable=filter_type == "keep" and data_filter is not None,
     )
 
 

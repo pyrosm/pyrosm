@@ -957,12 +957,12 @@ class OSM:
         shared_paths,
         timestamp,
     ):
-        """For an out-of-core read with ``indoor_elements``, a block in which its layer
+        """For an out-of-core read with ``indoor_elements``, a block in which its other
         reads (its walking areas with ``walking_areas``, see
-        :meth:`_walking_area_polygons`; its indoor areas, lift areas, walls and doors,
-        see :meth:`_with_indoor_areas`) decode the file once between them (see
-        :func:`pyrosm.engine.readers.shared_decode`); a block that does nothing for any
-        other read."""
+        :meth:`_walking_area_polygons`; its platforms; its indoor areas, lift areas,
+        walls and doors, see :meth:`_with_indoor_areas`) decode the file once between
+        them (see :func:`pyrosm.engine.readers.shared_decode`); a block that does
+        nothing for any other read."""
         if not indoor_elements or not self._use_engine():
             return contextlib.nullcontext()
         from pyrosm.engine.readers import shared_decode

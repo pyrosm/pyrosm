@@ -451,7 +451,7 @@ def _decode_threads(tasks, workers, settings, progress):
 
 
 class _SharedDecode:
-    """The decode of one file for the keys of several layer reads (see
+    """The decode of one file for the keys of several reads (see
     :func:`shared_decode_for_keys`): made by the first of them that decodes, kept until
     the block ends."""
 
@@ -493,7 +493,7 @@ _SHARED_DECODE = contextvars.ContextVar("pyrosm_shared_decode", default=None)
 
 @contextlib.contextmanager
 def shared_decode_for_keys(filepath, osm_key_bytes, bbox_bounds=None, unix_time=None):
-    """Within the block, the layer reads of ``filepath`` (``_decode_and_run(...,
+    """Within the block, the reads of ``filepath`` (``_decode_and_run(...,
     shareable=True)``) whose filter keys are among ``osm_key_bytes``, with the box
     ``bbox_bounds`` and the time ``unix_time`` of the block and every tag kept, decode
     the file once between them: the first such read decodes it for all these keys, with
@@ -525,8 +525,8 @@ def _decode_and_run(
     """Index + parallel-decode ``filepath`` into a temp shard dir, call
     ``run(shard_paths, steps)`` in this process and clean up. The shared front half of
     every public read. ``unix_time`` (seconds), for a history file, reads each element's
-    version at that time. A ``shareable`` read (a layer read, whose collect selects its
-    elements by its filter keys) inside a :func:`shared_decode_for_keys` block that
+    version at that time. A ``shareable`` read (a read whose collect selects its elements
+    by its filter keys) inside a :func:`shared_decode_for_keys` block that
     covers it runs on the block's decode instead.
 
     ``steps`` (a :class:`~pyrosm.utils.progress.Steps` of the whole read, or None) gets

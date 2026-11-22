@@ -2182,6 +2182,35 @@ def test_engine_shared_decode_reads_like_separate_decodes(
     assert decodes == [[b"amenity", b"shop"], [b"shop"]]
 
 
+def test_engine_shared_decode_serves_keep_network_reads(
+    helsinki_pbf, monkeypatch, fresh_cache
+):
+    # A network read that keeps what its value filter passes takes its ways from a
+    # shared decode with its keys and gives the frames of a read that decodes on its own;
+    # a network read that excludes decodes on its own.
+    from geopandas.testing import assert_geodataframe_equal
+    from pyrosm.engine.readers import shared_decode
+
+    steps = {"highway": ["footway", "steps"]}
+    separate = get_network(helsinki_pbf, custom_filter=steps, filter_type="keep", nodes=True)
+    walking = get_network(helsinki_pbf, network_type="walking")
+    for path in fresh_cache.iterdir():
+        path.unlink()
+    decodes = []
+    real = pool._decode_to_shards
+    monkeypatch.setattr(
+        pool, "_decode_to_shards", lambda *args: decodes.append(args[2]) or real(*args)
+    )
+    with shared_decode(helsinki_pbf, [steps, {"building": True}]):
+        shared = get_network(
+            helsinki_pbf, custom_filter=steps, filter_type="keep", nodes=True
+        )
+        assert_geodataframe_equal(get_network(helsinki_pbf, network_type="walking"), walking)
+    assert decodes == [[b"building", b"highway"], [b"highway"]]
+    for mine, ref in zip(shared, separate):
+        assert_geodataframe_equal(mine, ref)
+
+
 def test_osm_list_and_clear_cache_per_file_and_all(test_pbf, helsinki_pbf, fresh_cache):
     # OSM.list_cache reflects what each out-of-core read cached; OSM.clear_cache(filepath)
     # removes only that source file's entries and OSM.clear_cache() removes everything.
