@@ -42,6 +42,7 @@ from pyrosm._area_crossings import (
     visibility,
 )
 from pyrosm.distance import calculate_line_lengths
+from pyrosm.engine.pool import cost_ordered_map
 from pyrosm.int64_hash import Int64Set
 from pyrosm.levels import level_ranges, tag_layer
 from pyrosm.new_elements import (
@@ -850,7 +851,8 @@ def _part_crossings(polygon, entrances):
 def _parts_crossings(parts):
     """:func:`_part_crossings` of each ``(polygon, entrances)`` of ``parts``, for all of
     them at once: the rings, the inward corners, the pairs that rounding leaves open and
-    the lines of the edges are worked out for all parts together."""
+    the lines of the edges are worked out for all parts together, the paths of each part
+    (see :func:`_part_paths`) on the read's threads."""
     found = [[] for _ in parts]
     live = [i for i, (_, entrances) in enumerate(parts) if len(entrances) >= 2]
     if not live:
@@ -865,33 +867,11 @@ def _parts_crossings(parts):
     for k in np.flatnonzero(few):
         if len(corners[k]):
             points[k] = np.vstack([points[k], corners[k]])
-    paths = []
-    for k, (first, second) in enumerate(_visible_pairs(polygons, points, outlines)):
-        plane = points[k] * [scales[k], 1.0]
-        if few[k]:
-            length = np.hypot(*(plane[first] - plane[second]).T)
-            step, distance = shortest_paths(
-                len(points[k]), first, second, length, 1 - 1e-12
-            )
-            first, second, lengths, offsets, path = entrance_paths(
-                step, distance, counts[k]
-            )
-        else:
-            lengths = np.array(
-                [float(np.hypot(*(plane[a] - plane[b]))) for a, b in zip(first, second)]
-            )
-            offsets = np.arange(0, 2 * len(first) + 1, 2, dtype=np.intp)
-            path = np.column_stack([first, second]).ravel()
-        if not len(first):
-            paths.append(None)
-            continue
-        passed = _entrances_passed(points[k], counts[k], offsets, path)
-        candidates = np.flatnonzero(passed == 2)
-        order = candidates[np.argsort(lengths[candidates], kind="stable")]
-        kept = spanning_pairs(
-            len(points[k]), first, second, lengths, order, MAX_ROUTE_STRETCH
-        )
-        paths.append((first, second, offsets, path, kept))
+    visible = _visible_pairs(polygons, points, outlines)
+    paths = cost_ordered_map(
+        lambda k: _part_paths(points[k], counts[k], scales[k], *visible[k], few[k]),
+        [len(p) ** 3 for p in points],
+    )
     lines = _path_lines(points, paths)
     for k, i in enumerate(live):
         if paths[k] is None:
@@ -905,6 +885,35 @@ def _parts_crossings(parts):
             for v in node_ids[second[pair]]
         ]
     return found
+
+
+def _part_paths(points, count, scale, first, second, shortest):
+    """``(first, second, offsets, path, kept)`` of a part whose ``points`` (lon/lat), its
+    ``count`` entrances and then its inward corners, the straight lines inside it join in
+    the pairs ``first``, ``second``: the pairs of entrances that a path joins, the points
+    of the path of pair ``i`` (``path[offsets[i]:offsets[i + 1]]``) and the pairs that
+    get an edge (see :func:`_part_crossings`); None when no path joins two entrances.
+    With ``shortest``, the paths are the shortest ones over those lines, else the lines
+    themselves. ``scale`` multiplies longitudes, so the lengths are true to the part's
+    latitude."""
+    plane = points * [scale, 1.0]
+    if shortest:
+        length = np.hypot(*(plane[first] - plane[second]).T)
+        step, distance = shortest_paths(len(points), first, second, length, 1 - 1e-12)
+        first, second, lengths, offsets, path = entrance_paths(step, distance, count)
+    else:
+        lengths = np.array(
+            [float(np.hypot(*(plane[a] - plane[b]))) for a, b in zip(first, second)]
+        )
+        offsets = np.arange(0, 2 * len(first) + 1, 2, dtype=np.intp)
+        path = np.column_stack([first, second]).ravel()
+    if not len(first):
+        return None
+    passed = _entrances_passed(points, count, offsets, path)
+    candidates = np.flatnonzero(passed == 2)
+    order = candidates[np.argsort(lengths[candidates], kind="stable")]
+    kept = spanning_pairs(len(points), first, second, lengths, order, MAX_ROUTE_STRETCH)
+    return first, second, offsets, path, kept
 
 
 def _part_outlines(polygons, scales, entrances):
@@ -987,23 +996,30 @@ def _visible_pairs(polygons, points, outlines):
     """For each of the ``polygons``, the pairs ``(first, second)`` of indices of its
     ``points`` (lon/lat), ``first`` below ``second``, that a straight line inside the
     polygon joins (by :func:`shapely.covers` on the polygon widened by the tolerance,
-    which is asked only where :func:`pyrosm._area_crossings.visibility` leaves a pair
-    open, for all polygons at once). Its ``outlines`` entry holds its ring vertices (see
-    :func:`_oriented_rings`), one ring after another, and the vertex after and before
-    each (see :func:`pyrosm._area_crossings.ring_links`)."""
+    which is asked only where :func:`pyrosm._area_crossings.visibility`, run on the
+    read's threads, leaves a pair open, for all polygons at once). Its ``outlines`` entry
+    holds its ring vertices (see :func:`_oriented_rings`), one ring after another, and
+    the vertex after and before each (see :func:`pyrosm._area_crossings.ring_links`)."""
     valid = shapely.is_valid(polygons)
+
+    def status_of(k):
+        if not valid[k]:
+            return None
+        return visibility(*outlines[k], np.ascontiguousarray(points[k], dtype=float))
+
+    statuses = cost_ordered_map(
+        status_of,
+        [len(p) ** 2 * len(outline[0]) for p, outline in zip(points, outlines)],
+    )
     pairs, insides, segments, segment_part, open_rows = [], [], [], [], []
     # np.triu_indices by number of points, for the parts of this call
     upper = {}
-    for k, (polygon_points, outline) in enumerate(zip(points, outlines)):
+    for k, (polygon_points, status) in enumerate(zip(points, statuses)):
         n = len(polygon_points)
         if n not in upper:
             upper[n] = np.triu_indices(n, 1)
         first, second = upper[n]
         if valid[k]:
-            status = visibility(
-                *outline, np.ascontiguousarray(polygon_points, dtype=float)
-            )
             inside = status == VISIBLE
             open_pairs = np.flatnonzero(status == OPEN)
         else:

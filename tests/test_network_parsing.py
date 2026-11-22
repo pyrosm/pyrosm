@@ -805,13 +805,15 @@ def test_walking_areas_pass_the_network_filter(
 
 
 @pytest.mark.parametrize(
-    "case", ["walking", "driving", "footway areas", "node lists", "excluded areas"]
+    "case",
+    ["walking", "driving", "footway areas", "node lists", "excluded areas", "threads"],
 )
 def test_get_network_with_walking_areas(case):
     """walking_areas=True adds the edges across the walking areas that the network's
     filter keeps to the edges of the network, marked by the column walking_area, with the
-    area's id, type and tags; both engines return the same frames. A custom_filter that
-    excludes area=yes leaves the areas out as ways and still crosses them."""
+    area's id, type and tags; both engines return the same frames, also when the
+    out-of-core engine works out the lines on threads. A custom_filter that excludes
+    area=yes leaves the areas out as ways and still crosses them."""
     from geopandas.testing import assert_geodataframe_equal
 
     from pyrosm import OSM
@@ -827,7 +829,10 @@ def test_get_network_with_walking_areas(case):
     frames = []
     for engine in ("in_memory", "out_of_core"):
         osm = OSM(
-            get_data("helsinki_pbf"), engine=engine, keep_node_info=case == "node lists"
+            get_data("helsinki_pbf"),
+            engine=engine,
+            keep_node_info=case == "node lists",
+            workers=2 if case == "threads" else None,
         )
         frames.append(osm.get_network(nodes=True, walking_areas=True, **kwargs))
     assert_geodataframe_equal(frames[0][1], frames[1][1], check_dtype=False)
@@ -840,6 +845,8 @@ def test_get_network_with_walking_areas(case):
     assert crossing["u"].isin(nodes["id"]).all() and crossing["v"].isin(nodes["id"]).all()
     if case == "driving":
         assert crossing.empty
+    elif case == "threads":
+        assert len(crossing) > 0
     elif case == "footway areas":
         assert len(crossing) > 0 and (crossing["highway"] == "footway").all()
     elif case == "node lists":

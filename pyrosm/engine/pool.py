@@ -86,8 +86,9 @@ _PROGRESS_INTERVAL = 0.2
 _COUNTER = None
 
 # The threads the threaded read running in this thread uses for its steps after the
-# decode, 0 outside a threaded read (set for the read by :func:`_decode_and_run`). Each
-# thread has its own value.
+# decode, 0 outside a threaded read (set by :func:`_run_on_shards` for the read's collect
+# and by :func:`step_threads` for the steps after its reads). Each thread has its own
+# value.
 _READ_THREADS = contextvars.ContextVar("pyrosm_read_threads", default=0)
 
 
@@ -134,6 +135,64 @@ def thread_map(function, items, window=None):
         return
     with ThreadPoolExecutor(threads) as pool:
         yield from _ordered_map(pool, function, items, window or 2 * threads)
+
+
+def cost_ordered_map(function, costs):
+    """``[function(k) for k in range(len(costs))]``, run on the threads of the threaded
+    read running in this thread (see :func:`read_threads`): the other threads take the
+    items from the largest of ``costs`` down while this thread takes them from the
+    smallest up, until the two meet."""
+    n = len(costs)
+    threads = read_threads()
+    if threads <= 1 or n <= 1:
+        return [function(k) for k in range(n)]
+    order = sorted(range(n), key=lambda k: -costs[k])
+    found = [None] * n
+    lock = threading.Lock()
+    costly, cheap = 0, n - 1
+
+    def work(from_costly):
+        nonlocal costly, cheap
+        while True:
+            with lock:
+                if costly > cheap:
+                    return
+                if from_costly:
+                    k = order[costly]
+                    costly += 1
+                else:
+                    k = order[cheap]
+                    cheap -= 1
+            found[k] = function(k)
+
+    with ThreadPoolExecutor(threads - 1) as pool:
+        helpers = [pool.submit(work, True) for _ in range(threads - 1)]
+        work(False)
+        for helper in helpers:
+            helper.result()
+    return found
+
+
+@contextlib.contextmanager
+def step_threads(filepath, workers):
+    """A block in which the steps that a read of ``filepath`` with ``workers`` runs after
+    its reads use as many threads as its decode (see :func:`read_threads`): by the
+    file's size for ``"auto"``, else the count, at most the CPU cores this process may
+    use; one thread with the processes backend."""
+    if _decode_backend() != "threads":
+        yield
+        return
+    workers = default_workers(workers)
+    if isinstance(workers, str):
+        # The blob count that caps a decode's workers does not cap these steps
+        workers = auto_worker_count(Path(filepath).stat().st_size, _available_cores())
+    else:
+        workers = min(workers, _available_cores())
+    token = _READ_THREADS.set(workers)
+    try:
+        yield
+    finally:
+        _READ_THREADS.reset(token)
 
 
 def _available_cores():
