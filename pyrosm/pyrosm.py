@@ -265,7 +265,9 @@ class OSM:
         way's topology from this column.
 
     workers : int | str (default: None)
-        Number of threads the `'out_of_core'` engine uses to decode the file. By
+        Number of threads the `'out_of_core'` engine uses to decode the file, and
+        to work out the lines across areas of `get_network(..., walking_areas=True)`
+        and `indoor_elements=True`. By
         default (`None`, as `"auto"`) pyrosm chooses the count: a single core for
         files below about 20 MB; for larger files the CPU cores this process may use
         less two, at most 4 below about 70 MB and at most one per data blob. Pass
@@ -1125,9 +1127,20 @@ class OSM:
         areas = self._walking_area_polygons(
             edges, network_type, custom_filter, filter_type, shared_paths, timestamp
         )
-        edges = add_crossings(nodes, edges, areas)
+        with self._step_threads():
+            edges = add_crossings(nodes, edges, areas)
         advance(1, 1)
         return edges
+
+    def _step_threads(self):
+        """For the out-of-core engine, a block in which the steps after the reads use
+        the threads of a read (see :func:`pyrosm.engine.pool.step_threads`); a block
+        that does nothing for the in-memory engine."""
+        if not self._use_engine():
+            return contextlib.nullcontext()
+        from pyrosm.engine.pool import step_threads
+
+        return step_threads(self.filepath, self.workers)
 
     def _walking_area_polygons(
         self, edges, network_type, custom_filter, filter_type, shared_paths, timestamp
@@ -1250,7 +1263,10 @@ class OSM:
         areas, lifts = self._drop_node_lists(areas), self._drop_node_lists(lifts)
         nodes, edges = without_lift_area_ways(nodes, edges, lifts)
         stepped = stair_areas_with_ways(areas, edges)
-        nodes, edges = with_indoor_crossings(nodes, edges, areas, doors, borders, lifts)
+        with self._step_threads():
+            nodes, edges = with_indoor_crossings(
+                nodes, edges, areas, doors, borders, lifts
+            )
         return nodes, edges, lifts, levels, stepped
 
     @logged()

@@ -3064,6 +3064,58 @@ def test_auto_workers(tmp_path, monkeypatch, size, cores, blobs, backend, expect
 
 
 @pytest.mark.parametrize(
+    "backend, workers, expected",
+    [("threads", None, 4), ("threads", 3, 3), ("threads", 16, 10), ("processes", 3, 1)],
+)
+def test_step_threads(tmp_path, monkeypatch, backend, workers, expected):
+    # The steps after a read's reads use the threads of its decode: by the file's size
+    # for "auto", else the count at most the cores; one thread with the processes backend.
+    # The count is reset when the block raises.
+    import os
+
+    monkeypatch.setattr(pool, "_available_cores", lambda: 10)
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    fp = tmp_path / "file.osm.pbf"
+    fp.touch()
+    os.truncate(fp, pool._PARALLEL_MIN_FILE_BYTES)
+    with pytest.raises(RuntimeError):
+        with pool.step_threads(str(fp), workers):
+            assert pool.read_threads() == expected
+            raise RuntimeError
+    assert pool.read_threads() == 1
+
+
+def test_engine_cost_ordered_map():
+    # The other thread takes the costliest item while the calling thread takes the
+    # cheapest (each waits for the other to start); the results keep the items' order,
+    # and an item's exception reaches the caller.
+    caller = threading.get_ident()
+    started = {0: threading.Event(), 3: threading.Event()}
+    ran_on = {}
+
+    def work(k):
+        ran_on[k] = threading.get_ident()
+        if k in started:
+            started[k].set()
+            assert started[3 - k].wait(10)
+        return 10 * k
+
+    def fail(k):
+        if k == 0:
+            raise ValueError("costliest")
+        return k
+
+    token = pool._READ_THREADS.set(2)
+    try:
+        assert pool.cost_ordered_map(work, [9, 5, 2, 1]) == [0, 10, 20, 30]
+        with pytest.raises(ValueError, match="costliest"):
+            pool.cost_ordered_map(fail, [3, 2, 1])
+    finally:
+        pool._READ_THREADS.reset(token)
+    assert ran_on[0] != caller and ran_on[3] == caller
+
+
+@pytest.mark.parametrize(
     "spans, workers, per_worker, expected",
     [
         ([5, 5, 5], 1, 8, [[5, 5, 5]]),
