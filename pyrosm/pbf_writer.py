@@ -253,11 +253,21 @@ def _may_hold_keys(values, names):
     escape = _key_escapes(names)
     if not isinstance(values.dtype, pd.StringDtype):
         return np.array([_may_hold_key(v, quoted, escape) for v in values], dtype=bool)
-    found = values.str.contains("|".join(map(re.escape, quoted)), regex=True)
-    found |= values.str.contains("\\", regex=False) & values.str.contains(
-        escape.pattern, regex=True
+    keys = "|".join(map(re.escape, quoted))
+    # One search of the column for a key or a backslash; the few values it finds are
+    # then searched for each
+    rows = np.flatnonzero(
+        values.str.contains(keys + r"|\\", regex=True).fillna(False).to_numpy(bool)
     )
-    return found.fillna(False).to_numpy(dtype=bool)
+    found = np.zeros(len(values), dtype=bool)
+    if len(rows):
+        subset = values.iloc[rows]
+        held = subset.str.contains(keys, regex=True)
+        held |= subset.str.contains("\\", regex=False) & subset.str.contains(
+            escape.pattern, regex=True
+        )
+        found[rows] = held.fillna(False).to_numpy(dtype=bool)
+    return found
 
 
 def _record_tags(record):

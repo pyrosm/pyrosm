@@ -294,10 +294,9 @@ def edge_levels(edges, tags, node_levels=None):
     v_level = u_level.copy()
     u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
     flat = single & ~vertical
-    ends = pd.DataFrame(
-        {"node": np.concatenate([u[flat], v[flat]]), "level": np.tile(low[flat], 2)}
+    levels_at = _levels_by_node(
+        np.concatenate([u[flat], v[flat]]), np.tile(low[flat], 2)
     )
-    levels_at = ends.groupby("node")["level"].unique().to_dict()
     node_levels = node_levels or {}
     lengths = float_column(edges, "length")
     for rows, nodes in _vertical_ways(edges, vertical):
@@ -328,6 +327,17 @@ def edge_levels(edges, tags, node_levels=None):
     if platforms.any():
         _fill_platform_levels(u, v, u_level, v_level, platforms)
     return u_level, v_level
+
+
+def _levels_by_node(nodes, levels):
+    """``{node: levels}`` for the ``nodes`` with a level each in ``levels`` (arrays):
+    the distinct levels of each node as an array, in the order they first come."""
+    first = ~pd.DataFrame({"node": nodes, "level": levels}).duplicated().to_numpy()
+    nodes, levels = nodes[first], levels[first]
+    order = np.argsort(nodes, kind="stable")
+    nodes, levels = nodes[order], levels[order]
+    starts = np.flatnonzero(np.r_[True, nodes[1:] != nodes[:-1]]) if len(nodes) else []
+    return dict(zip(nodes[starts].tolist(), np.split(levels, starts[1:])))
 
 
 def _is_platform(tags):
