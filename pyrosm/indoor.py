@@ -1583,10 +1583,13 @@ def doors_joining_levels(doors, areas, lifts=None):
     of its ``level`` tag (see :func:`_whole_levels`). Doors tagged ``repeat_on`` and
     lift nodes (``highway=elevator``) are left out: :func:`door_copies` and
     :func:`split_lifts` copy them by their own tags."""
-    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
+    from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _may_hold_keys
 
     listed = {}
-    for row, text in enumerate(doors["tags"]):
+    # A door without a level tag lists no levels
+    texts = doors["tags"].tolist()
+    for row in np.flatnonzero(_may_hold_keys(doors["tags"], {"level"})).tolist():
+        text = texts[row]
         tags = json.loads(text) if isinstance(text, str) else {}
         if "repeat_on" in tags or tags.get("highway") == "elevator":
             continue
@@ -1629,10 +1632,20 @@ def door_copies(doors, joining=()):
     :func:`split_lifts`), a door whose id is not a positive one the copy ids fit, and a
     door on more than :data:`MAX_REPEATED_LEVELS` levels or with a range spanning more.
     """
-    from pyrosm.pbf_writer import _tag_str
+    from pyrosm.pbf_writer import _may_hold_keys, _tag_str
 
+    # Only a door tagged repeat_on or in joining can be copied
+    joining = set(joining)
+    may_copy = _may_hold_keys(doors["tags"], {"repeat_on"}) | np.isin(
+        doors["id"].to_numpy(), list(joining)
+    )
     rows, ids, texts = [], [], []
     for row, (door, text) in enumerate(zip(doors["id"].tolist(), doors["tags"])):
+        if not may_copy[row]:
+            rows.append(row)
+            ids.append(door)
+            texts.append(text)
+            continue
         tags = json.loads(text) if isinstance(text, str) else {}
         own = level_ranges(tags.get("level")) or []
         levels = _whole_levels(own + (level_ranges(tags.get("repeat_on")) or []))
