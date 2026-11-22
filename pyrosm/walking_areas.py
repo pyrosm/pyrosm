@@ -960,7 +960,8 @@ def _path_lines(points, paths):
     """For each part, the LineStrings of its kept paths: ``paths[k]`` is ``(first,
     second, offsets, path, kept)`` (see :func:`_parts_crossings`) through ``points[k]``,
     or None for a part without paths."""
-    coords, indices, counts, total = [], [], [], 0
+    coords, indices = [np.empty((0, 2))], [np.empty(0, dtype=np.intp)]
+    counts, total = [], 0
     for k, entry in enumerate(paths):
         if entry is None:
             counts.append(0)
@@ -972,11 +973,7 @@ def _path_lines(points, paths):
         indices.append(np.repeat(np.arange(len(kept)) + total, sizes))
         counts.append(len(kept))
         total += len(kept)
-    lines = np.empty(0, dtype=object)
-    if total:
-        lines = shapely.linestrings(
-            np.concatenate(coords), indices=np.concatenate(indices)
-        )
+    lines = shapely.linestrings(np.concatenate(coords), indices=np.concatenate(indices))
     return np.split(lines, np.cumsum(counts)[:-1])
 
 
