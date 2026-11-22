@@ -906,17 +906,13 @@ def with_platforms(nodes, edges, platform_nodes, platforms, walking_areas=False)
     if "walking_area" in edges.columns:
         new = new.assign(walking_area=False)
     attrs = dict(edges.attrs)
-    edges = GeoDataFrame(
-        pd.concat([edges, new], ignore_index=True), geometry="geometry", crs=edges.crs
-    )
+    edges = _appended(edges, new)
     edges.attrs = attrs
     used = pd.unique(np.concatenate([new["u"].to_numpy(), new["v"].to_numpy()]))
     added = platform_nodes[
         platform_nodes["id"].isin(used) & ~platform_nodes["id"].isin(nodes["id"])
     ]
-    nodes = GeoDataFrame(
-        pd.concat([nodes, added], ignore_index=True), geometry="geometry", crs=nodes.crs
-    )
+    nodes = _appended(nodes, added)
     return nodes, edges
 
 
@@ -1534,11 +1530,7 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
     if rows is not None and not rows.empty:
         rows = rows.assign(walking_area=True)
         attrs = dict(edges.attrs)
-        edges = GeoDataFrame(
-            pd.concat([edges, rows], ignore_index=True),
-            geometry="geometry",
-            crs=edges.crs,
-        )
+        edges = _appended(edges, rows)
         edges.attrs = attrs
         if borders is not None:
             added[-1] = borders.drop(columns=["spaces", "level"]).assign(tags=None)
@@ -1547,11 +1539,7 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
         new = frame[frame["id"].isin(used) & ~frame["id"].isin(nodes["id"])]
         if len(new):
             new = new[[col for col in nodes.columns if col in new.columns]]
-            nodes = GeoDataFrame(
-                pd.concat([nodes, new], ignore_index=True),
-                geometry="geometry",
-                crs=nodes.crs,
-            )
+            nodes = _appended(nodes, new)
     return nodes, edges
 
 
@@ -1899,18 +1887,25 @@ def _with_lift_rows(nodes, edges, copies, lift_rows, metadata, rows=None):
         {col: edges[col].dtype for col in metadata}
     )
     added = [lift_edges] if rows is None else [rows, lift_edges]
-    edges = GeoDataFrame(
-        pd.concat([edges, *added], ignore_index=True),
-        geometry="geometry",
-        crs=edges.crs,
-    )
+    edges = _appended(edges, *added)
     edges.attrs = attrs
-    nodes = GeoDataFrame(
-        pd.concat([nodes, pd.DataFrame(copies)], ignore_index=True),
-        geometry="geometry",
-        crs=nodes.crs,
-    )
-    return nodes, edges
+    return _appended(nodes, pd.DataFrame(copies)), edges
+
+
+def _appended(frame, *parts):
+    """``frame`` (a GeoDataFrame with a ``geometry`` column) with the rows of the
+    frames ``parts`` after it, without the parts that have no columns, on a new index
+    and with ``frame``'s CRS and no ``attrs``. The parts are made GeoDataFrames first:
+    the concatenation then gives a GeoDataFrame without a copy of ``frame`` to build
+    one."""
+    parts = [
+        GeoDataFrame(part, geometry="geometry", crs=frame.crs)
+        for part in parts
+        if len(part.columns)
+    ]
+    appended = pd.concat([frame, *parts], ignore_index=True)
+    appended.attrs = {}
+    return appended
 
 
 # How many metres longer a lift edge is than the escalator or stairs whose length it
