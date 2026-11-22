@@ -173,6 +173,12 @@ def _add_dict_tags(tags, extra, columns=()):
             return tags
     if isinstance(extra, dict):
         for k, v in extra.items():
+            if type(k) is str and type(v) is str:
+                # The usual tag, decided without the checks below
+                key = "id" if k == "id_tag" else k
+                if key and key not in tags and key not in columns:
+                    tags[key] = v
+                continue
             key = _tag_key(k)
             if (
                 key is None
@@ -201,7 +207,7 @@ def _frame_tags(gdf, tag_cols, only=None):
         values = gdf[col]
         present = values.notna().to_numpy()
         for i, value in zip(np.flatnonzero(present).tolist(), values[present].tolist()):
-            tags[i][key] = _tag_str(value)
+            tags[i][key] = value if type(value) is str else _tag_str(value)
     extras = gdf["tags"].tolist() if "tags" in gdf.columns else [None] * len(gdf)
     columns = set(keys)
     if only is None:
