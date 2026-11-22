@@ -1,5 +1,6 @@
 """Worker-count resolution and parallel-decode orchestration for decoding blobs."""
 
+import contextlib
 import contextvars
 import logging
 import multiprocessing
@@ -15,6 +16,7 @@ from functools import partial
 from pathlib import Path
 
 from pyrosm._log import timed
+from pyrosm.engine import cache
 from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
 from pyrosm.engine.decode import (
     _DecodeSettings,
@@ -448,6 +450,65 @@ def _decode_threads(tasks, workers, settings, progress):
     return [shard for shards in results for shard in shards]
 
 
+class _SharedDecode:
+    """The decode of one file for the keys of several layer reads (see
+    :func:`shared_decode_for_keys`): made by the first of them that decodes, kept until
+    the block ends."""
+
+    def __init__(self, filepath, osm_key_bytes, bbox_bounds, unix_time):
+        self.filepath = filepath
+        self.osm_key_bytes = sorted(set(osm_key_bytes))
+        self.bbox_bounds = bbox_bounds
+        self.unix_time = unix_time
+        self.shard_dir = None
+        self.shard_paths = None
+        self.workers = None
+        self.identity = None
+
+    def covers(
+        self, filepath, osm_key_bytes, bbox_bounds, requested_tag_keys, unix_time
+    ):
+        """Whether a read of these arguments (see :func:`_decode_and_run`) can select
+        its elements from this decode: the same file, not changed since before the
+        decode (see :func:`pyrosm.engine.cache.source_identity`; a file changed during
+        the decode serves no other read), box and time, every tag kept, and filter keys
+        among this decode's."""
+        return (
+            filepath == self.filepath
+            and (
+                self.shard_paths is None
+                or self.identity is not None
+                and cache.source_identity(filepath) == self.identity
+            )
+            and osm_key_bytes is not None
+            and set(osm_key_bytes) <= set(self.osm_key_bytes)
+            and bbox_bounds == self.bbox_bounds
+            and requested_tag_keys is None
+            and unix_time == self.unix_time
+        )
+
+
+_SHARED_DECODE = contextvars.ContextVar("pyrosm_shared_decode", default=None)
+
+
+@contextlib.contextmanager
+def shared_decode_for_keys(filepath, osm_key_bytes, bbox_bounds=None, unix_time=None):
+    """Within the block, the layer reads of ``filepath`` (``_decode_and_run(...,
+    shareable=True)``) whose filter keys are among ``osm_key_bytes``, with the box
+    ``bbox_bounds`` and the time ``unix_time`` of the block and every tag kept, decode
+    the file once between them: the first such read decodes it for all these keys, with
+    the point features and every way's node refs, and the others collect from that
+    decode. The decode is removed when the block ends."""
+    shared = _SharedDecode(filepath, osm_key_bytes, bbox_bounds, unix_time)
+    token = _SHARED_DECODE.set(shared)
+    try:
+        yield
+    finally:
+        _SHARED_DECODE.reset(token)
+        if shared.shard_dir is not None:
+            shutil.rmtree(shared.shard_dir, ignore_errors=True)
+
+
 def _decode_and_run(
     filepath,
     osm_key_bytes,
@@ -459,16 +520,76 @@ def _decode_and_run(
     steps=None,
     spill_all_ways=True,
     unix_time=None,
+    shareable=False,
 ):
     """Index + parallel-decode ``filepath`` into a temp shard dir, call
     ``run(shard_paths, steps)`` in this process and clean up. The shared front half of
     every public read. ``unix_time`` (seconds), for a history file, reads each element's
-    version at that time.
+    version at that time. A ``shareable`` read (a layer read, whose collect selects its
+    elements by its filter keys) inside a :func:`shared_decode_for_keys` block that
+    covers it runs on the block's decode instead.
 
     ``steps`` (a :class:`~pyrosm.utils.progress.Steps` of the whole read, or None) gets
     the steps :data:`INDEXING` and :data:`DECODING`, moved by the bytes of the file
     passed, out of the bytes indexed (the file size); ``run`` reports its own steps to
     it."""
+    shared = _SHARED_DECODE.get() if shareable else None
+    if shared is not None and shared.covers(
+        filepath, osm_key_bytes, bbox_bounds, requested_tag_keys, unix_time
+    ):
+        if shared.shard_paths is None:
+            before = cache.source_identity(filepath)
+            if shared.shard_dir is None:
+                shared.shard_dir = tempfile.mkdtemp(prefix="pyrosm_ooc_")
+            shared.shard_paths, shared.workers = _decode_to_shards(
+                shared.shard_dir,
+                filepath,
+                shared.osm_key_bytes,
+                True,
+                workers,
+                bbox_bounds,
+                None,
+                steps,
+                True,
+                unix_time,
+            )
+            if cache.source_identity(filepath) == before:
+                shared.identity = before
+        return _run_on_shards(run, shared.shard_paths, steps, shared.workers)
+    shard_dir = tempfile.mkdtemp(prefix="pyrosm_ooc_")
+    try:
+        shard_paths, workers = _decode_to_shards(
+            shard_dir,
+            filepath,
+            osm_key_bytes,
+            include_nodes,
+            workers,
+            bbox_bounds,
+            requested_tag_keys,
+            steps,
+            spill_all_ways,
+            unix_time,
+        )
+        return _run_on_shards(run, shard_paths, steps, workers)
+    finally:
+        shutil.rmtree(shard_dir, ignore_errors=True)
+
+
+def _decode_to_shards(
+    shard_dir,
+    filepath,
+    osm_key_bytes,
+    include_nodes,
+    workers,
+    bbox_bounds,
+    requested_tag_keys,
+    steps,
+    spill_all_ways,
+    unix_time,
+):
+    """``(shard_paths, workers)``: ``filepath`` indexed and decoded in parallel into the
+    temp dir ``shard_dir``, with the worker count used (see :func:`_decode_and_run` for
+    the other arguments)."""
     name = Path(filepath).name
     with timed(logger, "index", file=name) as fields:
         index = None if steps is None else steps.start_step(INDEXING)
@@ -480,35 +601,37 @@ def _decode_and_run(
         workers = _auto_workers(filepath, len(data_blobs))
     else:
         workers = _cap_workers(workers)
-    shard_dir = tempfile.mkdtemp(prefix="pyrosm_ooc_")
+    with timed(logger, "decode", workers=workers, blobs=len(data_blobs)) as fields:
+        shard_paths, pool_ok = _decode_all(
+            filepath,
+            data_blobs,
+            workers,
+            shard_dir,
+            osm_key_bytes,
+            include_nodes,
+            bbox_bounds,
+            requested_tag_keys,
+            (
+                None
+                if steps is None
+                else (steps.start_step(DECODING), header_bytes, total)
+            ),
+            spill_all_ways,
+            unix_time,
+        )
+        fields["pool"] = pool_ok
+    return shard_paths, workers
+
+
+def _run_on_shards(run, shard_paths, steps, workers):
+    """``run(shard_paths, steps)``, the collect of a read on its decoded shards, on
+    ``workers`` threads of a threaded decode."""
+    token = None
+    if _decode_backend() == "threads":
+        token = _READ_THREADS.set(workers)
     try:
-        with timed(logger, "decode", workers=workers, blobs=len(data_blobs)) as fields:
-            shard_paths, pool_ok = _decode_all(
-                filepath,
-                data_blobs,
-                workers,
-                shard_dir,
-                osm_key_bytes,
-                include_nodes,
-                bbox_bounds,
-                requested_tag_keys,
-                (
-                    None
-                    if steps is None
-                    else (steps.start_step(DECODING), header_bytes, total)
-                ),
-                spill_all_ways,
-                unix_time,
-            )
-            fields["pool"] = pool_ok
-        token = None
-        if _decode_backend() == "threads":
-            token = _READ_THREADS.set(workers)
-        try:
-            with timed(logger, "collect"):
-                return run(shard_paths, steps)
-        finally:
-            if token is not None:
-                _READ_THREADS.reset(token)
+        with timed(logger, "collect"):
+            return run(shard_paths, steps)
     finally:
-        shutil.rmtree(shard_dir, ignore_errors=True)
+        if token is not None:
+            _READ_THREADS.reset(token)

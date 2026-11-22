@@ -2129,6 +2129,45 @@ def test_engine_cache_reuse_skips_decode(helsinki_pbf, monkeypatch, fresh_cache)
     )
 
 
+@pytest.mark.parametrize("backend", ["threads", "processes"])
+def test_engine_shared_decode_reads_like_separate_decodes(
+    backend, helsinki_pbf, monkeypatch, fresh_cache, tmp_path
+):
+    # Inside shared_decode the keep reads with the block's keys decode the file once
+    # between them and give the frames of reads that decode on their own, also a read
+    # without nodes on a decode that has the point features. A read with another key, an
+    # exclude read and a read after the file changed decode on their own.
+    import os
+    from geopandas.testing import assert_geodataframe_equal
+    from pyrosm.engine.readers import shared_decode
+
+    monkeypatch.setenv("PYROSM_DECODE_BACKEND", backend)
+    pbf = tmp_path / "helsinki.osm.pbf"
+    shutil.copy(helsinki_pbf, pbf)
+    reads = [
+        ({"amenity": True}, {"keep_nodes": False}),
+        ({"shop": True}, {"keep_ways": False}),
+        ({"leisure": True}, {}),
+        ({"shop": ["kiosk"]}, {"filter_type": "exclude"}),
+    ]
+    separate = [get_data_by_custom_criteria(pbf, f, **kw) for f, kw in reads]
+    for path in fresh_cache.iterdir():
+        path.unlink()
+    decodes = []
+    real = pool._decode_to_shards
+    monkeypatch.setattr(
+        pool, "_decode_to_shards", lambda *args: decodes.append(args[2]) or real(*args)
+    )
+    with shared_decode(pbf, [f for f, _ in reads[:2]]):
+        shared = [get_data_by_custom_criteria(pbf, f, **kw) for f, kw in reads]
+        os.utime(pbf, ns=(pbf.stat().st_atime_ns, pbf.stat().st_mtime_ns + 10**9))
+        changed = get_data_by_custom_criteria(pbf, *reads[1][:1], **reads[1][1])
+    assert decodes == [[b"amenity", b"shop"], [b"leisure"], [b"shop"], [b"shop"]]
+    assert (separate[0].geom_type == "Point").sum() == 0
+    for mine, ref in zip(shared + [changed], separate + [separate[1]]):
+        assert_geodataframe_equal(mine, ref)
+
+
 def test_osm_list_and_clear_cache_per_file_and_all(test_pbf, helsinki_pbf, fresh_cache):
     # OSM.list_cache reflects what each out-of-core read cached; OSM.clear_cache(filepath)
     # removes only that source file's entries and OSM.clear_cache() removes everything.

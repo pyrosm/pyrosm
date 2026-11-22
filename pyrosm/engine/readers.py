@@ -4,6 +4,7 @@ into shards selecting the layer's elements (and, for point layers, the matching
 nodes), then collects and assembles (or streams to GeoParquet) the requested layer. A
 ``bounding_box`` restricts the read to that area."""
 
+import contextlib
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,7 @@ from pyrosm.engine.pool import (
     NETWORK_NODES_SHARES,
     NETWORK_SHARES,
     _decode_and_run,
+    shared_decode_for_keys,
 )
 from pyrosm.engine.bounding_box import _bbox_bounds, _normalize_bounding_box
 from pyrosm.engine.assemble import (
@@ -175,12 +177,14 @@ def _get_layer(
                         grouping_relations=grouping_relations,
                         member_nodes=member_nodes,
                         closed_only=closed_only,
+                        keep_nodes=include_nodes,
                     ),
                     bbox_bounds=bounds,
                     requested_tag_keys=requested_tag_keys,
                     steps=steps,
                     spill_all_ways=keep_relations,
                     unix_time=unix_time,
+                    shareable=filter_type == "keep",
                 )
                 is not None,
                 steps=steps,
@@ -205,6 +209,7 @@ def _get_layer(
                 grouping_relations=grouping_relations,
                 member_nodes=member_nodes,
                 closed_only=closed_only,
+                keep_nodes=include_nodes,
             )
 
         result = _decode_and_run(
@@ -218,8 +223,28 @@ def _get_layer(
             steps=steps,
             spill_all_ways=keep_relations,
             unix_time=unix_time,
+            shareable=filter_type == "keep",
         )
         return result
+
+
+@contextlib.contextmanager
+def shared_decode(filepath, custom_filters, bounding_box=None, unix_time=None):
+    """Within the block, the layer reads of ``filepath`` with ``filter_type="keep"`` and
+    one of ``custom_filters`` (dicts), the box ``bounding_box`` and the time
+    ``unix_time`` (see :func:`get_data_by_custom_criteria`) decode the file once between
+    them (see :func:`pyrosm.engine.pool.shared_decode_for_keys`): such a read keeps only
+    elements with one of its filter keys, so it selects the same elements from a decode
+    for all the filters' keys."""
+    keys = set()
+    for custom_filter in custom_filters:
+        data_filter, osm_keys = parse_custom_filter(custom_filter)
+        keys.update(rename_filter_key(data_filter, osm_keys, "id_tag", "id")[1])
+    bounds = _bbox_bounds(_normalize_bounding_box(bounding_box))
+    with shared_decode_for_keys(
+        filepath, [_key_bytes(key) for key in keys], bounds, unix_time
+    ):
+        yield
 
 
 def _node_lists(result):
