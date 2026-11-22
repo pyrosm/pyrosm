@@ -884,31 +884,41 @@ class OSM:
         if indoor_elements:
             check_indoor_read(network_type, custom_filter, nodes)
         walking = None
-        with self._walking_area_steps(walking_areas, timestamp):
-            result = self._read_network(
-                network_type,
-                extra_attributes,
-                nodes,
-                timestamp,
-                custom_filter,
-                filter_type,
-                tags_to_keep,
-                shared_paths,
-                walking_areas and not indoor_elements,
-                warn_empty=not indoor_elements,
-            )
-            if walking_areas and indoor_elements:
-                advance = start_step(self.progress, WALKING_AREAS)
-                walking = self._walking_area_polygons(
-                    result[1],
+        with self._indoor_reads_decode(
+            indoor_elements,
+            walking_areas,
+            network_type,
+            custom_filter,
+            filter_type,
+            shared_paths,
+            timestamp,
+        ):
+            with self._walking_area_steps(walking_areas, timestamp):
+                result = self._read_network(
                     network_type,
+                    extra_attributes,
+                    nodes,
+                    timestamp,
                     custom_filter,
                     filter_type,
+                    tags_to_keep,
                     shared_paths,
-                    timestamp,
+                    walking_areas and not indoor_elements,
+                    warn_empty=not indoor_elements,
                 )
-                advance(1, 1)
-        if indoor_elements:
+                if walking_areas and indoor_elements:
+                    advance = start_step(self.progress, WALKING_AREAS)
+                    walking = self._walking_area_polygons(
+                        result[1],
+                        network_type,
+                        custom_filter,
+                        filter_type,
+                        shared_paths,
+                        timestamp,
+                    )
+                    advance(1, 1)
+            if not indoor_elements:
+                return result
             platform_nodes, platforms = self._read_network(
                 network_type_of_read(None, PLATFORM_FILTER),
                 extra_attributes,
@@ -930,13 +940,48 @@ class OSM:
             node_gdf, edges, lifts, border_levels, stepped = self._with_indoor_areas(
                 node_gdf, edges, timestamp, walking
             )
-            edges = with_indoor_columns(edges, escalator_slope, node_gdf, border_levels)
-            node_gdf, edges = without_lines_between_levels(node_gdf, edges, stepped)
-            node_gdf, edges = without_levelless_lines(node_gdf, edges)
-            node_gdf, edges = split_lifts(node_gdf, edges)
-            node_gdf, edges = join_lift_areas(node_gdf, edges, lifts)
-            result = node_gdf, with_climb_lengths(with_area_climb_verticals(edges))
-        return result
+        edges = with_indoor_columns(edges, escalator_slope, node_gdf, border_levels)
+        node_gdf, edges = without_lines_between_levels(node_gdf, edges, stepped)
+        node_gdf, edges = without_levelless_lines(node_gdf, edges)
+        node_gdf, edges = split_lifts(node_gdf, edges)
+        node_gdf, edges = join_lift_areas(node_gdf, edges, lifts)
+        return node_gdf, with_climb_lengths(with_area_climb_verticals(edges))
+
+    def _indoor_reads_decode(
+        self,
+        indoor_elements,
+        walking_areas,
+        network_type,
+        custom_filter,
+        filter_type,
+        shared_paths,
+        timestamp,
+    ):
+        """For an out-of-core read with ``indoor_elements``, a block in which its other
+        reads (its walking areas with ``walking_areas``, see
+        :meth:`_walking_area_polygons`; its platforms; its indoor areas, lift areas,
+        walls and doors, see :meth:`_with_indoor_areas`) decode the file once between
+        them (see :func:`pyrosm.engine.readers.shared_decode`); a block that does
+        nothing for any other read."""
+        if not indoor_elements or not self._use_engine():
+            return contextlib.nullcontext()
+        from pyrosm.engine.readers import shared_decode
+        from pyrosm.walking_areas import area_filter
+
+        filters = [INDOOR_AREA_FILTER, LIFT_AREA_FILTER, WALL_FILTER, ENTRANCE_FILTER]
+        if walking_areas:
+            osm_keys = area_filter(
+                network_type,
+                custom_filter,
+                filter_type,
+                shared_paths,
+                self.filepath,
+                self.bounding_box,
+            )[0]
+            filters.append({key: True for key in osm_keys})
+        return shared_decode(
+            self.filepath, filters, self.bounding_box, self._history_time(timestamp)
+        )
 
     @contextlib.contextmanager
     def _walking_area_steps(self, walking_areas, timestamp):

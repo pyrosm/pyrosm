@@ -50,7 +50,7 @@ from pyrosm.new_elements import (
     _key_codes,
     _query_pairs,
 )
-from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_key
+from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _rows_tags, _tag_key
 
 # An area with more entrances and inward corners than this gets edges only between the
 # entrances that a straight line inside it joins.
@@ -228,9 +228,14 @@ def crossing_rows(
         ]
         keep = ~lone | np.array(lifted, dtype=bool)
         area_rows, node_rows = area_rows[keep], node_rows[keep]
-    entrances = []
-    for area in np.unique(area_rows):
-        candidates = node_rows[area_rows == area]
+    # The rows are in the order of the areas
+    with_nodes, starts = np.unique(area_rows, return_index=True)
+    ends = np.append(starts[1:], len(area_rows))
+    parts, part_area = shapely.get_parts(geometries[with_nodes], return_index=True)
+    part_starts = np.searchsorted(part_area, np.arange(len(with_nodes) + 1))
+    each_part = []
+    for k, area in enumerate(with_nodes):
+        candidates = node_rows[starts[k] : ends[k]]
         joinable = np.array(
             [
                 (bool(end) and _on_same_level(positions[i], area_positions[area]))
@@ -239,11 +244,16 @@ def crossing_rows(
             ],
             dtype=bool,
         )
-        for part in shapely.get_parts(geometries[area]):
-            at = _entrances(
-                part, ids[candidates], lon[candidates], lat[candidates], joinable
-            )
-            entrances.append((area, part, at))
+        each_part.extend(
+            (area, part, ids[candidates], lon[candidates], lat[candidates], joinable)
+            for part in parts[part_starts[k] : part_starts[k + 1]]
+        )
+    entrances = [
+        (area, part, at)
+        for (area, part, *_), at in zip(
+            each_part, _parts_entrances([entry[1:] for entry in each_part])
+        )
+    ]
     off_level = _off_level_entrances(entrances, positions, area_positions, stair_ends)
     off_level -= lifts
     if len(strict):
@@ -298,22 +308,26 @@ def crossing_rows(
             parts[k] = (part, dict(sorted(within.items(), key=lambda e: min(e[1][2]))))
             reached[area, k, node] = end
     found = []
-    for area, parts in kept.items():
-        stairs = _is_stair_area(area_tags[area])
-        for k, (part, within) in enumerate(parts):
-            for u, v, line in _part_crossings(part, within):
-                start, end = reached.get((area, k, u)), reached.get((area, k, v))
-                if start or end:
-                    coords = list(line.coords)
-                    line = shapely.LineString(
-                        ([start] if start else []) + coords + ([end] if end else [])
-                    )
-                found.append((area, u, v, line))
-            if stairs:
-                found.extend(
-                    (area, u, v, line)
-                    for u, v, line in _floor_steps(within, strict, positions)
+    each_part = [
+        (area, k, part, within)
+        for area, parts in kept.items()
+        for k, (part, within) in enumerate(parts)
+    ]
+    crossings = _parts_crossings([(part, within) for _, _, part, within in each_part])
+    for (area, k, _, within), lines in zip(each_part, crossings):
+        for u, v, line in lines:
+            start, end = reached.get((area, k, u)), reached.get((area, k, v))
+            if start or end:
+                coords = list(line.coords)
+                line = shapely.LineString(
+                    ([start] if start else []) + coords + ([end] if end else [])
                 )
+            found.append((area, u, v, line))
+        if _is_stair_area(area_tags[area]):
+            found.extend(
+                (area, u, v, line)
+                for u, v, line in _floor_steps(within, strict, positions)
+            )
     if not found:
         return None
     return area_edge_rows(areas, found, edges)
@@ -457,14 +471,9 @@ def _loose_stair_ends(edges, ids, dead_end):
     v = edges["v"].to_numpy()
     ends = Int64Set(ids[dead_end])
     rows = np.flatnonzero(ends.isin(u) | ends.isin(v))
-    subset = edges.iloc[rows]
     steps = [
         node
-        for a, b, tags in zip(
-            u[rows],
-            v[rows],
-            _frame_tags(subset, _frame_tag_columns(subset), only={"highway"}),
-        )
+        for a, b, tags in zip(u[rows], v[rows], _rows_tags(edges, rows, {"highway"}))
         if tags.get("highway") == "steps"
         for node in (a, b)
     ]
@@ -569,16 +578,12 @@ def _entrance_positions(edges, node_ids, dead_ends, own_levels):
     v = edges["v"].to_numpy()
     in_areas = Int64Set(node_ids)
     rows = np.flatnonzero(in_areas.isin(u) | in_areas.isin(v))
-    subset = edges.iloc[rows]
     wanted = set(np.asarray(node_ids).tolist())
     ends = set(np.asarray(dead_ends).tolist())
-    way_ids = subset["id"].to_numpy() if "id" in subset.columns else rows
+    way_ids = edges["id"].to_numpy()[rows] if "id" in edges.columns else rows
     single, other, sides, open_ends, stair_ways = {}, {}, {}, {}, {}
     for a, b, way, tags in zip(
-        u[rows],
-        v[rows],
-        way_ids,
-        _frame_tags(subset, _frame_tag_columns(subset), only=_POSITION_TAG_KEYS),
+        u[rows], v[rows], way_ids, _rows_tags(edges, rows, _POSITION_TAG_KEYS)
     ):
         ranges, side = _level_position(tags)
         vertical = is_vertical(tags)
@@ -763,14 +768,51 @@ def _entrances(polygon, ids, lon, lat, dead_end):
     ``{coordinate key: (x, y, [node ids])}`` of the nodes at a vertex of its outline or of
     a hole, and of the dead ends (``dead_end``, nodes of one edge) inside it, in the
     order of their first node id."""
-    vertices = _vertex_keys(polygon)
-    inside = shapely.contains_properly(polygon, shapely.points(lon, lat)) & dead_end
-    entrances = {}
-    for row in np.argsort(ids, kind="stable"):
-        key = _coordinate_key(lon[row], lat[row])
-        if key in vertices or inside[row]:
-            entrances.setdefault(key, (lon[row], lat[row], []))[2].append(int(ids[row]))
-    return entrances
+    return _parts_entrances([(polygon, ids, lon, lat, dead_end)])[0]
+
+
+def _parts_entrances(entries):
+    """:func:`_entrances` of each ``(polygon, ids, lon, lat, dead_end)`` of ``entries``,
+    for all of them at once."""
+    if not entries:
+        return []
+    polygons = np.array([polygon for polygon, *_ in entries], dtype=object)
+    node_part = np.repeat(np.arange(len(entries)), [len(e[1]) for e in entries])
+    lon = np.concatenate([np.asarray(e[2], dtype=float) for e in entries])
+    lat = np.concatenate([np.asarray(e[3], dtype=float) for e in entries])
+    coords, vertex_part = shapely.get_coordinates(polygons, return_index=True)
+    at_vertex = _pairs_in(
+        node_part,
+        _coordinate_codes(lon, lat),
+        vertex_part,
+        _coordinate_codes(coords[:, 0], coords[:, 1]),
+    )
+    inside = shapely.contains_properly(polygons[node_part], shapely.points(lon, lat))
+    chosen = at_vertex | (inside & np.concatenate([e[4] for e in entries]))
+    found, start = [], 0
+    for _, ids, part_lon, part_lat, _ in entries:
+        entrances = {}
+        for row in np.argsort(ids, kind="stable"):
+            if chosen[start + row]:
+                key = _coordinate_key(part_lon[row], part_lat[row])
+                entrances.setdefault(key, (part_lon[row], part_lat[row], []))[2].append(
+                    int(ids[row])
+                )
+        found.append(entrances)
+        start += len(ids)
+    return found
+
+
+def _pairs_in(part, code, other_part, other_code):
+    """Whether each pair ``(part[i], code[i])`` of the integer arrays is one of the
+    pairs ``(other_part[j], other_code[j])``. The codes are compared by their rank among
+    all codes, which with the part fits one int64."""
+    _, ranks = np.unique(np.concatenate([code, other_code]), return_inverse=True)
+    width = len(ranks) + 1
+    return np.isin(
+        np.asarray(part) * width + ranks[: len(code)],
+        np.asarray(other_part) * width + ranks[len(code) :],
+    )
 
 
 def _oriented_rings(polygon):
@@ -802,53 +844,128 @@ def _part_crossings(polygon, entrances):
     no edge: the edges to and from that entrance cover it. Nor does a pair that the edges
     of shorter pairs already join within :data:`MAX_ROUTE_STRETCH` times its length (see
     :func:`pyrosm._area_crossings.spanning_pairs`)."""
-    if len(entrances) < 2:
-        return []
-    points = np.array([(x, y) for x, y, _ in entrances.values()])
-    count = len(points)
-    scale = math.cos(math.radians(points[:, 1].mean()))
-    rings = _oriented_rings(polygon)
-    vertices = np.ascontiguousarray(np.vstack(rings), dtype=float)
-    following, preceding = ring_links(np.array([len(r) for r in rings], dtype=np.intp))
-    corners = vertices[_inward_corners(vertices, following, preceding, scale)]
-    corners = corners[
-        ~np.isin(_coordinate_codes(corners[:, 0], corners[:, 1]), _key_codes(entrances))
-    ]
-    outline = (vertices, following, preceding)
-    if count + len(corners) <= MAX_VISIBILITY_POINTS:
-        if len(corners):
-            points = np.vstack([points, corners])
-        first, second = _visible_pairs(polygon, points, outline)
-        plane = points * [scale, 1.0]
-        length = np.hypot(*(plane[first] - plane[second]).T)
-        step, distance = shortest_paths(len(points), first, second, length, 1 - 1e-12)
-        first, second, lengths, offsets, path = entrance_paths(step, distance, count)
-    else:
-        first, second = _visible_pairs(polygon, points, outline)
-        plane = points * [scale, 1.0]
-        lengths = np.array(
-            [float(np.hypot(*(plane[a] - plane[b]))) for a, b in zip(first, second)]
+    return _parts_crossings([(polygon, entrances)])[0]
+
+
+def _parts_crossings(parts):
+    """:func:`_part_crossings` of each ``(polygon, entrances)`` of ``parts``, for all of
+    them at once: the rings, the inward corners, the pairs that rounding leaves open and
+    the lines of the edges are worked out for all parts together."""
+    found = [[] for _ in parts]
+    live = [i for i, (_, entrances) in enumerate(parts) if len(entrances) >= 2]
+    if not live:
+        return found
+    polygons = np.array([parts[i][0] for i in live], dtype=object)
+    entrances = [parts[i][1] for i in live]
+    points = [np.array([(x, y) for x, y, _ in at.values()]) for at in entrances]
+    counts = [len(p) for p in points]
+    scales = [math.cos(math.radians(p[:, 1].mean())) for p in points]
+    outlines, corners = _part_outlines(polygons, scales, entrances)
+    few = [n + len(c) <= MAX_VISIBILITY_POINTS for n, c in zip(counts, corners)]
+    for k in np.flatnonzero(few):
+        if len(corners[k]):
+            points[k] = np.vstack([points[k], corners[k]])
+    paths = []
+    for k, (first, second) in enumerate(_visible_pairs(polygons, points, outlines)):
+        plane = points[k] * [scales[k], 1.0]
+        if few[k]:
+            length = np.hypot(*(plane[first] - plane[second]).T)
+            step, distance = shortest_paths(
+                len(points[k]), first, second, length, 1 - 1e-12
+            )
+            first, second, lengths, offsets, path = entrance_paths(
+                step, distance, counts[k]
+            )
+        else:
+            lengths = np.array(
+                [float(np.hypot(*(plane[a] - plane[b]))) for a, b in zip(first, second)]
+            )
+            offsets = np.arange(0, 2 * len(first) + 1, 2, dtype=np.intp)
+            path = np.column_stack([first, second]).ravel()
+        if not len(first):
+            paths.append(None)
+            continue
+        passed = _entrances_passed(points[k], counts[k], offsets, path)
+        candidates = np.flatnonzero(passed == 2)
+        order = candidates[np.argsort(lengths[candidates], kind="stable")]
+        kept = spanning_pairs(
+            len(points[k]), first, second, lengths, order, MAX_ROUTE_STRETCH
         )
-        offsets = np.arange(0, 2 * len(first) + 1, 2, dtype=np.intp)
-        path = np.column_stack([first, second]).ravel()
-    if not len(first):
-        return []
-    candidates = np.flatnonzero(_entrances_passed(points, count, offsets, path) == 2)
-    order = candidates[np.argsort(lengths[candidates], kind="stable")]
-    kept = spanning_pairs(len(points), first, second, lengths, order, MAX_ROUTE_STRETCH)
-    sizes = offsets[kept + 1] - offsets[kept]
-    rows = np.repeat(offsets[kept] - (np.cumsum(sizes) - sizes), sizes)
-    lines = shapely.linestrings(
-        points[path[rows + np.arange(sizes.sum())]],
-        indices=np.repeat(np.arange(len(kept)), sizes),
+        paths.append((first, second, offsets, path, kept))
+    lines = _path_lines(points, paths)
+    for k, i in enumerate(live):
+        if paths[k] is None:
+            continue
+        first, second, _, _, kept = paths[k]
+        node_ids = [ids for _, _, ids in entrances[k].values()]
+        found[i] = [
+            (u, v, lines[k][j])
+            for j, pair in enumerate(kept)
+            for u in node_ids[first[pair]]
+            for v in node_ids[second[pair]]
+        ]
+    return found
+
+
+def _part_outlines(polygons, scales, entrances):
+    """``(outlines, corners)`` of the ``polygons``: for each, ``(vertices, following,
+    preceding)``, its rings as :func:`_oriented_rings` gives them, one after another, and
+    the vertex after and before each (see :func:`pyrosm._area_crossings.ring_links`);
+    and its inward corners (see :func:`_inward_corners`, with its longitude scale of
+    ``scales``) that are not at one of its ``entrances`` (see :func:`_entrances`)."""
+    rings, ring_part = shapely.get_rings(
+        shapely.orient_polygons(polygons), return_index=True
     )
-    node_ids = [ids for _, _, ids in entrances.values()]
-    return [
-        (u, v, lines[k])
-        for k, i in enumerate(kept)
-        for u in node_ids[first[i]]
-        for v in node_ids[second[i]]
-    ]
+    coords, ring_of = shapely.get_coordinates(rings, return_index=True)
+    sizes = np.bincount(ring_of, minlength=len(rings)) - 1
+    # Each ring without its closing point
+    closing = np.cumsum(sizes + 1) - 1
+    keep = np.ones(len(coords), dtype=bool)
+    keep[closing] = False
+    vertices = np.ascontiguousarray(coords[keep], dtype=float)
+    following, preceding = ring_links(sizes.astype(np.intp))
+    part_sizes = np.bincount(ring_part, weights=sizes, minlength=len(polygons))
+    starts = np.concatenate([[0], np.cumsum(part_sizes.astype(np.intp))])
+    vertex_part = np.repeat(np.arange(len(polygons)), np.diff(starts))
+    inward = np.flatnonzero(
+        _inward_corners(vertices, following, preceding, np.asarray(scales)[vertex_part])
+    )
+    # A corner at an entrance of its part is not a corner to bend at
+    at_entrance = _pairs_in(
+        vertex_part[inward],
+        _coordinate_codes(vertices[inward, 0], vertices[inward, 1]),
+        np.repeat(np.arange(len(entrances)), [len(at) for at in entrances]),
+        _key_codes([key for at in entrances for key in at]),
+    )
+    inward = inward[~at_entrance]
+    corner_starts = np.searchsorted(inward, starts)
+    outlines, corners = [], []
+    for k in range(len(polygons)):
+        a, b = starts[k], starts[k + 1]
+        outlines.append((vertices[a:b], following[a:b] - a, preceding[a:b] - a))
+        corners.append(vertices[inward[corner_starts[k] : corner_starts[k + 1]]])
+    return outlines, corners
+
+
+def _path_lines(points, paths):
+    """For each part, the LineStrings of its kept paths: ``paths[k]`` is ``(first,
+    second, offsets, path, kept)`` (see :func:`_parts_crossings`) through ``points[k]``,
+    or None for a part without paths."""
+    coords, indices = [np.empty((0, 2))], [np.empty(0, dtype=np.intp)]
+    counts, total = [], 0
+    for k, entry in enumerate(paths):
+        if entry is None:
+            counts.append(0)
+            continue
+        _, _, offsets, path, kept = entry
+        sizes = offsets[kept + 1] - offsets[kept]
+        rows = np.repeat(offsets[kept] - (np.cumsum(sizes) - sizes), sizes)
+        coords.append(points[k][path[rows + np.arange(sizes.sum())]])
+        indices.append(np.repeat(np.arange(len(kept)) + total, sizes))
+        counts.append(len(kept))
+        total += len(kept)
+    lines = shapely.linestrings(np.concatenate(coords), indices=np.concatenate(indices))
+    return np.split(lines, np.cumsum(counts)[:-1])
 
 
 def _entrances_passed(points, count, offsets, path):
@@ -858,34 +975,67 @@ def _entrances_passed(points, count, offsets, path):
     passed, undecided = entrances_passed(
         np.ascontiguousarray(points, dtype=float), count, offsets, path, _TOLERANCE
     )
-    entrances = shapely.points(points[:count])
-    for i in np.flatnonzero(undecided):
-        line = shapely.LineString(points[path[offsets[i] : offsets[i + 1]]])
-        passed[i] = int(shapely.dwithin(line, entrances, _TOLERANCE).sum())
+    if undecided.any():
+        entrances = shapely.points(points[:count])
+        for i in np.flatnonzero(undecided):
+            line = shapely.LineString(points[path[offsets[i] : offsets[i + 1]]])
+            passed[i] = int(shapely.dwithin(line, entrances, _TOLERANCE).sum())
     return passed
 
 
-def _visible_pairs(polygon, points, outline):
-    """The pairs ``(first, second)`` of indices of ``points`` (lon/lat), ``first`` below
-    ``second``, that a straight line inside ``polygon`` joins (by
-    :func:`shapely.covers` on the polygon widened by the tolerance, which is asked only
-    where :func:`pyrosm._area_crossings.visibility` leaves a pair open). ``outline`` holds
-    the polygon's ring vertices (see :func:`_oriented_rings`), one ring after another,
-    and the vertex after and before each (see
-    :func:`pyrosm._area_crossings.ring_links`)."""
-    first, second = np.triu_indices(len(points), 1)
-    if shapely.is_valid(polygon):
-        status = visibility(*outline, np.ascontiguousarray(points, dtype=float))
-        inside = status == VISIBLE
-        open_pairs = np.flatnonzero(status == OPEN)
-    else:
-        inside = np.zeros(len(first), dtype=bool)
-        open_pairs = np.arange(len(first))
-    if len(open_pairs):
-        lines = shapely.linestrings(
-            np.stack([points[first[open_pairs]], points[second[open_pairs]]], axis=1)
-        )
-        widened = shapely.buffer(polygon, _TOLERANCE, join_style="mitre")
+def _visible_pairs(polygons, points, outlines):
+    """For each of the ``polygons``, the pairs ``(first, second)`` of indices of its
+    ``points`` (lon/lat), ``first`` below ``second``, that a straight line inside the
+    polygon joins (by :func:`shapely.covers` on the polygon widened by the tolerance,
+    which is asked only where :func:`pyrosm._area_crossings.visibility` leaves a pair
+    open, for all polygons at once). Its ``outlines`` entry holds its ring vertices (see
+    :func:`_oriented_rings`), one ring after another, and the vertex after and before
+    each (see :func:`pyrosm._area_crossings.ring_links`)."""
+    valid = shapely.is_valid(polygons)
+    pairs, insides, segments, segment_part, open_rows = [], [], [], [], []
+    # np.triu_indices by number of points, for the parts of this call
+    upper = {}
+    for k, (polygon_points, outline) in enumerate(zip(points, outlines)):
+        n = len(polygon_points)
+        if n not in upper:
+            upper[n] = np.triu_indices(n, 1)
+        first, second = upper[n]
+        if valid[k]:
+            status = visibility(
+                *outline, np.ascontiguousarray(polygon_points, dtype=float)
+            )
+            inside = status == VISIBLE
+            open_pairs = np.flatnonzero(status == OPEN)
+        else:
+            inside = np.zeros(len(first), dtype=bool)
+            open_pairs = np.arange(len(first))
+        if len(open_pairs):
+            segments.append(
+                np.stack(
+                    [
+                        polygon_points[first[open_pairs]],
+                        polygon_points[second[open_pairs]],
+                    ],
+                    axis=1,
+                )
+            )
+            segment_part.append(np.full(len(open_pairs), k))
+            open_rows.append((k, open_pairs))
+        pairs.append((first, second))
+        insides.append(inside)
+    if segments:
+        with_open = np.array([k for k, _ in open_rows])
+        widened = shapely.buffer(polygons[with_open], _TOLERANCE, join_style="mitre")
         shapely.prepare(widened)
-        inside[open_pairs] = shapely.covers(widened, lines)
-    return first[inside], second[inside]
+        segment_part = np.concatenate(segment_part)
+        covered = shapely.covers(
+            widened[np.searchsorted(with_open, segment_part)],
+            shapely.linestrings(np.concatenate(segments)),
+        )
+        for k, open_pairs in open_rows:
+            insides[k][open_pairs] = covered[: len(open_pairs)]
+            covered = covered[len(open_pairs) :]
+    return [
+        (first[inside], second[inside])
+        for (first, second), inside in zip(pairs, insides)
+    ]

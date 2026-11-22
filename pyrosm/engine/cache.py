@@ -73,19 +73,24 @@ def result_path(filepath, key_params):
     options). Identical reads share one cache file; any difference keys a new one. The filename is
     ``result_<source>_<read>.parquet``, where ``<source>`` depends only on the source path so all
     of one file's cache files can be matched by that prefix (see :func:`clear`)."""
-    fp = Path(filepath)
-    st = fp.stat()
-    key = {
-        "format": _RESULT_FORMAT,
-        "filepath": str(fp.resolve()),
-        "mtime_ns": st.st_mtime_ns,
-        "size": st.st_size,
-        "params": _stable(key_params),
-    }
+    key = dict(source_identity(filepath), format=_RESULT_FORMAT)
+    key["params"] = _stable(key_params)
     digest = hashlib.sha1(
         json.dumps(key, sort_keys=True, default=str).encode("ascii")
     ).hexdigest()[:16]
     return cache_dir() / ("result_%s_%s.parquet" % (_source_digest(filepath), digest))
+
+
+def source_identity(filepath):
+    """The source file as the result cache knows it: its resolved path, modification
+    time and size, which change when the file is replaced or written."""
+    fp = Path(filepath)
+    st = fp.stat()
+    return {
+        "filepath": str(fp.resolve()),
+        "mtime_ns": st.st_mtime_ns,
+        "size": st.st_size,
+    }
 
 
 def list_files(filepath=None):

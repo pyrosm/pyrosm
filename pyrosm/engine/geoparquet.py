@@ -86,8 +86,10 @@ def _stream_layer_to_parquet(
     grouping_relations=False,
     member_nodes=False,
     closed_only=False,
+    keep_nodes=True,
 ):
-    """Stream the layer (point nodes, then ways in chunks, then relations) to a
+    """Stream the layer (point nodes unless not ``keep_nodes``, then ways in chunks,
+    then relations) to a
     GeoParquet at ``output``, a few chunks in memory at a time (see
     :func:`~pyrosm.engine.ways.chunk_tables`). Returns the path, or ``None`` if there
     was nothing to write. ``keep_node_info`` keeps the ways' ``nodes`` column;
@@ -112,6 +114,7 @@ def _stream_layer_to_parquet(
         bounding_box,
         complete_relations,
         grouping_relations,
+        keep_nodes,
     )
     if collected is None:
         return None

@@ -173,6 +173,12 @@ def _add_dict_tags(tags, extra, columns=()):
             return tags
     if isinstance(extra, dict):
         for k, v in extra.items():
+            if type(k) is str and type(v) is str:
+                # The usual tag, decided without the checks below
+                key = "id" if k == "id_tag" else k
+                if key and key not in tags and key not in columns:
+                    tags[key] = v
+                continue
             key = _tag_key(k)
             if (
                 key is None
@@ -201,7 +207,7 @@ def _frame_tags(gdf, tag_cols, only=None):
         values = gdf[col]
         present = values.notna().to_numpy()
         for i, value in zip(np.flatnonzero(present).tolist(), values[present].tolist()):
-            tags[i][key] = _tag_str(value)
+            tags[i][key] = value if type(value) is str else _tag_str(value)
     extras = gdf["tags"].tolist() if "tags" in gdf.columns else [None] * len(gdf)
     columns = set(keys)
     if only is None:
@@ -215,6 +221,17 @@ def _frame_tags(gdf, tag_cols, only=None):
         found = _add_dict_tags({}, extras[i], columns)
         tags[i].update((key, found[key]) for key in in_json.intersection(found))
     return tags
+
+
+def _rows_tags(gdf, rows, only=None):
+    """``_frame_tags(gdf.iloc[rows], _frame_tag_columns(gdf), only)``, with only the
+    columns it reads taken from the rows: the tag columns (with ``only``, those of its
+    keys) and ``tags``."""
+    tag_cols = _frame_tag_columns(gdf)
+    if only is not None:
+        tag_cols = [col for col in tag_cols if _tag_key(col) in only]
+    read = tag_cols + (["tags"] if "tags" in gdf.columns else [])
+    return _frame_tags(gdf[read].iloc[rows], tag_cols, only)
 
 
 def _key_escapes(names):
@@ -247,11 +264,21 @@ def _may_hold_keys(values, names):
     escape = _key_escapes(names)
     if not isinstance(values.dtype, pd.StringDtype):
         return np.array([_may_hold_key(v, quoted, escape) for v in values], dtype=bool)
-    found = values.str.contains("|".join(map(re.escape, quoted)), regex=True)
-    found |= values.str.contains("\\", regex=False) & values.str.contains(
-        escape.pattern, regex=True
+    keys = "|".join(map(re.escape, quoted))
+    # One search of the column for a key or a backslash; the few values it finds are
+    # then searched for each
+    rows = np.flatnonzero(
+        values.str.contains(keys + r"|\\", regex=True).fillna(False).to_numpy(bool)
     )
-    return found.fillna(False).to_numpy(dtype=bool)
+    found = np.zeros(len(values), dtype=bool)
+    if len(rows):
+        subset = values.iloc[rows]
+        held = subset.str.contains(keys, regex=True)
+        held |= subset.str.contains("\\", regex=False) & subset.str.contains(
+            escape.pattern, regex=True
+        )
+        found[rows] = held.fillna(False).to_numpy(dtype=bool)
+    return found
 
 
 def _record_tags(record):

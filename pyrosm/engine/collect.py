@@ -798,8 +798,10 @@ def _collect_layer(
     bounding_box=None,
     complete_relations=False,
     grouping_relations=False,
+    keep_nodes=True,
 ):
-    """Shared collection for both output modes: node features, standalone ways, relations,
+    """Shared collection for both output modes: node features (unless not
+    ``keep_nodes``), standalone ways, relations,
     their member ways and the node coordinates the ways/relations reference. The member
     ways that the relations take in are left out of the standalone ways (see
     :func:`pyrosm.grouping_relations.area_member_way_ids`; a matching inner way of a
@@ -857,8 +859,10 @@ def _collect_layer(
         if keep_ways
         else None
     )
-    node_features = _collect_node_features(
-        shard_paths, tags_as_columns, keep_metadata, keep
+    node_features = (
+        _collect_node_features(shard_paths, tags_as_columns, keep_metadata, keep)
+        if keep_nodes
+        else None
     )
     if kept is None and relations is None and node_features is None:
         return None
