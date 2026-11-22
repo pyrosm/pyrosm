@@ -273,6 +273,22 @@ def _coordinate_key(x, y):
     return round(y * 1e7), 1_800_000_000 if lon == -1_800_000_000 else lon
 
 
+def _coordinate_codes(lon, lat):
+    """The coordinate keys (see :func:`_coordinate_key`) of the points ``lon``, ``lat``
+    (arrays), each as one integer (see :func:`_key_codes`)."""
+    key_lat = np.rint(lat * 1e7).astype(np.int64)
+    key_lon = np.rint(lon * 1e7).astype(np.int64)
+    key_lon[key_lon == -1_800_000_000] = 1_800_000_000
+    return (key_lat + 900_000_000) * 3_600_000_001 + (key_lon + 1_800_000_000)
+
+
+def _key_codes(keys):
+    """The coordinate ``keys`` ((latitude, longitude) in 1e-7 degrees each) as integers:
+    one integer per key, the same for the same key."""
+    pairs = np.array(list(keys), dtype=np.int64).reshape(-1, 2)
+    return (pairs[:, 0] + 900_000_000) * 3_600_000_001 + (pairs[:, 1] + 1_800_000_000)
+
+
 class _NewNodes:
     """Gives out the ids of new nodes: a vertex at the coordinates of an earlier new
     Point or vertex gets that node."""

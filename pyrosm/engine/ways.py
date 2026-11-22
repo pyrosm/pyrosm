@@ -1021,6 +1021,16 @@ def kept_ways(store, exclude_ids, filter_spec, in_box):
     return store.take(np.flatnonzero(mask))
 
 
+def closed_ways(refs_off, refs):
+    """Whether each way, way ``i`` with the node refs ``refs[refs_off[i]:refs_off[i +
+    1]]``, ends at the node it starts at: the ways that can be areas."""
+    starts, ends = refs_off[:-1], refs_off[1:]
+    some = ends > starts
+    closed = np.zeros(len(starts), dtype=bool)
+    closed[some] = refs[starts[some]] == refs[ends[some] - 1]
+    return closed
+
+
 def node_coordinates(shard_paths, refs):
     """The coordinate store of the nodes ``refs`` (a list of id arrays) refer to, as
     :func:`~pyrosm.engine.collect._node_lookup` builds it: their ids in ascending order

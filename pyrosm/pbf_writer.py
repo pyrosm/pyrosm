@@ -207,16 +207,13 @@ def _frame_tags(gdf, tag_cols, only=None):
     if only is None:
         return [_add_dict_tags(row, extra, columns) for row, extra in zip(tags, extras)]
     in_json = set(only) - columns
-    if not in_json:
+    if not in_json or "tags" not in gdf.columns:
         return tags
     # The reader's name of a tag keyed "id" is "id_tag" (see _tag_key)
     names = in_json | ({"id_tag"} if "id" in in_json else set())
-    quoted = [json.dumps(name, ensure_ascii=False) for name in sorted(names)]
-    escape = _key_escapes(names)
-    for row, extra in zip(tags, extras):
-        if _may_hold_key(extra, quoted, escape):
-            found = _add_dict_tags({}, extra, columns)
-            row.update((key, found[key]) for key in in_json.intersection(found))
+    for i in np.flatnonzero(_may_hold_keys(gdf["tags"], names)).tolist():
+        found = _add_dict_tags({}, extras[i], columns)
+        tags[i].update((key, found[key]) for key in in_json.intersection(found))
     return tags
 
 
@@ -240,6 +237,21 @@ def _may_hold_key(extra, quoted, escape):
             return True
         return "\\" in extra and escape.search(extra) is not None
     return isinstance(extra, dict)
+
+
+def _may_hold_keys(values, names):
+    """Whether each of the JSON ``tags`` ``values`` (a Series) can hold one of the keys
+    ``names``, as :func:`_may_hold_key` decides for one value; a column of text is
+    searched all at once."""
+    quoted = [json.dumps(name, ensure_ascii=False) for name in sorted(names)]
+    escape = _key_escapes(names)
+    if not isinstance(values.dtype, pd.StringDtype):
+        return np.array([_may_hold_key(v, quoted, escape) for v in values], dtype=bool)
+    found = values.str.contains("|".join(map(re.escape, quoted)), regex=True)
+    found |= values.str.contains("\\", regex=False) & values.str.contains(
+        escape.pattern, regex=True
+    )
+    return found.fillna(False).to_numpy(dtype=bool)
 
 
 def _record_tags(record):

@@ -76,6 +76,7 @@ from geopandas import GeoDataFrame
 from rapidjson import dumps
 from shapely.geometry import LineString
 
+from pyrosm.int64_hash import Int64Set
 from pyrosm.levels import level_ranges
 
 # The network types whose reads take indoor_elements=True.
@@ -242,6 +243,29 @@ _EDGE_TAG_KEYS = frozenset(
     {"level", "highway", "conveying", "incline", *PLATFORM_FILTER}
 )
 
+# The highway values that make an edge stairs (see is_vertical) or a platform
+_EDGE_HIGHWAYS = frozenset({"steps", *PLATFORM_FILTER["highway"]})
+
+
+def _edge_tag_rows(edges):
+    """The rows of ``edges`` whose tags can give them a level or a kind in
+    :func:`edge_levels` and :func:`edge_vertical`: a value in a column of a key of
+    :data:`_EDGE_TAG_KEYS` (of ``highway``, one of :data:`_EDGE_HIGHWAYS`), or JSON
+    ``tags`` that can hold one of those keys (see
+    :func:`pyrosm.pbf_writer._may_hold_key`)."""
+    from pyrosm.pbf_writer import _frame_tag_columns, _may_hold_keys, _tag_key
+
+    found = np.zeros(len(edges), dtype=bool)
+    for col in _frame_tag_columns(edges):
+        key = _tag_key(col)
+        if key == "highway":
+            found |= edges[col].isin(_EDGE_HIGHWAYS).to_numpy()
+        elif key in _EDGE_TAG_KEYS:
+            found |= edges[col].notna().to_numpy()
+    if "tags" in edges.columns:
+        found |= _may_hold_keys(edges["tags"], _EDGE_TAG_KEYS)
+    return np.flatnonzero(found)
+
 
 def edge_levels(edges, tags, node_levels=None):
     """``(u_level, v_level)``: float arrays of the level at each end of ``edges`` (a
@@ -252,13 +276,18 @@ def edge_levels(edges, tags, node_levels=None):
     n = len(edges)
     low, high = np.full(n, np.nan), np.full(n, np.nan)
     vertical = np.zeros(n, dtype=bool)
+    rise = np.zeros(n, dtype=np.int8)
+    platform = np.zeros(n, dtype=bool)
     for i, row_tags in enumerate(tags):
+        if not row_tags:
+            continue
         ranges = level_ranges(row_tags.get("level"))
         if ranges:
             low[i] = min(r[0] for r in ranges)
             high[i] = max(r[1] for r in ranges)
         vertical[i] = is_vertical(row_tags)
-    rise = np.array([_rise(row_tags) for row_tags in tags], dtype=np.int8)
+        rise[i] = _rise(row_tags)
+        platform[i] = _is_platform(row_tags)
     single = low == high
     listed = high > low
     u_level = np.where(single, low, np.nan)
@@ -295,7 +324,7 @@ def edge_levels(edges, tags, node_levels=None):
                 )
                 if len(found) == 1:
                     end_levels[i] = found[0]
-    platforms = np.isnan(low) & np.array([_is_platform(t) for t in tags], dtype=bool)
+    platforms = np.isnan(low) & platform
     if platforms.any():
         _fill_platform_levels(u, v, u_level, v_level, platforms)
     return u_level, v_level
@@ -345,12 +374,14 @@ def _range_stair_rows(edges, ends):
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
-    at_end = np.flatnonzero(np.isin(u, ends) | np.isin(v, ends))
+    wanted = Int64Set(ends)
+    at_end = np.flatnonzero(wanted.isin(u) | wanted.isin(v))
     if "id" not in edges.columns or not len(at_end):
         return []
     stairs = []
     for row, tags in zip(
-        at_end, _frame_tags(edges.iloc[at_end], _frame_tag_columns(edges))
+        at_end,
+        _frame_tags(edges.iloc[at_end], _frame_tag_columns(edges), only=_EDGE_TAG_KEYS),
     ):
         ranges = level_ranges(tags.get("level"))
         if (
@@ -370,17 +401,20 @@ def stair_end_levels(edges, ends, own_levels=None):
     nodes' ``own_levels``, see :func:`node_levels`), or from its incline."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
-    wanted = stair_way_ends(edges, ends)
+    stairs = _range_stair_rows(edges, ends)
+    wanted = stair_way_ends(edges, ends, stairs)
     if not wanted:
         return {}
     u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
     ids = edges["id"].to_numpy()
-    ways = np.isin(ids, ids[_range_stair_rows(edges, ends)])
-    way_nodes = np.concatenate([u[ways], v[ways]])
-    near = np.flatnonzero(np.isin(u, way_nodes) | np.isin(v, way_nodes))
+    ways = Int64Set(ids[stairs]).isin(ids)
+    way_nodes = Int64Set(np.concatenate([u[ways], v[ways]]))
+    near = np.flatnonzero(way_nodes.isin(u) | way_nodes.isin(v))
     subset = edges.iloc[near]
     u_level, v_level = edge_levels(
-        subset, _frame_tags(subset, _frame_tag_columns(edges)), own_levels
+        subset,
+        _frame_tags(subset, _frame_tag_columns(edges), only=_EDGE_TAG_KEYS),
+        own_levels,
     )
     found = {}
     for a, b, level_a, level_b, way in zip(
@@ -392,16 +426,19 @@ def stair_end_levels(edges, ends, own_levels=None):
     return found
 
 
-def stair_way_ends(edges, ends):
+def stair_way_ends(edges, ends, stairs=None):
     """``{node: (other end, starts, inner)}`` for the nodes ``ends`` that end stairs,
     escalators or moving walkways with a level range in ``edges``: the node at the other
     end of the way (see :func:`_vertical_ways`), whether the way starts at the node, in
-    its drawn direction, and the number of nodes between its ends."""
-    stairs = _range_stair_rows(edges, ends)
+    its drawn direction, and the number of nodes between its ends. ``stairs`` are the
+    rows of such ways that end at ``ends`` when the caller has them (see
+    :func:`_range_stair_rows`)."""
+    if stairs is None:
+        stairs = _range_stair_rows(edges, ends)
     if not stairs:
         return {}
     ids = edges["id"].to_numpy()
-    rows = np.flatnonzero(np.isin(ids, ids[stairs]))
+    rows = np.flatnonzero(Int64Set(ids[stairs]).isin(ids))
     vertical = np.zeros(len(edges), dtype=bool)
     vertical[rows] = True
     wanted = set(np.asarray(ends).tolist())
@@ -436,12 +473,13 @@ def _vertical_ways(edges, vertical):
     each edge on its own, as are the lines across areas (``walking_area`` True)."""
     u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
     alone = np.full(len(edges), "id" not in edges.columns) | _area_lines(edges)
+    ids = edges["id"].to_numpy() if "id" in edges.columns else None
     ways, found = {}, []
     for i in np.flatnonzero(vertical):
         if alone[i]:
             found.append(([i], [u[i], v[i]]))
         else:
-            ways.setdefault(edges["id"].iat[i], []).append(i)
+            ways.setdefault(ids[i], []).append(i)
     for rows in ways.values():
         line = _line_order(rows, u, v)
         found += [line] if line else [([i], [u[i], v[i]]) for i in rows]
@@ -628,14 +666,14 @@ def edge_vertical(tags, areas=False):
     other steps, ``"moving_walkway"`` for other ways that move, None for the rest. With
     ``areas``, the tags are those of the areas the edges cross, and stairs mapped as an
     area (see :func:`_stairs_tagged`) count as steps too."""
-    kinds = []
-    for row_tags in tags:
-        kind = None
+    kinds = [None] * len(tags)
+    for i, row_tags in enumerate(tags):
+        if not row_tags:
+            continue
         if row_tags.get("highway") == "steps" or (areas and _stairs_tagged(row_tags)):
-            kind = "escalator" if _is_moving(row_tags) else "stairs"
+            kinds[i] = "escalator" if _is_moving(row_tags) else "stairs"
         elif _is_moving(row_tags):
-            kind = "moving_walkway"
-        kinds.append(kind)
+            kinds[i] = "moving_walkway"
     return kinds
 
 
@@ -672,13 +710,18 @@ def with_indoor_columns(edges, escalator_slope, nodes=None, levels=None):
     millimetres; None keeps the length on the map."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
-    tags = _frame_tags(edges, _frame_tag_columns(edges), only=_EDGE_TAG_KEYS)
+    # The other edges' tags give them no level and no kind: they count as no tags
+    rows = _edge_tag_rows(edges)
+    tags = [{}] * len(edges)
+    for row, row_tags in zip(
+        rows,
+        _frame_tags(edges.iloc[rows], _frame_tag_columns(edges), only=_EDGE_TAG_KEYS),
+    ):
+        tags[row] = row_tags
     own = {**(levels or {}), **({} if nodes is None else node_levels(nodes))}
     u_level, v_level = edge_levels(edges, tags, own)
-    vertical = edge_vertical(tags)
-    vertical = [
-        None if line else kind for kind, line in zip(vertical, _area_lines(edges))
-    ]
+    vertical = np.array(edge_vertical(tags), dtype=object)
+    vertical[_area_lines(edges)] = None
     edges = edges.assign(u_level=u_level, v_level=v_level, vertical=vertical)
     if escalator_slope is not None:
         escalator = edges["vertical"] == "escalator"
@@ -703,12 +746,13 @@ def stair_areas_with_ways(areas, edges):
     rows = np.flatnonzero((edges["osm_type"] == "way").to_numpy() & ~_area_lines(edges))
     if not stair.any() or not len(rows):
         return set()
+    tree = shapely.STRtree(areas.geometry.to_numpy()[stair])
+    # A middle inside an area is in its box, and so is a part of the edge's box
+    rows = rows[np.unique(tree.query(edges.geometry.to_numpy()[rows])[0])]
     middles = shapely.line_interpolate_point(
         edges.geometry.to_numpy()[rows], 0.5, normalized=True
     )
-    inside, area_rows = shapely.STRtree(areas.geometry.to_numpy()[stair]).query(
-        middles, predicate="within"
-    )
+    inside, area_rows = tree.query(middles, predicate="within")
     edge_tags = _frame_tags(edges.iloc[rows[inside]], _frame_tag_columns(edges))
     keys = list(zip(areas["osm_type"][stair], areas["id"][stair]))
     return {
@@ -792,7 +836,7 @@ def without_levelless_lines(nodes, edges):
         & np.isnan(edges["u_level"].to_numpy(dtype=float))
         & np.isnan(edges["v_level"].to_numpy(dtype=float))
     )
-    tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges))
+    tags = _frame_tags(edges.iloc[rows], _frame_tag_columns(edges), only={"level"})
     levelled = [level_ranges(row_tags.get("level")) is not None for row_tags in tags]
     return _without_rows(nodes, edges, rows[levelled])
 
@@ -806,11 +850,17 @@ def _without_rows(nodes, edges, rows):
     drop[rows] = True
     kept = edges[~drop].reset_index(drop=True)
     kept.attrs = dict(edges.attrs)
-    used = set(kept["u"]) | set(kept["v"])
-    ends = set(edges["u"].iloc[rows]) | set(edges["v"].iloc[rows])
-    left = nodes[~nodes["id"].isin(ends - used)].reset_index(drop=True)
+    left = nodes[~nodes["id"].isin(_ends_only_of(edges, drop))].reset_index(drop=True)
     left.attrs = dict(nodes.attrs)
     return left, kept
+
+
+def _ends_only_of(edges, drop):
+    """The nodes that end edges among ``edges`` that ``drop`` marks and no other edge,
+    as an array."""
+    u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
+    ends = np.unique(np.concatenate([u[drop], v[drop]]))
+    return ends[~Int64Set(np.concatenate([u[~drop], v[~drop]])).isin(ends)]
 
 
 def with_platform_filter(read_filter):
@@ -978,16 +1028,16 @@ def border_entrances(areas, walls=None, anchors=()):
                 ring if isinstance(ring, (list, np.ndarray)) else None,
             )
         )
-    places, walled = _node_places(spaces, walls, anchors)
-    node_at = {}
-    for node, (x, y) in places.items():
-        key = _coordinate_key(x, y)
-        node_at[key] = None if node_at.get(key, node) != node else node
     meeting, sides = {}, {}
     for key, geometry, ranges, _ in spaces:
         for vertex, next_to in _outline_sides(geometry).items():
             meeting.setdefault(vertex, {})[key] = ranges
             sides.setdefault(vertex, {})[key] = next_to
+    places, walled = _node_places(spaces, walls, anchors, meeting)
+    node_at = {}
+    for node, (x, y) in places.items():
+        key = _coordinate_key(x, y)
+        node_at[key] = None if node_at.get(key, node) != node else node
     rows = []
     for vertex, by_space in meeting.items():
         node = node_at.get(vertex)
@@ -1047,14 +1097,25 @@ def without_clashing_copies(borders, nodes, doors):
         split |= {
             int(door)
             for door, tags in zip(
-                doors["id"], _frame_tags(doors, _frame_tag_columns(doors))
+                doors["id"],
+                _frame_tags(
+                    doors, _frame_tag_columns(doors), only={"highway", "repeat_on"}
+                ),
             )
             if tags.get("highway") == "elevator" or tags.get("repeat_on")
         }
     copy = (borders["id"] != borders["node"]).to_numpy()
-    taken = set(nodes["id"]) | doors_ids | set(borders["id"][~copy])
-    clash = borders["node"].isin(split) | borders["id"].isin(taken)
-    kept = borders[~copy | ~clash.to_numpy()]
+    taken = Int64Set(
+        np.concatenate(
+            [
+                nodes["id"].to_numpy(),
+                np.fromiter(doors_ids, dtype=np.int64),
+                borders["id"].to_numpy()[~copy],
+            ]
+        )
+    )
+    clash = borders["node"].isin(split).to_numpy() | taken.isin(borders["id"])
+    kept = borders[~copy | ~clash]
     return kept if len(kept) else None
 
 
@@ -1184,9 +1245,10 @@ def _one_level(ranges):
     return low if len(set(ranges)) == 1 and low == high else np.nan
 
 
-def _node_places(spaces, walls, anchors):
+def _node_places(spaces, walls, anchors, vertices):
     """``(places, walled)``: ``{node id: (x, y)}``, the places of nodes that the reads
-    tell, and ``{node id: [(level ranges, vertices), ...]}``, for each ``indoor=wall``
+    tell (of the ``anchors``, only of the nodes that are at one of the coordinate keys
+    ``vertices`` there or are on a way of the walls or the spaces), and ``{node id: [(level ranges, vertices), ...]}``, for each ``indoor=wall``
     way among ``walls`` (with ``nodes`` lists) through a node, its levels (None without
     a ``level`` tag) and its vertices next to the node (None when its coordinates do not
     follow its node list). A node of the ``anchors`` (frames with ``id``, ``lon`` and ``lat``, such as
@@ -1199,7 +1261,7 @@ def _node_places(spaces, walls, anchors):
     known at just one of its two places is drawn in that direction, which gives the
     place of each of its nodes. A way whose node list does not match its outline tells
     nothing, and a node with places that disagree has none."""
-    from pyrosm.new_elements import _coordinate_key
+    from pyrosm.new_elements import _coordinate_codes, _coordinate_key, _key_codes
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
 
     places, conflicts, walled = {}, set(), {}
@@ -1210,10 +1272,18 @@ def _node_places(spaces, walls, anchors):
             conflicts.add(node)
         places.setdefault(node, (float(xy[0]), float(xy[1])))
 
-    for frame in anchors:
-        if frame is not None and len(frame):
-            for node, x, y in zip(frame["id"], frame["lon"], frame["lat"]):
-                place(node, (x, y))
+    frames = [frame for frame in anchors if frame is not None and len(frame)]
+    if frames:
+        ids = np.concatenate([frame["id"].to_numpy() for frame in frames])
+        lon = np.concatenate([frame["lon"].to_numpy(dtype=float) for frame in frames])
+        lat = np.concatenate([frame["lat"].to_numpy(dtype=float) for frame in frames])
+        rings = [ring for _, _, _, ring in spaces if ring is not None]
+        if walls is not None and "nodes" in walls.columns:
+            rings += [r for r in walls["nodes"] if isinstance(r, (list, np.ndarray))]
+        at_vertex = Int64Set(_key_codes(vertices)).isin(_coordinate_codes(lon, lat))
+        wanted = Int64Set(np.concatenate([ids[at_vertex], *map(np.asarray, rings)]))
+        for row in np.flatnonzero(wanted.isin(ids)).tolist():
+            place(ids[row], (lon[row], lat[row]))
     if walls is not None and "nodes" in walls.columns:
         wall_tags = _frame_tags(walls, _frame_tag_columns(walls))
         for ring, line, tags in zip(walls["nodes"], walls.geometry, wall_tags):
@@ -1311,33 +1381,50 @@ def without_lift_area_ways(nodes, edges, lifts):
     drop &= edges["osm_type"] == "way"
     if not drop.any():
         return nodes, edges
-    kept = edges[~drop]
-    used = set(kept["u"]) | set(kept["v"])
-    gone = (set(edges.loc[drop, "u"]) | set(edges.loc[drop, "v"])) - used
-    return nodes[~nodes["id"].isin(gone)], kept
+    gone = _ends_only_of(edges, drop.to_numpy())
+    return nodes[~nodes["id"].isin(gone)], edges[~drop]
 
 
 def concat_with_tag_columns(frames):
     """The rows of ``frames`` in one frame, in which each frame has the columns of the
-    others: those it lacks are filled from its tags (see :func:`_with_tag_columns`)."""
+    others: those it lacks are filled from its tags (see :func:`_with_tag_columns`), in
+    the type the column has in the first frame that has it when the filled values fit
+    that type unchanged (text and float columns), else as objects."""
     columns = [col for frame in frames for col in frame.columns]
-    frames = [_with_tag_columns(frame, columns) for frame in frames]
+    dtypes = {}
+    for frame in frames:
+        for col in frame.columns:
+            dtypes.setdefault(col, frame[col].dtype)
+    frames = [_with_tag_columns(frame, columns, dtypes) for frame in frames]
     return pd.concat(frames, ignore_index=True)
 
 
-def _with_tag_columns(frame, columns):
+def _with_tag_columns(frame, columns, dtypes):
     """``frame`` with those of ``columns`` that it lacks, filled from its tags (see
     :func:`pyrosm.pbf_writer._frame_tags`), so that a tag of the JSON ``tags`` is kept
-    where another frame has a column for it."""
+    where another frame has a column for it. A filled column takes its type in
+    ``dtypes`` when its values fit it unchanged: text for a text column, or no value at
+    all for a float column; the type's missing value then stands for an absent tag."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags, _tag_key
 
     missing = list(dict.fromkeys(col for col in columns if col not in frame.columns))
     if not missing:
         return frame
     tags = _frame_tags(frame, _frame_tag_columns(frame))
-    return frame.assign(
-        **{col: [row.get(_tag_key(col)) for row in tags] for col in missing}
-    )
+    filled = {}
+    for col in missing:
+        values = pd.Series(
+            [row.get(_tag_key(col)) for row in tags], index=frame.index, dtype=object
+        )
+        dtype = dtypes[col]
+        present = values.dropna()
+        if (
+            isinstance(dtype, pd.StringDtype)
+            and present.map(lambda value: isinstance(value, str)).all()
+        ) or (dtype.kind == "f" and present.empty):
+            values = values.astype(dtype)
+        filled[col] = values
+    return frame.assign(**filled)
 
 
 def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
@@ -1377,8 +1464,10 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
         copied = door_copies(doors, doors_joining_levels(doors, areas, lifts))
         twice = set(copied["id"][copied["id"].duplicated()])
         new = set(copied["id"]) - set(doors["id"])
-        taken = set(nodes["id"]) | (set() if borders is None else set(borders["id"]))
-        clash = sorted(twice | (new & taken))
+        taken = Int64Set(
+            nodes["id"] if borders is None else pd.concat([nodes["id"], borders["id"]])
+        )
+        clash = sorted(twice | {node for node in new if node in taken})
         if clash:
             raise ValueError(
                 "Doors on several levels (a repeat_on tag, or a level tag that lists "
@@ -1388,9 +1477,9 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
         # The doors copied per level, and their copies, enter areas on their level only
         repeated = new | {door for door in doors["id"] if node_copy_id(door, 1) in new}
         doors, copy_ids = copied, new
-        ends = set(edges["u"]) | set(edges["v"])
+        before = edges
         edges = _walkways_on_door_copies(edges, copied[copied["id"].isin(new)])
-        left = ends - set(edges["u"]) - set(edges["v"])
+        left = _ends_left(before, edges)
         if left:
             # A door whose edges all end at its copies is no node of the network now
             attrs = dict(nodes.attrs)
@@ -1403,12 +1492,11 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
     if doors is not None and "tags" in entrances.columns:
         # A door of the network enters areas with its tags as a door, on its own level
         door_tags = dict(zip(doors["id"], doors["tags"]))
-        entrances = entrances.assign(
-            tags=[
-                door_tags.get(i, tags)
-                for i, tags in zip(entrances["id"], entrances["tags"])
-            ]
-        )
+        ids = entrances["id"].to_numpy()
+        tags = entrances["tags"].to_numpy(dtype=object, copy=True)
+        for row in np.flatnonzero(Int64Set(list(door_tags)).isin(ids)):
+            tags[row] = door_tags[ids[row]]
+        entrances = entrances.assign(tags=tags)
     for frame in added:
         new = frame[~frame["id"].isin(nodes["id"])]
         new = new[[col for col in columns if col in new.columns]]
@@ -1423,11 +1511,16 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
             new = borders[~borders["id"].isin(nodes["id"])]
             only = dict(zip(new["id"], new["spaces"]))
         rows = crossing_rows(entrances, plain, areas, door_areas, only, repeated, lifts)
+    u, v = edges["u"].to_numpy(), edges["v"].to_numpy()
     if rows is not None:
         # A line along the outline of an area that is an edge itself (a platform's ring)
-        joined = set(zip(edges["u"], edges["v"])) | set(zip(edges["v"], edges["u"]))
+        at = Int64Set(np.concatenate([rows["u"].to_numpy(), rows["v"].to_numpy()]))
+        near = np.flatnonzero(at.isin(u) & at.isin(v))
+        joined = set(zip(u[near].tolist(), v[near].tolist()))
+        joined |= set(zip(v[near].tolist(), u[near].tolist()))
         rows = rows[[pair not in joined for pair in zip(rows["u"], rows["v"])]]
-    used = (set(edges["u"]) | set(edges["v"])) & copy_ids
+    copies = Int64Set(list(copy_ids))
+    used = set(u[copies.isin(u)].tolist()) | set(v[copies.isin(v)].tolist())
     if rows is not None and not rows.empty:
         rows = rows.assign(walking_area=True)
         attrs = dict(edges.attrs)
@@ -1450,6 +1543,17 @@ def with_indoor_crossings(nodes, edges, areas, doors, borders=None, lifts=None):
                 crs=nodes.crs,
             )
     return nodes, edges
+
+
+def _ends_left(before, after):
+    """The nodes that end edges of ``before`` and no edge of ``after``, the same edges
+    with some of their ends moved (see :func:`_walkways_on_door_copies`)."""
+    old = np.concatenate([before["u"].to_numpy(), before["v"].to_numpy()])
+    new = np.concatenate([after["u"].to_numpy(), after["v"].to_numpy()])
+    moved = old[old != new]
+    if not len(moved):
+        return set()
+    return set(moved[~Int64Set(new).isin(moved)].tolist())
 
 
 # The largest lift node id whose copies' ids (see node_copy_id) fit in a signed 64-bit
@@ -1529,29 +1633,41 @@ def door_copies(doors, joining=()):
     """
     from pyrosm.pbf_writer import _tag_str
 
-    rows = []
-    for _, row in doors.iterrows():
-        tags = json.loads(row["tags"]) if isinstance(row["tags"], str) else {}
+    rows, ids, texts = [], [], []
+    for row, (door, text) in enumerate(zip(doors["id"].tolist(), doors["tags"])):
+        tags = json.loads(text) if isinstance(text, str) else {}
         own = level_ranges(tags.get("level")) or []
         levels = _whole_levels(own + (level_ranges(tags.get("repeat_on")) or []))
         copied = (
-            (tags.get("repeat_on") or row["id"] in joining)
+            (tags.get("repeat_on") or door in joining)
             and tags.get("highway") != "elevator"
-            and 0 < row["id"] <= _MAX_LIFT_ID
+            and 0 < door <= _MAX_LIFT_ID
             and 1 < len(levels) <= MAX_REPEATED_LEVELS
         )
         if not copied:
             rows.append(row)
+            ids.append(door)
+            texts.append(text)
             continue
         home = own[0][0] if own else min(levels)
         others = [level for level in levels if level != home]
         for rank, level in [(0, home)] + list(enumerate(others, 1)):
             copy = {k: v for k, v in tags.items() if k != "repeat_on"}
             copy["level"] = _tag_str(level)
-            node = row["id"] if rank == 0 else node_copy_id(row["id"], rank)
-            rows.append(row.copy())
-            rows[-1]["id"], rows[-1]["tags"] = node, dumps(copy)
-    return GeoDataFrame(rows, geometry="geometry", crs=doors.crs).reset_index(drop=True)
+            rows.append(row)
+            ids.append(door if rank == 0 else node_copy_id(door, rank))
+            texts.append(dumps(copy))
+    copies = doors.iloc[rows].reset_index(drop=True)
+    copies["id"] = ids
+    copies["tags"] = texts
+    copies.attrs = {}
+    # Integer and float columns come back as int64 and float64
+    for col in copies.columns:
+        if copies[col].dtype.kind in "iu":
+            copies[col] = copies[col].astype(np.int64)
+        elif copies[col].dtype.kind == "f":
+            copies[col] = copies[col].astype(np.float64)
+    return copies
 
 
 def copied_node(copy):
@@ -1607,16 +1723,23 @@ def _whole_levels(ranges):
     return sorted(float(level) for level in found)
 
 
-def _tags_by_node(nodes):
-    """``(id, tags)`` of each of ``nodes`` with tags, from their ``tags`` column (dicts,
-    or JSON text)."""
+def _tags_by_node(nodes, keys):
+    """``(id, tags)`` of each of ``nodes`` whose tags can hold one of ``keys`` (see
+    :func:`pyrosm.pbf_writer._may_hold_key`), from their ``tags`` column (dicts, or JSON
+    text)."""
+    from pyrosm.pbf_writer import _key_escapes, _may_hold_key
+
     if "tags" not in nodes.columns:
         return
-    for node, tags in zip(nodes["id"], nodes["tags"]):
-        if isinstance(tags, str):
-            tags = json.loads(tags)
-        if isinstance(tags, dict):
-            yield int(node), tags
+    values = nodes["tags"]
+    present = values.notna().to_numpy()
+    quoted = [json.dumps(key, ensure_ascii=False) for key in sorted(keys)]
+    escape = _key_escapes(keys)
+    for node, tags in zip(
+        nodes["id"].to_numpy()[present].tolist(), values[present].tolist()
+    ):
+        if _may_hold_key(tags, quoted, escape):
+            yield int(node), json.loads(tags) if isinstance(tags, str) else tags
 
 
 def _lift_levels(nodes):
@@ -1624,7 +1747,7 @@ def _lift_levels(nodes):
     the levels its own ``level`` tag names (see :func:`_whole_levels`)."""
     return {
         node: _whole_levels(level_ranges(tags.get("level")) or [])
-        for node, tags in _tags_by_node(nodes)
+        for node, tags in _tags_by_node(nodes, {"highway"})
         if tags.get("highway") == "elevator"
     }
 
@@ -1633,7 +1756,7 @@ def node_levels(nodes):
     """``{id: (level,)}``: the level of each of ``nodes`` whose ``level`` tag names one
     level."""
     found = {}
-    for node, tags in _tags_by_node(nodes):
+    for node, tags in _tags_by_node(nodes, {"level"}):
         ranges = level_ranges(tags.get("level"))
         if ranges and len(ranges) == 1 and ranges[0][0] == ranges[0][1]:
             found[node] = (ranges[0][0],)
@@ -1664,7 +1787,14 @@ def split_lifts(nodes, edges):
     metadata = [
         col for col in LIFT_METADATA if col in edges.columns and col in at.columns
     ]
-    taken = set(nodes["id"].tolist())
+    taken, new = Int64Set(nodes["id"].to_numpy()), set()
+    # The edges whose ends are at each lift node, in their order
+    at_lift = {}
+    for ends, end_levels in ((u, u_level), (v, v_level)):
+        for i in np.flatnonzero(
+            Int64Set(list(levels)).isin(ends) & ~np.isnan(end_levels)
+        ).tolist():
+            at_lift.setdefault((int(ends[i]), ends is v), []).append(i)
     copies, lift_rows = [], []
     for lift, found in sorted(levels.items()):
         if len(found) < 2 or not 0 < lift <= _MAX_LIFT_ID:
@@ -1672,15 +1802,17 @@ def split_lifts(nodes, edges):
         ordered = sorted(found)
         ids = {level: node_copy_id(lift, rank) for rank, level in enumerate(ordered)}
         ids[ordered[0]] = lift
-        clash = [node for node in list(ids.values())[1:] if node in taken]
+        clash = [
+            node for node in list(ids.values())[1:] if node in taken or node in new
+        ]
         if clash or len(ordered) >= 500:
             raise ValueError(
                 "Lift node %d cannot be split per level: the ids of its copies, %s, "
                 "are taken or too many." % (lift, sorted(ids.values())[:3])
             )
-        taken.update(ids.values())
+        new.update(ids.values())
         for ends, end_levels in ((u, u_level), (v, v_level)):
-            for i in np.flatnonzero((ends == lift) & ~np.isnan(end_levels)):
+            for i in at_lift.get((lift, ends is v), ()):
                 ends[i] = ids[float(end_levels[i])]
         row = at.loc[lift]
         point = row.geometry
@@ -1878,16 +2010,27 @@ def _ways_between_levels(edges, kind):
     ``vertical`` is ``kind`` (lines across areas aside), by the lowest and highest level
     of their edges when these differ, each with the geometry and the summed ``length``
     of its edges."""
-    rows = edges[(edges["vertical"] == kind).to_numpy() & ~_area_lines(edges)]
+    keys = ["osm_type", "id"] if "osm_type" in edges else ["id"]
+    rows = np.flatnonzero((edges["vertical"] == kind).to_numpy() & ~_area_lines(edges))
+    # The ways in the order of their keys, the edges of a way in their order
+    codes = [pd.factorize(edges[key].to_numpy()[rows], sort=True)[0] for key in keys]
+    known = np.logical_and.reduce([code >= 0 for code in codes])
+    order = np.lexsort([code[known] for code in codes[::-1]])
+    rows = rows[known][order]
+    codes = [code[known][order] for code in codes]
+    new_way = np.logical_or.reduce([code[1:] != code[:-1] for code in codes])
+    starts = np.flatnonzero(np.concatenate([[True], new_way])) if len(rows) else []
+    u_level = edges["u_level"].to_numpy(dtype=float)[rows]
+    v_level = edges["v_level"].to_numpy(dtype=float)[rows]
+    lengths = edges["length"].to_numpy(dtype=float)[rows]
+    geometries = edges.geometry.to_numpy()[rows]
     found = {}
-    for _, way in rows.groupby(["osm_type", "id"] if "osm_type" in rows else "id"):
-        levels = np.concatenate(
-            [way["u_level"].to_numpy(dtype=float), way["v_level"].to_numpy(dtype=float)]
-        )
+    for a, b in zip(starts, list(starts[1:]) + [len(rows)]):
+        levels = np.concatenate([u_level[a:b], v_level[a:b]])
         levels = levels[~np.isnan(levels)]
         if len(levels) and levels.min() < levels.max():
             found.setdefault((levels.min(), levels.max()), []).append(
-                (shapely.union_all(way.geometry.to_numpy()), way["length"].sum())
+                (shapely.union_all(geometries[a:b]), np.nansum(lengths[a:b]))
             )
     return found
 
@@ -1914,11 +2057,11 @@ def _levels_at_nodes(edges, nodes):
     """``{node id: {level, ...}}``: the levels of ``edges`` (``u_level`` and
     ``v_level``) at those of their end nodes that are among ``nodes``."""
     found = {}
-    wanted = list(nodes)
+    wanted = Int64Set(np.fromiter(nodes, dtype=np.int64))
     for ends, end_levels in (("u", "u_level"), ("v", "v_level")):
         ends = edges[ends].to_numpy()
         end_levels = edges[end_levels].to_numpy(dtype=float)
-        for i in np.flatnonzero(np.isin(ends, wanted) & ~np.isnan(end_levels)):
+        for i in np.flatnonzero(wanted.isin(ends) & ~np.isnan(end_levels)):
             found.setdefault(int(ends[i]), set()).add(float(end_levels[i]))
     return found
 
@@ -1931,21 +2074,24 @@ def _lift_area_entrances(lifts, nodes, edges):
     :func:`pyrosm.walking_areas._entrances`); a level counts when the area's ``level``
     tag lists it, or any level when the area has none."""
     from pyrosm.pbf_writer import _frame_tag_columns, _frame_tags
-    from pyrosm.walking_areas import _entrances
+    from pyrosm.walking_areas import _entrances, _rows_in_boxes
 
     ids = nodes["id"].to_numpy()
     lon = nodes["lon"].to_numpy(dtype=float)
     lat = nodes["lat"].to_numpy(dtype=float)
     geometries = lifts.geometry.to_numpy()
-    area_rows, node_rows = shapely.STRtree(shapely.points(lon, lat)).query(
+    near = _rows_in_boxes(lon, lat, shapely.bounds(geometries))
+    area_rows, node_rows = shapely.STRtree(shapely.points(lon[near], lat[near])).query(
         geometries, predicate="intersects"
     )
+    # In the order of the areas and the nodes, whatever the tree's order
+    order = np.lexsort((near[node_rows], area_rows))
+    area_rows, node_rows = area_rows[order], near[node_rows][order]
     levels_at = _levels_at_nodes(edges, ids[node_rows])
-    ends, counts = np.unique(
-        np.concatenate([edges["u"].to_numpy(), edges["v"].to_numpy()]),
-        return_counts=True,
-    )
-    dead_end = np.isin(ids, ends[counts == 1])
+    counts = pd.Series(
+        np.concatenate([edges["u"].to_numpy(), edges["v"].to_numpy()])
+    ).value_counts()
+    dead_end = Int64Set(counts.index[counts.to_numpy() == 1].to_numpy()).isin(ids)
     tags = _frame_tags(lifts, _frame_tag_columns(lifts))
     found = {}
     for area in np.unique(area_rows):
@@ -2010,15 +2156,15 @@ def join_lift_areas(nodes, edges, lifts):
         col for col in LIFT_METADATA if col in nodes.columns and col in lifts.columns
     ]
     tags = _frame_tags(lifts, _frame_tag_columns(lifts))
-    taken = set(nodes["id"].tolist())
+    taken, new = Int64Set(nodes["id"].to_numpy()), set()
     items = []
     for area, parts in _lift_area_entrances(lifts, nodes, edges).items():
         row = lifts.iloc[area]
         planned = _lift_area_plan(row, parts) if 0 < row["id"] <= _MAX_LIFT_ID else []
         new_ids = [node for *_, ids in planned for node in ids.values()]
-        if len(new_ids) >= 250 or any(node in taken for node in new_ids):
+        if len(new_ids) >= 250 or any(node in taken or node in new for node in new_ids):
             continue
-        taken.update(new_ids)
+        new.update(new_ids)
         ranges = level_ranges(tags[area].get("level")) or []
         span = (
             (min(a for a, _ in ranges), max(b for _, b in ranges)) if ranges else None
@@ -2062,7 +2208,12 @@ def join_lift_areas(nodes, edges, lifts):
         return nodes, edges
     rows = area_edge_rows(lifts, found, edges)
     levels = rows["v"].map(level_of).to_numpy(dtype=float)
-    rows = rows.assign(u_level=levels, v_level=levels, walking_area=True, vertical=None)
+    rows = rows.assign(
+        u_level=levels,
+        v_level=levels,
+        walking_area=True,
+        vertical=pd.Series(None, index=rows.index, dtype=edges["vertical"].dtype),
+    )
     if "level" in rows.columns:
         rows["level"] = [_tag_str(level) for level in levels]
     elif "tags" in rows.columns:

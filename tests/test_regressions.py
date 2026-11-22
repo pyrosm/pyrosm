@@ -6995,7 +6995,8 @@ def test_indoor_reads_join_lift_areas_as_lifts(tmp_path, engine):
     found, edges = osm.get_network("walking", nodes=True, indoor_elements=True)
     low, high = lift_area_copy_id(40, "way", 1), lift_area_copy_id(40, "way", 2)
     lift = edges[edges["id"] == 40]
-    assert lift[["u", "v", "u_level", "v_level", "walking_area", "vertical"]].values.tolist() == [
+    rows = lift[["u", "v", "u_level", "v_level", "walking_area", "vertical"]]
+    assert rows.astype(object).where(rows.notna(), None).values.tolist() == [
         [5, low, 0.0, 0.0, True, None],
         [12, high, 1.0, 1.0, True, None],
         [low, high, 0.0, 1.0, False, "lift"],
@@ -8276,3 +8277,54 @@ def test_indoor_read_with_walking_areas_of_an_area_without_ways(engine):
         )
     assert found == (None, None)
 
+
+
+@pytest.mark.parametrize(
+    "switches",
+    [{"walking_areas": True}, {"walking_areas": True, "indoor_elements": True}],
+)
+def test_network_reads_with_walking_areas_keep_the_column_types(switches):
+    """A network read with walking areas, or with walking areas and indoor elements,
+    returns the columns of the plain read in their types: the text columns stay text,
+    also those that no crossed area has a value in. They came back as object columns
+    (#1089)."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    _, plain = osm.get_network("walking", nodes=True)
+    _, edges = osm.get_network("walking", nodes=True, **switches)
+    assert {col: edges[col].dtype for col in plain.columns} == dict(plain.dtypes)
+
+
+def test_indoor_elements_with_walking_areas_keep_the_column_types():
+    """``get_indoor_elements(walking_areas=True)`` returns the columns of the read
+    without walking areas in their types: the coordinates as floats and the tags as
+    text, missing on the rows of the walking areas. They came back as object columns
+    (#1094)."""
+    from pyrosm import OSM, get_data
+
+    osm = OSM(get_data("helsinki_pbf"))
+    plain = osm.get_indoor_elements()
+    crossed = osm.get_indoor_elements(walking_areas=True)
+    assert {col: crossed[col].dtype for col in plain.columns} == dict(plain.dtypes)
+
+
+def test_joined_indoor_frames_keep_tag_values_that_fit_no_column_type():
+    """Joining frames of indoor elements keeps a tag whose value does not fit the type
+    of the other frame's column of that name, such as text in a float column, as it
+    is."""
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    from pyrosm.indoor import concat_with_tag_columns
+
+    points = gpd.GeoDataFrame(
+        {"id": [1], "lon": [24.9], "name": ["Kiosk"]}, geometry=[Point(24.9, 60.2)]
+    )
+    areas = gpd.GeoDataFrame(
+        {"id": [2], "tags": ['{"lon": "east"}']}, geometry=[Point(24.91, 60.2)]
+    )
+    joined = concat_with_tag_columns([points, areas])
+    assert joined["lon"].tolist() == [24.9, "east"]
+    assert joined["name"].dtype == points["name"].dtype
+    assert joined["name"].isna().tolist() == [False, True]

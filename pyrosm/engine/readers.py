@@ -67,6 +67,7 @@ def _get_layer(
     unix_time=None,
     grouping_relations=False,
     member_nodes=False,
+    closed_only=False,
 ):
     """Read a layer: decode the file in parallel selecting the elements that carry any of
     the filter keys (``osm_keys`` if given, else ``custom_filter``'s keys, or every tagged
@@ -94,7 +95,8 @@ def _get_layer(
     :mod:`pyrosm.grouping_relations`), as ``get_data_by_custom_criteria`` does.
     ``member_nodes`` gives the relations the column ``member_nodes``, the nodes of their
     member ways with their coordinates (see
-    :func:`pyrosm.engine.relation_geometry.member_nodes`).
+    :func:`pyrosm.engine.relation_geometry.member_nodes`). ``closed_only`` leaves out the
+    ways that do not end at the node they start at, which cannot be areas.
     """
     validate_progress(progress)
     workers = default_workers(workers)
@@ -146,6 +148,8 @@ def _get_layer(
                 key_params["grouping_relations"] = True
             if member_nodes:
                 key_params["member_nodes"] = True
+            if closed_only:
+                key_params["closed_only"] = True
             cache_path = cache.result_path(filepath, key_params)
             result = cache.materialize(
                 cache_path,
@@ -170,6 +174,7 @@ def _get_layer(
                         steps=steps,
                         grouping_relations=grouping_relations,
                         member_nodes=member_nodes,
+                        closed_only=closed_only,
                     ),
                     bbox_bounds=bounds,
                     requested_tag_keys=requested_tag_keys,
@@ -199,6 +204,7 @@ def _get_layer(
                 steps=steps,
                 grouping_relations=grouping_relations,
                 member_nodes=member_nodes,
+                closed_only=closed_only,
             )
 
         result = _decode_and_run(
@@ -517,6 +523,7 @@ def get_data_by_custom_criteria(
     tags_to_keep=None,
     unix_time=None,
     member_nodes=False,
+    closed_only=False,
 ):
     """Read OSM elements matching an arbitrary ``custom_filter`` from ``filepath`` with the
     out-of-core engine, with the same columns as
@@ -581,6 +588,7 @@ def get_data_by_custom_criteria(
         unix_time=unix_time,
         grouping_relations=True,
         member_nodes=member_nodes,
+        closed_only=closed_only,
     )
 
 

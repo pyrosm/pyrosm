@@ -3778,3 +3778,59 @@ def test_relation_member_nodes_match_between_readers(helsinki_pbf):
         coords = shapely.get_coordinates(geometry)
         on_grid = (np.abs(coords * 1e7 - np.round(coords * 1e7)) < 1e-3).all(axis=1)
         assert all(_coordinate_key(x, y) in keys for x, y in coords[on_grid])
+
+
+def test_engine_closed_only_keeps_the_ways_that_can_be_areas():
+    """Of way columns, a read that builds only the closed ways keeps those that end at
+    the node they start at, and all of them when none does."""
+    from pyrosm.engine.collect import _closed_only
+
+    def columns(*ways):
+        nodes = np.empty(len(ways), dtype=object)
+        nodes[:] = [np.array(way, dtype=np.int64) for way in ways]
+        return {"id": np.arange(1, len(ways) + 1), "nodes": nodes}
+
+    assert _closed_only(columns([5, 6, 7, 5], [5, 6], []))["id"].tolist() == [1]
+    open_ways = columns([5, 6], [7, 8, 9])
+    assert _closed_only(open_ways) is open_ways
+    assert _closed_only(None) is None
+
+
+def test_engine_stream_builds_all_ways_when_no_closed_way_gives_a_geometry(
+    helsinki_pbf, tmp_path, monkeypatch
+):
+    """A read that builds only the closed ways builds all of them when none of the
+    closed ways gives a geometry, so that its frame is that of the read without it."""
+    import pandas as pd
+    import pyarrow.parquet as pq
+    from pyrosm.config import Conf
+    from pyrosm.data_manager import parse_custom_filter
+    from pyrosm.engine import geoparquet
+    from pyrosm.engine.blobs import _data_blob_spans, _index_blobs
+    from pyrosm.engine.pool import _decode_all
+
+    data_filter, osm_keys = parse_custom_filter({"building": [True]})
+    filter_spec = (osm_keys, data_filter, "keep")
+    blobs, _ = _data_blob_spans(_index_blobs(helsinki_pbf))
+    shards, _ = _decode_all(helsinki_pbf, blobs, 1, str(tmp_path), [b"building"], False)
+
+    def unbuildable(kept):
+        if isinstance(kept, dict):
+            ways = {key: values[:1] for key, values in kept.items()}
+            ways["nodes"] = ways["nodes"].copy()
+            ways["nodes"][0] = np.full_like(ways["nodes"][0], -1)
+            return ways
+        ways = kept.take([0])
+        ways.refs = np.full_like(ways.refs, -1)
+        return ways
+
+    def read(name, closed_only):
+        path = geoparquet._stream_layer_to_parquet(
+            shards, str(tmp_path / name), 250_000, Conf.tags.building, True,
+            filter_spec, True, True, closed_only=closed_only,
+        )
+        return pq.read_table(path).to_pandas()
+
+    expected = read("all.parquet", False)
+    monkeypatch.setattr(geoparquet, "_closed_only", unbuildable)
+    pd.testing.assert_frame_equal(read("closed.parquet", True), expected)
